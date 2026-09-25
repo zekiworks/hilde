@@ -27,7 +27,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the OMP model. Each job reads them when it starts. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
-| `README.md` | User-facing installation, CLI usage, shared web workflow, command reference, and troubleshooting. |
+| `README.md` | User guide in four sections: Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
 | `AGENTS.md` | Short standing instructions that coding agents load automatically; the details stay in this document. |
 
 There is no package manifest. Both applications are run directly with Python.
@@ -540,14 +540,15 @@ across local and SSH workers, internal device pinning, FIFO scheduling and
 deduplication, GPU enumeration when CUDA cannot open one device, public worker
 and model configuration without hosts or paths, exact overwrite confirmation,
 GPU-preferred resolution, extensionless document
-URL inference, remote chunk reuse, resumable paragraph adaptation, real PDF
+URL inference, remote chunk reuse, resumable paragraph adaptation with bounded
+concurrency and context and ordered commits, real PDF
 extraction flowing directly into MP3 and an exact sentence reader through a
 fake speech service, Listen-page, Create-step, and open-book persistence, the
 fixed passage for every new voice, voice catalog preview comparability and
 traversal refusal, preview refusal for voice folders linked from outside the
 library, preview rendering that never publishes a failed clip, library
 titles/durations/sources newest first and refreshed after a book is narrated
-again, legacy sentence-cue conversion,
+again, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
 audio with keep-alive byte ranges, safe retained-MP3 downloads,
 job-specific SSE replay, cookie isolation, model configuration ownership,
