@@ -451,25 +451,27 @@ that does not establish that the generated file is silent.
 ### Voices
 
 **Voices** lists every saved voice in a compact table: Preview, Voice name,
-Prompt, and **Select** and **Delete** buttons, 50 rows at a time. The prompt is
-the voice description given to VoiceDesign, and search looks only at prompts:
-every word you type must appear, in any order and case, so
+Prompt, and **Select**, **Use**, and **Delete** buttons, 50 rows at a time. The
+prompt is the voice description given to VoiceDesign, and search looks only at
+prompts: every word you type must appear, in any order and case, so
 `warm british female` finds voices whose prompt contains all three. The
-preview plays in place, and **Select** makes the voice current and returns to
-**Create**. **Delete** removes a voice after you confirm. A voice that is being
-created can't be deleted until it finishes or you stop it; audiobooks made
-with a deleted voice are kept, and a job already queued keeps its own copy.
+preview plays in place. **Use** makes the voice current and returns to
+**Create**; the voice in use shows **In use** instead. **Delete** removes a
+voice after you confirm; audiobooks made with it are kept, and a job already
+queued keeps its own copy.
 
 A new library comes with eight stock voices, each with its prompt: Balder,
 Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun (female).
 
-**New voice** asks for a name and a prompt. Every voice reads the same fixed
-passage, so previews compare pace, tone, and naturalness on the same words;
-the passage is saved as `transcript.txt` beside `reference.wav` and is neither
-shown nor editable. **Stop** cancels a voice being created without saving
-anything. Listen to the new voice's preview; to refine it, adjust the prompt
-and choose **Replace voice**, which regenerates the same name. The new voice is
-already selected in **Create**.
+To change a voice, choose **Select**: its name and prompt load into the editor
+at the top. Change the prompt and choose **Listen**. VoiceDesign makes a new
+version, which plays as soon as it is ready, while the saved voice stays as it
+was. Listen again after each change until you like it, then choose **Save**,
+which keeps exactly the version you heard. Save under another name to keep both
+voices. **New voice** opens the same editor empty, and **Stop** cancels a
+version being made. Every voice reads the same fixed passage, so previews
+compare pace, tone, and naturalness on the same words; the passage is saved as
+`transcript.txt` beside `reference.wav` and is neither shown nor editable.
 
 Voices made before the fixed passage read other words. Render their comparable
 previews once, while no audiobook is being made:

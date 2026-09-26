@@ -1736,11 +1736,12 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         )
         return self.storage.voices / name
 
-    def serve(self):
+    def serve(self, tts_models=None):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.storage = self.storage
         server.jobs = self.jobs = web.JobQueue()
+        server.tts_models = tts_models or web.unconfigured_tts_models()
         server.verbose = False
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1753,10 +1754,10 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.addCleanup(stop)
         return f"http://127.0.0.1:{server.server_port}"
 
-    def delete(self, origin, kind, name, headers=None):
+    def post(self, origin, path, body, headers=None):
         request = urllib.request.Request(
-            f"{origin}/api/{kind}/delete",
-            data=json.dumps({"name": name}).encode("utf-8"),
+            f"{origin}{path}",
+            data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json", **(headers or {})},
             method="POST",
         )
@@ -1765,6 +1766,9 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
+
+    def delete(self, origin, kind, name, headers=None):
+        return self.post(origin, f"/api/{kind}/delete", {"name": name}, headers)
 
     def test_previews_are_comparable_only_when_they_read_the_fixed_passage(self):
         fixed = self.add_voice(
@@ -1808,7 +1812,9 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             "clone": {"source": "missing"},
         }
         with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
-            command = web.create_voice_command(web.values_of(state, models, self.storage))
+            command = web.create_voice_command(
+                web.values_of(state, models, self.storage), self.storage.drafts / "draft"
+            )
 
         self.assertEqual(command[command.index("--text") + 1], web.VOICE_REFERENCE_TEXT)
         self.assertEqual(command[command.index("--instruct") + 1], "Warm narrator.")
@@ -1954,23 +1960,6 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(link))
         self.assertTrue(web.is_saved_voice(outside))
 
-    def test_a_voice_being_created_is_not_deleted(self):
-        busy = self.add_voice("Busy", web.VOICE_REFERENCE_TEXT)
-        origin = self.serve()
-
-        class Creating(web.Run):
-            def start(self):
-                pass
-
-        run = Creating([], "voice", str(busy))
-        self.assertTrue(self.jobs.start_voice(run))
-        self.addCleanup(run.close, 130)
-        status, payload = self.delete(origin, "voices", "Busy")
-
-        self.assertEqual(status, 409)
-        self.assertIn("being created", payload["error"])
-        self.assertTrue(web.is_saved_voice(busy))
-
     def test_deleting_an_audiobook_removes_its_record_and_reader_files(self):
         def book(name):
             output = self.storage.audiobooks / name
@@ -2088,6 +2077,97 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
                 read_voice(voice)
                 self.assertEqual(web.voice_preview(voice), (voice / "reference.wav", True))
                 self.assertTrue((voice / "description.txt").read_text(encoding="utf-8").strip())
+
+    def test_listen_makes_a_draft_and_save_keeps_exactly_that_clip(self):
+        freyja = self.add_voice("Freyja", web.VOICE_REFERENCE_TEXT, "Old prompt.")
+        (freyja / "preview.wav").write_bytes(b"preview of the old voice")
+        before = (freyja / "reference.wav").read_bytes()
+        fake = Path(self.storage.root) / "fake_design.py"
+        fake.write_text(
+            "import argparse, pathlib, numpy, soundfile\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('command')\n"
+            "parser.add_argument('--voice-dir', type=pathlib.Path)\n"
+            "parser.add_argument('--instruct')\n"
+            "parser.add_argument('--text')\n"
+            "args, _ = parser.parse_known_args()\n"
+            "args.voice_dir.mkdir(parents=True)\n"
+            "soundfile.write(args.voice_dir / 'reference.wav',\n"
+            "                numpy.full(2400, 0.25, 'float32'), 24000, subtype='FLOAT')\n"
+            "(args.voice_dir / 'transcript.txt').write_text(args.text, encoding='utf-8')\n"
+            "(args.voice_dir / 'description.txt').write_text(args.instruct, encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        models = {
+            "design": {"source": "local", "model": "/models/design", "allow_downloads": False},
+            "clone": {"source": "missing"},
+        }
+        state = normalize({"tab": "voice", "voice": {"name": "Freyja", "instruct": "New prompt."}})
+        with mock.patch.object(web, "SCRIPT", fake), \
+                mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
+            origin = self.serve(models)
+            status, _ = self.post(origin, "/api/run", {"state": state})
+            deadline = time.monotonic() + 30
+            while self.jobs.exclusive is not None and time.monotonic() < deadline:
+                time.sleep(0.05)
+        [draft] = list(self.storage.drafts.iterdir())
+        with urllib.request.urlopen(f"{origin}/api/voices/draft?id={draft.name}") as response:
+            heard, _ = sf.read(io.BytesIO(response.read()), dtype="float32")
+        untouched = (
+            (freyja / "reference.wav").read_bytes() == before
+            and (freyja / "description.txt").read_text(encoding="utf-8") == "Old prompt."
+        )
+        saved = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Freyja"})
+
+        self.assertEqual(status, 200)
+        self.assertTrue(untouched)
+        self.assertEqual(saved[0], 200)
+        np.testing.assert_array_equal(sf.read(freyja / "reference.wav", dtype="float32")[0], heard)
+        self.assertEqual((freyja / "description.txt").read_text(encoding="utf-8"), "New prompt.")
+        self.assertEqual(
+            (freyja / "transcript.txt").read_text(encoding="utf-8"), web.VOICE_REFERENCE_TEXT
+        )
+        self.assertFalse((freyja / "preview.wav").exists())
+        self.assertFalse(draft.exists())
+
+    def test_save_refuses_missing_drafts_bad_names_and_linked_voices(self):
+        draft = self.storage.drafts / "0123456789abcdef"
+        save_voice(
+            draft, np.linspace(-0.5, 0.5, 2400, dtype=np.float32), 24000,
+            web.VOICE_REFERENCE_TEXT, "FLOAT", description="Prompt.",
+        )
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        (self.storage.voices / "Linked").symlink_to(elsewhere.name, target_is_directory=True)
+        origin = self.serve()
+
+        missing = self.post(origin, "/api/voices/save", {"draft": "feedfacefeedface", "name": "Nova"})
+        bad_name = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "../Nova"})
+        linked = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Linked"})
+        with self.assertRaises(urllib.error.HTTPError) as traversal:
+            urllib.request.urlopen(f"{origin}/api/voices/draft?id=..%2FVoices")
+
+        self.assertEqual(missing, (404, {"error": "That draft no longer exists. Listen again."}))
+        self.assertEqual(bad_name, (400, {"error": "Enter a voice name without a slash."}))
+        self.assertEqual(linked, (400, {"error": "An existing voice must be a directory."}))
+        self.assertEqual(traversal.exception.code, 400)
+        self.assertTrue(web.is_saved_voice(draft))
+        self.assertEqual(os.listdir(elsewhere.name), [])
+
+    def test_listen_keeps_only_the_newest_drafts(self):
+        for index in range(web.VOICE_DRAFT_LIMIT + 2):
+            old = self.storage.drafts / f"draft{index:02d}"
+            old.mkdir()
+            os.utime(old, ns=(index * 10**9,) * 2)
+
+        fresh = web.new_voice_draft(self.storage)
+
+        self.assertEqual(
+            sorted(path.name for path in self.storage.drafts.iterdir()),
+            [f"draft{index:02d}" for index in range(3, web.VOICE_DRAFT_LIMIT + 2)],
+        )
+        self.assertEqual(fresh.parent, self.storage.drafts)
+        self.assertFalse(fresh.exists())
 
 
 class ReaderAudioIndexTests(unittest.TestCase):

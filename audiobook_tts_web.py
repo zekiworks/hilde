@@ -58,6 +58,8 @@ from markdown_it import MarkdownIt
 from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
+    read_voice,
+    save_voice,
     speech_endpoint,
     split_sentences,
     split_text,
@@ -72,6 +74,8 @@ APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
+# Listen keeps this many unsaved voice drafts before removing the oldest.
+VOICE_DRAFT_LIMIT = 10
 DEFAULT_STORAGE_ROOT = ROOT / "User"
 STATE_COOKIE_PREFIX = "audiobook_tts_state"
 STATE_COOKIE_COUNT = f"{STATE_COOKIE_PREFIX}_chunks"
@@ -421,6 +425,7 @@ class SharedStorage:
         self.in_progress = self.root / "in_progress"
         self.versions = self.audiobooks / ".versions"
         self.readers = self.audiobooks / ".readers"
+        self.drafts = self.in_progress / "voice-drafts"
 
     def ensure(self):
         for directory in (
@@ -430,6 +435,7 @@ class SharedStorage:
             self.in_progress,
             self.versions,
             self.readers,
+            self.drafts,
         ):
             directory.mkdir(mode=0o750, parents=True, exist_ok=True)
 
@@ -783,6 +789,40 @@ def prepare_library(storage):
                 (staging / voice.name).rename(storage.voices / voice.name)
     finally:
         shutil.rmtree(staging)
+
+
+def new_voice_draft(storage):
+    """Return a fresh folder for Listen, keeping only the newest drafts."""
+    drafts = sorted(
+        (path for path in storage.drafts.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for old in drafts[VOICE_DRAFT_LIMIT - 1:]:
+        shutil.rmtree(old, ignore_errors=True)
+    return storage.drafts / os.urandom(8).hex()
+
+
+def save_voice_draft(storage, draft_id, name):
+    """Save exactly the draft that was heard as the named voice."""
+    import soundfile as sf
+
+    draft = resolve_asset(storage.drafts, draft_id)
+    if not is_saved_voice(draft):
+        raise FileNotFoundError("no such draft")
+    if not name or safe_asset_name(name) != name:
+        raise ValueError("Enter a voice name without a slash.")
+    waveform, rate, transcript = read_voice(draft)
+    try:
+        description = (draft / VOICE_DESCRIPTION_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        description = ""
+    save_voice(
+        storage.voices / name, waveform, rate, transcript,
+        sf.info(str(draft / "reference.wav")).subtype,
+        overwrite=True, description=description,
+    )
+    shutil.rmtree(draft)
 
 
 def is_markdown_table(paragraph):
@@ -2665,7 +2705,7 @@ def narrate_command(values):
     )
 
 
-def create_voice_command(values):
+def create_voice_command(values, voice_dir):
     model = values["design"]
     arguments = [
         sys.executable,
@@ -2673,7 +2713,7 @@ def create_voice_command(values):
         str(SCRIPT),
         "create-voice",
         "--voice-dir",
-        values["new_voice_dir"],
+        str(voice_dir),
         "--overwrite",
         "--instruct",
         values["instruct"],
@@ -3566,12 +3606,6 @@ class JobQueue:
             self.exclusive = record
         self._launch(record)
         return True
-
-    def creating_voice(self, voice_dir):
-        """Return whether the running voice creation writes this voice folder."""
-        with self.lock:
-            record = self.exclusive
-        return record is not None and Path(record["run"].predicted) == Path(voice_dir)
 
     def _launch(self, record):
         threading.Thread(
@@ -4990,6 +5024,16 @@ class Handler(BaseHTTPRequestHandler):
                 {"voices": voice_catalog(self.server.storage)},
                 extra=(("Cache-Control", "no-store"),),
             )
+        if route == "/api/voices/draft":
+            try:
+                draft = resolve_asset(
+                    self.server.storage.drafts, query.get("id", [""])[0]
+                )
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            if not is_saved_voice(draft):
+                return self.fail(HTTPStatus.NOT_FOUND, "That draft no longer exists.")
+            return self.send_file(str(draft / "reference.wav"), False)
         if route == "/api/voices/preview":
             try:
                 voice_dir = resolve_asset(
@@ -5082,6 +5126,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_asset("document", body.get("name", ""))
         if route == "/api/audiobooks/delete":
             return self.delete_asset("audiobook", body.get("name", ""))
+        if route == "/api/voices/save":
+            return self.save_draft(
+                str(body.get("draft", "")), str(body.get("name", "")).strip()
+            )
         if route == "/api/paper/openai/login":
             return self.reply(
                 HTTPStatus.ACCEPTED,
@@ -5369,12 +5417,6 @@ class Handler(BaseHTTPRequestHandler):
         storage = self.server.storage
         try:
             if kind == "voice":
-                voice_dir = resolve_asset(storage.voices, name)
-                if self.server.jobs.creating_voice(voice_dir):
-                    return self.fail(
-                        HTTPStatus.CONFLICT,
-                        f"{voice_dir.name} is being created. Stop it before deleting it.",
-                    )
                 delete_voice(storage, name)
             elif kind == "document":
                 delete_document(storage, name)
@@ -5393,6 +5435,28 @@ class Handler(BaseHTTPRequestHandler):
             )
         return self.reply(HTTPStatus.OK, {"assets": asset_catalog(storage)})
 
+    def save_draft(self, draft_id, name):
+        storage = self.server.storage
+        try:
+            save_voice_draft(storage, draft_id, name)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileNotFoundError:
+            return self.fail(
+                HTTPStatus.NOT_FOUND, "That draft no longer exists. Listen again."
+            )
+        except (FileExistsError, NotADirectoryError):
+            return self.fail(
+                HTTPStatus.BAD_REQUEST, "An existing voice must be a directory."
+            )
+        except OSError as exc:
+            # Operating-system messages name server paths; browsers get the reason.
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not save {name}: {exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, {"name": name, "assets": asset_catalog(storage)})
+
 
 
     def run(self, state, confirmed=False, state_headers=()):
@@ -5410,8 +5474,9 @@ class Handler(BaseHTTPRequestHandler):
             state, self.server.tts_models, self.server.storage
         )
         if state["tab"] == "voice":
-            command = create_voice_command(values)
-            run = Run(command, "voice", values["new_voice_dir"])
+            draft = new_voice_draft(self.server.storage)
+            command = create_voice_command(values, draft)
+            run = Run(command, "voice", str(draft))
             # The fixed passage stays out of the visible run log.
             shown = [
                 "<fixed preview passage>" if part == VOICE_REFERENCE_TEXT else part
@@ -5938,18 +6003,18 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
                    border-bottom:1px solid var(--surface); }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
-  .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; }
+  .voice-table tr { grid-template-columns:auto minmax(0,1fr); align-items:center; }
   .voice-table .preview { grid-row:1 / span 2; }
   .voice-table .name, .voice-table .description { grid-column:2; }
   .voice-table .description { color:var(--dim); font-size:14px; }
-  .voice-table .select { grid-column:3; grid-row:1 / span 2; }
+  .voice-table .select { grid-column:2; grid-row:3; display:flex; flex-wrap:wrap;
+                         align-items:center; gap:6px; }
   .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
   .book-table .title, .book-table .duration, .book-table .source { grid-column:1; }
   .book-table .duration, .book-table .source { font-size:13px; }
   .book-table td[data-label]::before { content:attr(data-label) ": "; }
   .book-table .action { grid-column:2; grid-row:1 / span 3; align-self:center; }
-  .voice-table .select, .book-table .action { display:flex; flex-direction:column;
-                                             align-items:flex-end; gap:2px; }
+  .book-table .action { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
   .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
 }
 @media (max-width:640px), (pointer:coarse) {
@@ -6220,13 +6285,14 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
         </div>
         <p id="voice-problem" class="problem hidden"></p>
         <div id="voice-progress" class="progress-meter hidden">
-          <progress aria-label="Creating the voice"></progress>
-          <span class="note">Creating the voice…</span>
+          <progress aria-label="Designing the voice"></progress>
+          <span class="note">Designing the voice…</span>
         </div>
         <div id="voice-result" class="voice-card hidden" tabindex="-1"></div>
         <div class="actions">
-          <button id="voice-create" class="primary" type="button"
-            onclick="createVoice()">Create voice</button>
+          <button id="voice-listen" class="primary" type="button"
+            onclick="listenVoice()">Listen</button>
+          <button id="voice-save" class="hidden" type="button" onclick="saveVoice(this)">Save</button>
           <button id="voice-stop" class="hidden" type="button" onclick="stopRun()">Stop</button>
           <button id="voice-close" type="button" onclick="closeVoiceForm()">Close</button>
         </div>
@@ -6371,7 +6437,8 @@ let paperOpenAIConnected = false, advancedOpen = false, voiceFormOpen = false;
 // Create shows the steps (compose), a followed run (progress), or its outcome (result).
 let submitting = false, createView = "compose", stopping = false, waitingJobId = "";
 let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
-let voiceResult = null, queueSignature = "";
+// A draft is the clip Listen made; Save stores exactly that clip.
+let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
 let etaSample = null, etaSecondsPerUnit = null, etaDeadline = null, etaTimer = null;
 let etaPhase = null, etaPhaseStarted = null;
@@ -6401,10 +6468,6 @@ const FLAGS = [["adapt", "audiobook.adapt"]];
 
 function at(path) { const [group, key] = path.split("."); return state[group][key]; }
 function put(path, value) { const [group, key] = path.split("."); state[group][key] = value; }
-function clientFileName(path) {
-  const parts = String(path || "").replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1];
-}
 function plural(count, noun) { return `${count} ${noun}${count === 1 ? "" : "s"}`; }
 
 function searchWords(value) {
@@ -7066,18 +7129,24 @@ function voiceRow(voice) {
     older.textContent = "Preview reads an older passage";
     description.append(older);
   }
+  // Select loads a voice into the editor above; Use picks it for audiobooks.
   const select = cell("select");
+  const edit = document.createElement("button");
+  edit.type = "button"; edit.textContent = "Select";
+  edit.setAttribute("aria-label", `Select ${voice.name} to edit it`);
+  edit.addEventListener("click", () => editVoice(voice));
+  select.append(edit);
   if (selected) {
     const badge = document.createElement("span");
     badge.className = "selected-badge";
     badge.innerHTML = CHECK_ICON;
-    badge.append("Selected");
+    badge.append("In use");
     select.append(badge);
   } else if (!facts.clone_server) {
     const button = document.createElement("button");
-    button.type = "button"; button.textContent = "Select";
-    button.setAttribute("aria-label", `Select ${voice.name}`);
-    button.addEventListener("click", () => selectVoice(voice.name));
+    button.type = "button"; button.textContent = "Use";
+    button.setAttribute("aria-label", `Use ${voice.name}`);
+    button.addEventListener("click", () => useVoice(voice.name));
     select.append(button);
   }
   select.append(deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
@@ -7086,12 +7155,25 @@ function voiceRow(voice) {
 }
 
 function previewButton(voice) {
+  return clipButton(
+    voice.name, voice.name,
+    `/api/voices/preview?name=${encodeURIComponent(voice.name)}` +
+      `&v=${encodeURIComponent(voice.preview)}`,
+  );
+}
+function draftButton(draft) {
+  return clipButton(
+    `draft:${draft.id}`, "the new version",
+    `/api/voices/draft?id=${encodeURIComponent(draft.id)}`,
+  );
+}
+function clipButton(key, title, url) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "preview-button";
-  button.dataset.voice = voice.name;
-  button.setAttribute("aria-label", `Preview ${voice.name}`);
-  button.addEventListener("click", () => togglePreview(voice.name, voice.preview));
+  button.dataset.voice = key;
+  button.setAttribute("aria-label", `Preview ${title}`);
+  button.addEventListener("click", () => togglePreview(key, url, title));
   setPreviewButton(button);
   return button;
 }
@@ -7103,16 +7185,15 @@ function setPreviewButton(button) {
 function syncPreviewButtons() {
   for (const button of document.querySelectorAll(".preview-button")) setPreviewButton(button);
 }
-function togglePreview(name, version) {
-  if (previewing === name && !previewAudio.paused) { previewAudio.pause(); return; }
-  previewing = name;
-  previewAudio.src = `/api/voices/preview?name=${encodeURIComponent(name)}` +
-    `&v=${encodeURIComponent(version)}`;
+function togglePreview(key, url, title) {
+  if (previewing === key && !previewAudio.paused) { previewAudio.pause(); return; }
+  previewing = key;
+  previewAudio.src = url;
   previewAudio.play().catch((error) => {
     // A newer click replaced or paused this clip before it started.
-    if (error.name === "AbortError" || previewing !== name) return;
+    if (error.name === "AbortError" || previewing !== key) return;
     previewing = ""; syncPreviewButtons();
-    setStatus(`The preview of ${name} couldn't be played.`, true);
+    setStatus(`The preview of ${title} couldn't be played.`, true);
   });
   syncPreviewButtons();
 }
@@ -7148,7 +7229,7 @@ async function deleteVoice(name, button) {
     `Delete the voice ${name}? Its reference clip and preview are removed for good.`, button);
   if (!answer) return;
   if (previewing === name) stopPreview();
-  if (voiceResult && voiceResult.name === name) voiceResult = null;
+  if (voiceResult && voiceResult.saved === name) voiceResult = null;
   assets = answer.assets || assets;
   if (state.audiobook.voice === name) state.audiobook.voice = "";
   populateAssets();
@@ -7177,7 +7258,19 @@ async function deleteDocument(button) {
   render(); queueSync();
 }
 
-async function selectVoice(name) {
+function editVoice(voice) {
+  stopPreview();
+  state.voice.name = voice.name;
+  state.voice.instruct = voice.description;
+  $("voice-name").value = voice.name;
+  $("instruct").value = voice.description;
+  voiceFormOpen = true; voiceDraft = null; voiceResult = null;
+  render(); queueSync();
+  $("voice-form").scrollIntoView({ block:"start" });
+  $("instruct").focus({ preventScroll:true });
+}
+
+async function useVoice(name) {
   stopPreview();
   state.audiobook.voice = name;
   populateAssets();
@@ -7384,12 +7477,16 @@ function renderResult() {
 }
 
 function openVoiceForm() {
-  voiceFormOpen = true; voiceResult = null;
-  render();
+  // New voice starts empty; Select loads an existing voice instead.
+  stopPreview();
+  state.voice.name = ""; state.voice.instruct = "";
+  $("voice-name").value = ""; $("instruct").value = "";
+  voiceFormOpen = true; voiceDraft = null; voiceResult = null;
+  render(); queueSync();
   $("voice-name").focus();
 }
 function closeVoiceForm() {
-  voiceFormOpen = false;
+  voiceFormOpen = false; voiceDraft = null; voiceResult = null; stopPreview();
   render();
   $("new-voice").focus();
 }
@@ -7405,38 +7502,49 @@ function renderVoiceForm() {
   $("voice-stop").classList.toggle("hidden", !creating);
   $("voice-close").classList.toggle("hidden", creating);
   const name = state.voice.name.trim();
+  $("voice-form-title").textContent = voiceByName(name) ? `Edit ${name}` : "New voice";
   $("voice-exists").textContent =
-    facts.voice_exists && name ? `This replaces the voice named ${name}.` : "";
-  // Voice creation needs every narration worker, so it waits for an empty queue.
+    facts.voice_exists && name ? `Saving replaces the voice named ${name}.` : "";
+  // Designing a voice needs every narration worker, so it waits for an empty queue.
   const queued = !creating && jobs.length > 0;
   const typed = !!(name || state.voice.instruct.trim());
-  const problem = queued ? "New voices can be created once no audiobook is being made."
+  const problem = queued ? "Voices can be designed once no audiobook is being made."
     : typed && state.tab === "voice" && facts.tab === "voice" ? facts.problem : "";
   $("voice-problem").textContent = problem || "";
   $("voice-problem").classList.toggle("hidden", !problem);
-  $("voice-create").disabled =
+  // Save keeps the clip that was heard, so it waits until the prompt is heard.
+  const heard = !!voiceDraft && voiceDraft.prompt.trim() === state.voice.instruct.trim();
+  $("voice-listen").disabled =
     submitting || creating || queued || facts.tab !== "voice" || !!facts.problem;
-  $("voice-create").textContent = facts.voice_exists ? "Replace voice" : "Create voice";
+  $("voice-listen").classList.toggle("primary", !heard);
+  $("voice-save").classList.toggle("hidden", !voiceDraft || creating);
+  $("voice-save").classList.toggle("primary", heard);
+  $("voice-save").disabled =
+    !heard || submitting || creating || facts.tab !== "voice" || !!facts.problem;
   const result = $("voice-result");
-  const shown = !!voiceResult && !creating;
+  const shown = !creating && !!(voiceDraft || voiceResult);
   result.classList.toggle("hidden", !shown);
-  const voice = shown && voiceResult.ok ? voiceByName(voiceResult.name) : null;
-  const key = shown ? JSON.stringify([voiceResult, voice && voice.preview]) : "";
+  const key = shown ? JSON.stringify([voiceDraft, voiceResult, heard]) : "";
   if (result.dataset.key === key) return;
   result.dataset.key = key;
   result.replaceChildren();
   if (!shown) return;
-  if (voice) result.append(previewButton(voice));
+  if (voiceDraft) result.append(draftButton(voiceDraft));
   const text = document.createElement("div");
   text.className = "voice-meta";
   const message = document.createElement("span");
-  message.className = voiceResult.ok || voiceResult.stopped ? "" : "problem";
-  message.textContent = voiceResult.ok
-    ? `${voiceResult.name} is ready and selected for your next audiobook.`
-    : voiceResult.stopped ? "Stopped. Nothing was saved."
-    : "We couldn't create this voice. Try again, or change the prompt.";
+  if (voiceDraft) {
+    message.textContent = heard
+      ? "This is the new version. Save it to keep it, or change the prompt and listen again."
+      : "The prompt has changed. Listen again before saving.";
+  } else {
+    message.className = voiceResult.saved || voiceResult.stopped ? "" : "problem";
+    message.textContent = voiceResult.saved ? `${voiceResult.saved} is saved.`
+      : voiceResult.stopped ? "Stopped. Nothing was saved."
+      : "We couldn't design this voice. Try again, or change the prompt.";
+  }
   text.append(message);
-  if (!voiceResult.ok && voiceResult.detail) {
+  if (voiceResult && voiceResult.detail) {
     const details = document.createElement("details");
     details.className = "technical";
     const summary = document.createElement("summary");
@@ -7680,12 +7788,14 @@ async function startAudiobook() {
   }
 }
 
-async function createVoice() {
+async function listenVoice() {
   if (submitting) return;
-  submitting = true; voiceResult = null; render();
+  stopPreview();
+  submitting = true; voiceResult = null; voiceDraft = null; render();
   try {
     collect();
     state.tab = "voice";
+    draftPrompt = state.voice.instruct;
     const answer = await requestRun(false);
     if (!answer) return;
     jobs = answer.queue || jobs; runs = answer.runs || runs;
@@ -7694,6 +7804,28 @@ async function createVoice() {
     if (active) { followActive(active, false); $("voice-stop").focus(); }
   } finally {
     submitting = false; render();
+  }
+}
+
+async function saveVoice(button) {
+  if (!voiceDraft) return;
+  button.disabled = true;
+  try {
+    const answer = await jsonRequest("/api/voices/save", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ draft:voiceDraft.id, name:state.voice.name.trim() }),
+    });
+    stopPreview();
+    voiceDraft = null; voiceResult = { saved:answer.name };
+    assets = answer.assets || assets;
+    populateAssets();
+    setStatus(`Saved ${answer.name}.`);
+    queueSync();
+    await refreshVoices();
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false; render();
   }
 }
 
@@ -7782,15 +7914,15 @@ function watch(jobId="") {
         );
       }
     }
-    const createdVoice = info.kind === "voice" && info.code === 0 && info.artifact
-      ? clientFileName(info.artifact) : null;
     if (info.kind === "voice") {
       // Stop terminates the voice process, which then reports SIGTERM.
       const stopped = info.code === 130 || info.code === -15;
-      voiceResult = {
-        ok:info.code === 0, stopped, name:createdVoice,
-        detail:info.code && !stopped ? recentLog.join("\n") : "",
+      voiceDraft = info.code === 0 && info.name
+        ? { id:info.name, prompt:draftPrompt ?? state.voice.instruct } : null;
+      voiceResult = voiceDraft ? null : {
+        ok:false, stopped, detail:info.code && !stopped ? recentLog.join("\n") : "",
       };
+      draftPrompt = null;
       if (state.tab === "voice") focus = "voice-result";
     }
     let nextRun = null;
@@ -7803,17 +7935,15 @@ function watch(jobId="") {
       jobs = current.queue || []; runs = current.runs || [];
       consumers = current.consumers || [];
       nextRun = runs.find((item) => item.active) || null;
-      if (createdVoice) {
-        state.voice.name = createdVoice;
-        state.audiobook.voice = createdVoice;
-      }
       populateAssets();
-      if (createdVoice) await sync();
     } catch (_) {}
-    if (info.kind === "voice") refreshVoices();
     if (info.kind === "audiobook" && info.code === 0) refreshLibrary();
     render();
     if (focus) $(focus).focus();
+    // The new version plays as soon as it is ready.
+    if (info.kind === "voice" && voiceDraft && state.tab === "voice") {
+      $("voice-result").querySelector(".preview-button").click();
+    }
     if (nextRun) followActive(nextRun, true);
   });
   source.onerror = () => {

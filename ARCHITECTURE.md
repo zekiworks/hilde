@@ -142,6 +142,7 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │   └── .versions/
 ├── Documents/
 └── in_progress/
+    └── voice-drafts/
 ```
 
 Browser state contains only flat asset names. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser. File-serving and AirDrop paths must resolve inside the shared root.
@@ -159,6 +160,8 @@ existing library is never reseeded, so a deleted stock voice stays deleted.
 - Prepared document: `Documents/<input-stem>-narration.txt`.
 - Final audiobook: `Audiobooks/<input-stem>-<voice-name>.mp3`.
 - Unfinished workflow: `in_progress/<audiobook-output-stem>/`.
+- Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
+  **Save** stores under a voice name. Listen keeps only the newest ten drafts.
 - Synchronized reader: content-addressed Markdown and timing JSON under
   `Audiobooks/.readers/`, referenced by the audiobook version record.
 
@@ -351,18 +354,20 @@ the active tab is flush with an accent top edge and opens into the page below.
   background run's outcome appears as a notice. An **In progress** list with
   View/Stop/Cancel appears whenever it holds a job other than the followed
   one. Focus moves to the heading of each card that replaces the steps.
-- **Voices** is a compact table: Preview, Voice name, Prompt, and **Select**
-  and **Delete** buttons, 50 rows at a time with **Show more**. The prompt is
-  the VoiceDesign description
+- **Voices** is a compact table: Preview, Voice name, Prompt, and **Select**,
+  **Use**, and **Delete** buttons, 50 rows at a time with **Show more**. The
+  prompt is the VoiceDesign description
   saved as `description.txt`. Search reads prompts only: every typed word must
   begin a prompt word (AND, any order, case- and accent-insensitive, so `male`
   does not match `female`). One shared player previews in place, ignoring
-  clips replaced before they start; **Select** makes the voice current and
-  returns to Create with focus on the next step. **New voice** asks for a name
-  and prompt only, and **Stop** cancels a creation without saving anything.
-  Successful creation stays on Voices, shows the new voice's preview, and
-  selects it for Create; users refine a narrator by adjusting the prompt and
-  choosing **Replace voice**, which regenerates the same name.
+  clips replaced before they start. **Use** makes the voice current and returns
+  to Create with focus on the next step; the voice in use shows **In use**.
+  **Select** loads a voice's name and prompt into the editor at the top, titled
+  "Edit <name>"; **New voice** opens it empty. **Listen** designs a draft from
+  the prompt without touching the saved voice and plays it when ready. **Save**
+  stores exactly that draft under the name and is enabled only while the prompt
+  matches the one heard; saving under another name keeps both voices. **Stop**
+  cancels a draft.
 - **Listen** is a compact table: Title, Duration, Source name, and **Listen**
   and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
   only, with the same rules.
@@ -374,7 +379,7 @@ the active tab is flush with an accent top edge and opens into the page below.
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
 while its request runs. Deleting the selected voice or document clears that
 selection, so Create reopens the step that needs it, and deleting a voice just
-created clears its result.
+saved clears its message.
 
 Buttons that start work disable themselves while their request is in flight,
 so a double click starts one job or voice. A refresh restores the page, Create
@@ -473,12 +478,14 @@ playable but have no synchronized text.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
-| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice a running creation writes is refused with HTTP 409. An audiobook takes its version record, the reader files that record names, and older `<name>.<audio-hash>` reader files. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
-| `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs; voice generation requires an empty queue. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook takes its version record, the reader files that record names, and older `<name>.<audio-hash>` reader files. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
 | `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, and a preview version that changes when the clip is replaced. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
+| `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
+| `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, else the document name), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
 | `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
@@ -494,12 +501,13 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
+- **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
 - A resumable narration never mixes checkpoints from different text/chunk/voice/inference identities.
 - Public audiobook job identity contains only the document content version and voice version.
 - Each narration worker is assigned to at most one audiobook at a time; one Auto audiobook may own several workers. Voice generation is exclusive.
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
-- Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots, and the voice a running creation writes cannot be deleted.
+- Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Final audiobook publication is atomic; a failed/stopped unified run does not publish a partial MP3.
 - An `in_progress` stage is removed only after final output and version metadata are committed.
@@ -550,7 +558,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 69 tests. It covers voice persistence
+The regression suite currently has 71 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -573,8 +581,10 @@ endpoint normalization, local model servers of the chosen type, batches retried
 one chunk at a time after running out of memory, the batch-size default for
 older browser state, and deletion of voices (a link, never its target),
 documents, and audiobooks with their reader files, refusing traversal, missing
-assets, other origins, and a voice being created, stock voices that seed only a
-new library, and stock voices that each preview the fixed passage with a
-prompt. It does not load a Qwen model or require a GPU.
+assets, and other origins, stock voices that seed only a new library, stock
+voices that each preview the fixed passage with a prompt, and voice drafts:
+Listen leaves the saved voice alone, Save keeps exactly the clip heard and
+refuses missing drafts, bad names, and linked voices, and old drafts are
+pruned. It does not load a Qwen model or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.
