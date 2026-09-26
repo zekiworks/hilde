@@ -189,7 +189,8 @@ fixed layout:
   its final audiobook is committed.
 
 Existing files are not migrated automatically when the storage root changes.
-Move them into the appropriate directory yourself.
+Move them into the appropriate directory yourself. The web app's **Delete**
+buttons remove voices, documents, and audiobooks with their reader files.
 
 ### Speech models
 
@@ -329,6 +330,9 @@ extensionless PDF URLs such as arXiv `/pdf/<id>` links. Files are limited to
 pages. The voice step keeps the saved-voice dropdown for voices you know by
 name, with **Search voices** beside it for finding one by description.
 
+**Delete** beside the dropdown removes the chosen document after you confirm.
+Audiobooks made from it are kept, and a job already queued keeps its own copy.
+
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:
 1. A PDF is extracted page by page. Text and Markdown skip extraction unless
@@ -398,7 +402,8 @@ restart, submit unfinished document/voice pairs again to resume their durable
 
 Open **Listen** to find a completed audiobook in a table of titles, durations,
 and source names. Search looks only at titles; every word you type must
-appear, in any order and case. **Listen** opens the book's player and
+appear, in any order and case. **Delete** removes an audiobook and its
+synchronized text after you confirm. **Listen** opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
 and **Download MP3** retrieves the retained server copy. Text keeps its paragraphs:
 the playing sentence is tinted inside its paragraph, the paragraph is marked
@@ -439,11 +444,14 @@ that does not establish that the generated file is silent.
 ### Voices
 
 **Voices** lists every saved voice in a compact table: Preview, Voice name,
-Prompt, and Select, 50 rows at a time. The prompt is the voice description
-given to VoiceDesign, and search looks only at prompts: every word you type
-must appear, in any order and case, so `warm british female` finds voices
-whose prompt contains all three. The preview plays in place, and **Select**
-makes the voice current and returns to **Create**.
+Prompt, and **Select** and **Delete** buttons, 50 rows at a time. The prompt is
+the voice description given to VoiceDesign, and search looks only at prompts:
+every word you type must appear, in any order and case, so
+`warm british female` finds voices whose prompt contains all three. The
+preview plays in place, and **Select** makes the voice current and returns to
+**Create**. **Delete** removes a voice after you confirm. A voice that is being
+created can't be deleted until it finishes or you stop it; audiobooks made
+with a deleted voice are kept, and a job already queued keeps its own copy.
 
 **New voice** asks for a name and a prompt. Every voice reads the same fixed
 passage, so previews compare pace, tone, and naturalness on the same words;

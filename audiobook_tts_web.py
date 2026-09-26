@@ -717,6 +717,54 @@ def library_catalog(storage):
     return [book for _, book in books]
 
 
+def delete_voice(storage, name):
+    """Delete one saved voice; a linked voice loses only its link."""
+    voice_dir = resolve_asset(storage.voices, name)
+    if not is_saved_voice(voice_dir):
+        raise FileNotFoundError("no such voice")
+    if voice_dir.is_symlink():
+        voice_dir.unlink()
+        return
+    # One rename takes the whole voice out of the library, so no catalog or job
+    # snapshot sees part of it while its files are removed.
+    trash = Path(tempfile.mkdtemp(prefix=".deleting-", dir=storage.voices))
+    try:
+        voice_dir.rename(trash / voice_dir.name)
+    finally:
+        shutil.rmtree(trash)
+
+
+def delete_document(storage, name):
+    """Delete one shared document; a linked document loses only its link."""
+    document = resolve_asset(storage.documents, name)
+    if not document.is_file():
+        raise FileNotFoundError("no such document")
+    document.unlink()
+
+
+def delete_audiobook(storage, name):
+    """Delete one retained MP3 with its version record and reader files."""
+    output = resolve_asset(storage.audiobooks, name)
+    if output.suffix.lower() != ".mp3" or not output.is_file():
+        raise FileNotFoundError("no such audiobook")
+    record = audiobook_version_path(storage, output)
+    reader = (read_json_file(record) or {}).get("reader")
+    named = (
+        {reader.get("markdown"), reader.get("sync")}
+        if isinstance(reader, dict) else set()
+    )
+    output.unlink()
+    record.unlink(missing_ok=True)
+    # Reader files are named for their book and audio version, so earlier
+    # narrations of the same book can have left some behind as well.
+    earlier = re.compile(re.escape(output.name) + r"\.[0-9a-f]{16}\.(?:md|json)")
+    for sidecar in storage.readers.iterdir():
+        if sidecar.name in named or earlier.fullmatch(sidecar.name):
+            sidecar.unlink(missing_ok=True)
+    with _LIBRARY_LOCK:
+        _LIBRARY_ENTRIES.pop(str(output), None)
+
+
 def is_markdown_table(paragraph):
     """Return whether a paragraph is a structurally valid pipe table."""
     rows = [line.strip() for line in paragraph.splitlines() if line.strip()]
@@ -3499,6 +3547,12 @@ class JobQueue:
         self._launch(record)
         return True
 
+    def creating_voice(self, voice_dir):
+        """Return whether the running voice creation writes this voice folder."""
+        with self.lock:
+            record = self.exclusive
+        return record is not None and Path(record["run"].predicted) == Path(voice_dir)
+
     def _launch(self, record):
         threading.Thread(
             target=self._wait_for_finish,
@@ -5002,6 +5056,12 @@ class Handler(BaseHTTPRequestHandler):
         body = self.payload()
         if route == "/api/documents/download":
             return self.download_document(body)
+        if route == "/api/voices/delete":
+            return self.delete_asset("voice", body.get("name", ""))
+        if route == "/api/documents/delete":
+            return self.delete_asset("document", body.get("name", ""))
+        if route == "/api/audiobooks/delete":
+            return self.delete_asset("audiobook", body.get("name", ""))
         if route == "/api/paper/openai/login":
             return self.reply(
                 HTTPStatus.ACCEPTED,
@@ -5284,6 +5344,34 @@ class Handler(BaseHTTPRequestHandler):
                 "assets": asset_catalog(self.server.storage),
             },
         )
+
+    def delete_asset(self, kind, name):
+        storage = self.server.storage
+        try:
+            if kind == "voice":
+                voice_dir = resolve_asset(storage.voices, name)
+                if self.server.jobs.creating_voice(voice_dir):
+                    return self.fail(
+                        HTTPStatus.CONFLICT,
+                        f"{voice_dir.name} is being created. Stop it before deleting it.",
+                    )
+                delete_voice(storage, name)
+            elif kind == "document":
+                delete_document(storage, name)
+            else:
+                delete_audiobook(storage, name)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileNotFoundError:
+            missing = {"voice": "voice", "document": "book"}.get(kind, "audiobook")
+            return self.fail(HTTPStatus.NOT_FOUND, f"That {missing} no longer exists.")
+        except OSError as exc:
+            # Operating-system messages name server paths; browsers get the reason.
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not delete {name}: {exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, {"assets": asset_catalog(storage)})
 
 
 
@@ -5748,6 +5836,7 @@ legend + * { clear:both; }
 .voice-table .preview { width:64px; }
 .voice-table .name { width:22%; font-weight:600; overflow-wrap:anywhere; }
 .voice-table .select, .book-table .action { width:1%; text-align:right; white-space:nowrap; }
+.voice-table .select > * + *, .book-table .action > * + * { margin-left:4px; }
 .book-table .duration { width:120px; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
 .book-table .source { width:26%; color:var(--dim); overflow-wrap:anywhere; }
@@ -5839,6 +5928,9 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
   .book-table .duration, .book-table .source { font-size:13px; }
   .book-table td[data-label]::before { content:attr(data-label) ": "; }
   .book-table .action { grid-column:2; grid-row:1 / span 3; align-self:center; }
+  .voice-table .select, .book-table .action { display:flex; flex-direction:column;
+                                             align-items:flex-end; gap:2px; }
+  .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
 }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
@@ -5954,7 +6046,11 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
         <div class="step-body">
           <div class="field">
             <label for="document">Your books</label>
-            <select id="document"><option value="">Choose a book</option></select>
+            <div class="line">
+              <select id="document"><option value="">Choose a book</option></select>
+              <button id="document-delete" class="link" type="button"
+                aria-label="Delete the chosen book" onclick="deleteDocument(this)">Delete</button>
+            </div>
           </div>
           <div class="line">
             <input id="document-file" class="hidden" type="file"
@@ -6125,7 +6221,7 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
       <thead><tr><th scope="col">Preview</th><th scope="col">Voice name</th>
-        <th scope="col">Prompt</th><th scope="col">Select</th></tr></thead>
+        <th scope="col">Prompt</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
     </table>
     <p id="voice-none" class="empty hidden"></p>
@@ -6149,7 +6245,7 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
           <caption class="visually-hidden">Audiobooks</caption>
           <thead><tr><th scope="col">Title</th><th scope="col">Duration</th>
             <th scope="col">Source name</th>
-            <th scope="col"><span class="visually-hidden">Listen</span></th></tr></thead>
+            <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
           <tbody id="book-rows"></tbody>
         </table>
         <p id="book-none" class="empty hidden"></p>
@@ -6894,7 +6990,7 @@ function bookRow(book) {
   listen.type = "button"; listen.textContent = "Listen";
   listen.setAttribute("aria-label", `Listen to ${book.title}`);
   listen.addEventListener("click", () => openAudiobook(book.name, true));
-  action.append(listen);
+  action.append(listen, deleteButton(`Delete ${book.title}`, (button) => deleteBook(book, button)));
   row.append(title, duration, source, action);
   return row;
 }
@@ -6964,6 +7060,7 @@ function voiceRow(voice) {
     button.addEventListener("click", () => selectVoice(voice.name));
     select.append(button);
   }
+  select.append(deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
   row.append(preview, name, description, select);
   return row;
 }
@@ -7001,6 +7098,63 @@ function togglePreview(name, version) {
 }
 function stopPreview() {
   previewAudio.pause(); previewing = ""; syncPreviewButtons();
+}
+
+// Deleting asks first; the button stays disabled while the server removes the asset.
+async function deleteAsset(kind, name, question, button) {
+  if (!window.confirm(question)) return null;
+  button.disabled = true;
+  try {
+    return await jsonRequest(`/api/${kind}/delete`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name }),
+    });
+  } catch (error) {
+    setStatus(error.message, true);
+    return null;
+  } finally {
+    button.disabled = false;
+  }
+}
+function deleteButton(label, onDelete) {
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "link"; button.textContent = "Delete";
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", () => onDelete(button));
+  return button;
+}
+async function deleteVoice(name, button) {
+  const answer = await deleteAsset("voices", name,
+    `Delete the voice ${name}? Its reference clip and preview are removed for good.`, button);
+  if (!answer) return;
+  if (previewing === name) stopPreview();
+  if (voiceResult && voiceResult.name === name) voiceResult = null;
+  assets = answer.assets || assets;
+  if (state.audiobook.voice === name) state.audiobook.voice = "";
+  populateAssets();
+  setStatus(`Deleted the voice ${name}.`);
+  render(); queueSync();
+  await refreshVoices();
+}
+async function deleteBook(book, button) {
+  const answer = await deleteAsset("audiobooks", book.name,
+    `Delete the audiobook ${book.title}? The MP3 and its synchronized text are removed for good.`,
+    button);
+  if (!answer) return;
+  setStatus(`Deleted the audiobook ${book.title}.`);
+  await refreshLibrary();
+}
+async function deleteDocument(button) {
+  const name = state.audiobook.document;
+  if (!name) return;
+  const answer = await deleteAsset("documents", name,
+    `Delete ${name} from your books? Audiobooks made from it are kept.`, button);
+  if (!answer) return;
+  assets = answer.assets || assets;
+  if (state.audiobook.document === name) state.audiobook.document = "";
+  populateAssets();
+  setStatus(`Deleted ${name}.`);
+  render(); queueSync();
 }
 
 async function selectVoice(name) {
@@ -7159,6 +7313,7 @@ function renderCreate() {
   $("voice-change").classList.toggle("hidden", step === "voice" || !done.book);
   $("book-continue").disabled =
     submitting || !(done.book || state.audiobook.source_url.trim());
+  $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
   $("clone-voice-row").classList.toggle("hidden", !facts.clone_server);
   $("shared-voice-row").classList.toggle("hidden", !!facts.clone_server);

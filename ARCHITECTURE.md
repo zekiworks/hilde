@@ -323,6 +323,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   ones are complete.
   1. **Add your book**: choose a document, upload a PDF/Markdown/text file, or
      add one under **Add from a link**; **Continue** downloads a link first.
+     **Delete** beside the dropdown removes the chosen document.
   2. **Choose a voice**: the saved-voice dropdown with **Search voices** beside
      it (opens **Voices**) and a card previewing the chosen voice. A narration
      speech server takes a server voice ID instead.
@@ -343,8 +344,9 @@ the active tab is flush with an accent top edge and opens into the page below.
   background run's outcome appears as a notice. An **In progress** list with
   View/Stop/Cancel appears whenever it holds a job other than the followed
   one. Focus moves to the heading of each card that replaces the steps.
-- **Voices** is a compact table: Preview, Voice name, Prompt, Select, 50 rows
-  at a time with **Show more**. The prompt is the VoiceDesign description
+- **Voices** is a compact table: Preview, Voice name, Prompt, and **Select**
+  and **Delete** buttons, 50 rows at a time with **Show more**. The prompt is
+  the VoiceDesign description
   saved as `description.txt`. Search reads prompts only: every typed word must
   begin a prompt word (AND, any order, case- and accent-insensitive, so `male`
   does not match `female`). One shared player previews in place, ignoring
@@ -354,12 +356,18 @@ the active tab is flush with an accent top edge and opens into the page below.
   Successful creation stays on Voices, shows the new voice's preview, and
   selects it for Create; users refine a narrator by adjusting the prompt and
   choosing **Replace voice**, which regenerates the same name.
-- **Listen** is a compact table: Title, Duration, Source name, Listen, newest
-  first, 50 rows at a time. Search reads titles only, with the same rules.
+- **Listen** is a compact table: Title, Duration, Source name, and **Listen**
+  and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
+  only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
   audiobook**. **Listen** opens the book view: title, narrator, duration,
   source, **Follow along**, **Download MP3**, the player, and the synchronized
   reader; **All audiobooks** returns to the table.
+
+Every **Delete** asks for confirmation (`window.confirm`) and disables itself
+while its request runs. Deleting the selected voice or document clears that
+selection, so Create reopens the step that needs it, and deleting a voice just
+created clears its result.
 
 Buttons that start work disable themselves while their request is in flight,
 so a double click starts one job or voice. A refresh restores the page, Create
@@ -456,6 +464,7 @@ playable but have no synchronized text.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice a running creation writes is refused with HTTP 409. An audiobook takes its version record, the reader files that record names, and older `<name>.<audio-hash>` reader files. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs; voice generation requires an empty queue. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
@@ -481,6 +490,7 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - Each narration worker is assigned to at most one audiobook at a time; one Auto audiobook may own several workers. Voice generation is exclusive.
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
+- Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots, and the voice a running creation writes cannot be deleted.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Final audiobook publication is atomic; a failed/stopped unified run does not publish a partial MP3.
 - An `in_progress` stage is removed only after final output and version metadata are committed.
@@ -533,7 +543,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base \
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 61 tests. It covers voice persistence
+The regression suite currently has 67 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -553,7 +563,10 @@ Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
 audio with keep-alive byte ranges, safe retained-MP3 downloads,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried
-one chunk at a time after running out of memory, and the batch-size default for
-older browser state. It does not load a Qwen model or require a GPU.
+one chunk at a time after running out of memory, the batch-size default for
+older browser state, and deletion of voices (a link, never its target),
+documents, and audiobooks with their reader files, refusing traversal, missing
+assets, other origins, and a voice being created. It does not load a Qwen model
+or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.

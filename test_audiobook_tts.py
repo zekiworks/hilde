@@ -1740,6 +1740,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.storage = self.storage
+        server.jobs = self.jobs = web.JobQueue()
         server.verbose = False
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1751,6 +1752,19 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
 
         self.addCleanup(stop)
         return f"http://127.0.0.1:{server.server_port}"
+
+    def delete(self, origin, kind, name, headers=None):
+        request = urllib.request.Request(
+            f"{origin}/api/{kind}/delete",
+            data=json.dumps({"name": name}).encode("utf-8"),
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
 
     def test_previews_are_comparable_only_when_they_read_the_fixed_passage(self):
         fixed = self.add_voice(
@@ -1906,6 +1920,129 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             urllib.request.urlopen(f"{origin}/api/voices/preview?name=Linked")
 
         self.assertEqual(refused.exception.code, 404)
+
+    def test_deleting_a_voice_removes_it_from_the_library(self):
+        self.add_voice("Keep", web.VOICE_REFERENCE_TEXT)
+        gone = self.add_voice("Gone", "Older reference words.")
+        (gone / "preview.wav").write_bytes(b"preview of the deleted voice")
+        origin = self.serve()
+
+        status, payload = self.delete(origin, "voices", "Gone")
+        with urllib.request.urlopen(f"{origin}/api/voices") as response:
+            listed = [voice["name"] for voice in json.load(response)["voices"]]
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["assets"]["voices"], ["Keep"])
+        self.assertEqual(listed, ["Keep"])
+        self.assertEqual([path.name for path in self.storage.voices.iterdir()], ["Keep"])
+
+    def test_deleting_a_linked_voice_removes_only_the_link(self):
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        outside = Path(elsewhere.name) / "Private"
+        save_voice(
+            outside, np.linspace(-0.5, 0.5, 2400, dtype=np.float32), 24000,
+            web.VOICE_REFERENCE_TEXT, "FLOAT",
+        )
+        link = self.storage.voices / "Linked"
+        link.symlink_to(outside, target_is_directory=True)
+        origin = self.serve()
+
+        status, _ = self.delete(origin, "voices", "Linked")
+
+        self.assertEqual(status, 200)
+        self.assertFalse(os.path.lexists(link))
+        self.assertTrue(web.is_saved_voice(outside))
+
+    def test_a_voice_being_created_is_not_deleted(self):
+        busy = self.add_voice("Busy", web.VOICE_REFERENCE_TEXT)
+        origin = self.serve()
+
+        class Creating(web.Run):
+            def start(self):
+                pass
+
+        run = Creating([], "voice", str(busy))
+        self.assertTrue(self.jobs.start_voice(run))
+        self.addCleanup(run.close, 130)
+        status, payload = self.delete(origin, "voices", "Busy")
+
+        self.assertEqual(status, 409)
+        self.assertIn("being created", payload["error"])
+        self.assertTrue(web.is_saved_voice(busy))
+
+    def test_deleting_an_audiobook_removes_its_record_and_reader_files(self):
+        def book(name):
+            output = self.storage.audiobooks / name
+            sf.write(
+                output, np.zeros(2400, dtype=np.float32), 24000,
+                format="MP3", subtype="MPEG_LAYER_III",
+            )
+            return output
+
+        tale, other = book("tale-Martin.mp3"), book("other-Sarah.mp3")
+        reader = {
+            "markdown": "tale-Martin.mp3.0123456789abcdef.md",
+            "sync": "tale-Martin.mp3.0123456789abcdef.json",
+        }
+        web.write_json_atomic(
+            web.audiobook_version_path(self.storage, tale),
+            {"document": "tale.txt", "reader": reader},
+        )
+        web.write_json_atomic(
+            web.audiobook_version_path(self.storage, other), {"document": "other.txt"}
+        )
+        # An earlier narration of the tale, and another book's reader.
+        for name in (
+            *reader.values(),
+            "tale-Martin.mp3.fedcba9876543210.md",
+            "other-Sarah.mp3.0123456789abcdef.md",
+        ):
+            (self.storage.readers / name).write_text("reader", encoding="utf-8")
+        origin = self.serve()
+
+        status, _ = self.delete(origin, "audiobooks", "tale-Martin.mp3")
+        with urllib.request.urlopen(f"{origin}/api/library") as response:
+            listed = [entry["name"] for entry in json.load(response)["books"]]
+
+        self.assertEqual(status, 200)
+        self.assertEqual(listed, ["other-Sarah.mp3"])
+        self.assertEqual(
+            [path.name for path in self.storage.readers.iterdir()],
+            ["other-Sarah.mp3.0123456789abcdef.md"],
+        )
+        self.assertEqual(
+            [path.name for path in self.storage.versions.iterdir()], ["other-Sarah.mp3.json"]
+        )
+
+    def test_deleting_a_document_keeps_audiobooks_made_from_it(self):
+        (self.storage.documents / "paper.pdf").write_bytes(b"%PDF-1.7\n")
+        (self.storage.documents / "paper-narration.txt").write_text("Prepared.", encoding="utf-8")
+        audiobook = self.storage.audiobooks / "paper-Martin.mp3"
+        audiobook.write_bytes(b"narrated from paper.pdf")
+        origin = self.serve()
+
+        status, payload = self.delete(origin, "documents", "paper.pdf")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["assets"]["documents"], ["paper-narration.txt"])
+        self.assertTrue(audiobook.is_file())
+
+    def test_delete_refuses_traversal_missing_assets_and_other_origins(self):
+        keep = self.add_voice("Keep", web.VOICE_REFERENCE_TEXT)
+        (self.storage.documents / "folder").mkdir()
+        origin = self.serve()
+
+        traversal = self.delete(origin, "voices", "../Voices/Keep")
+        missing = self.delete(origin, "audiobooks", "missing.mp3")
+        directory = self.delete(origin, "documents", "folder")
+        foreign = self.delete(origin, "voices", "Keep", {"Origin": "http://attacker.example"})
+
+        self.assertEqual(traversal[0], 400)
+        self.assertEqual(missing, (404, {"error": "That audiobook no longer exists."}))
+        self.assertEqual(directory, (404, {"error": "That book no longer exists."}))
+        self.assertEqual(foreign[0], 403)
+        self.assertTrue(web.is_saved_voice(keep))
 
 
 class ReaderAudioIndexTests(unittest.TestCase):
