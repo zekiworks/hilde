@@ -253,8 +253,10 @@ It counts CUDA devices after initialization, so a GPU the runtime cannot open,
 such as one waiting for a reset, is skipped and the remaining GPUs stay in the
 pool instead of the server falling back to CPU. The pool is fixed at startup:
 restart the server after changing `CUDA_VISIBLE_DEVICES` or the SSH workers,
-or after GPUs are added, removed, or recovered. Voice creation resolves the
-server-managed device to the first CUDA device, then MPS, then CPU.
+or after GPUs are added, removed, or recovered. Voice design runs alone, on the
+GPU with the most free memory at that moment, so a GPU another program has
+filled is passed over; `nvidia-smi` measures this without touching any GPU.
+Without CUDA it uses MPS, then CPU.
 Unsupported precision or `flash_attention_2` combinations still fail through
 CLI validation.
 

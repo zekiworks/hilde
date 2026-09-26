@@ -422,8 +422,9 @@ model server with its type while adaptation is on; and reference-WAV
 encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
-configured SSH workers; voice creation resolves automatically to the first
-CUDA device, then MPS, then CPU. **Download MP3** retrieves an exact retained
+configured SSH workers; voice design runs on the GPU with the most free memory
+(`roomiest_cuda_device()` matches `nvidia-smi` to PyTorch by GPU UUID and opens
+no CUDA context), else MPS, else CPU. **Download MP3** retrieves an exact retained
 audiobook name.
 
 ### Reader
@@ -558,7 +559,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 71 tests. It covers voice persistence
+The regression suite currently has 72 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -585,6 +586,7 @@ assets, and other origins, stock voices that seed only a new library, stock
 voices that each preview the fixed passage with a prompt, and voice drafts:
 Listen leaves the saved voice alone, Save keeps exactly the clip heard and
 refuses missing drafts, bad names, and linked voices, and old drafts are
-pruned. It does not load a Qwen model or require a GPU.
+pruned, and voice design on the GPU with the most free memory, matched to
+`nvidia-smi` by UUID. It does not load a Qwen model or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.

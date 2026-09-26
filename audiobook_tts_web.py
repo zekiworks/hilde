@@ -216,6 +216,8 @@ if torch.cuda.is_available():
             "label": f"CUDA {index} — {properties.name}",
             "name": properties.name,
             "memory": properties.total_memory,
+            # Builds without UUIDs still list the GPU; it just cannot be measured.
+            "uuid": str(getattr(properties, "uuid", "")),
         })
 mps = getattr(torch.backends, "mps", None)
 if mps is not None and mps.is_available():
@@ -286,7 +288,7 @@ def available_devices():
                     "label": item["label"],
                     **{
                         key: item[key]
-                        for key, kind in (("name", str), ("memory", int))
+                        for key, kind in (("name", str), ("memory", int), ("uuid", str))
                         if isinstance(item.get(key), kind)
                     },
                 }
@@ -314,6 +316,39 @@ def resolve_device(requested, devices=None):
         if match:
             return match
     return "cpu"
+
+
+def roomiest_cuda_device(devices=None):
+    """Return the visible GPU with the most free memory, or None.
+
+    Voice design runs alone, so it can take any GPU, and the first one may be
+    full of another program's work. nvidia-smi reads memory without opening a
+    CUDA context, so measuring never takes memory from a nearly full GPU, and
+    GPU UUIDs map its numbering onto PyTorch's.
+    """
+    choices = devices if devices is not None else available_devices()
+    gpus = [
+        choice for choice in choices
+        if choice.get("value", "").startswith("cuda:") and choice.get("uuid")
+    ]
+    if not gpus:
+        return None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid,memory.free", "--format=csv,noheader,nounits"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    free = {}
+    for line in result.stdout.splitlines():
+        uuid, _, mebibytes = line.partition(",")
+        try:
+            free[uuid.strip().removeprefix("GPU-")] = int(mebibytes)
+        except ValueError:
+            continue
+    measured = [(free[gpu["uuid"]], gpu["value"]) for gpu in gpus if gpu["uuid"] in free]
+    return max(measured, key=lambda item: item[0])[1] if measured else None
 
 
 def public_device_label(value):
@@ -2600,9 +2635,12 @@ def public_configuration(tts_models, devices=None):
             path = Path(model["model"])
             entry["model"] = path.name if path.is_absolute() else model["model"]
             if role == "design":
-                # Voice creation always takes the automatic device.
-                entry["device"] = public_device_label(
-                    resolve_device("auto", devices)
+                # Voice design runs alone on the GPU with the most free memory.
+                choices = devices if devices is not None else available_devices()
+                gpus = sum(choice["value"].startswith("cuda:") for choice in choices)
+                entry["device"] = (
+                    "the GPU with the most free memory" if gpus > 1
+                    else public_device_label(resolve_device("auto", devices))
                 )
         configuration[role] = entry
     return configuration
@@ -5475,6 +5513,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         if state["tab"] == "voice":
             draft = new_voice_draft(self.server.storage)
+            # Designing runs alone, so it takes the GPU with the most room.
+            values = {**values, "device": roomiest_cuda_device() or values["device"]}
             command = create_voice_command(values, draft)
             run = Run(command, "voice", str(draft))
             # The fixed passage stays out of the visible run log.
@@ -8263,7 +8303,7 @@ def main():
         if tts_models["clone"]["source"] != "local":
             parser.error("--render-voice-previews needs a local --voice-clone-model")
         failed = render_voice_previews(
-            storage, tts_models["clone"], resolve_device("auto")
+            storage, tts_models["clone"], roomiest_cuda_device() or resolve_device("auto")
         )
         if failed:
             raise SystemExit(f"Could not render previews for: {', '.join(failed)}")

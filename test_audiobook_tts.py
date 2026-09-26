@@ -270,7 +270,7 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertEqual(local_design["design"], {
             "source": "local",
             "model": "Qwen/VoiceDesign",
-            "device": "GPU 0",
+            "device": "the GPU with the most free memory",
         })
         serialized = json.dumps(public)
         for private in ("spark-one", "narrator", "/srv/private", "10.1.2.3"):
@@ -299,6 +299,25 @@ class PaperWorkflowTests(unittest.TestCase):
         devices = [{"value": "cpu", "label": "CPU"}]
 
         self.assertEqual(web.resolve_device("auto", devices), "cpu")
+
+    def test_voice_design_takes_the_gpu_with_the_most_free_memory(self):
+        devices = [
+            {"value": "cpu", "label": "CPU"},
+            {"value": "cuda:0", "label": "CUDA 0", "uuid": "aaaa"},
+            {"value": "cuda:1", "label": "CUDA 1", "uuid": "bbbb"},
+            {"value": "cuda:2", "label": "CUDA 2", "uuid": "cccc"},
+        ]
+        # nvidia-smi numbers GPUs its own way; only the UUIDs line up.
+        smi = web.subprocess.CompletedProcess(
+            [], 0, stdout="GPU-cccc, 50000\nGPU-aaaa, 261\nGPU-bbbb, 96387\n", stderr=""
+        )
+        with mock.patch.object(web.subprocess, "run", return_value=smi):
+            chosen = web.roomiest_cuda_device(devices)
+        with mock.patch.object(web.subprocess, "run", side_effect=FileNotFoundError):
+            without_tool = web.roomiest_cuda_device(devices)
+
+        self.assertEqual(chosen, "cuda:1")
+        self.assertIsNone(without_tool)
 
     def test_browser_device_selection_is_ignored(self):
         state = normalize({
