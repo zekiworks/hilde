@@ -224,7 +224,7 @@ one fallback worker.
 The pool is process-owned configuration, not a browser setting or a hardcoded
 machine count. Local membership is the CUDA devices visible to the server
 process; use `CUDA_VISIBLE_DEVICES` to select a deployment-specific subset, for
-example to leave GPU 0 to another program:
+example to keep narration off GPU 0 even when it has room:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
@@ -260,6 +260,14 @@ Without CUDA it uses MPS, then CPU.
 Unsupported precision or `flash_attention_2` combinations still fail through
 CLI validation.
 
+A book with several workers starts only on GPUs with about 6 GiB free: the
+4 GiB model plus room for a batch. The others are checked every minute and join
+once another program frees memory. A GPU that runs out of memory mid-book hands
+its chunks to the other workers and waits the same way, so the book slows down
+instead of failing. If every GPU is full, the book waits until one has room;
+**Stop** ends it. The log names the waiting GPUs; their chips still show
+`running`, because the book holds them.
+
 ### Batch size
 
 All batch sizes reuse the same voice prompt. Batching controls memory use and throughput—not narrator identity.
@@ -280,8 +288,10 @@ size that is too large costs time rather than the book. If the log often says
 so, lower the batch size to skip the wasted attempt, and reduce
 `--chunk-max-chars` (**Chunking** under **Advanced**) when individual chunks are
 too expensive. Other GPU processes, such as another model server, leave less
-memory for narration. A single chunk that still does not fit fails the run;
-with `--resume-dir`, rerunning the same command reuses the completed chunks.
+memory for narration. A single chunk that still does not fit fails a
+single-device run; with several workers, that GPU hands its chunks to the others
+and waits (see [Multiple GPUs and SSH workers](#multiple-gpus-and-ssh-workers)).
+With `--resume-dir`, rerunning the same command reuses the completed chunks.
 
 Changing batch sizes can change sampled audio even with the same `--seed`. A saved reference establishes the shared speaker reference, not bit-for-bit reproducibility across hardware, batching decisions, or library versions.
 
@@ -615,6 +625,21 @@ checkpoint, and the coordinator encodes them into the final file in source
 order. `--resume-dir` is required because it is the handoff boundary between
 workers.
 
+A local GPU starts its worker only when `nvidia-smi` reports at least 6 GiB
+free: the 4 GiB model plus room for a batch. A fuller GPU waits and is checked
+again every minute, so it joins the book once another program frees memory:
+
+```text
+[Local cuda:0] 3.7 GiB free; waiting for 6 GiB, checked every minute
+```
+
+A local worker that runs out of GPU memory mid-book hands its chunks back to the
+queue and waits the same way, so the book slows down instead of failing. If no
+worker can run, the book waits; Ctrl+C stops it, and completed chunks stay in
+`--resume-dir`. `nvidia-smi` opens no CUDA context, so checking never takes
+memory from a full GPU. Without `nvidia-smi`, every GPU starts at once. SSH
+workers are not measured, and one that runs out of memory fails the run.
+
 Passwordless SSH workers use the same protocol without requiring shared
 storage:
 
@@ -761,7 +786,7 @@ python audiobook_tts.py narrate --help
 | `--output` | Required `.mp3` or `.wav` destination. |
 | `--chunk-max-chars` | `500`; must be positive. |
 | `--batch-size` | `0` for all chunks on one device and one chunk per distributed worker; positive values set the chunks per clone call. A batch that runs out of CUDA memory is retried one chunk at a time. |
-| `--worker-device` | Unset; repeat to add local devices to one resumable narration. |
+| `--worker-device` | Unset; repeat to add local devices to one resumable narration. A GPU with less than 6 GiB free joins once it has room. |
 | `--ssh-worker` | Unset; repeat passwordless `HOST` or `USER@HOST` targets. |
 | `--ssh-python` | `python3`; Python executable shared by SSH workers. |
 | `--ssh-model-path` | Uses `--clone-model-path`; remote model path or permitted Hub ID. |

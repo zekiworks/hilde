@@ -3,8 +3,9 @@
 # the library in User/ beside this script, and port 8800 on every interface.
 # It has no login: anyone who can reach port 8800 can use it.
 #
-# Narration uses every GPU that CUDA can open. To leave out a GPU that another
-# program needs:
+# Narration uses every GPU that CUDA can open. A book starts on the GPUs with
+# 6 GiB free and adds the others, checked every minute, once they have room.
+# To keep narration off a GPU entirely:
 #   CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 #
 # Extra arguments pass through, and a repeated option replaces the one below.

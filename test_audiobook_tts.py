@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import os
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -1496,6 +1497,114 @@ class BatchingTests(unittest.TestCase):
         self.assertEqual(batch_size(3, "1"), "2")
         self.assertEqual(batch_size(3, "4"), "4")
         self.assertEqual(batch_size(web.STATE_SCHEMA_VERSION, "1"), "1")
+
+
+class DistributedNarrationTests(unittest.TestCase):
+    # Speaks the worker protocol without a model. When given a marker path, the
+    # worker's first chunk runs out of memory and leaves the marker behind.
+    WORKER = """\
+import base64, io, json, sys, time
+from pathlib import Path
+
+import numpy
+import soundfile
+
+protocol, device, record, marker = sys.argv[1:5]
+
+
+def note(line):
+    with open(record, "a", encoding="utf-8") as stream:
+        stream.write(line + "\\n")
+
+
+def emit(payload):
+    print(protocol + json.dumps(payload), flush=True)
+
+
+note(f"start {device}")
+emit({"type": "ready"})
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["type"] == "stop":
+        break
+    indexes = request["indexes"]
+    if marker and not Path(marker).exists():
+        note(f"oom {device} {indexes}")
+        Path(marker).touch()
+        emit({"type": "error", "message": "AcceleratorError: CUDA error: out of memory"})
+        sys.exit(1)
+    time.sleep(0.1)
+    waves = []
+    for _ in indexes:
+        buffer = io.BytesIO()
+        soundfile.write(buffer, numpy.zeros(240, dtype="float32"), 24000, format="WAV", subtype="FLOAT")
+        waves.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    emit({"type": "result", "indexes": indexes, "waves": waves})
+"""
+
+    def test_full_gpu_joins_later_and_out_of_memory_chunks_return_to_the_queue(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "worker.py").write_text(self.WORKER, encoding="utf-8")
+        record, marker = root / "record.txt", root / "out-of-memory"
+        checkpoints = root / "checkpoints"
+        checkpoints.mkdir()
+
+        def worker(device, oom_marker):
+            command = [
+                sys.executable, "-u", str(root / "worker.py"),
+                cli.WORKER_PROTOCOL, device, str(record), oom_marker,
+            ]
+            return (f"Local {device}", command, None, device)
+
+        class Memory:
+            # Another program fills cuda:1 until cuda:0 has run out of memory.
+            def __init__(self, devices):
+                pass
+
+            def free_mib(self):
+                return {"cuda:0": 90000, "cuda:1": 90000 if marker.exists() else 1000}
+
+        class Parser:
+            @staticmethod
+            def error(message):
+                raise AssertionError(message)
+
+        chunks = [f"Chunk {index}." for index in range(1, 7)]
+        completed, outcome = set(), {}
+
+        def narrate():
+            try:
+                outcome["value"] = cli._narrate_distributed(
+                    argparse.Namespace(batch_size=1), Parser, chunks, root, checkpoints,
+                    completed, list(range(1, len(chunks) + 1)), sf,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        specifications = [worker("cuda:0", str(marker)), worker("cuda:1", "")]
+        with (
+            mock.patch.object(cli, "_narration_worker_specifications", return_value=specifications),
+            mock.patch.object(cli, "GpuMemory", Memory),
+            mock.patch.object(cli, "GPU_RECHECK_SECONDS", 0.2),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            # A thread, so a coordinator that never rechecks fails instead of hanging.
+            thread = threading.Thread(target=narrate, daemon=True)
+            thread.start()
+            thread.join(30)
+
+        self.assertFalse(thread.is_alive(), "narration never finished")
+        self.assertEqual(outcome, {"value": True})
+        self.assertEqual(completed, set(range(1, 7)))
+        for index in completed:
+            self.assertGreater(sf.info(cli._checkpoint_path(checkpoints, index)).frames, 0)
+        events = record.read_text(encoding="utf-8").splitlines()
+        # The full GPU started only once it had room; the GPU that ran out came back.
+        self.assertEqual(events[:2], ["start cuda:0", "oom cuda:0 [1]"])
+        self.assertIn("start cuda:1", events)
+        self.assertEqual(events.count("start cuda:0"), 2)
 
 
 class SpeechEndpointTests(unittest.TestCase):

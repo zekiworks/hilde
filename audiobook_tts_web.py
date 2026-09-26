@@ -58,6 +58,7 @@ from markdown_it import MarkdownIt
 from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
+    gpu_free_mebibytes,
     read_voice,
     save_voice,
     speech_endpoint,
@@ -322,9 +323,8 @@ def roomiest_cuda_device(devices=None):
     """Return the visible GPU with the most free memory, or None.
 
     Voice design runs alone, so it can take any GPU, and the first one may be
-    full of another program's work. nvidia-smi reads memory without opening a
-    CUDA context, so measuring never takes memory from a nearly full GPU, and
-    GPU UUIDs map its numbering onto PyTorch's.
+    full of another program's work. GPU UUIDs map nvidia-smi's numbering onto
+    PyTorch's.
     """
     choices = devices if devices is not None else available_devices()
     gpus = [
@@ -333,20 +333,7 @@ def roomiest_cuda_device(devices=None):
     ]
     if not gpus:
         return None
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=uuid,memory.free", "--format=csv,noheader,nounits"],
-            check=True, capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    free = {}
-    for line in result.stdout.splitlines():
-        uuid, _, mebibytes = line.partition(",")
-        try:
-            free[uuid.strip().removeprefix("GPU-")] = int(mebibytes)
-        except ValueError:
-            continue
+    free = gpu_free_mebibytes()
     measured = [(free[gpu["uuid"]], gpu["value"]) for gpu in gpus if gpu["uuid"] in free]
     return max(measured, key=lambda item: item[0])[1] if measured else None
 

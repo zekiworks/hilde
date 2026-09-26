@@ -32,7 +32,9 @@ With --resume-dir, repeat --worker-device for additional local GPUs or
 pulls chunk batches dynamically, and returns independently validated WAV
 checkpoints; the coordinator assembles them in source order. SSH workers receive
 the script, saved voice, and narration text and need their own compatible Python
-environment and model.
+environment and model. A local GPU with less than 6 GiB free waits, and is
+checked again every minute until it has room; one that runs out of memory
+mid-book returns its chunks to the queue and waits the same way.
 
 Larger batches narrate faster until GPU memory runs out; a batch that runs out
 of CUDA memory is retried one chunk at a time instead of failing the book. Batch
@@ -75,6 +77,7 @@ import sys
 import textwrap
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -88,6 +91,10 @@ VOICE_DESCRIPTION_FILE = "description.txt"
 VOICE_PREVIEW_FILE = "preview.wav"
 WORKER_PROTOCOL = "@@AUDIOBOOK_TTS_WORKER@@"
 MAX_WORKER_WAV_BYTES = 256 * 1024 * 1024
+# A narration worker needs the Base model (about 4 GiB) plus room for a batch.
+NARRATION_MIN_FREE_MIB = 6 * 1024
+# How often a GPU without room is checked again during a narration.
+GPU_RECHECK_SECONDS = 60
 
 
 def split_sentences(text):
@@ -347,7 +354,8 @@ def build_parser():
         metavar="DEVICE",
         help=(
             "Additional local device that may narrate chunks for this job; "
-            "repeat for more devices. Requires --resume-dir."
+            "repeat for more devices. Requires --resume-dir. A GPU with less "
+            "than 6 GiB free joins once it has room, checked every minute."
         ),
     )
     narration.add_argument(
@@ -1033,11 +1041,13 @@ def narration_worker(args, parser):
 class NarrationWorkerProcess:
     """One local or SSH model process speaking the chunk-worker protocol."""
 
-    def __init__(self, label, command, events, cleanup=None):
+    def __init__(self, label, command, events, cleanup=None, device=None):
         self.label = label
         self.command = command
         self.events = events
         self.cleanup = cleanup
+        # The local device, so a worker that runs out of memory can wait.
+        self.device = device
         self.process = None
         self.input_lock = threading.Lock()
 
@@ -1257,7 +1267,8 @@ def _stage_ssh_worker(args, target, voice_dir):
     )
 
 
-def _build_narration_workers(args, voice_dir, events):
+def _narration_worker_specifications(args, voice_dir):
+    """Describe every worker as (label, command, cleanup, local device or None)."""
     specifications = []
     for device in [args.device, *args.worker_device]:
         specifications.append(
@@ -1275,22 +1286,20 @@ def _build_narration_workers(args, voice_dir, events):
                     ),
                 ],
                 None,
+                device,
             )
         )
     try:
         for target in args.ssh_worker:
             specifications.append(
-                _stage_ssh_worker(args, target, voice_dir)
+                (*_stage_ssh_worker(args, target, voice_dir), None)
             )
     except BaseException:
-        for _, _, cleanup in specifications:
+        for _, _, cleanup, _ in specifications:
             if cleanup is not None:
                 cleanup()
         raise
-    return [
-        NarrationWorkerProcess(label, command, events, cleanup)
-        for label, command, cleanup in specifications
-    ]
+    return specifications
 
 
 def _save_worker_checkpoint(directory, index, encoded, sf):
@@ -1328,6 +1337,74 @@ def _worker_topology(args):
     }
 
 
+_GPU_UUID_PROBE = """\
+import json
+import torch
+
+torch.cuda.init()
+print(json.dumps([
+    str(getattr(torch.cuda.get_device_properties(index), "uuid", ""))
+    for index in range(torch.cuda.device_count())
+]))
+"""
+
+
+def gpu_free_mebibytes():
+    """Return free MiB per GPU UUID from nvidia-smi, or {} when unavailable.
+
+    nvidia-smi opens no CUDA context, so reading it never takes memory from a
+    GPU that another program has nearly filled.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid,memory.free", "--format=csv,noheader,nounits"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    free = {}
+    for line in result.stdout.splitlines():
+        gpu, _, mebibytes = line.partition(",")
+        try:
+            free[gpu.strip().removeprefix("GPU-")] = int(mebibytes)
+        except ValueError:
+            continue
+    return free
+
+
+class GpuMemory:
+    """Free memory of the local CUDA devices one narration uses."""
+
+    def __init__(self, devices):
+        # UUIDs map PyTorch's device numbers onto nvidia-smi's.
+        self.uuids = {}
+        cuda = [device for device in devices if device.startswith("cuda")]
+        if not cuda:
+            return
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", _GPU_UUID_PROBE],
+                check=True, capture_output=True, text=True, timeout=120,
+            )
+            uuids = json.loads(result.stdout.strip().splitlines()[-1])
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return
+        for device in cuda:
+            try:
+                index = int(device.partition(":")[2] or 0)
+            except ValueError:
+                continue
+            if index < len(uuids) and uuids[index]:
+                self.uuids[device] = uuids[index]
+
+    def free_mib(self):
+        """Map each measurable device to its free MiB; others are absent."""
+        if not self.uuids:
+            return {}
+        free = gpu_free_mebibytes()
+        return {device: free[gpu] for device, gpu in self.uuids.items() if gpu in free}
+
+
 def _narrate_distributed(
     args,
     parser,
@@ -1340,11 +1417,11 @@ def _narrate_distributed(
 ):
     events = queue.Queue()
     try:
-        workers = _build_narration_workers(args, voice_dir, events)
+        specifications = _narration_worker_specifications(args, voice_dir)
     except (OSError, RuntimeError) as exc:
         parser.error(f"Cannot prepare narration workers: {exc}")
     print(
-        "Narration workers: " + ", ".join(worker.label for worker in workers),
+        "Narration workers: " + ", ".join(label for label, *_ in specifications),
         flush=True,
     )
     stop_requested = threading.Event()
@@ -1356,33 +1433,8 @@ def _narrate_distributed(
             lambda _signum, _frame: stop_requested.set(),
         )
     graceful = False
+    workers = []
     try:
-        for worker in workers:
-            worker.start()
-        ready = set()
-        while len(ready) < len(workers):
-            if stop_requested.is_set():
-                return False
-            try:
-                worker, event = events.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            kind = event.get("type")
-            if kind == "log":
-                print(f"[{worker.label}] {event.get('message', '')}", flush=True)
-            elif kind == "ready":
-                ready.add(worker)
-                print(f"[{worker.label}] Ready", flush=True)
-            elif kind == "error":
-                raise RuntimeError(
-                    f"{worker.label}: {event.get('message', 'worker failed')}"
-                )
-            elif kind == "exit":
-                raise RuntimeError(
-                    f"{worker.label} exited during startup with code "
-                    f"{event.get('code')}"
-                )
-
         batch_size = args.batch_size or 1
         batches = deque(
             [
@@ -1390,12 +1442,42 @@ def _narrate_distributed(
                 for offset in range(0, len(pending), batch_size)
             ]
         )
-        inflight = {}
+        # A local GPU without room waits and is checked again every minute; one
+        # that runs out of memory hands its chunks back and waits the same way.
+        # Idle workers stay up until the book is done, so handed-back chunks
+        # always find a worker.
+        memory = GpuMemory([spec[3] for spec in specifications if spec[3]])
+        local = {spec[3]: spec for spec in specifications if spec[3]}
+        alive, ready, idle, inflight, waiting = set(), set(), set(), {}, set()
+
+        def launch(specification):
+            label, command, cleanup, device = specification
+            worker = NarrationWorkerProcess(label, command, events, cleanup, device)
+            workers.append(worker)
+            alive.add(worker)
+            worker.start()
+
+        def admit(devices):
+            free = memory.free_mib()
+            for device in devices:
+                room = free.get(device)
+                if room is not None and room < NARRATION_MIN_FREE_MIB:
+                    if device not in waiting:
+                        print(
+                            f"[{local[device][0]}] {room / 1024:.1f} GiB free; waiting "
+                            f"for {NARRATION_MIN_FREE_MIB // 1024} GiB, checked every minute",
+                            flush=True,
+                        )
+                    waiting.add(device)
+                else:
+                    waiting.discard(device)
+                    launch(local[device])
 
         def dispatch(worker):
             if not batches:
-                worker.stop()
+                idle.add(worker)
                 return
+            idle.discard(worker)
             indexes = batches.popleft()
             inflight[worker] = indexes
             worker.send(
@@ -1411,12 +1493,41 @@ def _narrate_distributed(
                 flush=True,
             )
 
-        for worker in workers:
-            dispatch(worker)
+        def release(worker):
+            alive.discard(worker)
+            idle.discard(worker)
+            waiting.add(worker.device)
+            indexes = inflight.pop(worker, None)
+            returned = (
+                f"chunks {','.join(str(index) for index in indexes)} return to "
+                "the queue, and "
+                if indexes
+                else ""
+            )
+            print(
+                f"[{worker.label}] Out of GPU memory; {returned}the GPU is "
+                "checked again within a minute",
+                flush=True,
+            )
+            if indexes:
+                batches.appendleft(indexes)
+                if idle:
+                    dispatch(next(iter(idle)))
 
-        while inflight:
+        for specification in specifications:
+            if specification[3] is None:
+                launch(specification)
+        admit(list(local))
+        next_check = time.monotonic() + GPU_RECHECK_SECONDS
+
+        while batches or inflight:
             if stop_requested.is_set():
                 return False
+            if waiting and time.monotonic() >= next_check:
+                next_check = time.monotonic() + GPU_RECHECK_SECONDS
+                admit(sorted(waiting))
+            if not alive and not waiting:
+                raise RuntimeError("no narration worker is left")
             try:
                 worker, event = events.get(timeout=0.2)
             except queue.Empty:
@@ -1425,41 +1536,61 @@ def _narrate_distributed(
             if kind == "log":
                 print(f"[{worker.label}] {event.get('message', '')}", flush=True)
                 continue
-            if kind == "error":
-                raise RuntimeError(
-                    f"{worker.label}: {event.get('message', 'worker failed')}"
-                )
-            if kind == "exit":
+            if worker not in alive:
+                # A worker that ran out of memory is exiting; it is already replaced.
+                continue
+            if kind == "ready":
+                ready.add(worker)
+                print(f"[{worker.label}] Ready", flush=True)
+                dispatch(worker)
+            elif kind == "error":
+                message = event.get("message", "worker failed")
+                # PyTorch says "out of memory"; cuBLAS and cuDNN say *_ALLOC_FAILED.
+                lowered = message.lower()
+                if worker.device and (
+                    "out of memory" in lowered or "alloc_failed" in lowered
+                ):
+                    release(worker)
+                else:
+                    raise RuntimeError(f"{worker.label}: {message}")
+            elif kind == "exit":
+                if worker not in ready:
+                    raise RuntimeError(
+                        f"{worker.label} exited during startup with code "
+                        f"{event.get('code')}"
+                    )
                 if worker in inflight:
                     raise RuntimeError(
                         f"{worker.label} exited with code {event.get('code')}"
                     )
-                continue
-            if kind != "result" or worker not in inflight:
+                alive.discard(worker)
+                idle.discard(worker)
+            elif kind == "result" and worker in inflight:
+                expected = inflight.pop(worker)
+                indexes = event.get("indexes")
+                waves = event.get("waves")
+                if (
+                    indexes != expected
+                    or not isinstance(waves, list)
+                    or len(waves) != len(expected)
+                ):
+                    raise RuntimeError(
+                        f"{worker.label} returned the wrong chunk batch"
+                    )
+                for index, encoded in zip(indexes, waves, strict=True):
+                    _save_worker_checkpoint(
+                        checkpoint_dir, index, encoded, sf
+                    )
+                    completed.add(index)
+                    print(
+                        f"Checkpointed chunk {len(completed)}/{len(chunks)}",
+                        flush=True,
+                    )
+                dispatch(worker)
+            else:
                 raise RuntimeError(
                     f"{worker.label} emitted an unexpected protocol event"
                 )
-            expected = inflight.pop(worker)
-            indexes = event.get("indexes")
-            waves = event.get("waves")
-            if (
-                indexes != expected
-                or not isinstance(waves, list)
-                or len(waves) != len(expected)
-            ):
-                raise RuntimeError(
-                    f"{worker.label} returned the wrong chunk batch"
-                )
-            for index, encoded in zip(indexes, waves, strict=True):
-                _save_worker_checkpoint(
-                    checkpoint_dir, index, encoded, sf
-                )
-                completed.add(index)
-                print(
-                    f"Checkpointed chunk {len(completed)}/{len(chunks)}",
-                    flush=True,
-                )
-            dispatch(worker)
         graceful = True
         return True
     except KeyboardInterrupt:

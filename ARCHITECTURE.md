@@ -101,12 +101,25 @@ through passwordless OpenSSH. `narration_worker()` implements a private
 newline-delimited JSON protocol. A worker emits readiness, accepts indexed
 chunk batches, and returns base64-encoded FLOAT WAV data or a fatal error.
 
-`_narrate_distributed()` starts every worker before dispatch, maintains one
-in-flight batch per worker, and gives the next source-ordered batch to whichever
-worker finishes first. The coordinator validates and atomically commits each
-returned checkpoint immediately, then assembles all checkpoints in source
-order. A failed worker aborts the run without discarding already committed
-chunks.
+`_narrate_distributed()` starts SSH workers at once. A local CUDA worker starts
+only when its GPU has at least `NARRATION_MIN_FREE_MIB` (6 GiB: the 4 GiB model
+plus a batch) free. `GpuMemory` reads free memory with `nvidia-smi`, matched to
+PyTorch device numbers by GPU UUID through a short-lived child; neither opens a
+CUDA context, so measuring never takes memory from a full GPU. A GPU without
+room waits and is measured again every `GPU_RECHECK_SECONDS` (60); a device
+that cannot be measured (CPU, no `nvidia-smi`, no UUID) starts at once.
+
+Each worker receives a batch as soon as it is ready, keeps one in flight, and
+gets the next source-ordered batch when it finishes. Idle workers stay loaded
+until the book is done, so returned chunks always find a worker. A local worker
+whose error says `out of memory` (or cuBLAS/cuDNN `*_ALLOC_FAILED`) is dropped:
+its in-flight batch returns to the front of the queue and its GPU waits as
+above. Any other failure, including an SSH worker running out of memory, aborts
+the run, as does having no worker alive and none waiting; committed chunks are
+kept. The coordinator validates and atomically commits each returned
+checkpoint immediately, then assembles all checkpoints in source order.
+Waiting GPUs do not change the checkpoint identity, which names the configured
+worker topology.
 
 An SSH transport stages the current script plus the saved `reference.wav` and
 `transcript.txt` in a unique remote `/tmp/audiobook-tts-*` directory. The text
@@ -124,7 +137,8 @@ zero becomes one chunk so fast workers can pull more work.
 
 Every clone call goes through `generate_clone_batch()`. A batch that raises a
 CUDA out-of-memory error is repeated one chunk at a time; a single chunk that
-still does not fit fails the run. Batch size is a manual setting because
+still does not fit fails a single-device run, and returns a distributed local
+worker's batch to the queue. Batch size is a manual setting because
 throughput grows with it only until memory runs out. On an RTX PRO 6000 with
 about 6 GiB free beside another model, one sentence per call ran at 1.6× real
 time, two at 2.6×, and four or more ran out of memory, at about 0.7 GiB per
@@ -422,10 +436,11 @@ model server with its type while adaptation is on; and reference-WAV
 encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
-configured SSH workers; voice design runs on the GPU with the most free memory
-(`roomiest_cuda_device()` matches `nvidia-smi` to PyTorch by GPU UUID and opens
-no CUDA context), else MPS, else CPU. **Download MP3** retrieves an exact retained
-audiobook name.
+configured SSH workers; a GPU whose worker waits for memory inside the job
+still shows `running`, and the job's log names it. Voice design runs on the
+GPU with the most free memory (`roomiest_cuda_device()` reads the same
+`gpu_free_mebibytes()` as the narration coordinator), else MPS, else CPU.
+**Download MP3** retrieves an exact retained audiobook name.
 
 ### Reader
 
@@ -504,6 +519,7 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
 - **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
 - A resumable narration never mixes checkpoints from different text/chunk/voice/inference identities.
+- A local narration worker starts only on a GPU measured to have room, and measuring never opens a CUDA context; a local worker that runs out of GPU memory returns its chunks to the queue instead of failing the book.
 - Public audiobook job identity contains only the document content version and voice version.
 - Each narration worker is assigned to at most one audiobook at a time; one Auto audiobook may own several workers. Voice generation is exclusive.
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
@@ -559,7 +575,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 72 tests. It covers voice persistence
+The regression suite currently has 73 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -586,7 +602,9 @@ assets, and other origins, stock voices that seed only a new library, stock
 voices that each preview the fixed passage with a prompt, and voice drafts:
 Listen leaves the saved voice alone, Save keeps exactly the clip heard and
 refuses missing drafts, bad names, and linked voices, and old drafts are
-pruned, and voice design on the GPU with the most free memory, matched to
-`nvidia-smi` by UUID. It does not load a Qwen model or require a GPU.
+pruned, voice design on the GPU with the most free memory, matched to
+`nvidia-smi` by UUID, and distributed narration in which a full GPU joins only
+once it has room and a GPU that runs out of memory hands its chunk back and is
+started again. It does not load a Qwen model or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.
