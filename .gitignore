@@ -1,2 +1,5 @@
 __pycache__/
 .venv/
+# macOS Finder metadata, created when the folder is browsed from a Mac.
+.DS_Store
+._*
