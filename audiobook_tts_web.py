@@ -70,6 +70,7 @@ SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
+STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 DEFAULT_STORAGE_ROOT = Path.home() / "AudiobookTTS"
 STATE_COOKIE_PREFIX = "audiobook_tts_state"
@@ -763,6 +764,25 @@ def delete_audiobook(storage, name):
             sidecar.unlink(missing_ok=True)
     with _LIBRARY_LOCK:
         _LIBRARY_ENTRIES.pop(str(output), None)
+
+
+def prepare_library(storage):
+    """Create the shared folders; a new library starts with the stock voices."""
+    new = not storage.voices.exists()
+    storage.ensure()
+    if not new:
+        return
+    # Each voice is copied whole before it appears, so none is ever half there.
+    staging = Path(tempfile.mkdtemp(prefix=".stock-", dir=storage.voices))
+    try:
+        for voice in sorted(STOCK_VOICES_PATH.glob("*")):
+            if is_saved_voice(voice):
+                shutil.copytree(
+                    voice, staging / voice.name, ignore=shutil.ignore_patterns(".*")
+                )
+                (staging / voice.name).rename(storage.voices / voice.name)
+    finally:
+        shutil.rmtree(staging)
 
 
 def is_markdown_table(paragraph):
@@ -8106,7 +8126,7 @@ def main():
     tts_models = configured_tts_models(args, parser)
     storage = SharedStorage(args.storage_root)
     try:
-        storage.ensure()
+        prepare_library(storage)
     except OSError as exc:
         parser.error(f"cannot create shared storage under {storage.root}: {exc}")
     if args.render_voice_previews:

@@ -25,6 +25,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the OMP model. Each job reads them when it starts. |
+| `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
 | `README.md` | User guide in four sections: Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
@@ -145,6 +146,11 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 Browser state contains only flat asset names. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser. File-serving and AirDrop paths must resolve inside the shared root.
 
 `asset_catalog()` returns sorted shared voice and document names; the Listen page reads retained audiobooks from `GET /api/library`. Existing files are not migrated automatically when the root changes.
+
+`prepare_library()` runs at startup. It creates the layout and, only when it
+creates `Voices/`, copies in each stock voice from `STOCK_VOICES_PATH` whole:
+staged under a hidden folder, hidden files skipped, then renamed into place. An
+existing library is never reseeded, so a deleted stock voice stays deleted.
 
 ### Naming
 
@@ -395,6 +401,8 @@ with each such voice using the configured Base model and the default browser
 runtime, stages each clip in the voice directory, renames it into place only
 after a successful run, reports voices that failed, and exits. Until a voice
 has one, **Voices** labels its preview as reading an older passage.
+The stock voices read the fixed passage too, so changing `VOICE_REFERENCE_TEXT`
+means designing them again; a test checks each one.
 
 ### Advanced and devices
 
@@ -543,7 +551,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base \
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 67 tests. It covers voice persistence
+The regression suite currently has 69 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -566,7 +574,8 @@ endpoint normalization, local model servers of the chosen type, batches retried
 one chunk at a time after running out of memory, the batch-size default for
 older browser state, and deletion of voices (a link, never its target),
 documents, and audiobooks with their reader files, refusing traversal, missing
-assets, other origins, and a voice being created. It does not load a Qwen model
-or require a GPU.
+assets, other origins, and a voice being created, stock voices that seed only a
+new library, and stock voices that each preview the fixed passage with a
+prompt. It does not load a Qwen model or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.

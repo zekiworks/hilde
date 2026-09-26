@@ -2044,6 +2044,51 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertEqual(foreign[0], 403)
         self.assertTrue(web.is_saved_voice(keep))
 
+    def test_stock_voices_seed_only_a_new_library(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        stock = Path(temporary.name) / "stock"
+        stock.mkdir()
+        for name in ("Astrid", "Birger"):
+            save_voice(
+                stock / name, np.linspace(-0.5, 0.5, 2400, dtype=np.float32), 24000,
+                web.VOICE_REFERENCE_TEXT, "FLOAT", description=f"{name} narrator.",
+            )
+        (stock / "Birger" / ".DS_Store").write_bytes(b"Finder metadata")
+        fresh = web.SharedStorage(Path(temporary.name) / "fresh")
+        existing = web.SharedStorage(Path(temporary.name) / "existing")
+        existing.voices.mkdir(parents=True)
+
+        with mock.patch.object(web, "STOCK_VOICES_PATH", stock):
+            web.prepare_library(fresh)
+            seeded = sorted(path.name for path in fresh.voices.iterdir())
+            web.delete_voice(fresh, "Astrid")
+            web.prepare_library(fresh)
+            web.prepare_library(existing)
+
+        self.assertEqual(seeded, ["Astrid", "Birger"])
+        self.assertEqual([path.name for path in fresh.voices.iterdir()], ["Birger"])
+        self.assertEqual(
+            sorted(path.name for path in (fresh.voices / "Birger").iterdir()),
+            ["description.txt", "reference.wav", "transcript.txt"],
+        )
+        self.assertEqual(
+            (fresh.voices / "Birger" / "reference.wav").read_bytes(),
+            (stock / "Birger" / "reference.wav").read_bytes(),
+        )
+        self.assertEqual(list(existing.voices.iterdir()), [])
+
+    def test_stock_voices_are_valid_and_preview_the_fixed_passage(self):
+        voices = sorted(
+            path for path in web.STOCK_VOICES_PATH.iterdir() if not path.name.startswith(".")
+        )
+        self.assertTrue(voices)
+        for voice in voices:
+            with self.subTest(voice=voice.name):
+                read_voice(voice)
+                self.assertEqual(web.voice_preview(voice), (voice / "reference.wav", True))
+                self.assertTrue((voice / "description.txt").read_text(encoding="utf-8").strip())
+
 
 class ReaderAudioIndexTests(unittest.TestCase):
     def test_reader_mp4_indexes_every_mp3_frame_on_the_decoded_timeline(self):

@@ -107,7 +107,7 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --local-dir models/Qwen3-TTS-12Hz-1.7B-Base
 ```
 
-These are example locations, not built-in defaults. Supply the paths you chose when running Hilde. With local directories, model loading stays offline by default. A machine that only narrates with saved voices needs only the Base model.
+These are example locations, not built-in defaults. Supply the paths you chose when running Hilde. With local directories, model loading stays offline by default. A machine that only narrates, with the stock voices in `voices/` or other saved voices, needs only the Base model.
 
 Alternatively, pass a Hugging Face model ID in place of a local path and allow downloads: `--allow-downloads` on the command line, or `--allow-model-downloads` for the web server. That permits network access for both the main model and nested tokenizer/model loads. Without it, the model options must point to existing local directories.
 
@@ -191,6 +191,10 @@ fixed layout:
 Existing files are not migrated automatically when the storage root changes.
 Move them into the appropriate directory yourself. The web app's **Delete**
 buttons remove voices, documents, and audiobooks with their reader files.
+
+A new library starts with the stock voices from the repository's `voices/`
+folder. They are copied only when the library is created, so a stock voice you
+delete stays deleted.
 
 ### Speech models
 
@@ -453,6 +457,9 @@ preview plays in place, and **Select** makes the voice current and returns to
 created can't be deleted until it finishes or you stop it; audiobooks made
 with a deleted voice are kept, and a job already queued keeps its own copy.
 
+A new library comes with eight stock voices, each with its prompt: Balder,
+Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun (female).
+
 **New voice** asks for a name and a prompt. Every voice reads the same fixed
 passage, so previews compare pace, tone, and naturalness on the same words;
 the passage is saved as `transcript.txt` beside `reference.wav` and is neither
@@ -518,7 +525,8 @@ and audiobook. It has two commands:
 2. **`narrate`** uses a **Base** model to clone that saved reference for every chunk, across batches, books, and process sessions.
 
 Only the Base model is needed after you have created a voice. The examples use
-the model directories from [Installation](#5-download-the-models).
+the model directories from [Installation](#5-download-the-models) and Freyja,
+one of the stock voices in the repository's `voices/` folder.
 
 ### Create a voice
 
@@ -527,7 +535,7 @@ The following example uses CUDA and FlashAttention 2. Choose a short, natural re
 ```bash
 python audiobook_tts.py create-voice \
   --model-path models/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
-  --voice-dir voices/my-narrator \
+  --voice-dir ~/AudiobookTTS/Voices/My-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window. Take a seat, and let me tell you a story in a calm and familiar voice." \
   --language English \
@@ -541,11 +549,14 @@ For reference text stored in a file, replace `--text` with `--input reference.tx
 The command creates:
 
 ```text
-voices/my-narrator/
+~/AudiobookTTS/Voices/My-Narrator/
 ├── reference.wav
 ├── transcript.txt
 └── description.txt
 ```
+
+Saving into the web library's `Voices` folder, as here, makes the voice appear
+in Hilde too; any other folder works for the command line alone.
 
 - `reference.wav` contains the generated voice. Its default encoding is 32-bit floating-point WAV, preserving the model's waveform samples.
 - `transcript.txt` contains the exact text passed to voice generation, saved as UTF-8.
@@ -556,12 +567,12 @@ voices/my-narrator/
 
 ### Narrate an audiobook
 
-Prepare narration-ready text as `book.txt`, then reuse your voice:
+Prepare narration-ready text as `book.txt`, then narrate it with a saved voice:
 
 ```bash
 python audiobook_tts.py narrate \
   --clone-model-path models/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-dir voices/my-narrator \
+  --voice-dir voices/Freyja \
   --input book.txt \
   --output book.mp3 \
   --language English \
@@ -582,7 +593,7 @@ model and pull the next available chunk batch:
 ```bash
 python audiobook_tts.py narrate \
   --clone-model-path models/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-dir voices/my-narrator \
+  --voice-dir voices/Freyja \
   --input book.txt \
   --output book.mp3 \
   --resume-dir work/book-chunks \
@@ -604,7 +615,7 @@ storage:
 ```bash
 python audiobook_tts.py narrate \
   --clone-model-path /models/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-dir voices/my-narrator \
+  --voice-dir voices/Freyja \
   --input book.txt \
   --output book.mp3 \
   --resume-dir work/book-chunks \
@@ -634,7 +645,7 @@ For CPU execution, use `--device cpu --dtype float32 --attn-implementation sdpa`
 ```bash
 python audiobook_tts.py narrate \
   --clone-model-path models/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-dir voices/my-narrator \
+  --voice-dir voices/Freyja \
   --input book.txt \
   --output book.wav \
   --language English \
@@ -665,7 +676,7 @@ python audiobook_tts.py create-voice \
   --server 192.168.1.50:8880 \
   --server-model gpt-4o-mini-tts \
   --server-voice ash \
-  --voice-dir voices/remote-narrator \
+  --voice-dir ~/AudiobookTTS/Voices/Remote-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window."
 ```
