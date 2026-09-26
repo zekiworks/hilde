@@ -134,7 +134,6 @@ the text-adaptation model, are under **Advanced** in the page; see
 python audiobook_tts_web.py \
   --voice-design-model models/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
   --voice-clone-model models/Qwen3-TTS-12Hz-1.7B-Base \
-  --storage-root ~/AudiobookTTS \
   --port 8800 --open
 ```
 
@@ -149,7 +148,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--port` | `8800`. |
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
-| `--storage-root` | `~/AudiobookTTS`; see [Storage](#storage). |
+| `--storage-root` | `User/` in the project folder; see [Storage](#storage). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -163,11 +162,11 @@ paths; edit those for yours. Extra arguments pass through to the server.
 
 ### Storage
 
-`--storage-root` defaults to `~/AudiobookTTS`. The server creates and owns this
-fixed layout:
+`--storage-root` defaults to `User/` in the project folder, which git ignores.
+The server creates and owns this fixed layout:
 
 ```text
-~/AudiobookTTS/
+User/
 ├── Voices/
 ├── Audiobooks/
 │   ├── .readers/
@@ -195,6 +194,10 @@ buttons remove voices, documents, and audiobooks with their reader files.
 A new library starts with the stock voices from the repository's `voices/`
 folder. They are copied only when the library is created, so a stock voice you
 delete stays deleted.
+
+Because `User/` lives in the project folder, deleting or re-cloning the folder,
+or running `git clean -x`, deletes your library as well. Back it up, or pass
+`--storage-root` to keep the library somewhere else.
 
 ### Speech models
 
@@ -474,7 +477,6 @@ previews once, while no audiobook is being made:
 ```bash
 python audiobook_tts_web.py \
   --voice-clone-model models/Qwen3-TTS-12Hz-1.7B-Base \
-  --storage-root ~/AudiobookTTS \
   --render-voice-previews
 ```
 
@@ -535,7 +537,7 @@ The following example uses CUDA and FlashAttention 2. Choose a short, natural re
 ```bash
 python audiobook_tts.py create-voice \
   --model-path models/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
-  --voice-dir ~/AudiobookTTS/Voices/My-Narrator \
+  --voice-dir User/Voices/My-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window. Take a seat, and let me tell you a story in a calm and familiar voice." \
   --language English \
@@ -549,7 +551,7 @@ For reference text stored in a file, replace `--text` with `--input reference.tx
 The command creates:
 
 ```text
-~/AudiobookTTS/Voices/My-Narrator/
+User/Voices/My-Narrator/
 ├── reference.wav
 ├── transcript.txt
 └── description.txt
@@ -676,7 +678,7 @@ python audiobook_tts.py create-voice \
   --server 192.168.1.50:8880 \
   --server-model gpt-4o-mini-tts \
   --server-voice ash \
-  --voice-dir ~/AudiobookTTS/Voices/Remote-Narrator \
+  --voice-dir User/Voices/Remote-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window."
 ```

@@ -21,11 +21,12 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | --- | --- |
 | `audiobook_tts.py` | CLI parsing, validation, voice persistence, chunking, local/SSH worker orchestration, OpenAI-compatible narration, batching with out-of-memory retries, and durable narration checkpoints. |
 | `audiobook_tts_web.py` | Shared storage, single-page UI, document preparation, narration-worker scheduling, CPU forced word alignment, OMP integration, workflow orchestration, SSE progress, exactly indexed reader audio, serving and download. |
-| `example_run.sh` | Example web-server launch: local Qwen3-TTS models, `~/AudiobookTTS`, port 8800 on every interface, and every GPU CUDA can open. Set its interpreter and model paths for your machine; extra arguments pass through. |
+| `example_run.sh` | Example web-server launch: local Qwen3-TTS models, the default `User/` library, port 8800 on every interface, and every GPU CUDA can open. Set its interpreter and model paths for your machine; extra arguments pass through. |
 | `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the OMP model. Each job reads them when it starts. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
+| `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
 | `README.md` | User guide in four sections: Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
@@ -131,7 +132,7 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 
 ## Web shared storage
 
-`SharedStorage` owns a configurable root (`--storage-root`, default `~/AudiobookTTS`) and creates:
+`SharedStorage` owns a configurable root (`--storage-root`, default `User/` in the project folder, ignored by git) and creates:
 
 ```text
 <root>/
@@ -531,7 +532,6 @@ python audiobook_tts.py narrate --help
 python audiobook_tts_web.py \
   --voice-design-model /path/to/VoiceDesign \
   --voice-clone-model /path/to/Base \
-  --storage-root ~/AudiobookTTS \
   --port 8800
 ```
 
@@ -543,8 +543,7 @@ Voices whose `transcript.txt` is not the fixed preview passage get a comparable
 `preview.wav` from one pass, run while no audiobook is being made:
 
 ```bash
-python audiobook_tts_web.py --voice-clone-model /path/to/Base \
-  --storage-root ~/AudiobookTTS --render-voice-previews
+python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-previews
 ```
 
 ```bash

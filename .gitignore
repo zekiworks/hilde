@@ -3,3 +3,5 @@ __pycache__/
 # macOS Finder metadata, created when the folder is browsed from a Mac.
 .DS_Store
 ._*
+# The library: voices, documents, audiobooks, and unfinished jobs.
+/User/
