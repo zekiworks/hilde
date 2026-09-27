@@ -13,7 +13,8 @@ https://github.com/user-attachments/assets/b87b14be-c383-4f76-aee3-4a319eac03a2
 ```bash
 git clone https://github.com/zekiworks/hilde.git && cd hilde
 python3.12 -m venv .venv && source .venv/bin/activate
-python -m pip install torch==2.10.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install torch==2.10.0 torchaudio==2.10.0 \
+  --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt
 python audiobook_tts_web.py --host 127.0.0.1 --open --allow-model-downloads \
   --voice-clone-model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
