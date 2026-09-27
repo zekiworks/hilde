@@ -6,6 +6,9 @@
 
 <p align="center"><strong>Create a narrator once. Reuse that voice across your audiobooks.</strong></p>
 
+> [!WARNING]
+> 🚧 **Work in progress.** Early version, things may break. First release coming soon. Feedback and issues welcome.
+
 https://github.com/user-attachments/assets/b87b14be-c383-4f76-aee3-4a319eac03a2
 
 ## Quickstart
