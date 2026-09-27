@@ -235,14 +235,18 @@ with pymupdf.open(sys.argv[1]) as document:
 """
 
 _PDF_CONVERTER = """\
+import os
 import sys
 from pathlib import Path
 
 import pymupdf4llm
 
-source, output, images = (Path(value) for value in sys.argv[1:4])
+source, output, images = (Path(value).resolve() for value in sys.argv[1:4])
 page = int(sys.argv[4])
 images.mkdir(parents=True, exist_ok=True)
+# pymupdf4llm links images relative to the working directory when it holds
+# them. From the extraction folder, links stay valid wherever the stage lives.
+os.chdir(images.parent)
 markdown = pymupdf4llm.to_markdown(
     str(source),
     pages=[page],
@@ -4097,8 +4101,10 @@ class PaperRun(Run):
             raise InterruptedError("document processing stopped")
         request_path = scratch / f"paragraphs-{start}-{end}.txt"
         source = "\n\n".join(paragraphs)
+        # Extracted Markdown links images relative to the extraction folder.
         attachments = tuple(
-            path for path in image_paths if str(path) in source
+            path for path in image_paths
+            if path.relative_to(scratch).as_posix() in source
         )
         figure_note = (
             f" with {len(attachments)} figure attachment"

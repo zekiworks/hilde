@@ -1151,6 +1151,47 @@ class UnifiedWorkflowTests(unittest.TestCase):
             list(range(1, requests["count"] + 1)),
         )
 
+    def test_pdf_figures_reach_reader_and_model_with_the_library_under_the_project(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.pdf"
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 72), "A paragraph before the figure.")
+            figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+            figure.clear_with(200)
+            page.insert_image(pymupdf.Rect(72, 120, 372, 420), pixmap=figure)
+            pdf.save(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "User" / "in_progress" / "job" / "extraction"
+        attached = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                attached.extend(attachments)
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        # The server runs converters from the project folder, which holds User/.
+        with mock.patch.object(web, "ROOT", root):
+            run = StubPaperRun(
+                source, stage / "prepared.txt", "utf-8", in_flight=1,
+                prompt_path=prompt, scratch_path=stage,
+            )
+            run.pump()
+
+        self.assertEqual(run.code, 0)
+        images = sorted((stage / "images").iterdir())
+        self.assertEqual(len(images), 1)
+        self.assertEqual(attached, images)
+        markdown = (stage / "document.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "](data:image/png;base64,", web.embed_reader_images(markdown, (stage,))
+        )
+
 
 
 

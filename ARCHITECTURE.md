@@ -214,7 +214,10 @@ PDF work is page-addressable:
 
 1. a short-lived child obtains the page count;
 2. one converter child writes each missing `pdf-pages/<page>.md` checkpoint;
-3. extracted figures remain under `images/`;
+3. extracted figures remain under `images/`, linked as `images/<file>`: the
+   converter runs from the extraction folder because `pymupdf4llm` links
+   images relative to its working directory, and the reader and figure
+   attachments resolve links against that folder;
 4. page Markdown is joined into `document.md` in source order.
 
 Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process.
@@ -579,7 +582,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 75 tests. It covers voice persistence
+The regression suite currently has 76 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -610,7 +613,9 @@ pruned, voice design on the GPU with the most free memory, matched to
 `nvidia-smi` by UUID, and distributed narration in which a full GPU joins only
 once it has room and a GPU that runs out of memory hands its chunk back and is
 started again, adaptation in which a left-out reference adds no text while
-figures keep their place in the reader, and adaptation redone after the
-harness instructions change. It does not load a Qwen model or require a GPU.
+figures keep their place in the reader, adaptation redone after the harness
+instructions change, and PDF figures that reach both the reader and the model
+when the library sits inside the project folder. It does not load a Qwen model
+or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.
