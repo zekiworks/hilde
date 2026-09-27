@@ -121,14 +121,26 @@ OPENAI_DEVICE_PAGE = "https://auth.openai.com/codex/device"
 OPENAI_DEVICE_REDIRECT = "https://auth.openai.com/deviceauth/callback"
 OPENAI_DEVICE_LOGIN_SECONDS = 15 * 60
 OPENAI_DEVICE_POLL_FLOOR = 1.0
-OPENAI_REQUEST_TIMEOUT = 30
+# Sign-in, API-key, and model-list requests to a provider give up after this.
+PROVIDER_REQUEST_TIMEOUT = 30
 # OpenAI's Cloudflare front refuses urllib's default client name.
-OPENAI_USER_AGENT = "hilde/1.0"
+HILDE_USER_AGENT = "hilde/1.0"
 CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex"
 # The Codex backend lists the models it serves to a given client version.
 CODEX_CLIENT_VERSION = "0.144.1"
-# This server's ChatGPT sign-in lives here, readable only by its user.
+# This server's provider sign-ins and keys live here, readable only by its user.
 HILDE_HOME = Path.home() / ".hilde"
+ANTHROPIC_MODEL_PROVIDER = "anthropic"
+# Anthropic keeps Claude subscription sign-ins to its own apps, so this
+# provider takes an API key from the Claude Console.
+ANTHROPIC_API_URL = "https://api.anthropic.com"
+ANTHROPIC_VERSION = "2023-06-01"
+# A busy or rate-limited Anthropic API is asked again this many times.
+ANTHROPIC_RETRIES = 4
+# Output limit of one Messages request. Every model Anthropic still serves
+# accepts it, and always-on thinking counts toward it. Anthropic's rate limit
+# counts only the tokens a model produces, so a generous limit costs nothing.
+ANTHROPIC_MAX_TOKENS = 32_000
 # A streamed model request may wait this long for its next event, for example
 # while a busy local server queues it.
 MODEL_STREAM_TIMEOUT = 30 * 60
@@ -2185,6 +2197,20 @@ def normalize_local_server(value):
     ).rstrip("/")
 
 
+def _write_private_json(path, payload):
+    """Replace path with JSON only this user can read, in a private folder."""
+    HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def openai_credentials_path():
     return HILDE_HOME / "openai.json"
 
@@ -2248,17 +2274,7 @@ def save_openai_credentials(tokens, previous=None):
         "account_id": account_id,
         "expires_at": time.time() + expires_in,
     }
-    HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = openai_credentials_path()
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(credentials, stream)
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    _write_private_json(openai_credentials_path(), credentials)
     return credentials
 
 
@@ -2274,11 +2290,11 @@ def _openai_post(path, payload, form=False):
         f"{OPENAI_AUTH_URL}{path}", data=body, method="POST",
         headers={
             "Content-Type": content_type, "Accept": "application/json",
-            "User-Agent": OPENAI_USER_AGENT,
+            "User-Agent": HILDE_USER_AGENT,
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=OPENAI_REQUEST_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
             status, raw = response.status, response.read(1024 * 1024)
     except urllib.error.HTTPError as error:
         status, raw = error.code, error.read(1024 * 1024)
@@ -2314,7 +2330,7 @@ def openai_access(refused_token=None):
     with _OPENAI_SIGN_IN_LOCK:
         credentials = read_openai_credentials()
         if credentials is None:
-            raise RuntimeError("Sign in with OpenAI under Advanced first.")
+            raise RuntimeError("Sign in with OpenAI in Providers, under Advanced, first.")
         # Another request may already have renewed the token that was refused.
         if (
             credentials["expires_at"] - 300 > time.time()
@@ -2329,7 +2345,7 @@ def openai_access(refused_token=None):
         if status != 200:
             raise RuntimeError(
                 "OpenAI sign-in could not be renewed "
-                f"({_model_error(tokens, f'HTTP {status}')}); sign in again under Advanced."
+                f"({_model_error(tokens, f'HTTP {status}')}); sign in again in Providers."
             )
         return save_openai_credentials(tokens, credentials)
 
@@ -2430,7 +2446,7 @@ def openai_response(model, system_prompt, text, images, open_stream):
             "Authorization": f"Bearer {credentials['access_token']}",
             "ChatGPT-Account-Id": credentials["account_id"],
             "OAI-Product-Sku": "codex",
-            "User-Agent": OPENAI_USER_AGENT,
+            "User-Agent": HILDE_USER_AGENT,
             "session_id": session,
             "conversation_id": session,
             "Accept": "text/event-stream",
@@ -2458,7 +2474,7 @@ def openai_response(model, system_prompt, text, images, open_stream):
                         f"OpenAI stopped the response: {_model_error(event, kind)}"
                     )
             raise RuntimeError("OpenAI ended the response before it completed.")
-    raise RuntimeError("OpenAI refused the renewed sign-in; sign in again under Advanced.")
+    raise RuntimeError("OpenAI refused the renewed sign-in; sign in again in Providers.")
 
 
 def local_model_response(server, model, system_prompt, text, open_stream):
@@ -2518,11 +2534,11 @@ def openai_model_names():
                 "ChatGPT-Account-Id": credentials["account_id"],
                 "version": CODEX_CLIENT_VERSION,
                 "Accept": "application/json",
-                "User-Agent": OPENAI_USER_AGENT,
+                "User-Agent": HILDE_USER_AGENT,
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=OPENAI_REQUEST_TIMEOUT) as response:
+            with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
                 payload = json.loads(response.read(8 * 1024 * 1024))
         except urllib.error.HTTPError as error:
             if error.code == 401 and refused is None:
@@ -2533,7 +2549,7 @@ def openai_model_names():
             raise RuntimeError(f"Cannot list OpenAI models: {exc}") from exc
         break
     else:
-        raise RuntimeError("OpenAI refused the renewed sign-in; sign in again under Advanced.")
+        raise RuntimeError("OpenAI refused the renewed sign-in; sign in again in Providers.")
     rows = payload.get("models") if isinstance(payload, dict) else None
     models = []
     for row in rows if isinstance(rows, list) else ():
@@ -2549,6 +2565,135 @@ def openai_model_names():
     if not models:
         raise RuntimeError("OpenAI listed no models for this sign-in.")
     return [slug for _, slug in sorted(models, key=lambda item: item[0])]
+
+
+def anthropic_key_path():
+    return HILDE_HOME / "anthropic.json"
+
+
+def read_anthropic_key():
+    """Return this server's Anthropic API key, or None when it has none."""
+    try:
+        data = json.loads(anthropic_key_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    key = data.get("api_key") if isinstance(data, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
+def _anthropic_headers(key, accept="application/json"):
+    return {
+        "x-api-key": key,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "Accept": accept,
+        "Content-Type": "application/json",
+        "User-Agent": HILDE_USER_AGENT,
+    }
+
+
+def anthropic_model_names(key=None):
+    """List the models an Anthropic API key may use, newest first."""
+    key = key or read_anthropic_key()
+    if not key:
+        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+    request = urllib.request.Request(
+        f"{ANTHROPIC_API_URL}/v1/models?limit=1000", headers=_anthropic_headers(key),
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
+            payload = json.loads(response.read(8 * 1024 * 1024))
+    except urllib.error.HTTPError as error:
+        try:
+            detail = _model_error(json.loads(error.read(64 * 1024)), f"HTTP {error.code}")
+        except (AttributeError, OSError, ValueError):
+            detail = f"HTTP {error.code}"
+        verdict = "rejected the API key" if error.code in (401, 403) else "did not list its models"
+        raise RuntimeError(f"Anthropic {verdict}: {detail}") from error
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot list Anthropic models: {exc}") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    names = [
+        row["id"] for row in (rows if isinstance(rows, list) else ())
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
+    ]
+    if not names:
+        raise RuntimeError("Anthropic listed no models for this API key.")
+    return names
+
+
+def connect_anthropic(key):
+    """Keep an Anthropic API key, once Anthropic accepts it."""
+    key = str(key or "").strip()
+    if not key or len(key) > 512 or any(
+        char.isspace() or not char.isprintable() for char in key
+    ):
+        raise ValueError("Paste an API key from the Claude Console.")
+    anthropic_model_names(key)
+    _write_private_json(anthropic_key_path(), {"api_key": key})
+
+
+def _anthropic_text(response):
+    """Collect the answer of one streamed Messages response."""
+    parts, stop_reason = [], None
+    for data in sse_events(response):
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+        if kind == "content_block_delta" and delta.get("type") == "text_delta":
+            parts.append(str(delta.get("text") or ""))
+        elif kind == "message_delta":
+            stop_reason = delta.get("stop_reason") or stop_reason
+        elif kind == "message_stop":
+            if stop_reason == "max_tokens":
+                raise RuntimeError(
+                    "Anthropic stopped at its output limit; lower Paragraphs per worker."
+                )
+            return "".join(parts)
+        elif kind == "error":
+            raise RuntimeError(f"Anthropic stopped the response: {_model_error(event, 'error')}")
+    raise RuntimeError("Anthropic ended the response before it completed.")
+
+
+def anthropic_response(model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with a Claude model through Anthropic's Messages API."""
+    key = read_anthropic_key()
+    if key is None:
+        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+    content = [{"type": "text", "text": text}]
+    for path in images:
+        content.append({"type": "image", "source": {
+            "type": "base64",
+            "media_type": mimetypes.guess_type(path.name)[0] or "image/png",
+            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }})
+    body = json.dumps({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": content}],
+        "stream": True,
+    }).encode("utf-8")
+    headers = _anthropic_headers(key, "text/event-stream")
+    for attempt in range(ANTHROPIC_RETRIES + 1):
+        with open_stream(f"{ANTHROPIC_API_URL}/v1/messages", headers, body) as response:
+            # 429 is a rate limit and 529 an overload: both mean come back later.
+            if response.status in (429, 500, 502, 503, 504, 529) and attempt < ANTHROPIC_RETRIES:
+                try:
+                    delay = float(response.getheader("retry-after"))
+                except (TypeError, ValueError):
+                    delay = 2.0 ** attempt
+            elif response.status != 200:
+                raise _stream_failure(response, "Anthropic")
+            else:
+                return _anthropic_text(response)
+        if pause(min(max(delay, 0.0), 60.0)):
+            raise InterruptedError("document processing stopped")
+    raise AssertionError("unreachable Anthropic retry loop")
 
 
 def local_server_json(local_server, path, label):
@@ -2638,10 +2783,10 @@ def local_model_names(local_server, provider):
 
 
 def paper_model_catalog(local_server="", local_provider=""):
-    """List the models of this server's OpenAI sign-in and of the local server."""
+    """List the models of this server's providers, then of the local server."""
     local_server = normalize_local_server(local_server)
     models = []
-    openai_error = local_error = ""
+    openai_error = anthropic_error = local_error = ""
     openai_connected = read_openai_credentials() is not None
     if openai_connected:
         try:
@@ -2651,6 +2796,15 @@ def paper_model_catalog(local_server="", local_provider=""):
             ]
         except RuntimeError as exc:
             openai_error = str(exc)
+    anthropic_connected = read_anthropic_key() is not None
+    if anthropic_connected:
+        try:
+            models += [
+                {"provider": ANTHROPIC_MODEL_PROVIDER, "selector": f"{ANTHROPIC_MODEL_PROVIDER}/{name}"}
+                for name in anthropic_model_names()
+            ]
+        except RuntimeError as exc:
+            anthropic_error = str(exc)
     if local_server:
         try:
             models += [
@@ -2662,13 +2816,15 @@ def paper_model_catalog(local_server="", local_provider=""):
     return {
         "models": models,
         # Without a chosen model a job uses the first one: OpenAI's first once
-        # signed in, else the local server's first.
+        # signed in, then Anthropic's, then the local server's.
         "default_model": models[0]["selector"] if models else "",
         "local_server": local_server,
         "local_provider": local_provider,
         "local_error": local_error,
         "openai_error": openai_error,
         "openai_connected": openai_connected,
+        "anthropic_error": anthropic_error,
+        "anthropic_connected": anthropic_connected,
     }
 
 
@@ -3212,14 +3368,21 @@ def _adaptation_problem(values):
     model = values["model"]
     provider = model.partition("/")[0]
     if not model:
-        if read_openai_credentials() is None and not values["local_server"]:
+        if (
+            read_openai_credentials() is None
+            and read_anthropic_key() is None
+            and not values["local_server"]
+        ):
             return (
-                "Text adaptation needs a model: sign in with OpenAI or add a local "
+                "Text adaptation needs a model: connect a provider or add a local "
                 "model server under Advanced, or clear Adapt the text for listening."
             )
     elif provider == OPENAI_MODEL_PROVIDER:
         if read_openai_credentials() is None:
-            return "Sign in with OpenAI under Advanced to use this model."
+            return "Sign in with OpenAI in Providers, under Advanced, to use this model."
+    elif provider == ANTHROPIC_MODEL_PROVIDER:
+        if read_anthropic_key() is None:
+            return "Add an Anthropic API key in Providers, under Advanced, to use this model."
     elif provider not in LOCAL_MODEL_PROVIDERS:
         return "This adaptation model is no longer available; choose one under Advanced."
     elif not values["local_server"]:
@@ -4405,6 +4568,11 @@ class PaperRun(Run):
             return openai_response(
                 name, system_prompt, text, attachments, self.model_stream
             )
+        if provider == ANTHROPIC_MODEL_PROVIDER:
+            return anthropic_response(
+                name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
+            )
         if provider in LOCAL_MODEL_PROVIDERS and self.local_server:
             return local_model_response(
                 self.local_server, name, system_prompt, text, self.model_stream
@@ -5120,8 +5288,8 @@ class AudiobookRun(Run):
                     )["default_model"]
                     if not model:
                         raise RuntimeError(
-                            "No text-adaptation model is available: sign in with "
-                            "OpenAI or add a local model server under Advanced."
+                            "No text-adaptation model is available: connect a provider "
+                            "or add a local model server under Advanced."
                         )
                 self.paper_run = PaperRun(
                     input_path,
@@ -5468,15 +5636,7 @@ class Handler(BaseHTTPRequestHandler):
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/paper/models":
-            state = normalize(read_state_cookie(self.headers.get("Cookie")))
-            try:
-                catalog = paper_model_catalog(
-                    state["audiobook"]["local_server"],
-                    state["audiobook"]["local_provider"],
-                )
-            except (RuntimeError, ValueError) as exc:
-                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
-            return self.reply(HTTPStatus.OK, catalog)
+            return self.reply_paper_catalog()
         if route == "/api/paper/openai/status":
             return self.reply(
                 HTTPStatus.OK, self.server.openai_login.snapshot()
@@ -5557,6 +5717,17 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.openai_login.stop(),
             )
+        if route == "/api/paper/anthropic/key":
+            try:
+                connect_anthropic(body.get("key", ""))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            except RuntimeError as exc:
+                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return self.reply_paper_catalog()
+        if route == "/api/paper/anthropic/remove":
+            anthropic_key_path().unlink(missing_ok=True)
+            return self.reply_paper_catalog()
         if route == "/api/paper/local/check":
             try:
                 local_server = normalize_local_server(body.get("server", ""))
@@ -5829,6 +6000,18 @@ class Handler(BaseHTTPRequestHandler):
                 "assets": asset_catalog(self.server.storage),
             },
         )
+
+    def reply_paper_catalog(self):
+        """Answer with the adaptation models this browser can choose from."""
+        state = normalize(read_state_cookie(self.headers.get("Cookie")))
+        try:
+            catalog = paper_model_catalog(
+                state["audiobook"]["local_server"],
+                state["audiobook"]["local_provider"],
+            )
+        except (RuntimeError, ValueError) as exc:
+            return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+        return self.reply(HTTPStatus.OK, catalog)
 
     def delete_asset(self, kind, name):
         storage = self.server.storage
@@ -6408,6 +6591,9 @@ dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
          color:var(--text); border:1px solid var(--line); border-radius:var(--radius); }
 dialog::backdrop { background:rgba(0,0,0,.6); }
 dialog h2 { margin:0 0 12px; font-size:16px; }
+dialog h3 { margin:0 0 6px; font-size:15px; }
+.provider + .provider { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+#paper-providers-dialog { width:min(620px,92vw); }
 @media (max-width:640px) {
   main { padding:14px 14px 4px; }
   .brand-logo { width:36px; height:36px; border-radius:9px; }
@@ -6513,7 +6699,7 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
       <legend>Text adaptation</legend>
       <div class="row"><label for="paper-model">Model</label><div class="line">
         <select id="paper-model"><option value="">Loading models…</option></select>
-        <button id="paper-openai" type="button" onclick="openPaperOpenAI()">OpenAI</button>
+        <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
         <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
         <input id="paper-local-server" type="hidden">
         <input id="paper-local-provider" type="hidden">
@@ -6801,22 +6987,45 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
 </main>
 <footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt=""> Zeki Works</footer>
 
-<dialog id="paper-openai-dialog">
-  <h2>OpenAI OAuth</h2>
-  <p class="note">Sign in with ChatGPT. This server keeps the sign-in in
-    ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
-  <div class="row"><label>Status:</label><div>
-    <strong id="paper-openai-status"></strong>
-    <div id="paper-openai-device" class="hidden">
-      <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
-      <p>Enter code: <code id="paper-openai-code"></code></p>
+<dialog id="paper-providers-dialog">
+  <h2>Providers</h2>
+  <section class="provider">
+    <h3>OpenAI</h3>
+    <p class="note">Sign in with ChatGPT. This server keeps the sign-in in
+      ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
+    <div class="row"><label>Status:</label><div>
+      <strong id="paper-openai-status"></strong>
+      <div id="paper-openai-device" class="hidden">
+        <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
+        <p>Enter code: <code id="paper-openai-code"></code></p>
+      </div>
+    </div></div>
+    <div class="footer">
+      <button id="paper-openai-cancel" class="hidden" onclick="cancelPaperOpenAI()">Cancel login</button>
+      <span class="grow"></span>
+      <button id="paper-openai-start" onclick="startPaperOpenAI()">Connect</button>
     </div>
-  </div></div>
+  </section>
+  <section class="provider">
+    <h3>Anthropic</h3>
+    <p class="note">Anthropic allows Claude subscriptions only in its own apps, so this
+      uses an API key from the Claude Console. This server keeps it in
+      ~/.hilde/anthropic.json, readable only by its user.</p>
+    <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
+      <input id="paper-anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-…">
+    </div></div>
+    <div class="row"><label>Status:</label><div>
+      <strong id="paper-anthropic-status"></strong>
+    </div></div>
+    <div class="footer">
+      <button id="paper-anthropic-remove" onclick="removePaperAnthropic()">Remove</button>
+      <span class="grow"></span>
+      <button id="paper-anthropic-save" onclick="savePaperAnthropic()">Save key</button>
+    </div>
+  </section>
   <div class="footer">
-    <button id="paper-openai-cancel" class="hidden" onclick="cancelPaperOpenAI()">Cancel login</button>
     <span class="grow"></span>
-    <button onclick="closePaperOpenAI()">Close</button>
-    <button id="paper-openai-start" class="primary" onclick="startPaperOpenAI()">Connect</button>
+    <button onclick="closePaperProviders()">Close</button>
   </div>
 </dialog>
 
@@ -6856,7 +7065,8 @@ let configuration = {}, voices = [], books = [];
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
-let paperOpenAIConnected = false, advancedOpen = false, voiceFormOpen = false;
+let paperOpenAIConnected = false, paperAnthropicConnected = false;
+let advancedOpen = false, voiceFormOpen = false;
 // Create shows the steps (compose), a followed run (progress), or its outcome (result).
 let submitting = false, createView = "compose", stopping = false, waitingJobId = "";
 let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
@@ -8445,9 +8655,10 @@ function applyPaperCatalog(catalog) {
   }
   select.value = selected;
   paperOpenAIConnected = !!catalog.openai_connected;
-  $("paper-openai").textContent = paperOpenAIConnected ? "OpenAI ✓" : "OpenAI";
-  $("paper-local").textContent = state.audiobook.local_server ? "Local ✓" : "Add local";
-  const problem = catalog.local_error || catalog.openai_error;
+  paperAnthropicConnected = !!catalog.anthropic_connected;
+  renderPaperAnthropic(catalog.anthropic_error);
+  $("paper-local").textContent = state.audiobook.local_server ? "Local" : "Add local";
+  const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error;
   $("paper-model-status").textContent = problem ||
     `${(catalog.models || []).length} models`;
   $("paper-model-status").classList.toggle("bad", !!problem);
@@ -8482,11 +8693,38 @@ async function pollPaperOpenAI() {
     else if (info.status === "connected") await refreshPaperModels();
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
-async function openPaperOpenAI() {
-  $("paper-openai-dialog").showModal(); await pollPaperOpenAI();
+async function openPaperProviders() {
+  $("paper-anthropic-key").value = "";
+  renderPaperAnthropic();
+  $("paper-providers-dialog").showModal(); await pollPaperOpenAI();
 }
-function closePaperOpenAI() {
-  clearTimeout(paperOAuthTimer); $("paper-openai-dialog").close();
+function closePaperProviders() {
+  clearTimeout(paperOAuthTimer); $("paper-providers-dialog").close();
+}
+function renderPaperAnthropic(message) {
+  $("paper-anthropic-status").textContent = message || (paperAnthropicConnected
+    ? "An API key is saved on this server." : "No API key yet.");
+  $("paper-anthropic-remove").disabled = !paperAnthropicConnected;
+}
+async function savePaperAnthropic() {
+  $("paper-anthropic-save").disabled = true;
+  $("paper-anthropic-status").textContent = "Checking the key with Anthropic…";
+  try {
+    const catalog = await jsonRequest("/api/paper/anthropic/key", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ key:$("paper-anthropic-key").value }),
+    });
+    $("paper-anthropic-key").value = "";
+    applyPaperCatalog(catalog);
+  } catch (error) { $("paper-anthropic-status").textContent = error.message; }
+  finally { $("paper-anthropic-save").disabled = false; }
+}
+async function removePaperAnthropic() {
+  try {
+    applyPaperCatalog(await jsonRequest("/api/paper/anthropic/remove", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
+    }));
+  } catch (error) { $("paper-anthropic-status").textContent = error.message; }
 }
 async function startPaperOpenAI() {
   try {

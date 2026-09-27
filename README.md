@@ -28,9 +28,10 @@ python audiobook_tts_web.py --host 127.0.0.1 --open --allow-model-downloads \
 Without an NVIDIA GPU, replace `cu130` with `cpu` in the third command. The
 page opens at `http://127.0.0.1:8800/`, reachable only from this computer, with
 eight stock voices. Each model, about 4.3 GB, downloads the first time it is
-used. Text adaptation needs a language model: sign in with OpenAI or add a
-local model server under **Advanced**, or clear **Adapt the text for listening**
-before you create an audiobook; see [Text adaptation](#text-adaptation).
+used. Text adaptation needs a language model: connect a provider (OpenAI or
+Anthropic) or add a local model server under **Advanced**, or clear **Adapt the
+text for listening** before you create an audiobook; see
+[Text adaptation](#text-adaptation).
 [Installation](#installation) covers other platforms, local model folders, and
 FlashAttention.
 
@@ -308,12 +309,16 @@ remain. While adaptation is selected, its settings appear under **Advanced** in
 **Text adaptation**:
 
 - **Model** picks the model that rewrites the text. Without a choice, a job uses
-  the first one listed: OpenAI's first model once signed in, else the local
-  server's first.
-- **OpenAI** signs this server in with a ChatGPT account: open the sign-in page
-  it shows and enter the code. The server keeps the sign-in in
-  `~/.hilde/openai.json`, readable only by the user running it, and renews it
-  automatically; delete that file to sign out.
+  the first one listed: OpenAI's first model once signed in, then Anthropic's,
+  then the local server's.
+- **Providers** connects cloud models. **OpenAI** signs this server in with a
+  ChatGPT account: open the sign-in page it shows and enter the code; the
+  sign-in renews itself. **Anthropic** takes an API key from the
+  [Claude Console](https://platform.claude.com/), since Anthropic allows
+  Claude subscriptions only in its own apps; usage is billed to that key. The
+  server keeps both in `~/.hilde/`, readable only by the user running it.
+  **Remove** deletes the Anthropic key; delete `~/.hilde/openai.json` to sign
+  out of OpenAI.
 - **Add local** connects a model server on your network. Choose its type,
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
@@ -321,8 +326,8 @@ remain. While adaptation is selected, its settings appear under **Advanced** in
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds.
 
-Figures reach OpenAI models as images. A local server may run a text-only
-model, so it receives the text extracted from each figure instead.
+Figures reach OpenAI and Anthropic models as images. A local server may run a
+text-only model, so it receives the text extracted from each figure instead.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted

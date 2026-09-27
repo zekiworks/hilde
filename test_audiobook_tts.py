@@ -1818,16 +1818,23 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIsNotNone(problem("ollama/deepseek-v4.1-flash"))
         self.assertIsNone(problem("lm-studio/deepseek-v4.1-flash"))
         # A model no backend of this server serves is refused before the job starts.
-        self.assertIsNotNone(problem("anthropic/claude-opus-5-5"))
-        self.assertIsNotNone(problem("", local_server=""))
+        self.assertIsNotNone(problem("mistral/large"))
+        for model in ("", "openai-codex/gpt-a", "anthropic/claude-a"):
+            self.assertIsNotNone(problem(model, local_server=""))
+        with mock.patch.object(web, "HILDE_HOME", home):
+            web._write_private_json(web.anthropic_key_path(), {"api_key": "sk-ant-key"})
+        self.assertIsNone(problem("anthropic/claude-a", local_server=""))
+        self.assertIsNone(problem("", local_server=""))
         self.assertIsNotNone(problem("openai-codex/gpt-a", local_server=""))
         with mock.patch.object(web, "HILDE_HOME", home):
+            web.anthropic_key_path().unlink()
             web.save_openai_credentials({
                 "access_token": "access", "refresh_token": "refresh",
                 "id_token": fake_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct"}}),
             })
         self.assertIsNone(problem("openai-codex/gpt-a", local_server=""))
         self.assertIsNone(problem("", local_server=""))
+        self.assertIsNotNone(problem("anthropic/claude-a", local_server=""))
         self.assertEqual(
             normalize({"audiobook": {"local_provider": "vllm"}})["audiobook"]["local_provider"], ""
         )
@@ -2077,6 +2084,157 @@ class OpenAISignInTests(unittest.TestCase):
             json.loads((home / "openai.json").read_text(encoding="utf-8"))["refresh_token"],
             "refresh-2",
         )
+
+
+class AnthropicProviderTests(unittest.TestCase):
+    def test_api_key_is_checked_kept_owner_only_and_used_with_figures(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        messages = []
+
+        class AnthropicHandler(BaseHTTPRequestHandler):
+            def reply(self, status, payload, headers=()):
+                body = json.dumps(payload).encode()
+                self.send_response(status)
+                for name, value in headers:
+                    self.send_header(name, value)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def authorized(self):
+                if (
+                    self.headers.get("x-api-key") == "sk-ant-good"
+                    and self.headers.get("anthropic-version") == "2023-06-01"
+                ):
+                    return True
+                self.reply(401, {"type": "error", "error": {
+                    "type": "authentication_error", "message": "invalid x-api-key",
+                }})
+                return False
+
+            def do_GET(self):
+                if self.path != "/v1/models?limit=1000":
+                    return self.reply(404, {})
+                if self.authorized():
+                    self.reply(200, {"data": [
+                        {"id": "claude-new", "type": "model"},
+                        {"id": "claude-old", "type": "model"},
+                    ], "has_more": False})
+                return None
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path != "/v1/messages":
+                    return self.reply(404, {})
+                if not self.authorized():
+                    return None
+                # Anthropic requires max_tokens within the model's output limit;
+                # 64,000 is the lowest limit among the models it still serves.
+                limit = body.get("max_tokens")
+                if not isinstance(limit, int) or not 1 <= limit <= 64_000:
+                    return self.reply(400, {"type": "error", "error": {
+                        "type": "invalid_request_error", "message": f"max_tokens: {limit}",
+                    }})
+                messages.append(body)
+                # The first request meets a rate limit, as a busy account does.
+                if len(messages) == 1:
+                    return self.reply(429, {"type": "error", "error": {
+                        "type": "rate_limit_error", "message": "Too many requests.",
+                    }}, (("retry-after", "0"),))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                # Recent Claude models always think before they answer.
+                for event in (
+                    {"type": "message_start", "message": {"id": "msg", "content": []}},
+                    {"type": "content_block_start", "index": 0,
+                     "content_block": {"type": "thinking", "thinking": ""}},
+                    # and often draft the tagged answer while they do.
+                    {"type": "content_block_delta", "index": 0, "delta": {
+                        "type": "thinking_delta",
+                        "thinking": "Draft: <NARRATION>Wrong.</NARRATION><SUMMARY>x</SUMMARY>",
+                    }},
+                    {"type": "content_block_delta", "index": 0,
+                     "delta": {"type": "signature_delta", "signature": "c2lnbmF0dXJl"}},
+                    {"type": "content_block_stop", "index": 0},
+                    {"type": "content_block_start", "index": 1,
+                     "content_block": {"type": "text", "text": ""}},
+                    {"type": "ping"},
+                    {"type": "content_block_delta", "index": 1,
+                     "delta": {"type": "text_delta", "text": "<NARRATION>Figure one is "}},
+                    {"type": "content_block_delta", "index": 1, "delta": {
+                        "type": "text_delta",
+                        "text": "described.</NARRATION><SUMMARY>Figure.</SUMMARY>",
+                    }},
+                    {"type": "content_block_stop", "index": 1},
+                    {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+                    {"type": "message_stop"},
+                ):
+                    self.wfile.write(
+                        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+                    )
+                return None
+
+            def log_message(self, format, *args):
+                pass
+
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        home = root / ".hilde"
+        with ThreadingHTTPServer(("127.0.0.1", 0), AnthropicHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with mock.patch.object(
+                    web, "ANTHROPIC_API_URL", f"http://127.0.0.1:{server.server_port}"
+                ), mock.patch.object(web, "HILDE_HOME", home):
+                    with self.assertRaises(RuntimeError):
+                        web.connect_anthropic("sk-ant-wrong")
+                    self.assertFalse(web.anthropic_key_path().exists())
+                    web.connect_anthropic(" sk-ant-good\n")
+                    catalog = web.paper_model_catalog()
+                    run = PaperRun(
+                        source, stage / "prepared.txt", "utf-8", model="anthropic/claude-new",
+                        in_flight=1, prompt_path=prompt, scratch_path=stage,
+                    )
+                    run.pump()
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((home / "anthropic.json").stat().st_mode), 0o600)
+        self.assertEqual(
+            [model["selector"] for model in catalog["models"]],
+            ["anthropic/claude-new", "anthropic/claude-old"],
+        )
+        self.assertEqual(catalog["default_model"], "anthropic/claude-new")
+        self.assertEqual(run.code, 0)
+        self.assertIn(
+            "Figure one is described.", (stage / "prepared.txt").read_text(encoding="utf-8")
+        )
+        # The rate-limited request was sent again unchanged.
+        self.assertEqual(messages[0], messages[1])
+        request = next(
+            body for body in messages
+            if any(part["type"] == "image" for part in body["messages"][0]["content"])
+        )
+        self.assertEqual((request["model"], request["stream"]), ("claude-new", True))
+        self.assertIn("Adapt every paragraph.", request["system"])
+        self.assertNotIn("Wrong.", (stage / "prepared.txt").read_text(encoding="utf-8"))
+        image = next(
+            part for part in request["messages"][0]["content"] if part["type"] == "image"
+        )
+        self.assertEqual(
+            (image["source"]["type"], image["source"]["media_type"]), ("base64", "image/png")
+        )
+        base64.b64decode(image["source"]["data"], validate=True)
 
 
 class DocumentDownloadTests(unittest.TestCase):
