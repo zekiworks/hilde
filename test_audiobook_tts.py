@@ -1192,6 +1192,54 @@ class UnifiedWorkflowTests(unittest.TestCase):
             "](data:image/png;base64,", web.embed_reader_images(markdown, (stage,))
         )
 
+    def test_pdf_figures_are_not_overprinted_with_ocr_text(self):
+        import pymupdf
+        import pymupdf4llm
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        # A diagram whose labels are pixels rather than text, so OCR reads them.
+        with pymupdf.open() as sketch:
+            page = sketch.new_page(width=300, height=160)
+            for x, label in ((20, "Encoder"), (170, "Decoder")):
+                page.draw_rect(
+                    pymupdf.Rect(x, 50, x + 110, 100),
+                    color=(0, 0, 0), fill=(0.85, 0.9, 1), width=1.5,
+                )
+                page.insert_text((x + 18, 81), label, fontsize=16)
+            diagram = page.get_pixmap(dpi=150)
+        source = root / "paper.pdf"
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_textbox(
+                pymupdf.Rect(72, 72, 540, 160),
+                "The model has two parts, shown in the figure below.",
+                fontsize=12,
+            )
+            page.insert_image(pymupdf.Rect(150, 200, 450, 360), pixmap=diagram)
+            pdf.save(source)
+
+        stage = root / "extraction"
+        run = PaperRun(source, stage / "prepared.txt", "utf-8", adapt=False)
+        markdown_path, images = run.convert_pdf(stage, source)
+        # With OCR off, the figure is rendered exactly as the PDF draws it.
+        plain = root / "plain"
+        with mock.patch("sys.stdout", io.StringIO()):
+            pymupdf4llm.to_markdown(
+                str(source), pages=[0], write_images=True, image_path=str(plain),
+                image_format="png", use_ocr=False, show_progress=False,
+            )
+        references = sorted(plain.iterdir())
+
+        self.assertEqual((len(images), len(references)), (1, 1))
+        self.assertEqual(
+            hashlib.sha256(pymupdf.Pixmap(str(images[0])).samples).hexdigest(),
+            hashlib.sha256(pymupdf.Pixmap(str(references[0])).samples).hexdigest(),
+            "OCR text is drawn over the figure",
+        )
+        self.assertIn("Encoder", markdown_path.read_text(encoding="utf-8"))
+
 
 
 

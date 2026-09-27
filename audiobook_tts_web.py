@@ -240,6 +240,7 @@ import sys
 from pathlib import Path
 
 import pymupdf4llm
+from pymupdf4llm.helpers.document_layout import select_ocr_function
 
 source, output, images = (Path(value).resolve() for value in sys.argv[1:4])
 page = int(sys.argv[4])
@@ -247,6 +248,23 @@ images.mkdir(parents=True, exist_ok=True)
 # pymupdf4llm links images relative to the working directory when it holds
 # them. From the extraction folder, links stay valid wherever the stage lives.
 os.chdir(images.parent)
+
+
+class InvisibleOcrText:
+    # pymupdf4llm writes OCR text onto the page before it renders figures, so
+    # visible OCR text would print every figure label a second time, offset.
+    # Invisible text (render mode 3) is still extracted.
+    def __init__(self, page):
+        self._page = page
+
+    def __getattr__(self, name):
+        return getattr(self._page, name)
+
+    def insert_text(self, *args, **kwargs):
+        return self._page.insert_text(*args, render_mode=3, **kwargs)
+
+
+engine = select_ocr_function()
 markdown = pymupdf4llm.to_markdown(
     str(source),
     pages=[page],
@@ -257,6 +275,10 @@ markdown = pymupdf4llm.to_markdown(
     image_format="png",
     force_text=True,
     use_ocr=True,
+    ocr_function=(
+        (lambda page, **options: engine(InvisibleOcrText(page), **options))
+        if engine else None
+    ),
     show_progress=False,
 )
 if not isinstance(markdown, str):
@@ -4337,6 +4359,12 @@ class PaperRun(Run):
             "prompt_version": (
                 hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
                 if self.adapt
+                else None
+            ),
+            # PDF page caches are only as good as the converter that wrote them.
+            "converter_version": (
+                hashlib.sha256(_PDF_CONVERTER.encode("utf-8")).hexdigest()
+                if input_path.suffix.lower() == ".pdf"
                 else None
             ),
         }

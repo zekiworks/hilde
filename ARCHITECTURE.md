@@ -220,7 +220,7 @@ PDF work is page-addressable:
    attachments resolve links against that folder;
 4. page Markdown is joined into `document.md` in source order.
 
-Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process.
+Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process. `pymupdf4llm` writes OCR text onto the page before it renders figures, so the converter hands it an OCR function whose text is inserted invisibly (render mode 3): the text is still extracted, including a figure's picture text, but figures render as the PDF draws them instead of with every OCR-read label printed a second time.
 
 ### Paragraph adaptation
 
@@ -249,7 +249,7 @@ When adaptation is enabled:
 
 On restart, committed checkpoints populate the result buffer before only missing batches are submitted. With adaptation disabled, normalized body paragraphs are written directly.
 
-`extraction.json` binds checkpoints to input bytes, adaptation toggle, OMP model/local endpoint, worker configuration, and the complete system prompt (the prompt file plus the transport contract), so changed harness instructions redo adaptations made under the old ones. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or OMP calls.
+`extraction.json` binds checkpoints to input bytes, adaptation toggle, OMP model/local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or OMP calls.
 
 ## Unified `AudiobookRun`
 
@@ -582,7 +582,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 76 tests. It covers voice persistence
+The regression suite currently has 77 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -614,8 +614,9 @@ pruned, voice design on the GPU with the most free memory, matched to
 once it has room and a GPU that runs out of memory hands its chunk back and is
 started again, adaptation in which a left-out reference adds no text while
 figures keep their place in the reader, adaptation redone after the harness
-instructions change, and PDF figures that reach both the reader and the model
-when the library sits inside the project folder. It does not load a Qwen model
-or require a GPU.
+instructions change, PDF figures that reach both the reader and the model
+when the library sits inside the project folder, and PDF figures rendered
+without OCR text printed over their labels. It does not load a Qwen model or
+require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.
