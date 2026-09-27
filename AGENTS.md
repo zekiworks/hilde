@@ -7,8 +7,8 @@ narrate and to create voices.
 
 - Read `ARCHITECTURE.md` before changing behavior. It records the routes,
   storage, browser state, and the invariants the code must keep.
-- Update `ARCHITECTURE.md` (internals) and `README.md` (users) in the same
-  change as the code.
+- Update `ARCHITECTURE.md` (internals) and `README.md` plus `docs/` (users) in
+  the same change as the code.
 - Run `python -m unittest test_audiobook_tts` before and after a change. It
   needs no GPU or model.
 - Then prove the change with a real run: the CLI command, or a throwaway web

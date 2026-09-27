@@ -29,7 +29,9 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
-| `README.md` | User guide in four sections: Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
+| `README.md` | User guide: a five-command quickstart after the demo video, then Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
+| `docs/ssh-workers.md` | User reference for SSH narration workers: requirements, web-server flags, and the CLI form. The README links to it. |
+| `docs/command-line-options.md` | User reference listing every `audiobook_tts.py` flag with its default. The README links to it. |
 | `AGENTS.md` | Short standing instructions that coding agents load automatically; the details stay in this document. |
 
 There is no package manifest. Both applications are run directly with Python.

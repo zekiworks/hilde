@@ -1,13 +1,35 @@
-
 <p align="center">
   <img src="assets/hilde-dark.png" alt="Hilde logo" width="128">
 </p>
 
 <h1 align="center">Hilde</h1>
 
+<p align="center"><strong>Create a narrator once. Reuse that voice across your audiobooks.</strong></p>
+
 https://github.com/user-attachments/assets/b87b14be-c383-4f76-aee3-4a319eac03a2
 
-<p align="center"><strong>Create a narrator once. Reuse that voice across your audiobooks.</strong></p>
+## Quickstart
+
+```bash
+git clone https://github.com/zekiworks/hilde.git && cd hilde
+python3.12 -m venv .venv && source .venv/bin/activate
+python -m pip install torch==2.10.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements.txt
+python audiobook_tts_web.py --host 127.0.0.1 --open --allow-model-downloads \
+  --voice-clone-model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --voice-design-model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+```
+
+Without an NVIDIA GPU, replace `cu130` with `cpu` in the third command. The
+page opens at `http://127.0.0.1:8800/`, reachable only from this computer, with
+eight stock voices. Each model, about 4.3 GB, downloads the first time it is
+used. Text adaptation also needs
+[OMP](#6-optional-install-omp-for-text-adaptation); without it, clear **Adapt
+the text for listening** before you create an audiobook.
+[Installation](#installation) covers other platforms, local model folders, and
+FlashAttention.
+
+## About
 
 An audiobook studio built on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS). The Hilde web app turns PDF, Markdown, or text documents into narrated MP3 audiobooks with a synchronized reader. Underneath it, the `audiobook_tts.py` command-line tool designs a voice from a written description, saves a portable reference, and turns narration-ready text into one MP3 or WAV file. Run locally on CPU or CUDA, with optional FlashAttention 2 and batched narration.
 
@@ -157,10 +179,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-clone-server`, `--voice-clone-server-model` | A speech server for narration instead of the model; the server model defaults to `tts-1`. |
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
-| `--narration-ssh-worker` | Unset; repeat to add passwordless SSH narration workers. See [Narration workers](#narration-workers). |
-| `--narration-ssh-python` | `python3`; the Python executable on every SSH worker. |
-| `--narration-ssh-model` | The `--voice-clone-model` value; the Base model path or ID on every SSH worker. |
-| `--narration-ssh-device` | `cuda:0`; the PyTorch device on every SSH worker. |
+| `--narration-ssh-worker`, `--narration-ssh-python`, `--narration-ssh-model`, `--narration-ssh-device` | Passwordless SSH narration workers; see [SSH narration workers](docs/ssh-workers.md). |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](#voices). |
 
 ### Storage
@@ -234,22 +253,7 @@ CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 ```
 
 Remote membership comes only from the repeated `--narration-ssh-worker` startup
-flags. To add homogeneous passwordless SSH narration workers to the web pool:
-
-```bash
-python audiobook_tts_web.py \
-  --voice-clone-model /models/Qwen3-TTS-12Hz-1.7B-Base \
-  --narration-ssh-worker user@spark-one \
-  --narration-ssh-worker user@spark-two \
-  --narration-ssh-python /opt/qwen/bin/python \
-  --narration-ssh-model /models/Qwen3-TTS-12Hz-1.7B-Base
-```
-
-`--narration-ssh-model` defaults to the local clone-model value, and
-`--narration-ssh-device` defaults to `cuda:0`. All configured SSH workers
-currently share those Python, model, and device settings. Each target must meet
-the requirements in [Multiple GPUs and SSH workers](#multiple-gpus-and-ssh-workers)
-and is trusted with the saved voice and narration text.
+flags; see [SSH narration workers](docs/ssh-workers.md).
 
 The server probes PyTorch-visible CUDA and MPS devices in a short-lived child.
 It counts CUDA devices after initialization, so a GPU the runtime cannot open,
@@ -293,7 +297,7 @@ so, lower the batch size to skip the wasted attempt, and reduce
 too expensive. Other GPU processes, such as another model server, leave less
 memory for narration. A single chunk that still does not fit fails a
 single-device run; with several workers, that GPU hands its chunks to the others
-and waits (see [Multiple GPUs and SSH workers](#multiple-gpus-and-ssh-workers)).
+and waits (see [Multiple GPUs](#multiple-gpus)).
 With `--resume-dir`, rerunning the same command reuses the completed chunks.
 
 Changing batch sizes can change sampled audio even with the same `--seed`. A saved reference establishes the shared speaker reference, not bit-for-bit reproducibility across hardware, batching decisions, or library versions.
@@ -611,7 +615,7 @@ python audiobook_tts.py narrate \
 
 For another audiobook, change `--input` and `--output`, but keep the same `--voice-dir`. Narration loads only the Base model and reconstructs one clone prompt from the saved voice. The reference clip itself is not appended to the book. See [Batch size](#batch-size) for choosing `--batch-size`.
 
-### Multiple GPUs and SSH workers
+### Multiple GPUs
 
 With durable checkpoints enabled, one narration can use several model workers.
 The primary `--device` and every repeated `--worker-device` each load one Base
@@ -648,37 +652,10 @@ A local worker that runs out of GPU memory mid-book hands its chunks back to the
 queue and waits the same way, so the book slows down instead of failing. If no
 worker can run, the book waits; Ctrl+C stops it, and completed chunks stay in
 `--resume-dir`. `nvidia-smi` opens no CUDA context, so checking never takes
-memory from a full GPU. Without `nvidia-smi`, every GPU starts at once. SSH
-workers are not measured, and one that runs out of memory fails the run.
+memory from a full GPU. Without `nvidia-smi`, every GPU starts at once.
 
-Passwordless SSH workers use the same protocol without requiring shared
-storage:
-
-```bash
-python audiobook_tts.py narrate \
-  --clone-model-path /models/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-dir voices/Freyja \
-  --input book.txt \
-  --output book.mp3 \
-  --resume-dir work/book-chunks \
-  --device cuda:0 \
-  --ssh-worker user@spark-one \
-  --ssh-worker user@spark-two \
-  --ssh-python /opt/qwen/bin/python \
-  --ssh-model-path /models/Qwen3-TTS-12Hz-1.7B-Base \
-  --ssh-device cuda:0 \
-  --dtype bfloat16 \
-  --attn-implementation sdpa \
-  --batch-size 2
-```
-
-Each SSH target must already accept `ssh -o BatchMode=yes TARGET` and have a
-compatible Python environment, PyTorch/Qwen TTS stack, and Base model. The
-coordinator uses `scp` to stage this script plus `reference.wav` and
-`transcript.txt`, sends narration chunks over the SSH process, receives WAV
-results, and removes its `/tmp/audiobook-tts-*` workspace. Consequently, every
-SSH worker is trusted with the saved voice and narration text. The model itself
-is never copied.
+Other machines can take part over passwordless SSH; see
+[SSH narration workers](docs/ssh-workers.md).
 
 ### CPU only
 
@@ -759,60 +736,6 @@ That writes the usual `reference.wav` + `transcript.txt`, so the voice remains p
 
 ### Options
 
-```bash
-python audiobook_tts.py --help
-python audiobook_tts.py create-voice --help
-python audiobook_tts.py narrate --help
-```
-
-#### Shared options
-
-| Flag | Default / requirement |
-| --- | --- |
-| `--device` | Required for local inference; for example, `cuda:0` or `cpu`. Rejected with `--server`. |
-| `--attn-implementation` | Required for local inference: `flash_attention_2`, `sdpa`, or `eager`. Rejected with `--server`. |
-| `--dtype` | `auto`: CUDA uses bfloat16 when supported, otherwise float16; other devices use float32. Also accepts an explicit `float32`, `float16`, or `bfloat16`. |
-| `--text` / `--input` | Exactly one is required. |
-| `--input-encoding` | `utf-8-sig`; applies to `--input`. |
-| `--language` | `Auto`; otherwise use a language supported by the selected model. |
-| `--seed` | Unset; optional integer from `0` to `4294967295`. |
-| `--allow-downloads` | Disabled; explicitly permits Hugging Face network access. |
-
-#### Voice creation options
-
-| Flag | Default / requirement |
-| --- | --- |
-| `--model-path` | Required VoiceDesign model directory or permitted Hub ID. |
-| `--voice-dir` | Required destination directory; an existing directory requires `--overwrite`. |
-| `--overwrite` | Disabled; replace the existing `reference.wav`, `transcript.txt`, and `description.txt` after the new files are staged, removing a `preview.wav` rendered from the old voice. |
-| `--instruct` | Required nonempty voice description. |
-| `--wav-subtype` | `FLOAT`; choices: `PCM_16`, `PCM_24`, `PCM_32`, `FLOAT`, `DOUBLE`. |
-
-#### Narration options
-
-| Flag | Default / requirement |
-| --- | --- |
-| `--clone-model-path` | Required Base model directory or permitted Hub ID, unless `--server` is used. |
-| `--voice-dir` | Required existing saved voice directory, unless `--server` is used. |
-| `--output` | Required `.mp3` or `.wav` destination. |
-| `--chunk-max-chars` | `500`; must be positive. |
-| `--batch-size` | `0` for all chunks on one device and one chunk per distributed worker; positive values set the chunks per clone call. A batch that runs out of CUDA memory is retried one chunk at a time. |
-| `--worker-device` | Unset; repeat to add local devices to one resumable narration. A GPU with less than 6 GiB free joins once it has room. |
-| `--ssh-worker` | Unset; repeat passwordless `HOST` or `USER@HOST` targets. |
-| `--ssh-python` | `python3`; Python executable shared by SSH workers. |
-| `--ssh-model-path` | Uses `--clone-model-path`; remote model path or permitted Hub ID. |
-| `--ssh-device` | `cuda:0`; device used on every SSH worker. |
-| `--wav-subtype` | `PCM_16` for WAV; choices as above. |
-| `--mp3-compression-level` | Encoder default; optional value from `0` to `1` for MP3 only. |
-| `--overwrite` | Disabled; allows replacing an audiobook, never its saved reference or input file. |
-| `--resume-dir` | Unset; durable narration chunk directory used to resume matching work; required with local or SSH worker additions. |
-
-#### Speech-server options (either command)
-
-| Flag | Default / requirement |
-| --- | --- |
-| `--server` | Unset; `IP:PORT`, `host:port`, or a URL. A bare authority implies `/v1`. Replaces local inference. |
-| `--server-model` | `tts-1`; the model name sent to the server. `create-voice` refuses `tts-1`/`tts-1-hd`, which ignore `instructions`. |
-| `--server-voice` | Required with `--server`; a voice the server already holds. Voice design shapes it with `--instruct`. |
-| `--server-timeout` | `300`; seconds allowed for one chunk's response. |
-| `--api-key` | Unset; falls back to `OPENAI_API_KEY`, then sends no Authorization header. |
+Every flag, with its default and requirements, is listed in
+[Command-line options](docs/command-line-options.md). `--help` on either command
+prints them too.
