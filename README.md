@@ -1,3 +1,4 @@
+
 <p align="center">
   <img src="assets/hilde-dark.png" alt="Hilde logo" width="128">
 </p>
@@ -9,7 +10,7 @@
 > [!WARNING]
 > 🚧 **Work in progress.** Early version, things may break. First release coming soon. Feedback and issues welcome.
 
-https://github.com/user-attachments/assets/b87b14be-c383-4f76-aee3-4a319eac03a2
+https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
 
 ## Quickstart
 
