@@ -236,10 +236,10 @@ When adaptation is enabled:
 - referenced extracted figures become attachments for the relevant batch;
 - malformed response payloads are retried up to the configured attempt limit;
 - a batch that is entirely excluded material, such as reference entries that
-  extraction did not place under a standalone heading, returns an empty
-  NARRATION with a nonempty SUMMARY; it adds no text, the log names it with
-  that summary, and the reader's checkpoint mapping skips it so figures stay
-  with their narration;
+  extraction did not place under a standalone heading, or a bare image the
+  model cannot describe, returns an empty NARRATION with a nonempty SUMMARY;
+  it adds no text, the log names it with that summary, and the reader shows
+  its visuals after the text before it;
 - format-control-only narration paragraphs are removed;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.

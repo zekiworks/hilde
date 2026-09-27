@@ -321,7 +321,8 @@ under other instructions starts its adaptation over.
 When text extraction leaves reference entries outside a standalone References
 section, the model leaves them out one by one. The log shows each as `Paragraph
 149/174 has nothing to read aloud: …` with the model's reason, and nothing is
-narrated for it.
+narrated for it. A figure the model leaves out still shows in the reader, after
+the text before it.
 
 ### Access and security
 

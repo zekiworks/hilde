@@ -950,10 +950,9 @@ def _adapted_reader_groups(narration, source_paragraphs, checkpoint_dir):
             or end > len(source_paragraphs)
         ):
             return None
-        # A batch left out entirely, such as a reference entry, adds no text.
-        if adapted.strip():
-            groups.append((adapted.strip(), source_paragraphs[start - 1:end]))
-    if "\n\n".join(group[0] for group in groups) != narration.strip():
+        groups.append((adapted.strip(), source_paragraphs[start - 1:end]))
+    # A batch left out entirely, such as a reference entry, adds no text.
+    if "\n\n".join(group[0] for group in groups if group[0]) != narration.strip():
         return None
     return groups
 
@@ -1118,7 +1117,19 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
     paragraphs = []
     chunk_blocks = []
     flattened_chunks = []
+    leading_visuals = []
     for adapted, source_group in groups:
+        if not adapted:
+            # A batch left out of the narration, such as a figure the model
+            # could not describe, keeps its visuals after the text before it.
+            visuals = "\n\n".join(
+                visual for visual in map(reader_visual_markdown, source_group) if visual
+            )
+            if visuals and blocks:
+                blocks[-1] = f"{blocks[-1]}\n\n{visuals}"
+            elif visuals:
+                leading_visuals.append(visuals)
+            continue
         adapted_paragraphs = split_paper_paragraphs(adapted)
         paired = len(adapted_paragraphs) == len(source_group)
         group_blocks = []
@@ -1170,6 +1181,8 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
                 blocks[group_blocks[-1]] = (
                     f"{blocks[group_blocks[-1]]}\n\n{visuals}"
                 )
+    if leading_visuals and blocks:
+        blocks[0] = "\n\n".join((blocks[0], *leading_visuals))
 
     expected_chunks = split_text(
         narration, max_chars, sentence_chunks=True

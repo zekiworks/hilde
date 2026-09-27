@@ -2521,7 +2521,7 @@ class PaperResponseTests(unittest.TestCase):
             for event, data in run.history
         ))
 
-    def test_left_out_reference_adds_no_text_and_figures_keep_their_place(self):
+    def test_left_out_batches_add_no_text_and_figures_keep_their_place(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -2531,13 +2531,15 @@ class PaperResponseTests(unittest.TestCase):
         prompt = root / "prompt.md"
         paragraphs = [
             "First body paragraph.",
+            "![](images/figure-1.png)",
             "[25] Marcus, M. Building the Penn Treebank. 1993.",
-            "![Figure 1](images/figure-1.png)\nFigure 1: The model.",
+            "![Figure 2](images/figure-2.png)\nFigure 2: The model.",
         ]
         source.write_text("\n\n".join(paragraphs), encoding="utf-8")
         prompt.write_text("Adapt every paragraph.", encoding="utf-8")
-        # The model leaves the reference entry out, as the prompt tells it to.
-        narrations = {1: "First narration.", 2: "", 3: "Figure one shows the model."}
+        # The model leaves out the reference entry, as the prompt tells it to,
+        # and the bare image, which has no text to read.
+        narrations = {1: "First narration.", 2: "", 3: "", 4: "Figure two shows the model."}
         requested = []
 
         class StubPaperRun(PaperRun):
@@ -2555,14 +2557,14 @@ class PaperResponseTests(unittest.TestCase):
         run.pump()
 
         self.assertEqual(run.code, 0)
-        self.assertEqual(sorted(requested), [1, 2, 3])
+        self.assertEqual(sorted(requested), [1, 2, 3, 4])
         prepared = output.read_text(encoding="utf-8")
-        self.assertEqual(prepared, "First narration.\n\nFigure one shows the model.")
+        self.assertEqual(prepared, "First narration.\n\nFigure two shows the model.")
         blocks, *_ = web._reader_blocks(
             prepared, "\n\n".join(paragraphs), 500, stage / "paragraph-checkpoints"
         )
-        self.assertEqual(blocks[0], "First narration.")
-        self.assertIn("![Figure 1](images/figure-1.png)", blocks[1])
+        self.assertEqual(blocks[0], "First narration.\n\n![](images/figure-1.png)")
+        self.assertIn("![Figure 2](images/figure-2.png)", blocks[1])
 
     def test_changed_harness_instructions_redo_the_adaptation(self):
         temporary = tempfile.TemporaryDirectory()
