@@ -6,6 +6,7 @@ import http.client
 import http.cookiejar
 import json
 import os
+import stat
 import struct
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import unittest
 from unittest import mock
 import urllib.request
 import urllib.error
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -24,7 +26,7 @@ import audiobook_tts as cli
 import audiobook_tts_web as web
 
 from audiobook_tts import read_voice, save_voice, speech_endpoint
-from audiobook_tts_web import GIB, Handler, PaperRun, local_model_names, normalize, paper_omp_environment
+from audiobook_tts_web import GIB, Handler, PaperRun, local_model_names, normalize
 from audiobook_tts_web import parse_paper_response
 
 
@@ -96,6 +98,26 @@ def mp4_box_payload(data, *path):
         else:
             raise AssertionError(f"MP4 box {kind!r} is missing")
     return data[start:end]
+
+
+def fake_jwt(claims):
+    def encode(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+
+    return f"{encode({'alg': 'none'})}.{encode(claims)}.signature"
+
+
+def write_figure_pdf(path):
+    """Write a one-page PDF with a sentence and a raster figure."""
+    import pymupdf
+
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "A paragraph before the figure.")
+        figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+        figure.clear_with(200)
+        page.insert_image(pymupdf.Rect(72, 120, 372, 420), pixmap=figure)
+        pdf.save(path)
 
 
 class PaperWorkflowTests(unittest.TestCase):
@@ -1713,7 +1735,7 @@ class SpeechEndpointTests(unittest.TestCase):
 
 
 class LocalPaperProviderTests(unittest.TestCase):
-    # SGLang answers Ollama's /api/tags, but OMP's Ollama client fails against it.
+    # SGLang answers Ollama's /api/tags too, but only Ollama answers /api/version.
     SGLANG_ROUTES = {
         "/api/tags": {"models": [{"name": "deepseek-v4.1-flash"}]},
         "/v1/models": {"object": "list", "data": [
@@ -1748,15 +1770,13 @@ class LocalPaperProviderTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
 
-    def test_openai_compatible_server_is_listed_and_routed(self):
-        origin, names = self.list_models({"/v1/models": {"object": "list", "data": [
+    def test_openai_compatible_server_is_listed(self):
+        _, names = self.list_models({"/v1/models": {"object": "list", "data": [
             {"id": "vision-model", "owned_by": "vllm"},
             {"id": "text-model", "owned_by": "vllm"},
         ]}}, "lm-studio")
 
         self.assertEqual(names, ("text-model", "vision-model"))
-        environment = paper_omp_environment(origin, "lm-studio")
-        self.assertEqual(environment["LM_STUDIO_BASE_URL"], f"{origin}/v1")
 
     def test_choosing_ollama_for_a_server_that_only_imitates_it_is_refused(self):
         with self.assertRaises(RuntimeError):
@@ -1766,39 +1786,296 @@ class LocalPaperProviderTests(unittest.TestCase):
             self.list_models(self.SGLANG_ROUTES, "lm-studio")[1], ("deepseek-v4.1-flash",)
         )
 
-    def test_ollama_is_listed_and_routed(self):
-        origin, names = self.list_models({
+    def test_ollama_is_listed(self):
+        _, names = self.list_models({
             "/api/version": {"version": "0.32.8"},
             "/api/tags": {"models": [{"name": "qwen3.8:27b"}, {"name": "deepseek-v4-flash:latest"}]},
         }, "ollama")
 
         self.assertEqual(names, ("deepseek-v4-flash:latest", "qwen3.8:27b"))
-        self.assertEqual(paper_omp_environment(origin, "ollama")["OLLAMA_BASE_URL"], origin)
 
-    def test_adaptation_refuses_a_model_of_another_type_than_the_local_server(self):
+    def test_adaptation_accepts_only_models_this_server_can_reach(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        storage = web.SharedStorage(Path(temporary.name))
+        root = Path(temporary.name)
+        storage = web.SharedStorage(root / "library")
         storage.ensure()
-        prompt = Path(temporary.name) / "prompt.md"
+        prompt = root / "prompt.md"
         prompt.write_text("Adapt the text.", encoding="utf-8")
+        home = root / ".hilde"
 
-        def problem(model):
+        def problem(model, local_server="127.0.0.1:8010"):
             state = normalize({"tab": "audiobook", "audiobook": {
-                "adapt": True, "model": model,
-                "local_server": "127.0.0.1:8010", "local_provider": "lm-studio",
+                "adapt": True, "model": model, "local_server": local_server,
+                "local_provider": "lm-studio" if local_server else "",
             }})
             with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
                 values = web.values_of(state, web.unconfigured_tts_models(), storage)
             with mock.patch.object(web, "PAPER_PROMPT_PATH", prompt), \
-                    mock.patch.object(web.shutil, "which", return_value="/usr/bin/omp"):
+                    mock.patch.object(web, "HILDE_HOME", home):
                 return web._adaptation_problem(values)
 
         self.assertIsNotNone(problem("ollama/deepseek-v4.1-flash"))
         self.assertIsNone(problem("lm-studio/deepseek-v4.1-flash"))
-        self.assertIsNone(problem("anthropic/claude-opus-5-5"))
+        # A model no backend of this server serves is refused before the job starts.
+        self.assertIsNotNone(problem("anthropic/claude-opus-5-5"))
+        self.assertIsNotNone(problem("", local_server=""))
+        self.assertIsNotNone(problem("openai-codex/gpt-a", local_server=""))
+        with mock.patch.object(web, "HILDE_HOME", home):
+            web.save_openai_credentials({
+                "access_token": "access", "refresh_token": "refresh",
+                "id_token": fake_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct"}}),
+            })
+        self.assertIsNone(problem("openai-codex/gpt-a", local_server=""))
+        self.assertIsNone(problem("", local_server=""))
         self.assertEqual(
             normalize({"audiobook": {"local_provider": "vllm"}})["audiobook"]["local_provider"], ""
+        )
+
+    def test_local_server_adapts_figures_as_text_and_leaves_reasoning_out(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+
+        class ModelHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append((self.path, body))
+                # Like a text-only model, refuse image input.
+                if any(isinstance(message["content"], list) for message in body["messages"]):
+                    self.send_error(400, "image input is not supported")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for delta in (
+                    # Thinking models often draft the tagged answer first.
+                    {"reasoning_content": "Draft: <NARRATION>Wrong.</NARRATION><SUMMARY>x</SUMMARY>"},
+                    {"content": "<NARRATION>Spoken "},
+                    {"content": "text.</NARRATION><SUMMARY>Short.</SUMMARY>"},
+                ):
+                    self.wfile.write(
+                        f"data: {json.dumps({'choices': [{'delta': delta}]})}\n\n".encode()
+                    )
+                self.wfile.write(
+                    b'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+
+            def log_message(self, format, *args):
+                pass
+
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        with ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                run = PaperRun(
+                    source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
+                    local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
+                    prompt_path=prompt, scratch_path=stage,
+                )
+                run.pump()
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual(run.code, 0)
+        prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
+        self.assertIn("Spoken text.", prepared)
+        self.assertNotIn("Wrong", prepared)
+        self.assertTrue(all(
+            path == "/v1/chat/completions" and body["model"] == "local-model"
+            for path, body in requests
+        ))
+        # The figure paragraph still reached the model, as its Markdown text.
+        self.assertTrue(any("images/" in body["messages"][1]["content"] for _, body in requests))
+
+
+class OpenAISignInTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.approved = threading.Event()
+        self.pending = threading.Semaphore(0)
+        self.token_requests = []
+        self.responses = []
+        test = self
+
+        class OpenAIHandler(BaseHTTPRequestHandler):
+            def reply(self, status, payload):
+                body = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def signed_in(self):
+                return (
+                    self.headers.get("Authorization") == "Bearer access-2"
+                    and self.headers.get("ChatGPT-Account-Id") == "acct-1"
+                )
+
+            def do_GET(self):
+                if not self.path.startswith("/backend-api/codex/models?"):
+                    return self.reply(404, {})
+                if not self.signed_in():
+                    return self.reply(401, {"detail": "expired"})
+                self.reply(200, {"models": [
+                    {"slug": "gpt-b", "priority": 2},
+                    {"slug": "gpt-a", "priority": 1},
+                    {"slug": "gpt-hidden", "priority": 0, "visibility": "hide"},
+                ]})
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path == "/api/accounts/deviceauth/usercode":
+                    return self.reply(200, {
+                        "device_auth_id": "device-1", "user_code": "ABCD-EFGH", "interval": "0",
+                    })
+                if self.path == "/api/accounts/deviceauth/token":
+                    if not test.approved.is_set():
+                        test.pending.release()
+                        return self.reply(403, {"error": "authorization_pending"})
+                    return self.reply(200, {
+                        "authorization_code": "code-1", "code_verifier": "verifier-1",
+                    })
+                if self.path == "/oauth/token":
+                    form = dict(urllib.parse.parse_qsl(raw.decode()))
+                    test.token_requests.append(form)
+                    if form.get("grant_type") == "authorization_code" and (
+                        form.get("code"), form.get("code_verifier")
+                    ) == ("code-1", "verifier-1"):
+                        # Expires at once, so its first use renews it.
+                        return self.reply(200, {
+                            "access_token": "access-1", "refresh_token": "refresh-1",
+                            "id_token": fake_jwt(
+                                {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}}
+                            ),
+                            "expires_in": 1,
+                        })
+                    if form.get("grant_type") == "refresh_token" and (
+                        form.get("refresh_token") == "refresh-1"
+                    ):
+                        return self.reply(200, {
+                            "access_token": "access-2", "refresh_token": "refresh-2",
+                            "expires_in": 3600,
+                        })
+                    return self.reply(400, {"error": "invalid_grant"})
+                if self.path == "/backend-api/codex/responses":
+                    if not self.signed_in():
+                        return self.reply(401, {"detail": "expired"})
+                    test.responses.append(json.loads(raw))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    for event in (
+                        {"type": "response.created"},
+                        {"type": "response.output_text.delta", "delta": "<NARRATION>Figure one is "},
+                        {"type": "response.output_text.delta", "delta": "described.</NARRATION>"},
+                        {"type": "response.output_text.delta", "delta": "<SUMMARY>Figure.</SUMMARY>"},
+                        {"type": "response.completed", "response": {"usage": {}}},
+                    ):
+                        self.wfile.write(
+                            f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+                        )
+                    return None
+                return self.reply(404, {})
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), OpenAIHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop_server():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        self.addCleanup(stop_server)
+        origin = f"http://127.0.0.1:{server.server_port}"
+        for name, value in (
+            ("OPENAI_AUTH_URL", origin),
+            ("CHATGPT_CODEX_URL", f"{origin}/backend-api/codex"),
+            ("HILDE_HOME", self.root / ".hilde"),
+            ("OPENAI_DEVICE_POLL_FLOOR", 0.01),
+        ):
+            patcher = mock.patch.object(web, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def wait_for(login, status):
+        deadline = time.monotonic() + 10
+        while login.snapshot()["status"] != status and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return login.snapshot()
+
+    def test_device_sign_in_is_kept_owner_only_and_renewed_for_adaptation(self):
+        login = web.OpenAIOAuthLogin()
+        login.start()
+        waiting = self.wait_for(login, "waiting")
+        self.assertEqual(
+            (waiting["url"], waiting["code"]), (web.OPENAI_DEVICE_PAGE, "ABCD-EFGH")
+        )
+        # OpenAI answers "not yet" until the user enters the code.
+        self.assertTrue(self.pending.acquire(timeout=5))
+        self.approved.set()
+        self.assertEqual(self.wait_for(login, "connected")["status"], "connected")
+        home = self.root / ".hilde"
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((home / "openai.json").stat().st_mode), 0o600)
+
+        # The sign-in has already expired, so listing the models renews it.
+        catalog = web.paper_model_catalog()
+        self.assertEqual(
+            [model["selector"] for model in catalog["models"]],
+            ["openai-codex/gpt-a", "openai-codex/gpt-b"],
+        )
+        self.assertEqual(catalog["default_model"], "openai-codex/gpt-a")
+
+        source = self.root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = self.root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = self.root / "extraction"
+        run = PaperRun(
+            source, stage / "prepared.txt", "utf-8", model="openai-codex/gpt-a",
+            in_flight=1, prompt_path=prompt, scratch_path=stage,
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        self.assertIn(
+            "Figure one is described.", (stage / "prepared.txt").read_text(encoding="utf-8")
+        )
+        request = next(
+            body for body in self.responses
+            if any(part["type"] == "input_image" for part in body["input"][0]["content"])
+        )
+        self.assertEqual((request["model"], request["stream"], request["store"]), ("gpt-a", True, False))
+        self.assertIn("Adapt every paragraph.", request["instructions"])
+        image = next(
+            part for part in request["input"][0]["content"] if part["type"] == "input_image"
+        )
+        self.assertTrue(image["image_url"].startswith("data:image/png;base64,"))
+        # Renewed once, and the rotated refresh token was kept.
+        self.assertEqual(
+            [form["grant_type"] for form in self.token_requests],
+            ["authorization_code", "refresh_token"],
+        )
+        self.assertEqual(
+            json.loads((home / "openai.json").read_text(encoding="utf-8"))["refresh_token"],
+            "refresh-2",
         )
 
 
@@ -2965,50 +3242,50 @@ class PaperConcurrencyTests(unittest.TestCase):
         self.assertIn("older source-batch summaries omitted", context)
 
 
-    def test_stop_terminates_every_inflight_child(self):
+    def test_stop_cuts_off_every_inflight_model_request(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        run_directory = root / "run"
-        marker_directory = root / "markers"
-        run_directory.mkdir()
-        marker_directory.mkdir()
         source = root / "paper.md"
-        output = run_directory / "paper-audiobook.txt"
+        output = root / "paper-audiobook.txt"
         prompt = root / "prompt.md"
-        executable = root / "omp"
         source.write_text(
             "\n\n".join(f"Source {index}." for index in range(1, 5)),
             encoding="utf-8",
         )
         prompt.write_text("Adapt every paragraph.", encoding="utf-8")
-        executable.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys\n"
-            "import time\n"
-            "from pathlib import Path\n"
-            "request = next(arg[1:] for arg in sys.argv[1:] "
-            "if arg.startswith('@') and 'paragraphs-' in arg)\n"
-            f"(Path({str(marker_directory)!r}) / Path(request).stem).touch()\n"
-            "time.sleep(60)\n",
-            encoding="utf-8",
-        )
-        executable.chmod(0o700)
+        arrived = threading.Semaphore(0)
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class BusyHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.flush()
+                arrived.release()
+                # A busy server: the answer never starts.
+                release.wait(60)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), BusyHandler)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
         run = PaperRun(
-            source,
-            output,
-            "utf-8",
-            in_flight=4,
-            executable=str(executable),
-            prompt_path=prompt,
+            source, output, "utf-8", model="lm-studio/local-model",
+            local_server=f"127.0.0.1:{server.server_port}", in_flight=4, prompt_path=prompt,
         )
         worker = threading.Thread(target=run.pump)
         worker.start()
-        deadline = time.monotonic() + 5
-        while len(tuple(marker_directory.iterdir())) < 4 and time.monotonic() < deadline:
-            time.sleep(0.01)
         try:
-            self.assertEqual(len(tuple(marker_directory.iterdir())), 4)
+            for _ in range(4):
+                self.assertTrue(arrived.acquire(timeout=5))
         finally:
             run.stop()
             worker.join(10)
@@ -3016,7 +3293,7 @@ class PaperConcurrencyTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(run.code, 130)
         with run.process_lock:
-            self.assertEqual(run.processes, set())
+            self.assertEqual(run.streams, set())
 
 
 

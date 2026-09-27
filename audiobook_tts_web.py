@@ -1,9 +1,10 @@
 """Web front end for audiobook_tts.py.
 
-A dependency-light HTTP server that serves one page, drives the TTS CLI and OMP
-as child processes, and converts uploaded PDFs to Markdown in a short-lived
-converter child. Logs and progress stream over server-sent events; successful
-artifacts are exposed for playback, download, or AirDrop as applicable.
+A dependency-light HTTP server that serves one page, drives the TTS CLI as a
+child process, calls the text-adaptation model over HTTP, and converts uploaded
+PDFs to Markdown in a short-lived converter child. Logs and progress stream over
+server-sent events; successful artifacts are exposed for playback, download, or
+AirDrop as applicable.
 
 Run it on the machine that holds the models and configure each TTS backend once
 for the whole server process:
@@ -26,9 +27,11 @@ import argparse
 import array
 import base64
 import concurrent.futures
+import contextlib
 import json
 import hashlib
 import html
+import http.client
 import mimetypes
 import mmap
 import os
@@ -36,6 +39,7 @@ import platform
 import queue
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -46,6 +50,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import unicodedata
+import uuid
 import webbrowser
 import zlib
 from http import HTTPStatus
@@ -108,9 +113,25 @@ SERVER_MODEL_DEFAULTS = {"design": "gpt-4o-mini-tts", "clone": "tts-1"}
 NO_INSTRUCTIONS = ("tts-1", "tts-1-hd")
 PAPER_SUFFIXES = {".pdf", ".txt", ".text", ".md", ".markdown"}
 OLLAMA_DEFAULT_SERVER = "http://127.0.0.1:11434"
-OPENAI_OAUTH_PROVIDER = "openai-codex-device"
 OPENAI_MODEL_PROVIDER = "openai-codex"
-MODEL_CATALOG_TIMEOUT = 30
+# ChatGPT sign-in uses the OAuth client and endpoints of OpenAI's Codex CLI.
+OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OPENAI_AUTH_URL = "https://auth.openai.com"
+OPENAI_DEVICE_PAGE = "https://auth.openai.com/codex/device"
+OPENAI_DEVICE_REDIRECT = "https://auth.openai.com/deviceauth/callback"
+OPENAI_DEVICE_LOGIN_SECONDS = 15 * 60
+OPENAI_DEVICE_POLL_FLOOR = 1.0
+OPENAI_REQUEST_TIMEOUT = 30
+# OpenAI's Cloudflare front refuses urllib's default client name.
+OPENAI_USER_AGENT = "hilde/1.0"
+CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex"
+# The Codex backend lists the models it serves to a given client version.
+CODEX_CLIENT_VERSION = "0.144.1"
+# This server's ChatGPT sign-in lives here, readable only by its user.
+HILDE_HOME = Path.home() / ".hilde"
+# A streamed model request may wait this long for its next event, for example
+# while a busy local server queues it.
+MODEL_STREAM_TIMEOUT = 30 * 60
 LOCAL_SERVER_TIMEOUT = 5
 PAPER_DOWNLOAD_TIMEOUT = 60
 LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
@@ -2164,49 +2185,370 @@ def normalize_local_server(value):
     ).rstrip("/")
 
 
-def paper_omp_environment(local_server, provider):
-    environment = os.environ.copy()
-    server = normalize_local_server(local_server)
-    if provider == "ollama":
-        environment["OLLAMA_BASE_URL"] = server
-    elif provider == "lm-studio":
-        environment["LM_STUDIO_BASE_URL"] = f"{server}/v1"
+def openai_credentials_path():
+    return HILDE_HOME / "openai.json"
+
+
+def read_openai_credentials():
+    """Return this server's ChatGPT sign-in, or None when it has none."""
+    try:
+        credentials = json.loads(openai_credentials_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(credentials, dict)
+        or not all(
+            isinstance(credentials.get(key), str) and credentials[key]
+            for key in ("access_token", "refresh_token", "account_id")
+        )
+        or not isinstance(credentials.get("expires_at"), (int, float))
+    ):
+        return None
+    return credentials
+
+
+def _openai_account_id(tokens):
+    """Read the ChatGPT account from the token claims; the issuer is trusted."""
+    for name in ("id_token", "access_token"):
+        try:
+            payload = str(tokens.get(name) or "").split(".")[1]
+            claims = json.loads(
+                base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+            )
+        except (IndexError, ValueError):
+            continue
+        if not isinstance(claims, dict):
+            continue
+        auth = claims.get("https://api.openai.com/auth")
+        account = claims.get("chatgpt_account_id") or (
+            auth.get("chatgpt_account_id") if isinstance(auth, dict) else None
+        )
+        if isinstance(account, str) and account:
+            return account
+    return ""
+
+
+def save_openai_credentials(tokens, previous=None):
+    """Keep a token response owner-only; a renewal may omit unchanged tokens."""
+    previous = previous or {}
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token") or previous.get("refresh_token")
+    account_id = _openai_account_id(tokens) or previous.get("account_id")
+    if not all(
+        isinstance(value, str) and value
+        for value in (access_token, refresh_token, account_id)
+    ):
+        raise RuntimeError("OpenAI returned an incomplete sign-in.")
+    expires_in = tokens.get("expires_in")
+    if not isinstance(expires_in, (int, float)) or isinstance(expires_in, bool) or expires_in <= 0:
+        expires_in = 3600
+    credentials = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "account_id": account_id,
+        "expires_at": time.time() + expires_in,
+    }
+    HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = openai_credentials_path()
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(credentials, stream)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return credentials
+
+
+def _openai_post(path, payload, form=False):
+    """POST to OpenAI's sign-in service; return the status and decoded body."""
+    if form:
+        body = urllib.parse.urlencode(payload).encode("ascii")
+        content_type = "application/x-www-form-urlencoded"
     else:
-        raise ValueError(f"Unsupported local model provider: {provider}")
-    return environment
-
-
-def run_omp_json(arguments, environment=None, timeout=MODEL_CATALOG_TIMEOUT):
-    executable = shutil.which("omp")
-    if executable is None:
-        raise RuntimeError("The omp command is not available to the web server.")
+        body = json.dumps(payload).encode("utf-8")
+        content_type = "application/json"
+    request = urllib.request.Request(
+        f"{OPENAI_AUTH_URL}{path}", data=body, method="POST",
+        headers={
+            "Content-Type": content_type, "Accept": "application/json",
+            "User-Agent": OPENAI_USER_AGENT,
+        },
+    )
     try:
-        result = subprocess.run(
-            [executable, *arguments],
-            cwd=str(ROOT),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("OMP model discovery timed out.") from exc
+        with urllib.request.urlopen(request, timeout=OPENAI_REQUEST_TIMEOUT) as response:
+            status, raw = response.status, response.read(1024 * 1024)
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read(1024 * 1024)
     except OSError as exc:
-        raise RuntimeError(f"Cannot start omp: {exc}") from exc
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
-        if len(details) > 2000:
-            details = details[-2000:]
-        raise RuntimeError(
-            f"omp exited with {result.returncode}"
-            + (f": {details}" if details else "")
-        )
+        raise RuntimeError(f"Cannot reach OpenAI sign-in: {exc}") from exc
     try:
-        return json.loads(result.stdout)
-    except ValueError as exc:
-        raise RuntimeError("OMP returned invalid model metadata.") from exc
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        data = {}
+    return status, data if isinstance(data, dict) else {}
+
+
+def _model_error(data, fallback):
+    """Pick the readable message out of an OpenAI-style error payload."""
+    response = data.get("response") if isinstance(data.get("response"), dict) else {}
+    for source in (
+        data, data.get("error"), response.get("error"), response.get("incomplete_details"),
+    ):
+        if isinstance(source, dict):
+            for key in ("error_description", "message", "detail", "reason"):
+                if isinstance(source.get(key), str) and source[key]:
+                    return source[key]
+    error = data.get("error")
+    return error if isinstance(error, str) and error else fallback
+
+
+_OPENAI_SIGN_IN_LOCK = threading.Lock()
+
+
+def openai_access(refused_token=None):
+    """Return a usable sign-in, renewing it near expiry or once it is refused."""
+    # One renewal at a time: OpenAI rotates the refresh token on each one.
+    with _OPENAI_SIGN_IN_LOCK:
+        credentials = read_openai_credentials()
+        if credentials is None:
+            raise RuntimeError("Sign in with OpenAI under Advanced first.")
+        # Another request may already have renewed the token that was refused.
+        if (
+            credentials["expires_at"] - 300 > time.time()
+            and credentials["access_token"] != refused_token
+        ):
+            return credentials
+        status, tokens = _openai_post("/oauth/token", {
+            "grant_type": "refresh_token",
+            "client_id": OPENAI_CLIENT_ID,
+            "refresh_token": credentials["refresh_token"],
+        }, form=True)
+        if status != 200:
+            raise RuntimeError(
+                "OpenAI sign-in could not be renewed "
+                f"({_model_error(tokens, f'HTTP {status}')}); sign in again under Advanced."
+            )
+        return save_openai_credentials(tokens, credentials)
+
+
+class ModelStream:
+    """One streamed model request that another thread can cut off."""
+
+    def __init__(self, url, headers, body):
+        parts = urllib.parse.urlsplit(url)
+        connection = (
+            http.client.HTTPSConnection if parts.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        self.connection = connection(
+            parts.hostname, parts.port, timeout=MODEL_STREAM_TIMEOUT
+        )
+        self.target = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        self.headers = headers
+        self.body = body
+        self.aborted = threading.Event()
+        self.sock = None
+        self.response = None
+
+    def open(self):
+        self.connection.connect()
+        # Kept here: a response that ends with its connection takes the socket
+        # over and clears connection.sock.
+        self.sock = self.connection.sock
+        # A stop that came while connecting found no socket to shut down.
+        if self.aborted.is_set():
+            raise InterruptedError("model request stopped")
+        self.connection.request("POST", self.target, body=self.body, headers=self.headers)
+        self.response = self.connection.getresponse()
+        return self.response
+
+    def abort(self):
+        self.aborted.set()
+        if self.sock is not None:
+            try:
+                # The plain socket call wakes a blocked read, TLS included.
+                socket.socket.shutdown(self.sock, socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def close(self):
+        if self.response is not None:
+            self.response.close()
+        self.connection.close()
+
+
+def sse_events(response):
+    """Yield the data of each server-sent event."""
+    data = []
+    for raw in response:
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        if line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+        elif not line and data:
+            yield "\n".join(data)
+            data = []
+    if data:
+        yield "\n".join(data)
+
+
+def _stream_failure(response, label):
+    """Describe a refused model request from its status and error body."""
+    raw = response.read(64 * 1024)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    fallback = raw.decode("utf-8", "replace").strip()[:300] or "no details"
+    detail = _model_error(data, fallback) if isinstance(data, dict) else fallback
+    return RuntimeError(f"{label} refused the request (HTTP {response.status}): {detail}")
+
+
+def openai_response(model, system_prompt, text, images, open_stream):
+    """Adapt one batch with a ChatGPT model through the Codex backend."""
+    content = [{"type": "input_text", "text": text}]
+    for path in images:
+        media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append({
+            "type": "input_image", "image_url": f"data:{media_type};base64,{encoded}",
+        })
+    body = json.dumps({
+        "model": model,
+        "instructions": system_prompt,
+        "input": [{"type": "message", "role": "user", "content": content}],
+        "store": False,
+        "stream": True,
+    }).encode("utf-8")
+    session = uuid.uuid4().hex
+    refused = None
+    for _ in range(2):
+        credentials = openai_access(refused)
+        headers = {
+            "Authorization": f"Bearer {credentials['access_token']}",
+            "ChatGPT-Account-Id": credentials["account_id"],
+            "OAI-Product-Sku": "codex",
+            "User-Agent": OPENAI_USER_AGENT,
+            "session_id": session,
+            "conversation_id": session,
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        with open_stream(f"{CHATGPT_CODEX_URL}/responses", headers, body) as response:
+            if response.status == 401 and refused is None:
+                refused = credentials["access_token"]
+                continue
+            if response.status != 200:
+                raise _stream_failure(response, "OpenAI")
+            parts = []
+            for data in sse_events(response):
+                try:
+                    event = json.loads(data)
+                except ValueError:
+                    continue
+                kind = event.get("type") if isinstance(event, dict) else None
+                if kind == "response.output_text.delta":
+                    parts.append(str(event.get("delta") or ""))
+                elif kind == "response.completed":
+                    return "".join(parts)
+                elif kind in ("response.failed", "response.incomplete", "error"):
+                    raise RuntimeError(
+                        f"OpenAI stopped the response: {_model_error(event, kind)}"
+                    )
+            raise RuntimeError("OpenAI ended the response before it completed.")
+    raise RuntimeError("OpenAI refused the renewed sign-in; sign in again under Advanced.")
+
+
+def local_model_response(server, model, system_prompt, text, open_stream):
+    """Adapt one batch with a model on an Ollama or OpenAI-compatible server."""
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        "stream": True,
+    }).encode("utf-8")
+    url = f"{normalize_local_server(server)}/v1/chat/completions"
+    headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+    with open_stream(url, headers, body) as response:
+        if response.status != 200:
+            raise _stream_failure(response, "The local model server")
+        parts, finished = [], False
+        for data in sse_events(response):
+            if data.strip() == "[DONE]":
+                finished = True
+                break
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("error") or event.get("object") == "error":
+                raise RuntimeError(
+                    "The local model server stopped the response: "
+                    f"{_model_error(event, 'no details')}"
+                )
+            for choice in event.get("choices") or ():
+                if not isinstance(choice, dict):
+                    continue
+                # Reasoning arrives in its own field and is not part of the answer.
+                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                if isinstance(delta.get("content"), str):
+                    parts.append(delta["content"])
+                if choice.get("finish_reason"):
+                    finished = True
+        if not finished:
+            raise RuntimeError("The local model server ended the response early.")
+        return "".join(parts)
+
+
+def openai_model_names():
+    """List the ChatGPT models this sign-in may use, in OpenAI's order."""
+    refused = None
+    for _ in range(2):
+        credentials = openai_access(refused)
+        request = urllib.request.Request(
+            f"{CHATGPT_CODEX_URL}/models?client_version={CODEX_CLIENT_VERSION}",
+            headers={
+                "Authorization": f"Bearer {credentials['access_token']}",
+                "ChatGPT-Account-Id": credentials["account_id"],
+                "version": CODEX_CLIENT_VERSION,
+                "Accept": "application/json",
+                "User-Agent": OPENAI_USER_AGENT,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=OPENAI_REQUEST_TIMEOUT) as response:
+                payload = json.loads(response.read(8 * 1024 * 1024))
+        except urllib.error.HTTPError as error:
+            if error.code == 401 and refused is None:
+                refused = credentials["access_token"]
+                continue
+            raise RuntimeError(f"OpenAI did not list its models (HTTP {error.code}).") from error
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Cannot list OpenAI models: {exc}") from exc
+        break
+    else:
+        raise RuntimeError("OpenAI refused the renewed sign-in; sign in again under Advanced.")
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    models = []
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        slug = row.get("slug") or row.get("id")
+        if not isinstance(slug, str) or not slug:
+            continue
+        if str(row.get("visibility", "")).lower() in ("hide", "hidden"):
+            continue
+        priority = row.get("priority")
+        models.append((priority if isinstance(priority, (int, float)) else float("inf"), slug))
+    if not models:
+        raise RuntimeError("OpenAI listed no models for this sign-in.")
+    return [slug for _, slug in sorted(models, key=lambda item: item[0])]
 
 
 def local_server_json(local_server, path, label):
@@ -2250,8 +2592,7 @@ def valid_local_model_names(rows, keys):
 
 def ollama_model_names(local_server):
     server = normalize_local_server(local_server)
-    # SGLang answers /api/tags too, but OMP's Ollama client fails against it;
-    # only Ollama itself answers /api/version.
+    # SGLang answers /api/tags too; only Ollama itself answers /api/version.
     try:
         local_server_json(server, "/api/version", "Ollama")
     except RuntimeError as exc:
@@ -2297,91 +2638,37 @@ def local_model_names(local_server, provider):
 
 
 def paper_model_catalog(local_server="", local_provider=""):
+    """List the models of this server's OpenAI sign-in and of the local server."""
     local_server = normalize_local_server(local_server)
-    local_names = None
-    local_error = ""
-    environment = None
+    models = []
+    openai_error = local_error = ""
+    openai_connected = read_openai_credentials() is not None
+    if openai_connected:
+        try:
+            models += [
+                {"provider": OPENAI_MODEL_PROVIDER, "selector": f"{OPENAI_MODEL_PROVIDER}/{slug}"}
+                for slug in openai_model_names()
+            ]
+        except RuntimeError as exc:
+            openai_error = str(exc)
     if local_server:
         try:
-            local_names = local_model_names(local_server, local_provider)
-            environment = paper_omp_environment(local_server, local_provider)
+            models += [
+                {"provider": local_provider, "selector": f"{local_provider}/{name}"}
+                for name in local_model_names(local_server, local_provider)
+            ]
         except RuntimeError as exc:
             local_error = str(exc)
-    payload = run_omp_json(["models", "--json"], environment)
-    rows = payload.get("models")
-    if not isinstance(rows, list):
-        raise RuntimeError("OMP returned no model list.")
-    if local_names is not None:
-        discovered = {
-            row.get("id"): row
-            for row in rows
-            if isinstance(row, dict) and row.get("provider") == local_provider
-        }
-        rows = [
-            row for row in rows
-            if not isinstance(row, dict) or row.get("provider") != local_provider
-        ]
-        rows.extend(
-            discovered.get(name, {
-                "provider": local_provider,
-                "id": name,
-                "selector": f"{local_provider}/{name}",
-                "name": name,
-            })
-            for name in local_names
-        )
-    models = []
-    seen = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        provider = row.get("provider")
-        selector = row.get("selector")
-        name = row.get("name") or row.get("id")
-        if not all(isinstance(value, str) and value for value in (
-            provider, selector, name
-        )):
-            continue
-        if selector in seen:
-            continue
-        seen.add(selector)
-        models.append({
-            "provider": provider,
-            "selector": selector,
-            "name": name,
-        })
-
-    def provider_priority(provider):
-        if provider == OPENAI_MODEL_PROVIDER:
-            return 0
-        if local_provider and provider == local_provider:
-            return 1
-        if provider == "ollama":
-            return 2
-        return 3
-
-    models.sort(key=lambda model: (
-        provider_priority(model["provider"]),
-        model["provider"].lower(),
-        model["name"].lower(),
-    ))
-    default_model = ""
-    try:
-        roles = run_omp_json(["config", "get", "modelRoles", "--json"])
-        values = roles.get("value")
-        if isinstance(values, dict) and isinstance(values.get("default"), str):
-            default_model = values["default"]
-    except RuntimeError:
-        pass
     return {
         "models": models,
-        "default_model": default_model,
+        # Without a chosen model a job uses the first one: OpenAI's first once
+        # signed in, else the local server's first.
+        "default_model": models[0]["selector"] if models else "",
         "local_server": local_server,
         "local_provider": local_provider,
         "local_error": local_error,
-        "openai_connected": any(
-            model["provider"] == OPENAI_MODEL_PROVIDER for model in models
-        ),
+        "openai_error": openai_error,
+        "openai_connected": openai_connected,
     }
 
 
@@ -2922,8 +3209,21 @@ def _adaptation_problem(values):
             return problem
     if not PAPER_PROMPT_PATH.is_file():
         return f"Document adaptation instructions are missing: {PAPER_PROMPT_PATH}"
-    if shutil.which("omp") is None:
-        return "The omp command is not available to the web server."
+    model = values["model"]
+    provider = model.partition("/")[0]
+    if not model:
+        if read_openai_credentials() is None and not values["local_server"]:
+            return (
+                "Text adaptation needs a model: sign in with OpenAI or add a local "
+                "model server under Advanced, or clear Adapt the text for listening."
+            )
+    elif provider == OPENAI_MODEL_PROVIDER:
+        if read_openai_credentials() is None:
+            return "Sign in with OpenAI under Advanced to use this model."
+    elif provider not in LOCAL_MODEL_PROVIDERS:
+        return "This adaptation model is no longer available; choose one under Advanced."
+    elif not values["local_server"]:
+        return "Add the local model server for this model under Advanced."
     return None
 
 
@@ -3872,7 +4172,6 @@ class PaperRun(Run):
         in_flight=PAPER_DEFAULT_IN_FLIGHT,
         paragraphs_per_worker=PAPER_DEFAULT_PARAGRAPHS_PER_WORKER,
         summary_context_chars=None,
-        executable=None,
         prompt_path=PAPER_PROMPT_PATH,
         on_success=None,
         scratch_path=None,
@@ -3897,33 +4196,32 @@ class PaperRun(Run):
         )
         self.processes = set()
         self.process_lock = threading.Lock()
-        self.executable = executable or shutil.which("omp") or "omp"
+        self.streams = set()
         self.prompt_path = Path(prompt_path)
         self.stop_requested = threading.Event()
         self.scratch_path = Path(scratch_path) if scratch_path is not None else None
         self.adapt = bool(adapt)
 
-    def omp_command(self, request_path, system_prompt, attachments=()):
-        command = [
-            self.executable,
-            "-p",
-            "--no-session",
-            "--no-tools",
-            "--no-skills",
-            "--no-rules",
-            "--no-extensions",
-            "--no-title",
-            "--hide-thinking",
-            "--system-prompt",
-            system_prompt,
-        ]
-        if self.model:
-            command += ["--model", self.model]
-        return (
-            command
-            + [f"@{request_path}"]
-            + [f"@{path}" for path in attachments]
-        )
+    @contextlib.contextmanager
+    def model_stream(self, url, headers, body):
+        """Open one model request that stop() can cut off mid-response."""
+        stream = ModelStream(url, headers, body)
+        with self.process_lock:
+            if self.stop_requested.is_set():
+                raise InterruptedError("document processing stopped")
+            self.streams.add(stream)
+        try:
+            yield stream.open()
+        except Exception as exc:
+            if self.stop_requested.is_set():
+                raise InterruptedError("document processing stopped") from exc
+            if isinstance(exc, (OSError, http.client.HTTPException)):
+                raise RuntimeError(f"Model request failed: {exc}") from exc
+            raise
+        finally:
+            with self.process_lock:
+                self.streams.discard(stream)
+            stream.close()
 
     def child_output(self, command, label, environment=None):
         try:
@@ -3964,9 +4262,12 @@ class PaperRun(Run):
     def terminate_children(self):
         with self.process_lock:
             processes = tuple(self.processes)
+            streams = tuple(self.streams)
         for process in processes:
             if process.poll() is None:
                 process.terminate()
+        for stream in streams:
+            stream.abort()
 
     def download_source(self, scratch):
         self.publish("log", f"Downloading document from {self.input_url}…\n")
@@ -4098,14 +4399,18 @@ class PaperRun(Run):
         return markdown_path, images
 
     def model_response(self, request_path, system_prompt, attachments=()):
-        environment = None
-        provider = self.model.partition("/")[0]
-        if self.local_server and provider in LOCAL_MODEL_PROVIDERS:
-            environment = paper_omp_environment(self.local_server, provider)
-        return self.child_output(
-            self.omp_command(request_path, system_prompt, attachments),
-            "omp",
-            environment,
+        text = request_path.read_text(encoding="utf-8")
+        provider, _, name = self.model.partition("/")
+        if provider == OPENAI_MODEL_PROVIDER:
+            return openai_response(
+                name, system_prompt, text, attachments, self.model_stream
+            )
+        if provider in LOCAL_MODEL_PROVIDERS and self.local_server:
+            return local_model_response(
+                self.local_server, name, system_prompt, text, self.model_stream
+            )
+        raise RuntimeError(
+            f"No text-adaptation model is available for {self.model or 'this document'}."
         )
 
     def paragraph_batch_response(
@@ -4128,6 +4433,10 @@ class PaperRun(Run):
             path for path in image_paths
             if path.relative_to(scratch).as_posix() in source
         )
+        # A local server may run a text-only model, which refuses images; it
+        # reads the text extracted from each figure instead.
+        if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS:
+            attachments = ()
         figure_note = (
             f" with {len(attachments)} figure attachment"
             f"{'s' if len(attachments) != 1 else ''}"
@@ -4426,8 +4735,7 @@ class PaperRun(Run):
         if self.adapt:
             self.publish(
                 "log",
-                f"Adapting {len(paragraphs)} paragraphs with "
-                f"{self.model or 'the configured OMP model'}, up to "
+                f"Adapting {len(paragraphs)} paragraphs with {self.model}, up to "
                 f"{self.in_flight} worker request"
                 f"{'s' if self.in_flight != 1 else ''} in flight and "
                 f"{self.paragraphs_per_worker} paragraph"
@@ -4804,11 +5112,22 @@ class AudiobookRun(Run):
             if needs_extraction:
                 self.set_phase("extraction", "Extraction")
                 prepared_path = extraction_dir / "prepared.txt"
+                model = self.values["model"]
+                if self.values["adapt"] and not model:
+                    # No model chosen: the first one this server offers.
+                    model = paper_model_catalog(
+                        self.values["local_server"], self.values["local_provider"]
+                    )["default_model"]
+                    if not model:
+                        raise RuntimeError(
+                            "No text-adaptation model is available: sign in with "
+                            "OpenAI or add a local model server under Advanced."
+                        )
                 self.paper_run = PaperRun(
                     input_path,
                     prepared_path,
                     self.values["encoding"],
-                    self.values["model"],
+                    model,
                     self.values["local_server"],
                     self.values["in_flight"],
                     self.values["paragraphs_per_worker"],
@@ -4876,14 +5195,11 @@ class AudiobookRun(Run):
 
 
 class OpenAIOAuthLogin:
-    """One server-side OpenAI device login backed by OMP's credential store."""
-
-    URL = re.compile(r"https://auth\.openai\.com/\S+")
-    CODE = re.compile(r"Enter code:\s*([A-Z0-9-]+)")
+    """One ChatGPT device sign-in for this server, kept in ~/.hilde."""
 
     def __init__(self):
         self.lock = threading.RLock()
-        self.process = None
+        self.cancel = threading.Event()
         self.status = "idle"
         self.url = ""
         self.code = ""
@@ -4904,83 +5220,87 @@ class OpenAIOAuthLogin:
         with self.lock:
             if self.status in ("starting", "waiting"):
                 return self.snapshot()
+            self.cancel = cancel = threading.Event()
             self.status = "starting"
             self.url = ""
             self.code = ""
-            self.message = "Starting OpenAI device authorization…"
-        threading.Thread(target=self._pump, daemon=True).start()
+            self.message = "Starting OpenAI sign-in…"
+        threading.Thread(target=self._pump, args=(cancel,), daemon=True).start()
         return self.snapshot()
 
-    def _pump(self):
-        environment = os.environ.copy()
-        browser_suppressor = shutil.which("true")
-        if browser_suppressor:
-            environment["BROWSER"] = browser_suppressor
-        command = [
-            shutil.which("omp") or "omp",
-            "auth-broker",
-            "login",
-            OPENAI_OAUTH_PROVIDER,
-        ]
+    def _settle(self, cancel, status, message):
+        with self.lock:
+            if cancel is self.cancel and not cancel.is_set():
+                self.status = status
+                self.message = message
+
+    def _pump(self, cancel):
         try:
-            process = subprocess.Popen(
-                command,
-                cwd=str(ROOT),
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                bufsize=1,
+            status, device = _openai_post(
+                "/api/accounts/deviceauth/usercode", {"client_id": OPENAI_CLIENT_ID}
             )
-        except OSError as exc:
-            with self.lock:
-                self.status = "failed"
-                self.message = f"Cannot start OpenAI authorization: {exc}"
-            return
-        with self.lock:
-            self.process = process
-            if self.status == "canceled":
-                process.terminate()
-        for line in process.stdout:
-            clean = line.strip()
-            if not clean:
-                continue
-            with self.lock:
-                url = self.URL.search(clean)
-                code = self.CODE.search(clean)
-                if url is not None:
-                    self.url = url.group(0)
-                if code is not None:
-                    self.code = code.group(1)
-                if self.url or self.code:
-                    self.status = "waiting"
-                self.message = clean
-        process.stdout.close()
-        returncode = process.wait()
-        with self.lock:
-            self.process = None
-            if self.status == "canceled":
-                self.message = "OpenAI authorization canceled."
-            elif returncode == 0:
-                self.status = "connected"
-                self.message = "OpenAI OAuth credentials saved on this server."
-            else:
-                self.status = "failed"
-                self.message = (
-                    self.message
-                    if self.message and self.message != "Waiting for browser authorization…"
-                    else f"OpenAI authorization exited with {returncode}."
+            device_id, code = device.get("device_auth_id"), device.get("user_code")
+            if status != 200 or not device_id or not code:
+                raise RuntimeError(
+                    "OpenAI did not start a sign-in: "
+                    f"{_model_error(device, f'HTTP {status}')}"
                 )
+            try:
+                interval = float(device.get("interval") or 5)
+            except (TypeError, ValueError):
+                interval = 5.0
+            with self.lock:
+                if cancel is not self.cancel or cancel.is_set():
+                    return
+                self.status = "waiting"
+                self.url = OPENAI_DEVICE_PAGE
+                self.code = str(code)
+                self.message = "Open the sign-in page, then enter the code."
+            deadline = time.monotonic() + OPENAI_DEVICE_LOGIN_SECONDS
+            while not cancel.wait(max(OPENAI_DEVICE_POLL_FLOOR, interval)):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("The sign-in code expired. Connect again.")
+                status, grant = _openai_post(
+                    "/api/accounts/deviceauth/token",
+                    {"device_auth_id": device_id, "user_code": code},
+                )
+                # Until the code is entered, OpenAI answers 403 or 404.
+                if status in (403, 404):
+                    continue
+                if (
+                    status != 200
+                    or not grant.get("authorization_code")
+                    or not grant.get("code_verifier")
+                ):
+                    raise RuntimeError(
+                        f"OpenAI sign-in failed: {_model_error(grant, f'HTTP {status}')}"
+                    )
+                status, tokens = _openai_post("/oauth/token", {
+                    "grant_type": "authorization_code",
+                    "client_id": OPENAI_CLIENT_ID,
+                    "code": grant["authorization_code"],
+                    "code_verifier": grant["code_verifier"],
+                    "redirect_uri": OPENAI_DEVICE_REDIRECT,
+                }, form=True)
+                if status != 200:
+                    raise RuntimeError(
+                        f"OpenAI sign-in failed: {_model_error(tokens, f'HTTP {status}')}"
+                    )
+                with _OPENAI_SIGN_IN_LOCK:
+                    save_openai_credentials(tokens)
+                self._settle(
+                    cancel, "connected", "Signed in. This server keeps the sign-in in ~/.hilde."
+                )
+                return
+        except (OSError, RuntimeError) as exc:
+            self._settle(cancel, "failed", str(exc))
 
     def stop(self):
         with self.lock:
-            self.status = "canceled"
-            self.message = "Canceling OpenAI authorization…"
-            process = self.process
-        if process is not None and process.poll() is None:
-            process.terminate()
+            if self.status in ("starting", "waiting"):
+                self.status = "canceled"
+                self.message = "OpenAI sign-in canceled."
+            self.cancel.set()
         return self.snapshot()
 
 
@@ -6188,7 +6508,7 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
     <fieldset id="adaptation-advanced">
       <legend>Text adaptation</legend>
       <div class="row"><label for="paper-model">Model</label><div class="line">
-        <select id="paper-model"><option value="">Loading OMP models…</option></select>
+        <select id="paper-model"><option value="">Loading models…</option></select>
         <button id="paper-openai" type="button" onclick="openPaperOpenAI()">OpenAI</button>
         <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
         <input id="paper-local-server" type="hidden">
@@ -6479,8 +6799,8 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
 
 <dialog id="paper-openai-dialog">
   <h2>OpenAI OAuth</h2>
-  <p class="note">Sign in with ChatGPT. OMP stores and refreshes the credential
-    in the server user's private credential database.</p>
+  <p class="note">Sign in with ChatGPT. This server keeps the sign-in in
+    ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
   <div class="row"><label>Status:</label><div>
     <strong id="paper-openai-status"></strong>
     <div id="paper-openai-device" class="hidden">
@@ -8100,7 +8420,8 @@ function applyPaperCatalog(catalog) {
   const fallback = document.createElement("option");
   fallback.value = "";
   fallback.textContent = catalog.default_model
-    ? `OMP default — ${catalog.default_model}` : "OMP configured default";
+    ? `Default — ${catalog.default_model}`
+    : "No model yet: sign in with OpenAI or add a local server";
   select.append(fallback);
   const groups = new Map();
   for (const model of catalog.models || []) {
@@ -8122,9 +8443,10 @@ function applyPaperCatalog(catalog) {
   paperOpenAIConnected = !!catalog.openai_connected;
   $("paper-openai").textContent = paperOpenAIConnected ? "OpenAI ✓" : "OpenAI";
   $("paper-local").textContent = state.audiobook.local_server ? "Local ✓" : "Add local";
-  $("paper-model-status").textContent = catalog.local_error ||
+  const problem = catalog.local_error || catalog.openai_error;
+  $("paper-model-status").textContent = problem ||
     `${(catalog.models || []).length} models`;
-  $("paper-model-status").classList.toggle("bad", !!catalog.local_error);
+  $("paper-model-status").classList.toggle("bad", !!problem);
 }
 async function refreshPaperModels() {
   $("paper-model-status").textContent = "Loading models…";

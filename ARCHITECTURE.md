@@ -11,7 +11,7 @@ Hilde has two interfaces over the same speech pipeline:
 
 The speech backend for each role is selected when the web server starts. Voice creation can use a local Qwen3-TTS VoiceDesign model or an OpenAI-compatible speech endpoint. Narration can use a local Qwen3-TTS Base model, that model distributed across local/SSH workers, or an OpenAI-compatible endpoint.
 
-Current document preparation supports PDF, plain text, and Markdown. PDF pages are converted to Markdown. Optional OMP adaptation rewrites body paragraphs for spoken narration while omitting terminal bibliography sections.
+Current document preparation supports PDF, plain text, and Markdown. PDF pages are converted to Markdown. Optional adaptation by a language model rewrites body paragraphs for spoken narration while omitting terminal bibliography sections.
 
 Out of scope: EPUB extraction, CLI playback, built-in web authentication/authorization, and a durable multi-process queue. Audiobook submissions share one process-local worker scheduler. Direct public exposure is unsupported; deploy behind an authenticated, rate-limited TLS reverse proxy.
 
@@ -20,11 +20,11 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | Path | Responsibility |
 | --- | --- |
 | `audiobook_tts.py` | CLI parsing, validation, voice persistence, chunking, local/SSH worker orchestration, OpenAI-compatible narration, batching with out-of-memory retries, and durable narration checkpoints. |
-| `audiobook_tts_web.py` | Shared storage, single-page UI, document preparation, narration-worker scheduling, CPU forced word alignment, OMP integration, workflow orchestration, SSE progress, exactly indexed reader audio, serving and download. |
+| `audiobook_tts_web.py` | Shared storage, single-page UI, document preparation, narration-worker scheduling, CPU forced word alignment, the text-adaptation model client and ChatGPT sign-in, workflow orchestration, SSE progress, exactly indexed reader audio, serving and download. |
 | `example_run.sh` | Example web-server launch: local Qwen3-TTS models, the default `User/` library, port 8800 on every interface, and every GPU CUDA can open. Set its interpreter and model paths for your machine; extra arguments pass through. |
 | `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
-| `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the OMP model. Each job reads them when it starts. |
+| `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
@@ -236,9 +236,9 @@ while preserving inline attributions and recognized later appendices.
 When adaptation is enabled:
 
 - `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract;
-- a rolling pool dispatches bounded consecutive paragraph batches through `omp`;
+- a rolling pool dispatches bounded consecutive paragraph batches to the chosen model;
 - compacted prior summaries provide bounded continuity context;
-- referenced extracted figures become attachments for the relevant batch;
+- referenced extracted figures become image inputs for an OpenAI model; a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
 - a batch that is entirely excluded material, such as reference entries that
   extraction did not place under a standalone heading, or a bare image the
@@ -251,7 +251,16 @@ When adaptation is enabled:
 
 On restart, committed checkpoints populate the result buffer before only missing batches are submitted. With adaptation disabled, normalized body paragraphs are written directly.
 
-`extraction.json` binds checkpoints to input bytes, adaptation toggle, OMP model/local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or OMP calls.
+The web server calls the model itself; `PaperRun.model_response()` routes by the model selector's provider:
+
+- `openai-codex/<model>` streams a Responses request to the ChatGPT Codex backend (`CHATGPT_CODEX_URL/responses`, `store: false`) with the system prompt as `instructions` and the batch plus figures as input. `openai_model_names()` lists the signed-in account's models from `CHATGPT_CODEX_URL/models` in OpenAI's priority order, without hidden ones.
+- `ollama/<model>` and `lm-studio/<model>` stream `POST /v1/chat/completions` to the saved local server; only `content` deltas form the answer, never reasoning.
+- Each request is a `ModelStream` registered with the run. Stop shuts down its socket, which wakes a blocked read at once, including a request a busy server has not started answering.
+- A job without a chosen model resolves `paper_model_catalog()`'s default at start (OpenAI's first model once signed in, else the local server's first) and records that concrete model in its identity.
+
+ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex CLI's OAuth client: `deviceauth/usercode` issues a code the user enters at `OPENAI_DEVICE_PAGE`, `deviceauth/token` answers 403 or 404 until then, and `/oauth/token` exchanges the grant. `save_openai_credentials()` writes the access token, refresh token, ChatGPT account ID (from the token claims), and expiry to `~/.hilde/openai.json` through a private temporary file (mode 0600, directory 0700). `openai_access()` renews the sign-in under one lock when it is within five minutes of expiry or a request was refused with 401, and keeps OpenAI's rotated refresh token. Tokens never leave the server process.
+
+`extraction.json` binds checkpoints to input bytes, adaptation toggle, model selector and local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
@@ -275,7 +284,7 @@ flowchart LR
 
 At queue submission, source bytes and any local voice files are copied into a stage named by the job ID. Matching snapshots are reused; changed source/voice versions use a different stage. This prevents another client replacing a shared asset while the job waits or runs from changing that job's identity.
 
-PDF extraction always runs. OMP adaptation is independently optional. Prepared text is copied to shared `Documents`, while narration reads the durable staged preparation so a concurrent document replacement cannot affect it.
+PDF extraction always runs. Adaptation is independently optional. Prepared text is copied to shared `Documents`, while narration reads the durable staged preparation so a concurrent document replacement cannot affect it.
 
 Narration always invokes the CLI with `--resume-dir`, `--sentence-chunks`, and
 `--overwrite` against a staged MP3. The web process uses completed WAV
@@ -288,7 +297,7 @@ sentence timing usable. The reader sidecars and MP3 publish before the version
 record, which is the commit marker. Failure or Stop leaves the stage; success
 removes it.
 
-`AudiobookRun.stop()` signals document workers, terminates converter/OMP children and the narration child, and closes the run with code 130. Restarting with the same assets/settings resumes from the durable state.
+`AudiobookRun.stop()` signals document workers, terminates converter children, cuts off in-flight model requests, stops the narration child, and closes the run with code 130. Restarting with the same assets/settings resumes from the durable state.
 
 ## Audiobook worker pool
 
@@ -440,7 +449,7 @@ idle`, `running`, or `reserved` during voice creation; the tooltip adds the
 device and job) followed by the shared device description, and the narration
 and voice-design models plus the device voice creation uses. It also holds
 precision/attention tuning, language, encoding, and seed; narration
-chunk/batch/MP3 settings on Create; OMP model/concurrency and a local
+chunk/batch/MP3 settings on Create; adaptation model/concurrency and a local
 model server with its type while adaptation is on; and reference-WAV
 encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
@@ -514,9 +523,9 @@ playable but have no synchronized text.
 | `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, else the document name), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
 | `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
-| `GET /api/paper/models` | OMP/default/local model catalog. |
-| `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side OMP OpenAI device authorization. |
-| `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`: SGLang also answers Ollama's `/api/tags`, but OMP's Ollama client fails against it. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models` and run through OMP's `lm-studio` provider. A job refuses a local model whose provider differs from the saved server type. |
+| `GET /api/paper/models` | Adaptation model catalog: the signed-in ChatGPT account's models, then the saved local server's, with the default a job uses when none is chosen and per-source errors. |
+| `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
+| `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local model whose provider differs from the saved server type. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `0.0.0.0`; use `--host 127.0.0.1` when the shared server must be local-only.
@@ -555,6 +564,7 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - Automatic local audiobook work receives its complete worker set before the child coordinator starts.
 - OpenAI-compatible narration never uploads local reference clips because that schema names a server-owned voice. SSH model workers do receive the staged reference and text.
 - Browser-facing payloads describe local devices (runtime GPU index, device name, memory) and model directory names or IDs, but omit hostnames, SSH targets, speech-server URLs, script paths, model paths, and storage paths.
+- The ChatGPT sign-in stays in `~/.hilde/openai.json`, readable only by the server's user; no route or event returns its tokens.
 
 ## Build, run, and verify
 
@@ -584,7 +594,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 77 tests. It covers voice persistence
+The regression suite currently has 79 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -617,8 +627,12 @@ once it has room and a GPU that runs out of memory hands its chunk back and is
 started again, adaptation in which a left-out reference adds no text while
 figures keep their place in the reader, adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
-when the library sits inside the project folder, and PDF figures rendered
-without OCR text printed over their labels. It does not load a Qwen model or
-require a GPU.
+when the library sits inside the project folder, PDF figures rendered
+without OCR text printed over their labels, ChatGPT device sign-in stored
+owner-only and renewed once with its rotated refresh token before a figure
+reaches the model as an image, local-server adaptation that sends figures as
+text and leaves drafted reasoning out, only models this server can reach, and
+Stop cutting off requests a busy model server has not answered. It does not
+load a Qwen model or require a GPU.
 
-Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.
+Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.

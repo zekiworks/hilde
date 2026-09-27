@@ -24,9 +24,9 @@ python audiobook_tts_web.py --host 127.0.0.1 --open --allow-model-downloads \
 Without an NVIDIA GPU, replace `cu130` with `cpu` in the third command. The
 page opens at `http://127.0.0.1:8800/`, reachable only from this computer, with
 eight stock voices. Each model, about 4.3 GB, downloads the first time it is
-used. Text adaptation also needs
-[OMP](#6-optional-install-omp-for-text-adaptation); without it, clear **Adapt
-the text for listening** before you create an audiobook.
+used. Text adaptation needs a language model: sign in with OpenAI or add a
+local model server under **Advanced**, or clear **Adapt the text for listening**
+before you create an audiobook; see [Text adaptation](#text-adaptation).
 [Installation](#installation) covers other platforms, local model folders, and
 FlashAttention.
 
@@ -136,14 +136,6 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
 These are example locations, not built-in defaults. Supply the paths you chose when running Hilde. With local directories, model loading stays offline by default. A machine that only narrates, with the stock voices in `voices/` or other saved voices, needs only the Base model.
 
 Alternatively, pass a Hugging Face model ID in place of a local path and allow downloads: `--allow-downloads` on the command line, or `--allow-model-downloads` for the web server. That permits network access for both the main model and nested tokenizer/model loads. Without it, the model options must point to existing local directories.
-
-### 6. Optional: install OMP for text adaptation
-
-The web app can adapt a document for listening before narrating it; see
-[Text adaptation](#text-adaptation). It runs the adaptation model through the
-`omp` command of [OMP](https://github.com/can1357/oh-my-pi), so install OMP
-where the web server finds `omp` on its `PATH`. Everything else works without
-it.
 
 ## Configuration
 
@@ -308,19 +300,25 @@ Changing batch sizes can change sampled audio even with the same `--seed`. A sav
 **Adapt the text for listening**, in the **Create audiobook** step, rewrites a
 document so it sounds natural read aloud before it is narrated. Terminal
 bibliography sections are omitted; inline attributions and later appendices
-remain. Adaptation needs [OMP](#6-optional-install-omp-for-text-adaptation) on
-the server. While adaptation is selected, its settings appear under
-**Advanced** in **Text adaptation**:
+remain. While adaptation is selected, its settings appear under **Advanced** in
+**Text adaptation**:
 
-- **Model** uses OMP's default model unless you pick another.
-- **OpenAI** signs OMP in with ChatGPT. OMP stores and refreshes the credential
-  in the server user's private credential database.
+- **Model** picks the model that rewrites the text. Without a choice, a job uses
+  the first one listed: OpenAI's first model once signed in, else the local
+  server's first.
+- **OpenAI** signs this server in with a ChatGPT account: open the sign-in page
+  it shows and enter the code. The server keeps the sign-in in
+  `~/.hilde/openai.json`, readable only by the user running it, and renews it
+  automatically; delete that file to sign out.
 - **Add local** connects a model server on your network. Choose its type,
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
 - **Workers** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds.
+
+Figures reach OpenAI models as images. A local server may run a text-only
+model, so it receives the text extracted from each figure instead.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted
@@ -371,7 +369,7 @@ Audiobooks made from it are kept, and a job already queued keeps its own copy.
 or it waits in the shared queue:
 1. A PDF is extracted page by page. Text and Markdown skip extraction unless
    **Adapt the text for listening** is selected.
-2. Optional adaptation runs the configured OMP model in bounded concurrent
+2. Optional adaptation runs the chosen language model in bounded concurrent
    paragraph batches; see [Text adaptation](#text-adaptation).
 3. Prepared text is saved as
    `Documents/<input-stem>-narration.txt`.
@@ -418,7 +416,7 @@ without an additional prompt.
 Extraction and narration are resumable:
 
 - source bytes and local voice files are snapshotted when the job is queued;
-- converted PDF pages and committed OMP paragraph batches are reused;
+- converted PDF pages and committed adapted paragraph batches are reused;
 - each completed narration chunk is an independently validated WAV checkpoint;
 - restarting the server or pressing **Stop** leaves the job under
   `in_progress`;
