@@ -442,9 +442,10 @@ synchronized text after you confirm. **Listen** opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
 and **Download MP3** retrieves the retained server copy. Text keeps its paragraphs:
 the playing sentence is tinted inside its paragraph, the paragraph is marked
-with an accent bar, and the current word is filled. Sentence-era readers
-created before paragraph grouping was recorded still show one sentence per
-paragraph; paragraph-era readers regain their paragraphs automatically.
+with an accent bar, and the current word is filled in light orange with dark
+text. Sentence-era readers created before paragraph grouping was recorded still
+show one sentence per paragraph; paragraph-era readers regain their paragraphs
+automatically.
 Clicking a word seeks to that word (just before its aligned onset); clicking
 elsewhere in a sentence, or on its attached figure or table, seeks to the
 start of the sentence.

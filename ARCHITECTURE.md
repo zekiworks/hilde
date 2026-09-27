@@ -477,7 +477,9 @@ attached to their sentence. New sidecars record each block's paragraph in a
 `paragraphs` array; paragraph-era sidecars derive it from their original
 paragraph blocks; sentence sidecars written before the array existed show one
 sentence per paragraph. The playing sentence is tinted, its paragraph carries
-the accent bar, and the current word is filled.
+the accent bar, and the current word is filled with a lighter accent under
+dark ink (7.7:1 contrast). The word switches without a fade, since a fade
+passes through colors in which the text all but disappears.
 
 The reader player requests `/api/audio?name=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the

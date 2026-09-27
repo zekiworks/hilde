@@ -6170,6 +6170,8 @@ PAGE = r"""<!doctype html>
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#e07b39; --accent-ink:#1b1b1b; --accent-soft:rgba(224,123,57,.16);
+        /* The spoken word: a lighter accent, so dark ink on it reads at 7.7:1. */
+        --accent-light:#e89c6a;
         --bad:#ff8a80; --radius:12px; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -6383,9 +6385,11 @@ audio { height:36px; }
                    box-decoration-break:clone; }
 .reader-sentence:hover, .reader-block:hover { background:var(--raised); }
 .reader-sentence.active, .reader-block.active { background:var(--accent-soft); }
-.reader-word { border-radius:3px; transition:background-color .08s,color .08s; }
-.reader-word.active { color:var(--accent-ink); background:var(--accent);
-                      box-shadow:0 0 0 2px var(--accent); }
+/* The spoken word switches at once: a fade passes through colors in which its
+   text all but disappears, and a short word is mostly fade. */
+.reader-word { border-radius:3px; }
+.reader-word.active { color:var(--accent-ink); background:var(--accent-light);
+                      box-shadow:0 0 0 2px var(--accent-light); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
 .reader-block img { display:block; max-width:100%; height:auto; margin:12px auto;
