@@ -2521,6 +2521,81 @@ class PaperResponseTests(unittest.TestCase):
             for event, data in run.history
         ))
 
+    def test_left_out_reference_adds_no_text_and_figures_keep_their_place(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        stage = root / "stage"
+        output = stage / "prepared.txt"
+        prompt = root / "prompt.md"
+        paragraphs = [
+            "First body paragraph.",
+            "[25] Marcus, M. Building the Penn Treebank. 1993.",
+            "![Figure 1](images/figure-1.png)\nFigure 1: The model.",
+        ]
+        source.write_text("\n\n".join(paragraphs), encoding="utf-8")
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        # The model leaves the reference entry out, as the prompt tells it to.
+        narrations = {1: "First narration.", 2: "", 3: "Figure one shows the model."}
+        requested = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                start = int(request_path.stem.split("-")[1])
+                requested.append(start)
+                return (
+                    f"<NARRATION>\n{narrations[start]}\n</NARRATION>"
+                    f"<SUMMARY>Paragraph {start}.</SUMMARY>"
+                )
+
+        run = StubPaperRun(
+            source, output, "utf-8", in_flight=1, prompt_path=prompt, scratch_path=stage
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        self.assertEqual(sorted(requested), [1, 2, 3])
+        prepared = output.read_text(encoding="utf-8")
+        self.assertEqual(prepared, "First narration.\n\nFigure one shows the model.")
+        blocks, *_ = web._reader_blocks(
+            prepared, "\n\n".join(paragraphs), 500, stage / "paragraph-checkpoints"
+        )
+        self.assertEqual(blocks[0], "First narration.")
+        self.assertIn("![Figure 1](images/figure-1.png)", blocks[1])
+
+    def test_changed_harness_instructions_redo_the_adaptation(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        stage = root / "stage"
+        prompt = root / "prompt.md"
+        source.write_text("First source.\n\nSecond source.", encoding="utf-8")
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        requested = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requested.append(request_path.stem)
+                return "<NARRATION>Narration.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        def adapt():
+            run = StubPaperRun(
+                source, stage / "prepared.txt", "utf-8", in_flight=1,
+                prompt_path=prompt, scratch_path=stage,
+            )
+            run.pump()
+            self.assertEqual(run.code, 0)
+
+        adapt()
+        adapt()
+        self.assertEqual(len(requested), 2)
+        changed = web.PAPER_LOOP_INSTRUCTION + "\nChanged instruction."
+        with mock.patch.object(web, "PAPER_LOOP_INSTRUCTION", changed):
+            adapt()
+        self.assertEqual(len(requested), 4)
+
 
     def test_interrupted_adaptation_resumes_from_committed_batch(self):
         temporary = tempfile.TemporaryDirectory()

@@ -235,14 +235,18 @@ When adaptation is enabled:
 - compacted prior summaries provide bounded continuity context;
 - referenced extracted figures become attachments for the relevant batch;
 - malformed response payloads are retried up to the configured attempt limit;
-- format-control-only narration paragraphs are removed, and an all-artifact
-  response is retried;
+- a batch that is entirely excluded material, such as reference entries that
+  extraction did not place under a standalone heading, returns an empty
+  NARRATION with a nonempty SUMMARY; it adds no text, the log names it with
+  that summary, and the reader's checkpoint mapping skips it so figures stay
+  with their narration;
+- format-control-only narration paragraphs are removed;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.
 
 On restart, committed checkpoints populate the result buffer before only missing batches are submitted. With adaptation disabled, normalized body paragraphs are written directly.
 
-`extraction.json` binds checkpoints to input bytes, adaptation toggle, OMP model/local endpoint, worker configuration, and prompt contents. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or OMP calls.
+`extraction.json` binds checkpoints to input bytes, adaptation toggle, OMP model/local endpoint, worker configuration, and the complete system prompt (the prompt file plus the transport contract), so changed harness instructions redo adaptations made under the old ones. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or OMP calls.
 
 ## Unified `AudiobookRun`
 
@@ -575,7 +579,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 73 tests. It covers voice persistence
+The regression suite currently has 75 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -605,6 +609,8 @@ refuses missing drafts, bad names, and linked voices, and old drafts are
 pruned, voice design on the GPU with the most free memory, matched to
 `nvidia-smi` by UUID, and distributed narration in which a full GPU joins only
 once it has room and a GPU that runs out of memory hands its chunk back and is
-started again. It does not load a Qwen model or require a GPU.
+started again, adaptation in which a left-out reference adds no text while
+figures keep their place in the reader, and adaptation redone after the
+harness instructions change. It does not load a Qwen model or require a GPU.
 
 Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. OMP is required only when adaptation is selected. MP3 support depends on the installed SoundFile/libsndfile build.

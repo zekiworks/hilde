@@ -945,13 +945,14 @@ def _adapted_reader_groups(narration, source_paragraphs, checkpoint_dir):
         if (
             not isinstance(end, int)
             or not isinstance(adapted, str)
-            or not adapted.strip()
             or start < 1
             or end < start
             or end > len(source_paragraphs)
         ):
             return None
-        groups.append((adapted.strip(), source_paragraphs[start - 1:end]))
+        # A batch left out entirely, such as a reference entry, adds no text.
+        if adapted.strip():
+            groups.append((adapted.strip(), source_paragraphs[start - 1:end]))
     if "\n\n".join(group[0] for group in groups) != narration.strip():
         return None
     return groups
@@ -2411,8 +2412,11 @@ per source paragraph
 </SUMMARY>
 
 NARRATION is appended to the final file and must remain complete for all included
-source material. SUMMARY is internal compacted context; it must not shorten or
-replace any narration or recreate an omitted bibliography.
+source material. When every current source paragraph is excluded material, such
+as reference-list entries, leave NARRATION empty: never write a placeholder, a
+lone punctuation mark, or a note that something was omitted. SUMMARY is internal
+compacted context and is never empty; it must not shorten or replace any
+narration or recreate an omitted bibliography.
 Earlier source batches and narration are intentionally absent from later calls:
 use their summaries only for continuity."""
 
@@ -2480,7 +2484,7 @@ def paper_request(paragraphs, compacted_summaries, start, end, total, attempt=1)
 
 Transport retry attempt {attempt} of {PAPER_RESPONSE_ATTEMPTS}:
 The prior response could not be parsed. Generate the complete adapted included
-source batch again, preserving every supplied paragraph and its boundaries, with one nonempty
+source batch again, preserving every supplied paragraph and its boundaries, with one
 NARRATION element followed by one nonempty SUMMARY element. Do not discuss the
 retry or add text outside those elements."""
     return f"""Compacted summaries from earlier source batches completed before dispatch:
@@ -2501,18 +2505,17 @@ def parse_paper_response(response):
         if first_break >= 0:
             text = text[first_break + 1:-3].strip()
     matches = list(PAPER_RESPONSE_PATTERN.finditer(text))
+    problem = (
+        "model response must contain one NARRATION element followed by one "
+        "nonempty SUMMARY element"
+    )
     if len(matches) != 1:
-        raise ValueError(
-            "model response must contain one nonempty NARRATION element "
-            "followed by one nonempty SUMMARY element"
-        )
-    parts = tuple(part.strip() for part in matches[0].groups())
-    if not all(parts):
-        raise ValueError(
-            "model response must contain one nonempty NARRATION element "
-            "followed by one nonempty SUMMARY element"
-        )
-    return parts
+        raise ValueError(problem)
+    # NARRATION is empty when the whole batch is left out, such as a reference entry.
+    narration, summary = (part.strip() for part in matches[0].groups())
+    if not summary:
+        raise ValueError(problem)
+    return narration, summary
 
 
 def is_saved_voice(path):
@@ -4114,10 +4117,6 @@ class PaperRun(Run):
             )
             try:
                 narration, summary = parse_paper_response(response)
-                narration = _without_invisible_paragraphs(narration)
-                if not narration:
-                    raise ValueError("model narration contains no readable text")
-                return narration, summary
             except ValueError:
                 if attempt == PAPER_RESPONSE_ATTEMPTS:
                     preview = " ".join(response.split())
@@ -4137,6 +4136,18 @@ class PaperRun(Run):
                     "transport; retrying model response "
                     f"({attempt + 1}/{PAPER_RESPONSE_ATTEMPTS})…\n",
                 )
+                continue
+            narration = _without_invisible_paragraphs(narration)
+            if not narration:
+                reason = " ".join(summary.split())
+                if len(reason) > 160:
+                    reason = reason[:157] + "..."
+                self.publish(
+                    "log",
+                    f"{batch_label.capitalize()}/{total} has nothing to read "
+                    f"aloud: {reason}\n",
+                )
+            return narration, summary
         raise AssertionError("unreachable document response loop")
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt):
@@ -4161,7 +4172,7 @@ class PaperRun(Run):
                 continue
             narration = checkpoint.get("narration")
             summary = checkpoint.get("summary")
-            if not isinstance(narration, str) or not narration.strip():
+            if not isinstance(narration, str):
                 continue
             if not isinstance(summary, str) or not summary.strip():
                 continue
@@ -4173,6 +4184,7 @@ class PaperRun(Run):
             start for start, _ in batches if start not in results
         ])
         next_commit = 1
+        wrote_text = False
         executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=self.in_flight,
             thread_name_prefix="document",
@@ -4208,14 +4220,17 @@ class PaperRun(Run):
         try:
             with self.output_path.open("w", encoding="utf-8", newline="\n") as output:
                 def commit_ready():
-                    nonlocal next_commit
+                    nonlocal next_commit, wrote_text
                     while next_commit in results:
                         end, narration, summary = results.pop(next_commit)
-                        if next_commit > 1:
-                            output.write("\n\n")
-                        output.write(narration)
-                        output.flush()
-                        os.fsync(output.fileno())
+                        # A batch left out entirely adds nothing to the file.
+                        if narration:
+                            if wrote_text:
+                                output.write("\n\n")
+                            output.write(narration)
+                            output.flush()
+                            os.fsync(output.fileno())
+                            wrote_text = True
                         summaries.append((
                             next_commit,
                             end,
@@ -4266,6 +4281,10 @@ class PaperRun(Run):
                         ),
                     })
                     fill_workers()
+                if not wrote_text:
+                    raise ValueError(
+                        "the model left every paragraph out of the narration"
+                    )
         except BaseException:
             for future in futures:
                 future.cancel()
@@ -4281,6 +4300,11 @@ class PaperRun(Run):
             if self.input_url
             else self.input_path
         )
+        system_prompt = (
+            paper_system_prompt(self.prompt_path.read_text(encoding="utf-8"))
+            if self.adapt
+            else None
+        )
         identity = {
             "schema": 2,
             "input_version": file_version(input_path),
@@ -4289,8 +4313,12 @@ class PaperRun(Run):
             "local_server": self.local_server,
             "in_flight": self.in_flight,
             "paragraphs_per_worker": self.paragraphs_per_worker,
+            # The whole system prompt, so changed harness instructions redo
+            # adaptations made under the old ones.
             "prompt_version": (
-                file_version(self.prompt_path) if self.adapt else None
+                hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+                if self.adapt
+                else None
             ),
         }
         manifest_path = scratch / "extraction.json"
@@ -4349,9 +4377,6 @@ class PaperRun(Run):
                 "removing reference sections"
             )
         if self.adapt:
-            system_prompt = paper_system_prompt(
-                self.prompt_path.read_text(encoding="utf-8")
-            )
             self.publish(
                 "log",
                 f"Adapting {len(paragraphs)} paragraphs with "

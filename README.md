@@ -315,7 +315,13 @@ the server. While adaptation is selected, its settings appear under
   paragraphs each batch holds.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
-reads them when it starts, so edits apply to the next job.
+reads them when it starts, so edits apply to the next job, and a job adapted
+under other instructions starts its adaptation over.
+
+When text extraction leaves reference entries outside a standalone References
+section, the model leaves them out one by one. The log shows each as `Paragraph
+149/174 has nothing to read aloud: …` with the model's reason, and nothing is
+narrated for it.
 
 ### Access and security
 
