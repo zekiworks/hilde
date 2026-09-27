@@ -347,7 +347,7 @@ Three pages form an ARIA tablist of folder tabs on a baseline (Arrow, Home, and
 End keys move between them). Inactive tabs stand slightly raised with a bevel;
 the active tab is flush with an accent top edge and opens into the page below.
 **Advanced** is a separate toggle at the right of the strip, hidden on
-**Listen**:
+**Listen**, that reads **Simple** while its panels are open. Each page:
 
 - **Create** shows three steps, one open at a time; a finished step collapses
   to a summary with **Change**, and a later step opens only after the earlier

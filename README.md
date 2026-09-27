@@ -513,7 +513,8 @@ folder's `description.txt` to make one searchable.
 ### Advanced
 
 **Advanced**, beside the tabs and hidden on **Listen**, shows the server's
-narration workers and the settings a browser may change:
+narration workers and the settings a browser may change; while they show, the
+button reads **Simple** and hides them again:
 
 - **This server** shows the narration workers as live chips, for example
   `GPU 0 idle` through `GPU 3 running`, followed by the device model and

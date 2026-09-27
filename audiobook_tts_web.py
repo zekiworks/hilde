@@ -7795,6 +7795,8 @@ function render() {
   const creating = tab !== "player";
   $("advanced").classList.toggle("hidden", !creating);
   $("advanced").setAttribute("aria-expanded", String(creating && advancedOpen));
+  // While the extra settings show, the toggle names the way back.
+  $("advanced").textContent = creating && advancedOpen ? "Simple" : "Advanced";
   $("advanced-panels").classList.toggle("hidden", !creating || !advancedOpen);
   $("narration-advanced").classList.toggle("hidden", tab !== "audiobook");
   $("adaptation-advanced").classList.toggle(
