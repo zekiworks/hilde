@@ -1,8 +1,11 @@
+
 <p align="center">
   <img src="assets/hilde-dark.png" alt="Hilde logo" width="128">
 </p>
 
 <h1 align="center">Hilde</h1>
+
+https://github.com/user-attachments/assets/b87b14be-c383-4f76-aee3-4a319eac03a2
 
 <p align="center"><strong>Create a narrator once. Reuse that voice across your audiobooks.</strong></p>
 
