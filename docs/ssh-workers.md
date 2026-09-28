@@ -3,7 +3,7 @@
 Machines reached over passwordless SSH can narrate chunks of the same
 audiobook, for the web server and for `audiobook_tts.py narrate` alike. Each
 worker loads its own Base model and pulls chunk batches like a
-[local GPU worker](../README.md#multiple-gpus); no shared storage is required.
+[local GPU worker](command-line.md#multiple-gpus); no shared storage is required.
 
 ## Requirements
 

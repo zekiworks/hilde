@@ -29,7 +29,9 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
-| `README.md` | User guide: a five-command quickstart after the demo video, then Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), Web UI, and Command line. |
+| `README.md` | User guide: what Hilde does, how it reads a paper, a five-command quickstart, known limitations, Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), and License. Two-line summaries link to the Web UI and Command line guides. |
+| `docs/web-ui.md` | User guide to the page: creating an audiobook, the Listen reader, Voices, Advanced, and browser state. The README links to it. |
+| `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
 | `docs/ssh-workers.md` | User reference for SSH narration workers: requirements, web-server flags, and the CLI form. The README links to it. |
 | `docs/command-line-options.md` | User reference listing every `audiobook_tts.py` flag with its default. The README links to it. |
 | `AGENTS.md` | Short standing instructions that coding agents load automatically; the details stay in this document. |
@@ -549,7 +551,7 @@ playable but have no synchronized text.
 | `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local model whose provider differs from the saved server type. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
 
-POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `0.0.0.0`; use `--host 127.0.0.1` when the shared server must be local-only.
+POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface, as `example_run.sh` does.
 
 ## Core invariants
 

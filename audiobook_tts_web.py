@@ -16,8 +16,9 @@ for the whole server process:
 Documents, saved voices, completed audiobooks, and resumable checkpoints live
 under one server-owned shared storage root. The interface selects named shared
 assets and never accepts arbitrary filesystem paths. The server binds to
-0.0.0.0 by default, so anyone who can reach the port can read or replace those
-shared assets as the user running it. Use --host 127.0.0.1 to limit access.
+127.0.0.1 by default, so only this machine can reach it. With --host 0.0.0.0,
+anyone who can reach the port can read or replace those shared assets as the
+user running it.
 
 Window state is stored in per-browser cookies, but TTS model configuration is
 owned by the server process and is never accepted from a browser.
@@ -8861,8 +8862,9 @@ fetch("/api/state").then((response) => response.json()).then((data) => {
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--host", default="0.0.0.0",
-                        help="Interface to bind (default: 0.0.0.0).")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Interface to bind (default: 127.0.0.1, this machine only; "
+                             "0.0.0.0 serves other devices).")
     parser.add_argument("--port", type=int, default=8800, help="Port to bind (default: 8800).")
     parser.add_argument("--open", action="store_true", help="Open the page in a browser.")
     parser.add_argument("--verbose", action="store_true", help="Log every request to stderr.")

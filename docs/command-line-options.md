@@ -1,7 +1,7 @@
 # Command-line options
 
 Every flag of `audiobook_tts.py`, the tool described under
-[Command line](../README.md#command-line). Each command prints its own list too:
+[Command line](command-line.md). Each command prints its own list too:
 
 ```bash
 python audiobook_tts.py --help
