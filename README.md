@@ -5,12 +5,59 @@
 
 <h1 align="center">Hilde</h1>
 
-<p align="center"><strong>Create a narrator once. Reuse that voice across your audiobooks.</strong></p>
+<p align="center"><strong>Turn papers into audiobooks, figures included.</strong><br>
+One narrator from start to finish, a synced reader, and every GPU in your house.</p>
 
 > [!WARNING]
 > 🚧 **Work in progress.** Early version, things may break. First release coming soon. Feedback and issues welcome.
 
 https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
+
+<p align="center"><sub>Demo: Figure 2 of Vaswani et al., <a href="https://arxiv.org/abs/1706.03762">“Attention Is All You Need”</a> (2017), narrated with Hilde.</sub></p>
+
+## What it does
+
+- **Figures, read aloud.** Before narration, a language model rewrites the
+  paper for listening and describes each figure, chart, and table at the point
+  where the text introduces it.
+- **Written for the ear.** Page headers, footers, the table of contents, and
+  the bibliography are removed before any model sees the text. Adaptation also
+  leaves out section numbers, cross-references, citation marks, and email
+  addresses, and turns formulas, notation, and tables into plain words. See
+  [How Hilde reads a paper](#how-hilde-reads-a-paper).
+- **One narrator, start to finish.** A voice is designed once from a written
+  description, then cloned for every chunk of every book, across sessions.
+  Eight stock voices are included.
+- **A reader that follows along.** The current word lights up as it is spoken;
+  click any word to jump there.
+- **Every GPU in the house.** Narration spreads across all local GPUs and, over
+  SSH, other machines. A busy local GPU joins once it has room, and one that
+  runs out of memory hands its chunks to the others.
+- **Local first.** Speech is generated on your own hardware by default. Text
+  adaptation runs on a local model server, or on OpenAI or Anthropic if you
+  connect one.
+- **Resumable.** Press **Stop** or restart the server: finished chunks are kept,
+  and creating the same audiobook again picks up where it left off.
+
+## How Hilde reads a paper
+
+Plain text-to-speech reads a paper exactly as printed. Hilde first rewrites it
+for someone listening, who cannot skim, glance back, or see the page.
+
+| On the page | Read as printed | Read by Hilde |
+| --- | --- | --- |
+| **Table of contents** | "Contents. Part one. Context and history. Page 3. Section I.1. Need for an actionable definition… Page 3. Section I.2…" | *Skipped. The narration goes straight to the first chapter.* |
+| **Numbered headings**<br>`I.1 Need for an actionable definition…` | "I point one. Need for an actionable definition…" | "Need for an actionable definition and measure of intelligence." |
+| **Cross-references**<br>`We noted in II.1.1 that…` | "We noted in Section Two point One point One that…" | "We noted earlier that…" |
+| **Formulas** | "I superscript theta sub T, sub I S comma scope, equals the average over tasks T in the scope of omega sub T times theta sub T…" | "Intelligence across a given scope is the average, over the tasks in that scope, of the system's skill-acquisition efficiency…" |
+| **Notation**<br>`we will denote θ^max_T,IS as Θ` | "…we will denote theta superscript max, sub T comma I S, as capital theta." | *Skipped. Every quantity is named in words.* |
+| **Citation marks**<br>`…Loebner Prize [75]` | "…Loebner Prize seventy-five…" | "…the Total Turing Test and Loebner Prize…" |
+| **Contact details**<br>`author@example.com` | "author at example dot com" | *Skipped.* |
+| **Figures** | The labels inside the image, jumbled: "G General intelligence Extreme generalization Broad Broad Broad…" | "The figure presents intelligence as a hierarchy. At the bottom, task-specific skills support only local generalization…" |
+| **Tables and long lists** | Every cell and every item, in order | What they show and what stands out |
+| **The argument itself** | Every sentence | Every sentence, in full and in order. Only the changes above are made; nothing is summarized away. |
+
+<sub>Examples from François Chollet, <a href="https://arxiv.org/abs/1911.01547">“On the Measure of Intelligence”</a> (2019).</sub>
 
 ## Quickstart
 
@@ -41,12 +88,41 @@ An audiobook studio built on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS). T
 
 Giving every text chunk the same voice description does **not** establish a shared speaker identity—even when those chunks are generated in one batch. Hilde therefore separates voice creation from narration: a **VoiceDesign** model generates a reference clip once and saves it with its exact transcript, and a **Base** model clones that saved reference for every chunk, across batches, books, and sessions. The speaker reference stays the same; pacing, expression, and sampled audio can still vary.
 
-Hilde is released under the [MIT License](LICENSE). Speech generation is provided by Qwen3-TTS; GPU attention acceleration uses [FlashAttention](https://github.com/Dao-AILab/flash-attention). Follow the applicable model and dependency licenses, and use texts and voices you have the rights to use. [ARCHITECTURE.md](ARCHITECTURE.md) describes how the code fits together and how to test a change.
+Hilde's own code is released under the [MIT License](LICENSE); some dependencies have other terms, listed under [License](#license). Speech generation is provided by Qwen3-TTS; GPU attention acceleration uses [FlashAttention](https://github.com/Dao-AILab/flash-attention). [ARCHITECTURE.md](ARCHITECTURE.md) describes how the code fits together and how to test a change.
 
+- [Known limitations](#known-limitations)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Web UI](#web-ui)
 - [Command line](#command-line)
+- [License](#license)
+
+## Known limitations
+
+- **Adaptation is done by a language model.** It is told to keep every
+  sentence of the author's prose, but it can occasionally drop, reword, or
+  misdescribe something. The reader shows exactly the text that was narrated.
+- **Figure descriptions are model-generated and can be wrong.** Check the
+  original figure before relying on a number or a trend.
+- **Local text-only models never see the figure.** They describe it from the
+  text extracted from it (labels, numbers, caption), so a figure with few
+  labels gets a thin description. OpenAI and Anthropic models receive figures
+  as images.
+- **Cloud providers receive your document.** With OpenAI or Anthropic
+  connected, the text and figures of each adapted document are sent to that
+  provider. Use a local model server for private documents.
+- **Expression can still vary.** The saved reference keeps the speaker the
+  same, but pacing and energy are sampled per chunk and can shift between
+  sentences.
+- **SSH workers are not checked for free GPU memory.** One that runs out of
+  memory fails the run; local GPUs wait for room instead.
+- **No authentication.** The web server is meant for your own machine or a
+  trusted network; see [Access and security](#access-and-security).
+- **Tested stack.** The GPU workflow is tested on Linux with Python 3.12 and
+  PyTorch 2.10 + CUDA 13.0; CPU inference has also been exercised. Other
+  platforms may need adjustments.
+- **Inputs.** PDF, Markdown, and plain text up to 64 MiB. HTML pages and EPUB
+  files are not supported.
 
 ## Installation
 
@@ -753,3 +829,18 @@ That writes the usual `reference.wav` + `transcript.txt`, so the voice remains p
 Every flag, with its default and requirements, is listed in
 [Command-line options](docs/command-line-options.md). `--help` on either command
 prints them too.
+
+## License
+
+Hilde's own code is released under the [MIT License](LICENSE). Its
+dependencies keep their own terms:
+
+- PDF extraction uses [PyMuPDF](https://github.com/pymupdf/PyMuPDF) and
+  [pymupdf4llm](https://github.com/pymupdf/pymupdf4llm), which are
+  dual-licensed under the GNU AGPL v3.0 or a commercial license from Artifex.
+  `pip install -r requirements.txt` installs them under the AGPL. If you
+  distribute Hilde or run it as a service for other people, review the AGPL's
+  terms.
+- Speech is generated by [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
+  models; follow their model licenses.
+- Use texts and voices you have the rights to use.
