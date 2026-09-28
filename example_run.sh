@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the Hilde web server for this machine: both local Qwen3-TTS models,
-# the library in User/ beside this script, and port 8800 on every interface.
-# It has no login: anyone who can reach port 8800 can use it.
+# the library in User/ beside this script, and port 8800 on this machine only.
+# To reach it from other devices, add --host 0.0.0.0. It has no login, so
+# anyone who can then reach port 8800 can use it.
 #
 # Narration uses every GPU that CUDA can open. A book starts on the GPUs with
 # 6 GiB free and adds the others, checked every minute, once they have room.
@@ -21,7 +22,6 @@ MODELS=$HOME/code/models/Qwen
 # Serve the checkout this script lives in.
 cd "$(dirname "$0")"
 exec "$PYTHON" audiobook_tts_web.py \
-  --host 0.0.0.0 \
   --port 8800 \
   --voice-design-model "$MODELS/Qwen3-TTS-12Hz-1.7B-VoiceDesign" \
   --voice-clone-model "$MODELS/Qwen3-TTS-12Hz-1.7B-Base" \
