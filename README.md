@@ -303,9 +303,14 @@ Changing batch sizes can change sampled audio even with the same `--seed`. A sav
 ### Text adaptation
 
 **Adapt the text for listening**, in the **Create audiobook** step, rewrites a
-document so it sounds natural read aloud before it is narrated. Terminal
-bibliography sections are omitted; inline attributions and later appendices
-remain. While adaptation is selected, its settings appear under **Advanced** in
+document for someone listening, who cannot skim or glance back. The author's
+prose stays word for word. Whatever would be a chore to hear is left out:
+tables of contents, lists of sections, section numbers, page numbers, citation
+marks, and the bibliography. Whatever the ear cannot hold is tuned down to its
+point: tables, formulas, long lists, and runs of numbers. A table of contents
+or bibliography under its own heading is removed before the model sees the
+text, even without adaptation. Inline attributions and appendices remain.
+While adaptation is selected, its settings appear under **Advanced** in
 **Text adaptation**:
 
 - **Model** picks the model that rewrites the text. Without a choice, a job uses

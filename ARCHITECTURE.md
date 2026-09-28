@@ -11,7 +11,7 @@ Hilde has two interfaces over the same speech pipeline:
 
 The speech backend for each role is selected when the web server starts. Voice creation can use a local Qwen3-TTS VoiceDesign model or an OpenAI-compatible speech endpoint. Narration can use a local Qwen3-TTS Base model, that model distributed across local/SSH workers, or an OpenAI-compatible endpoint.
 
-Current document preparation supports PDF, plain text, and Markdown. PDF pages are converted to Markdown. Optional adaptation by a language model rewrites body paragraphs for spoken narration while omitting terminal bibliography sections.
+Current document preparation supports PDF, plain text, and Markdown. PDF pages are converted to Markdown. Optional adaptation by a language model rewrites body paragraphs for a listener: the author's prose stays, reader apparatus is left out, and dense material is tuned down. Tables of contents and terminal bibliography sections are removed with or without adaptation.
 
 Out of scope: EPUB extraction, CLI playback, built-in web authentication/authorization, and a durable multi-process queue. Audiobook submissions share one process-local worker scheduler. Direct public exposure is unsupported; deploy behind an authenticated, rate-limited TLS reverse proxy.
 
@@ -226,23 +226,37 @@ Existing page checkpoints are reported and reused. The converter uses `pymupdf4l
 
 ### Paragraph adaptation
 
-After text extraction, `split_paper_paragraphs()` produces ordered nonempty
-blocks. Paragraphs whose decoded content consists only of Unicode control or
-format characters are discarded unless they contain a real table or image.
-`omit_reference_sections()` removes standalone
-References/Bibliography/Works Cited/Literature Cited/Reference List sections
-while preserving inline attributions and recognized later appendices.
+After text extraction, `narrated_source_paragraphs()` returns the paragraphs a
+narration covers. `split_paper_paragraphs()` produces ordered nonempty blocks.
+Paragraphs whose decoded content consists only of Unicode control or format
+characters are discarded unless they contain a real table or image. Then two
+kinds of section are left out:
+
+- a table of contents: a heading such as Contents, Table of Contents, or List
+  of Figures, together with the paragraphs after it whose lines mostly end in a
+  page number (after dot leaders, in a table's last cell, or in roman front
+  matter). The first `#` heading or prose paragraph ends it, so a numbered
+  heading such as "Chapter 1" stays. A Contents heading over prose names a real
+  section and stays;
+- standalone References/Bibliography/Works Cited/Literature Cited/Reference
+  List sections, while inline attributions and recognized later appendices
+  stay.
+
+Adaptation checkpoints and the reader both number paragraphs in this list, so
+both take it from this one function, and any change to it bumps the
+extraction identity's `schema`.
 
 When adaptation is enabled:
 
-- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract;
+- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; the author's prose stays word for word;
 - a rolling pool dispatches bounded consecutive paragraph batches to the chosen model;
 - compacted prior summaries provide bounded continuity context;
 - referenced extracted figures become image inputs for OpenAI and Anthropic models; a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
 - a batch that is entirely excluded material, such as reference entries that
-  extraction did not place under a standalone heading, or a bare image the
-  model cannot describe, returns an empty NARRATION with a nonempty SUMMARY;
+  extraction did not place under a standalone heading, a contents list the
+  filter did not catch, or a bare image the model cannot describe, returns an
+  empty NARRATION with a nonempty SUMMARY;
   it adds no text, the log names it with that summary, and the reader shows
   its visuals after the text before it;
 - format-control-only narration paragraphs are removed;
@@ -263,7 +277,7 @@ ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex
 
 Anthropic takes a Console API key rather than a sign-in, because Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps. `connect_anthropic()` trims the pasted key, lists the key's models to prove Anthropic accepts it, and only then writes `~/.hilde/anthropic.json` through the same private temporary file. **Remove** deletes that file.
 
-`extraction.json` binds checkpoints to input bytes, adaptation toggle, model selector and local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
+`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
@@ -601,7 +615,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 80 tests. It covers voice persistence
+The regression suite currently has 81 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -632,7 +646,10 @@ pruned, voice design on the GPU with the most free memory, matched to
 `nvidia-smi` by UUID, and distributed narration in which a full GPU joins only
 once it has room and a GPU that runs out of memory hands its chunk back and is
 started again, adaptation in which a left-out reference adds no text while
-figures keep their place in the reader, adaptation redone after the harness
+figures keep their place in the reader, tables of contents left out before
+any model sees them (a contents table with wrapped rows, a page-break artifact
+inside it, and a list of figures) while a numbered chapter heading after them
+and a real section titled Contents stay, adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
 when the library sits inside the project folder, PDF figures rendered
 without OCR text printed over their labels, ChatGPT device sign-in stored

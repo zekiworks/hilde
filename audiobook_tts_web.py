@@ -102,10 +102,12 @@ VOICE_REFERENCE_TEXT = (
 )
 PAPER_LOOP_INSTRUCTION = (
     "You will process the included narration material in batches of one or more "
-    "consecutive paragraphs. Standalone bibliographies and reference lists have "
-    "already been removed; never recreate them. Preserve every remaining paragraph "
-    "in full and in source order. After each batch, also provide a compact summary "
-    "which will be kept in the context window instead of the source text."
+    "consecutive paragraphs. Standalone bibliographies and tables of contents "
+    "under their own heading have already been removed; never recreate them. "
+    "Narrate the remaining paragraphs in source order under the task's rules: "
+    "the author's prose in full, reader apparatus left out, and dense material "
+    "tuned down. After each batch, also provide a compact summary which will be "
+    "kept in the context window instead of the source text."
 )
 
 ROLE_LABELS = {"design": "VoiceDesign model", "clone": "Base model"}
@@ -161,6 +163,14 @@ PAPER_RESPONSE_PATTERN = re.compile(
     r"<SUMMARY>\s*(.*?)\s*</SUMMARY>",
     flags=re.DOTALL | re.IGNORECASE,
 )
+# Navigation lists a listener never needs; their entries end in page numbers.
+CONTENTS_SECTION_TITLES = frozenset({
+    "contents",
+    "list of figures",
+    "list of illustrations",
+    "list of tables",
+    "table of contents",
+})
 REFERENCE_SECTION_TITLES = frozenset({
     "bibliography",
     "literature cited",
@@ -191,6 +201,12 @@ MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 SECTION_NUMBER_PATTERN = re.compile(
     r"^(?:(?:chapter|section)[ \t]+)?"
     r"(?:\d+(?:\.\d+)*|[ivxlcdm]+)[.)]?[ \t]+",
+    flags=re.IGNORECASE,
+)
+# A contents entry ends in its page number: after dot leaders, in a table's
+# last cell, or after its title. Front matter may number pages in roman.
+CONTENTS_PAGE_PATTERN = re.compile(
+    r"(?:^|[\s.|*_])(?:\d{1,4}|(?=[ivx])x{0,3}(?:ix|iv|v?i{0,3}))[\s*_|]*$",
     flags=re.IGNORECASE,
 )
 
@@ -2848,27 +2864,58 @@ def _paper_heading_title(paragraph):
     return text.rstrip(":").strip().casefold()
 
 
-def omit_reference_sections(paragraphs):
-    """Remove standalone bibliography sections while retaining later appendices."""
+def _is_contents_entry(paragraph):
+    """Return whether a paragraph lists contents entries ending in page numbers."""
+    if MARKDOWN_HEADING_PATTERN.fullmatch(paragraph.strip()):
+        return False
+    lines = [
+        line.strip()
+        for line in paragraph.splitlines()
+        if line.strip() and not all(
+            MARKDOWN_TABLE_DIVIDER.fullmatch(cell)
+            for cell in line.strip().strip("|").split("|")
+        )
+    ]
+    paged = sum(1 for line in lines if CONTENTS_PAGE_PATTERN.search(line))
+    return bool(lines) and 2 * paged >= len(lines)
+
+
+def narrated_source_paragraphs(text):
+    """Return the paragraphs a narration covers and how many were left out.
+
+    Tables of contents and standalone bibliographies are left out, while later
+    appendices stay. Adaptation checkpoints and the reader both number
+    paragraphs in this list, so both must take it from here.
+    """
+    paragraphs = [
+        paragraph
+        for paragraph in split_paper_paragraphs(text)
+        if _reader_source_is_visible(paragraph)
+    ]
     kept = []
-    omitted = 0
-    in_references = False
-    for paragraph in paragraphs:
+    in_contents = in_references = False
+    for index, paragraph in enumerate(paragraphs):
         heading = _paper_heading_title(paragraph)
+        following = paragraphs[index + 1] if index + 1 < len(paragraphs) else ""
+        # Over prose instead of entries, a heading such as "Contents" names a
+        # real section.
+        if heading in CONTENTS_SECTION_TITLES and _is_contents_entry(following):
+            in_contents = True
+            continue
+        if in_contents and _is_contents_entry(paragraph):
+            continue
+        in_contents = False
         if heading in REFERENCE_SECTION_TITLES:
             in_references = True
-            omitted += 1
             continue
         if in_references and heading is not None and (
             heading in POST_REFERENCE_SECTION_TITLES
             or heading.startswith(POST_REFERENCE_SECTION_PREFIXES)
         ):
             in_references = False
-        if in_references:
-            omitted += 1
-        else:
+        if not in_references:
             kept.append(paragraph)
-    return kept, omitted
+    return kept, len(paragraphs) - len(kept)
 
 
 def paper_system_prompt(task):
@@ -2894,11 +2941,11 @@ per source paragraph
 </SUMMARY>
 
 NARRATION is appended to the final file and must remain complete for all included
-source material. When every current source paragraph is excluded material, such
-as reference-list entries, leave NARRATION empty: never write a placeholder, a
-lone punctuation mark, or a note that something was omitted. SUMMARY is internal
-compacted context and is never empty; it must not shorten or replace any
-narration or recreate an omitted bibliography.
+source material. When every current source paragraph is material the task leaves
+out, such as reference-list entries or a table of contents, leave NARRATION empty:
+never write a placeholder, a lone punctuation mark, or a note that something was
+omitted. SUMMARY is internal compacted context and is never empty; it must not
+shorten or replace any narration or recreate an omitted bibliography.
 Earlier source batches and narration are intentionally absent from later calls:
 use their summaries only for continuity."""
 
@@ -2965,10 +3012,9 @@ def paper_request(paragraphs, compacted_summaries, start, end, total, attempt=1)
         retry = f"""
 
 Transport retry attempt {attempt} of {PAPER_RESPONSE_ATTEMPTS}:
-The prior response could not be parsed. Generate the complete adapted included
-source batch again, preserving every supplied paragraph and its boundaries, with one
-NARRATION element followed by one nonempty SUMMARY element. Do not discuss the
-retry or add text outside those elements."""
+The prior response could not be parsed. Adapt the same source batch again under
+the same rules, with one NARRATION element followed by one nonempty SUMMARY
+element. Do not discuss the retry or add text outside those elements."""
     return f"""Compacted summaries from earlier source batches completed before dispatch:
 {compacted_summaries}
 Some immediately preceding batches may still be processing and therefore absent
@@ -4824,7 +4870,9 @@ class PaperRun(Run):
             else None
         )
         identity = {
-            "schema": 2,
+            # Bump whenever narrated_source_paragraphs() changes: checkpoints
+            # and the reader number paragraphs in its list.
+            "schema": 3,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,
@@ -4882,23 +4930,17 @@ class PaperRun(Run):
             source = source_path.read_text(encoding="utf-8")
         else:
             source = input_path.read_text(encoding=self.encoding)
-        paragraphs = [
-            paragraph
-            for paragraph in split_paper_paragraphs(source)
-            if _reader_source_is_visible(paragraph)
-        ]
-        paragraphs, omitted_references = omit_reference_sections(paragraphs)
-        if omitted_references:
+        paragraphs, left_out = narrated_source_paragraphs(source)
+        if left_out:
             self.publish(
                 "log",
-                f"Omitted {omitted_references} paragraph"
-                f"{'s' if omitted_references != 1 else ''} from standalone "
-                "reference sections.\n",
+                f"Left out {left_out} paragraph{'s' if left_out != 1 else ''} "
+                "of tables of contents and reference sections.\n",
             )
         if not paragraphs:
             raise ValueError(
-                "document contains no readable body paragraphs after "
-                "removing reference sections"
+                "document contains no readable body paragraphs after leaving "
+                "out contents and reference sections"
             )
         if self.adapt:
             self.publish(
@@ -5167,10 +5209,8 @@ class AudiobookRun(Run):
             if source_path == extraction_dir / "document.md"
             else self.values["encoding"]
         )
-        source_paragraphs, _ = omit_reference_sections(
-            split_paper_paragraphs(
-                source_path.read_text(encoding=source_encoding)
-            )
+        source_paragraphs, _ = narrated_source_paragraphs(
+            source_path.read_text(encoding=source_encoding)
         )
         narration_dir = self.stage / "narration"
         word_aligner = None

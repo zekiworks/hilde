@@ -1,39 +1,46 @@
 **Role and Objective:**
-Convert the included narrative body of the attached document into a complete, word-for-word spoken narration for text-to-speech (TTS) synthesis or an audiobook.
+Turn the included body of the attached document into narration for a text-to-speech (TTS) audiobook. Write for a listener, not a reader: someone who cannot skim, glance back, or see the page, and who can hold only a few things in mind at once. Information makes good listening; whatever would be a chore to listen to is left out or tuned down.
 
-**Critical Constraint — Absolute Textual Fidelity for Included Material (No Summaries):**
+**The Listener Test (Overrides Every Other Rule):**
+Ask of every passage whether a listener would want to hear it read aloud.
 
-* Do not summarize, condense, outline, abstract, or shorten included narrative material in any way.
-* Every paragraph, argument, finding, qualification, transition, and technical detail in the included narrative body must be retained in full length and sequence.
-* The mandatory section exclusion below overrides the fidelity rules. Excluded reference-list material must not appear in the narration.
-* The only other allowed transformations are mechanical adaptations that ensure clear audio pronunciation and listening comprehension.
+* Reader apparatus, which exists to help someone find, look up, or cross-check something on the page, is left out entirely. Do not summarize it or mention that it was left out.
+* Information in a form the ear cannot hold, such as a table, a long list, a formula, or a run of numbers, is tuned down: say what it shows and why it matters, keeping only the few values the argument needs.
+* The author's prose, meaning the argument, explanations, evidence, examples, qualifications, and transitions, is kept word for word.
 
-**Audio-Compatibility Rules:**
+**Always Leave Out:**
 
-1. **Pronunciation and Notation:**
-* Expand uncommon acronyms or abbreviations on their first spoken occurrence if defined in the text.
-* Render mathematical equations, formulas, and expressions in English. TTS models read numbers and simple equations correctly, however, if the equation is complex for listening, summarize the equation to give the gist of it.
-* Convert code blocks, algorithms, and technical syntax into spoken pseudocode using natural descriptive language rather than reciting punctuation, brackets, or raw symbols aloud.
+* Tables of contents: the heading (such as "Contents"), every entry, and every page number. The same holds for lists of figures, tables, and abbreviations.
+* Lists of sections or sub-sections in any form, such as a contents list that opens a part or chapter, or a roadmap like "Section 2 reviews prior work, Section 3 introduces the method". Sections announce themselves as they arrive. When a roadmap sentence also states a point of the argument, keep the point in plain words, without naming or numbering sections.
+* Section numbers. Speak a heading as its title alone: "Defining intelligence: two divergent visions", not "I point two. Defining intelligence". Only a major part or chapter keeps its ordinal, spoken as a word, as in "Part Two".
+* Cross-references by number, such as "as discussed in Section 2.3.1", "see Equation 4", or "in Appendix B". Say "as discussed earlier" or "as we will see", name the idea when that helps, or drop the reference when nothing is lost.
+* Page furniture: page numbers, running headers and footers, and footnote markers.
+* Citation machinery: bracketed or superscript citation numbers, author-year parentheses, URLs, DOIs, and email addresses. Keep the attribution itself, as in "as Legg and Hutter noted".
+* Publishing boilerplate: arXiv identifiers, copyright and license notices, preprint or review status, and keyword lists.
+* Reference lists and bibliographies, as described below.
 
+**Tune Down:**
 
-2. **Mandatory Section Exclusion — References (Overrides Fidelity):**
-* Completely omit every standalone section titled **References**, **Bibliography**, **Works Cited**, **Literature Cited**, **Reference List**, or an equivalent bibliographic heading.
-* Omit the section heading and every individual bibliographic entry. Do not narrate, summarize, enumerate, or reconstruct any part of that section.
-* The exclusion ends only if a later non-bibliographic section begins, such as an appendix or supplementary material; retain that later section.
-* Do not confuse a bibliography section with an inline attribution in the narrative body. Keep the substantive sentence and attribution, but remove its citation syntax.
+* Tables: say what the table compares and what stands out: the pattern, the extremes, and any value the text relies on. Never read a table row by row or cell by cell.
+* Formulas: say what a formula means and how its parts relate, in plain words, for example "intelligence is the skill a system attains per unit of prior knowledge and experience, averaged over the tasks in its scope". Never read out subscripts, superscripts, or symbol names, as in "theta sub T comma I S"; call each quantity by what it is, such as "the skill threshold". A short, simple expression may be read as spoken arithmetic.
+* Notation: since the narration names quantities in words, a sentence that only assigns a symbol, as in "we denote the maximum skill as Θ", is left out. When a sentence also introduces an idea, as in "we denote by C the space of curricula that reach sufficient skill", keep the idea and drop the symbol.
+* Long lists of names, items, or numbers: a few items flow as one sentence; for more, give the count and the ones that matter. A list whose items carry the author's argument, such as requirements that each come with an explanation, is prose: keep it, spoken as a sequence ("First… Second…").
+* Runs of numbers: keep the ones that make the point, rounded when the precision means nothing to a listener.
+* Figures: describe each figure once, where it is introduced, in a few sentences: what it shows and what it means, not every label. Text between "Start of picture text" and "End of picture text" markers holds the labels printed inside a figure; use it to understand the figure, and never read it out as a list.
+* Code and algorithms: say what they do in plain language, never punctuation, brackets, or syntax.
 
-3. **Inline Citations and Visuals:**
-* Strip out inline bibliographic citation machinery (bracketed numbers, superscripts, parenthetical author-year references, and URL links) while preserving substantive attributions and the surrounding text intact.
-* Do not drop references to figures, tables, or charts; instead, integrate an audio-friendly verbal explanation of what the visual presents at the exact point it is introduced, preserving all reported values, trends, and comparisons in continuous spoken prose.
+**Keep the Author's Prose Intact:**
 
+* Within these rules, never summarize, condense, or shorten the author's prose. Every sentence of argument, finding, qualification, example, and transition stays, in full and in order.
+* The title block is not apparatus: keep the document's title, its authors, and its date.
+* Make only the changes speech needs: expand an acronym on its first spoken use when the text defines it; replace visual references such as "see the table below" with spoken connectors; mend print artifacts such as broken line-break hyphenation and ligature glitches; and paragraph and punctuate so the speech engine pauses naturally.
 
-4. **Flow, Punctuation, and Cleanup:**
-* Smooth out visual/print artifacts: eliminate broken line-break hyphenations, ligature glitches, running headers, footers, and page numbers.
-* Replace visual references (such as "see the table below" or "as shown in the figure above") with natural verbal connectors.
-* Format the output using standard paragraphing and punctuation optimized for a speech engine to pause naturally.
+**References and Bibliography (Always Left Out):**
+
+* Omit every standalone section titled **References**, **Bibliography**, **Works Cited**, **Literature Cited**, **Reference List**, or an equivalent bibliographic heading: its heading and every entry. Do not narrate, summarize, enumerate, or reconstruct any part of it.
+* The exclusion ends only when a later non-bibliographic section begins, such as an appendix or supplementary material; narrate that section.
+* A citation inside the body is not a bibliography: keep the sentence and its attribution, without the citation syntax.
 
 **Output Requirements:**
 
-* Output only the narration text starting immediately with the title.
-* Do not include markdown styling, stage directions, bracketed tags, introductory commentary, or concluding notes.
-* If the full narration exceeds the single-response token limit, halt at a natural section break and wait for a prompt to continue. Never compress or omit remaining included narrative text to fit.
+* Output only the narration: no Markdown styling, stage directions, bracketed tags, commentary, or notes about what was left out or tuned down.

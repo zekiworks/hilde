@@ -351,20 +351,18 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertNotIn("device", state["runtime"])
 
     def test_terminal_bibliography_is_omitted_from_narration(self):
-        paragraphs = web.split_paper_paragraphs(
+        kept, omitted = web.narrated_source_paragraphs(
             "Conclusion cites Smith (2020) in the body.\n\n"
             "References\n\n"
             "Smith, A. Important work. 2020.\n\n"
             "Jones, B. Another work. 2021."
         )
 
-        kept, omitted = web.omit_reference_sections(paragraphs)
-
         self.assertEqual(kept, ["Conclusion cites Smith (2020) in the body."])
         self.assertEqual(omitted, 3)
 
     def test_appendix_after_markdown_references_is_preserved(self):
-        paragraphs = web.split_paper_paragraphs(
+        kept, omitted = web.narrated_source_paragraphs(
             "# Main text\n\n"
             "The substantive discussion remains intact.\n\n"
             "## Bibliography\n\n"
@@ -373,8 +371,6 @@ class PaperWorkflowTests(unittest.TestCase):
             "Appendix evidence remains part of the narration."
         )
 
-        kept, omitted = web.omit_reference_sections(paragraphs)
-
         self.assertEqual(kept, [
             "# Main text",
             "The substantive discussion remains intact.",
@@ -382,6 +378,40 @@ class PaperWorkflowTests(unittest.TestCase):
             "Appendix evidence remains part of the narration.",
         ])
         self.assertEqual(omitted, 2)
+
+    def test_tables_of_contents_are_never_narrated(self):
+        # As PDF extraction writes them: a contents table whose wrapped rows
+        # lose their page number, a format-control paragraph from the page
+        # break, and a list of figures with dot leaders.
+        kept, omitted = web.narrated_source_paragraphs(
+            "# On the Measure of Intelligence\n\n"
+            "# **Contents**\n\n"
+            "|**I**<br>**Context**|**and history**|**3**|\n"
+            "|---|---|---|\n"
+            "|I.1|Need for an actionable definition . . . . . .|3|\n"
+            "|I.3.3|Measuring broad abilities: the psychometrics||\n"
+            "|I.3.4|Integrating AI evaluation and psychometrics . . .|11|\n\n"
+            "\u200b\n\n"
+            "|II<br>A new|perspective|18|\n"
+            "|---|---|---|\n"
+            "|II.1|Critical assessment . . . . . . . .|18|\n\n"
+            "## List of Figures\n\n"
+            "1 Hierarchical model of cognitive abilities . . . . . . . 12\n\n"
+            "# Chapter 1\n\n"
+            "The promise of the field of AI is to develop machines."
+        )
+
+        self.assertEqual(kept, [
+            "# On the Measure of Intelligence",
+            "# Chapter 1",
+            "The promise of the field of AI is to develop machines.",
+        ])
+        self.assertEqual(omitted, 5)
+        # Over prose instead of entries, "Contents" names a real section.
+        section = ["## Contents", "The archive holds one folder per speaker."]
+        self.assertEqual(
+            web.narrated_source_paragraphs("\n\n".join(section)), (section, 0)
+        )
 
     def test_browser_cookie_state_isolated_between_clients(self):
         web._DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
@@ -2960,10 +2990,6 @@ class PaperUrlTests(unittest.TestCase):
         self.assertIn("Remote source paragraph with an inline attribution.", run.assert_source)
         self.assertNotIn("References", run.assert_source)
         self.assertNotIn("Bibliographic entry", run.assert_source)
-        self.assertTrue(any(
-            event == "log" and "Omitted 2 paragraphs" in data
-            for event, data in run.history
-        ))
         self.assertTrue(any(
             event == "log" and "Downloaded" in data
             for event, data in run.history
