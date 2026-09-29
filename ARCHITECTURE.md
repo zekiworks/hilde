@@ -531,7 +531,7 @@ The sentence cue is authoritative over a disagreeing word cue, so a word
 alignment error cannot outlive its sentence. Narration-ready visual descriptions
 receive word cues, while attached table cells and image markup do not.
 Visual-only and invisible-artifact intervals remain assigned to an adjacent
-visible block for their full audio duration. **Follow narration** controls
+visible block for their full audio duration. **Follow along** controls
 auto-scrolling. Paragraph-era sidecars retain estimated sentence cues only when
 word alignment is unavailable. Older MP3s without reader metadata remain
 playable but have no synchronized text.

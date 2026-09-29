@@ -110,10 +110,9 @@ indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
 away. Browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
 approximate seeking. Each sentence cue takes precedence over a stray word cue,
-so a word alignment error never outlives its sentence. **Follow narration**
-controls auto-scrolling. The active implementation identifies itself as
-**Word-synchronized · word seeking** beside the player. The web shell
-is served with `Cache-Control: no-store`, so subsequent ordinary refreshes load
+so a word alignment error never outlives its sentence. **Follow along**
+controls auto-scrolling. The web shell is served with `Cache-Control:
+no-store`, so subsequent ordinary refreshes load
 the current player code. Straightforward extracted tables remain selectable
 Markdown tables, and extracted figures and formulas remain embedded as validated raster
 images. Narration-ready descriptions above those visuals receive word timing;
