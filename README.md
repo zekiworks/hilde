@@ -61,6 +61,22 @@ for someone listening, who cannot skim, glance back, or see the page.
 
 <sub>Examples from François Chollet, <a href="https://arxiv.org/abs/1911.01547">“On the Measure of Intelligence”</a> (2019).</sub>
 
+### Measured
+
+Each audiobook's record keeps the model that adapted it, how much of the
+author's prose came through, and how long each stage took. Two papers, adapted
+by Gemma 4 31B (FP8, served by vLLM on one of the same GPUs) and narrated on
+four RTX PRO 6000 GPUs:
+
+| Paper | PDF pages | Audio | Made in | Prose paragraphs read word for word¹ |
+| --- | ---: | ---: | ---: | ---: |
+| Vaswani et al., “Attention Is All You Need” | 15 | 36 min | 6.5 min | 50 of 64 |
+| Chollet, “On the Measure of Intelligence” | 64 | 2 h 45 min | 32 min | 266 of 328 |
+
+<sub>¹ Keeping at least 95% of the author's words of four letters or more. The
+paragraphs that lost the most had notation turned into words or a reference such
+as "described in Section 3.2" dropped, as the adaptation instructions ask.</sub>
+
 ## Quickstart
 
 ```bash
