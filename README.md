@@ -104,10 +104,11 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   misdescribe something. The reader shows exactly the text that was narrated.
 - **Figure descriptions are model-generated and can be wrong.** Check the
   original figure before relying on a number or a trend.
-- **Local text-only models never see the figure.** They describe it from the
+- **Text-only local models never see the figure.** They describe it from the
   text extracted from it (labels, numbers, caption), so a figure with few
-  labels gets a thin description. OpenAI and Anthropic models receive figures
-  as images.
+  labels gets a thin description, and an equation printed as an image is left
+  out. OpenAI and Anthropic models, and a local model marked as seeing images,
+  receive figures as images.
 - **Cloud providers receive your document.** A document goes to OpenAI or
   Anthropic when you choose one of their models, or, with **Model** left on
   Default, when you have added no local server. The text and figures of each
@@ -408,14 +409,18 @@ While adaptation is selected, its settings appear under **Advanced** in
 - **Add local** connects a model server on your network. Choose its type,
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
+  Tick **This model sees images** when the model accepts images, as Gemma 4
+  does; figures and equations then go to it as images.
 - **Workers** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
   the labels read from inside it, and its caption always go to the model
   together, so it is described once.
 
-Figures reach OpenAI and Anthropic models as images. A local server may run a
-text-only model, so it receives the text extracted from each figure instead.
+Figures reach OpenAI and Anthropic models as images, and a local model too once
+**This model sees images** is ticked. Otherwise a local model receives the text
+extracted from each figure instead, and equations printed as images, which
+carry no text, are left out.
 
 In a PDF, a sentence that a page break splits is joined back together before
 the model sees it, even when a footnote or a figure sat between its halves;

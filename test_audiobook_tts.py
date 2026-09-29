@@ -2083,18 +2083,21 @@ class LocalPaperProviderTests(unittest.TestCase):
             normalize({"audiobook": {"local_provider": "vllm"}})["audiobook"]["local_provider"], ""
         )
 
-    def test_local_server_adapts_figures_as_text_and_leaves_reasoning_out(self):
+    def test_local_server_gets_figures_as_images_only_when_it_sees_them(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         requests = []
+        sees_images = threading.Event()
 
         class ModelHandler(BaseHTTPRequestHandler):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append((self.path, body))
                 # Like a text-only model, refuse image input.
-                if any(isinstance(message["content"], list) for message in body["messages"]):
+                if not sees_images.is_set() and any(
+                    isinstance(message["content"], list) for message in body["messages"]
+                ):
                     self.send_error(400, "image input is not supported")
                     return
                 self.send_response(200)
@@ -2122,30 +2125,59 @@ class LocalPaperProviderTests(unittest.TestCase):
         prompt = root / "prompt.md"
         prompt.write_text("Adapt every paragraph.", encoding="utf-8")
         stage = root / "extraction"
+        runs = []
         with ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                run = PaperRun(
-                    source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
-                    local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
-                    prompt_path=prompt, scratch_path=stage,
-                )
-                run.pump()
+                for local_vision, server_sees_images in ((False, False), (True, False), (True, True)):
+                    if server_sees_images:
+                        sees_images.set()
+                    requests.clear()
+                    run = PaperRun(
+                        source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
+                        local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
+                        prompt_path=prompt, scratch_path=stage, local_vision=local_vision,
+                    )
+                    run.pump()
+                    runs.append((run, list(requests)))
             finally:
                 server.shutdown()
                 thread.join()
 
-        self.assertEqual(run.code, 0)
+        # By default the figure reaches the model as its Markdown text only.
+        (text_only, text_requests), (refused, _), (seen, image_requests) = runs
+        self.assertEqual(text_only.code, 0)
+        self.assertTrue(all(
+            path == "/v1/chat/completions" and body["model"] == "local-model"
+            and isinstance(body["messages"][1]["content"], str)
+            for path, body in text_requests
+        ))
+        self.assertTrue(any("images/" in body["messages"][1]["content"] for _, body in text_requests))
+        # Turning images on redoes the adaptation; a text-only model refuses
+        # them, and the job says how to fix that.
+        self.assertEqual(refused.code, 1)
+        self.assertTrue(any(
+            event == "log" and "This model sees images" in str(data)
+            for event, data in refused.history
+        ))
+        # A model that sees images gets the figure as an image.
+        self.assertEqual(seen.code, 0)
+        [figure] = [
+            body["messages"][1]["content"] for _, body in image_requests
+            if isinstance(body["messages"][1]["content"], list)
+        ]
+        image = next(part for part in figure if part["type"] == "image_url")
+        self.assertTrue(image["image_url"]["url"].startswith("data:image/png;base64,"))
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
         self.assertIn("Spoken text.", prepared)
         self.assertNotIn("Wrong", prepared)
-        self.assertTrue(all(
-            path == "/v1/chat/completions" and body["model"] == "local-model"
-            for path, body in requests
-        ))
-        # The figure paragraph still reached the model, as its Markdown text.
-        self.assertTrue(any("images/" in body["messages"][1]["content"] for _, body in requests))
+        # The setting survives only as a real yes.
+        for stored, kept in ((True, True), ("yes", False), (None, False)):
+            self.assertIs(
+                normalize({"audiobook": {"local_vision": stored}})["audiobook"]["local_vision"],
+                kept,
+            )
 
 
 class OpenAISignInTests(unittest.TestCase):

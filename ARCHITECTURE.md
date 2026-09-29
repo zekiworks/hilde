@@ -203,7 +203,7 @@ The browser then asks whether to overwrite and retries with `confirmed: true`. A
 
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
-- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, local model server, and its type: `ollama`, `lm-studio`, or empty), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
+- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, local model server, its type: `ollama`, `lm-studio`, or empty, and `local_vision`, whether its model sees images, true only when stored as `true`), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
 - `player`: the audiobook open on Listen, so a refresh reopens it.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies. TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
@@ -265,7 +265,7 @@ When adaptation is enabled:
 - `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; the author's prose stays word for word;
 - `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
 - compacted prior summaries provide bounded continuity context;
-- referenced extracted figures become image inputs for OpenAI and Anthropic models; a local server receives only their extracted text, since it may run a text-only model;
+- referenced extracted figures become image inputs for OpenAI and Anthropic models, and for a local model when the browser's `local_vision` is set (**This model sees images** in Add local); otherwise a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
 - a batch that is entirely excluded material, such as reference entries that
   extraction did not place under a standalone heading, a contents list the
@@ -283,7 +283,7 @@ The web server calls the model itself; `PaperRun.model_response()` routes by the
 
 - `openai-codex/<model>` streams a Responses request to the ChatGPT Codex backend (`CHATGPT_CODEX_URL/responses`, `store: false`) with the system prompt as `instructions` and the batch plus figures as input. `openai_model_names()` lists the signed-in account's models from `CHATGPT_CODEX_URL/models` in OpenAI's priority order, without hidden ones. The backend fails requests intermittently, both with an HTTP status and with an error event inside a stream it had accepted ("Unable to verify model access right now. Please retry."). A status in `RETRYABLE_STATUSES`, or an error event whose code is in `OPENAI_BUSY_CODES` or whose message asks for a retry, is asked again up to `MODEL_RETRIES` times after `_retry_delay()`: the `retry-after` (at most 60 seconds), else 1, 2, 4, then 8 seconds. Stop cuts the wait short. Other refusals fail at once.
 - `anthropic/<model>` streams `POST /v1/messages` to Anthropic with the API key, the system prompt as `system`, and the batch plus figures as base64 image blocks; only `text_delta` events form the answer, never the thinking recent Claude models always do first. `max_tokens` is `ANTHROPIC_MAX_TOKENS` (32,000): every model Anthropic still serves accepts it, thinking counts toward it, and Anthropic's rate limit counts only the tokens produced. A status in `RETRYABLE_STATUSES` (429, 500, 502, 503, 504, or 529) before the stream starts is asked again up to `MODEL_RETRIES` times after `_retry_delay()`, and Stop cuts the wait short; a response that ends at `max_tokens` fails with advice to lower **Paragraphs per worker**. `anthropic_model_names()` lists the key's models from `/v1/models`, newest first.
-- `ollama/<model>` and `lm-studio/<model>` stream `POST /v1/chat/completions` to the saved local server; only `content` deltas form the answer, never reasoning.
+- `ollama/<model>` and `lm-studio/<model>` stream `POST /v1/chat/completions` to the saved local server; only `content` deltas form the answer, never reasoning. The user message is plain text, or, when `local_vision` is set and the batch links figures, OpenAI-style content parts with each figure as an `image_url` data URL, which Ollama, vLLM, SGLang, and LM Studio accept. Whether the model sees images is the user's choice, never detected: a 400 from a text-only model fails the job with advice to clear the checkbox.
 - Each request is a `ModelStream` registered with the run. Stop shuts down its socket, which wakes a blocked read at once, including a request a busy server has not started answering.
 - A job without a chosen model resolves `paper_model_catalog()`'s default at start and records that concrete model in its identity. When the browser has added a local server, the default is its first model; while that server does not answer there is no default, and the job stops with the server's error instead of sending the document to a cloud provider. Without a local server, the default is OpenAI's first model once signed in, then Anthropic's.
 
@@ -291,7 +291,7 @@ ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex
 
 Anthropic takes a Console API key rather than a sign-in, because Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps. `connect_anthropic()` trims the pasted key, lists the key's models to prove Anthropic accepts it, and only then writes `~/.hilde/anthropic.json` through the same private temporary file. **Remove** deletes that file.
 
-`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
+`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, whether a local model sees images, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
@@ -482,7 +482,7 @@ and voice-design models plus the device voice creation uses. It also holds
 precision/attention tuning, language, encoding, and seed; narration
 chunk/batch/MP3 settings on Create; adaptation model/concurrency, **Providers**
 (the OpenAI sign-in and the Anthropic API key), and a local
-model server with its type while adaptation is on; and reference-WAV
+model server with its type and whether its model sees images while adaptation is on; and reference-WAV
 encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
@@ -677,7 +677,9 @@ when the library sits inside the project folder, PDF figures rendered
 without OCR text printed over their labels, ChatGPT device sign-in stored
 owner-only and renewed once with its rotated refresh token before a figure
 reaches the model as an image, local-server adaptation that sends figures as
-text and leaves drafted reasoning out, an Anthropic API key that is saved
+text by default and as images once the model is marked as seeing them, redoing
+the adaptation when that setting changes and advising when a text-only model
+refuses the images, and leaves drafted reasoning out, an Anthropic API key that is saved
 owner-only only after Anthropic accepts it and then adapts with figures as
 images after a rate limit, leaving the model's thinking out, an OpenAI backend
 asked again after the failures it gave in real runs (an HTTP 503 and error

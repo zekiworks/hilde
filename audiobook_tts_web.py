@@ -2482,6 +2482,12 @@ def _retry_delay(response, attempt):
     return min(max(delay, 0.0), 60.0)
 
 
+def _image_data_url(path):
+    """Inline a figure as a data URL, as OpenAI-style APIs take images."""
+    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    return f"data:{media_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
 def _openai_text(response):
     """Collect the answer of one streamed Responses request."""
     parts = []
@@ -2513,12 +2519,7 @@ def _openai_text(response):
 def openai_response(model, system_prompt, text, images, open_stream, pause):
     """Adapt one batch with a ChatGPT model through the Codex backend."""
     content = [{"type": "input_text", "text": text}]
-    for path in images:
-        media_type = mimetypes.guess_type(path.name)[0] or "image/png"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        content.append({
-            "type": "input_image", "image_url": f"data:{media_type};base64,{encoded}",
-        })
+    content += [{"type": "input_image", "image_url": _image_data_url(path)} for path in images]
     body = json.dumps({
         "model": model,
         "instructions": system_prompt,
@@ -2565,13 +2566,21 @@ def openai_response(model, system_prompt, text, images, open_stream, pause):
         attempt += 1
 
 
-def local_model_response(server, model, system_prompt, text, open_stream):
+def local_model_response(server, model, system_prompt, text, images, open_stream):
     """Adapt one batch with a model on an Ollama or OpenAI-compatible server."""
+    # Plain text suits every server; figures go along only when the user says
+    # the model sees images, as OpenAI-style image_url parts.
+    content = text
+    if images:
+        content = [{"type": "text", "text": text}] + [
+            {"type": "image_url", "image_url": {"url": _image_data_url(path)}}
+            for path in images
+        ]
     body = json.dumps({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
+            {"role": "user", "content": content},
         ],
         "stream": True,
     }).encode("utf-8")
@@ -2579,7 +2588,13 @@ def local_model_response(server, model, system_prompt, text, open_stream):
     headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
     with open_stream(url, headers, body) as response:
         if response.status != 200:
-            raise _stream_failure(response, "The local model server")
+            failure = _stream_failure(response, "The local model server")
+            if images and response.status == 400:
+                raise RuntimeError(
+                    f"{failure}. If this model reads text only, clear \"This model "
+                    "sees images\" under Add local."
+                )
+            raise failure
         parts, finished = [], False
         for data in sse_events(response):
             if data.strip() == "[DONE]":
@@ -3875,6 +3890,8 @@ def normalize(state):
             "local_provider": (
                 local_provider if local_provider in LOCAL_MODEL_PROVIDERS else ""
             ),
+            # Set in Add local: send figures to the local model as images.
+            "local_vision": audiobook.get("local_vision") is True,
             "in_flight": stored_text(
                 audiobook, "in_flight", str(PAPER_DEFAULT_IN_FLIGHT)
             ),
@@ -3951,6 +3968,7 @@ def values_of(state, tts_models, storage):
         "model": audiobook["model"].strip(),
         "local_server": audiobook["local_server"].strip(),
         "local_provider": audiobook["local_provider"],
+        "local_vision": audiobook["local_vision"],
         "in_flight": audiobook["in_flight"].strip(),
         "paragraphs_per_worker": audiobook["paragraphs_per_worker"].strip(),
         "chunk_max_chars": audiobook["chunk_max_chars"].strip(),
@@ -4644,6 +4662,7 @@ class PaperRun(Run):
         on_success=None,
         scratch_path=None,
         adapt=True,
+        local_vision=False,
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -4669,6 +4688,8 @@ class PaperRun(Run):
         self.stop_requested = threading.Event()
         self.scratch_path = Path(scratch_path) if scratch_path is not None else None
         self.adapt = bool(adapt)
+        # Whether the local server's model sees images, as the user says.
+        self.local_vision = bool(local_vision)
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -4883,7 +4904,8 @@ class PaperRun(Run):
             )
         if provider in LOCAL_MODEL_PROVIDERS and self.local_server:
             return local_model_response(
-                self.local_server, name, system_prompt, text, self.model_stream
+                self.local_server, name, system_prompt, text, attachments,
+                self.model_stream,
             )
         raise RuntimeError(
             f"No text-adaptation model is available for {self.model or 'this document'}."
@@ -4910,8 +4932,9 @@ class PaperRun(Run):
             if path.relative_to(scratch).as_posix() in source
         )
         # A local server may run a text-only model, which refuses images; it
-        # reads the text extracted from each figure instead.
-        if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS:
+        # reads the text extracted from each figure instead, unless the user
+        # says the model sees images.
+        if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS and not self.local_vision:
             attachments = ()
         figure_note = (
             f" with {len(attachments)} figure attachment"
@@ -5141,6 +5164,13 @@ class PaperRun(Run):
             "adapt": self.adapt,
             "model": self.model,
             "local_server": self.local_server,
+            # A figure described from its image differs from one described
+            # from its labels, so the setting redoes the adaptation.
+            "local_vision": (
+                self.local_vision
+                if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
+                else None
+            ),
             "in_flight": self.in_flight,
             "paragraphs_per_worker": self.paragraphs_per_worker,
             # The whole system prompt, so changed harness instructions redo
@@ -5610,6 +5640,7 @@ class AudiobookRun(Run):
                     self.values["paragraphs_per_worker"],
                     scratch_path=extraction_dir,
                     adapt=self.values["adapt"],
+                    local_vision=self.values["local_vision"],
                 )
                 self.paper_run.publish = self.publish
                 self.paper_run.stop_requested = self.stop_requested
@@ -7350,6 +7381,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <div class="row"><label for="paper-local-url">Server:</label><div class="line">
     <input id="paper-local-url" type="text" placeholder="host:port">
   </div></div>
+  <div class="row"><span></span><div class="line">
+    <div class="field">
+      <label class="check"><input id="paper-local-vision" type="checkbox"> This model sees images</label>
+      <span class="note">Figures and equations go to it as images. Leave this off for a
+        text-only model: it reads the text extracted from each figure instead.</span>
+    </div>
+  </div></div>
   <div id="paper-local-status" class="note"></div>
   <div class="footer">
     <button id="paper-local-remove" onclick="removePaperLocal()">Remove</button>
@@ -9055,6 +9093,7 @@ async function cancelPaperOpenAI() {
 function openPaperLocal() {
   $("paper-local-type").value = state.audiobook.local_provider;
   $("paper-local-url").value = state.audiobook.local_server;
+  $("paper-local-vision").checked = !!state.audiobook.local_vision;
   $("paper-local-status").textContent = state.audiobook.local_server
     ? `Current server: ${state.audiobook.local_server}` : "";
   $("paper-local-remove").disabled = !state.audiobook.local_server;
@@ -9073,6 +9112,7 @@ async function savePaperLocal() {
     });
     state.audiobook.local_server = catalog.local_server;
     state.audiobook.local_provider = catalog.local_provider;
+    state.audiobook.local_vision = $("paper-local-vision").checked;
     $("paper-local-server").value = catalog.local_server;
     $("paper-local-provider").value = catalog.local_provider;
     await sync(); applyPaperCatalog(catalog); closePaperLocal();
@@ -9083,6 +9123,7 @@ async function savePaperLocal() {
 async function removePaperLocal() {
   state.audiobook.local_server = ""; $("paper-local-server").value = "";
   state.audiobook.local_provider = ""; $("paper-local-provider").value = "";
+  state.audiobook.local_vision = false;
   await sync(); closePaperLocal(); await refreshPaperModels();
 }
 
