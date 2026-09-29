@@ -28,7 +28,7 @@ or it waits in the shared queue:
    joined back together. Text and Markdown skip extraction unless
    **Adapt the text for listening** is selected.
 2. Optional adaptation runs the chosen language model in bounded concurrent
-   paragraph batches; see [Text adaptation](../README.md#text-adaptation).
+   paragraph batches; see [Text adaptation](text-adaptation.md).
 3. Prepared text is saved as
    `Documents/<input-stem>-narration.txt`.
 4. Narration writes
@@ -51,7 +51,7 @@ to the running job's progress and reconnects to its server-sent event stream
 without duplicating received log lines.
 
 The queue is global across browsers. Every web submission uses the
-server-owned pool of [narration workers](../README.md#narration-workers): one job claims
+server-owned pool of [narration workers](configuration.md#narration-workers): one job claims
 all currently idle compatible workers, and each worker dynamically pulls chunk
 batches from that audiobook. A second job waits when the first has claimed the
 whole pool. Browsers see each worker's device (GPU index, model, memory) and
@@ -191,9 +191,9 @@ button reads **Simple** and hides them again:
 - **Speech tuning**: precision and attention implementation, language, text
   encoding, and an optional seed.
 - **Narration**, on **Create**: **Chunking**, the longest chunk in characters;
-  [**Batch size**](../README.md#batch-size); and **MP3 compression**.
+  [**Batch size**](configuration.md#batch-size); and **MP3 compression**.
 - **Text adaptation**, on **Create** while adaptation is selected; see
-  [Text adaptation](../README.md#text-adaptation).
+  [Text adaptation](text-adaptation.md).
 - **Voice files**, on **Voices**: **Reference WAV encoding**. It remains
   because the generated sample is required for local voice cloning; it is not
   an output-location choice.

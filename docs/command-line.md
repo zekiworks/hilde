@@ -7,7 +7,7 @@ and audiobook. It has two commands:
 2. **`narrate`** uses a **Base** model to clone that saved reference for every chunk, across batches, books, and process sessions.
 
 Only the Base model is needed after you have created a voice. The examples use
-the model directories from [Installation](../README.md#5-download-the-models) and Freyja,
+the model directories from [Installation](installation.md#5-download-the-models) and Freyja,
 one of the stock voices in the repository's `voices/` folder.
 
 ## Create a voice
@@ -64,7 +64,7 @@ python audiobook_tts.py narrate \
   --batch-size 2
 ```
 
-For another audiobook, change `--input` and `--output`, but keep the same `--voice-dir`. Narration loads only the Base model and reconstructs one clone prompt from the saved voice. The reference clip itself is not appended to the book. See [Batch size](../README.md#batch-size) for choosing `--batch-size`.
+For another audiobook, change `--input` and `--output`, but keep the same `--voice-dir`. Narration loads only the Base model and reconstructs one clone prompt from the saved voice. The reference clip itself is not appended to the book. See [Batch size](configuration.md#batch-size) for choosing `--batch-size`.
 
 ## Multiple GPUs
 

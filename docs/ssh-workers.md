@@ -21,7 +21,7 @@ memory fails the run.
 ## Web server
 
 Remote membership in the server's
-[narration workers](../README.md#narration-workers) comes only from the
+[narration workers](configuration.md#narration-workers) comes only from the
 repeated `--narration-ssh-worker` startup flags. To add homogeneous
 passwordless SSH narration workers to the web pool:
 

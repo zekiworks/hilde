@@ -29,7 +29,10 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
-| `README.md` | User guide: what Hilde does, how it reads a paper, a five-command quickstart, known limitations, Installation, Configuration (web server options, storage, models, workers, batch size, text adaptation, access), and License. Two-line summaries link to the Web UI and Command line guides. |
+| `README.md` | User guide: what Hilde does, how it reads a paper, a five-command quickstart, known limitations, access and security, and License. Short summaries link to the guides below. |
+| `docs/installation.md` | User guide to installing: environment, PyTorch/TorchAudio builds, dependencies, FlashAttention 2, and model downloads. |
+| `docs/configuration.md` | User reference for the web server: starting it and its options, storage, speech models, narration workers, and batch size. |
+| `docs/text-adaptation.md` | User guide to text adaptation: what it changes, models and providers, local servers and images, workers, and what the job log reports. |
 | `docs/web-ui.md` | User guide to the page: creating an audiobook, the Listen reader, Voices, Advanced, and browser state. The README links to it. |
 | `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
 | `docs/ssh-workers.md` | User reference for SSH narration workers: requirements, web-server flags, and the CLI form. The README links to it. |
