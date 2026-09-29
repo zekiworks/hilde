@@ -448,7 +448,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
   audiobook**. **Listen** opens the book view: title, narrator, duration,
-  source, **Follow along**, **Download MP3**, the player, and the synchronized
+  source, **Follow along**, **Original** (adapted books), **Download MP3**, the player, and the synchronized
   reader; **All audiobooks** returns to the table.
 
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
@@ -559,8 +559,11 @@ The sentence cue is authoritative over a disagreeing word cue, so a word
 alignment error cannot outlive its sentence. Narration-ready visual descriptions
 receive word cues, while attached table cells and image markup do not.
 Visual-only and invisible-artifact intervals remain assigned to an adjacent
-visible block for their full audio duration. **Follow along** controls
-auto-scrolling. Paragraph-era sidecars retain estimated sentence cues only when
+visible block for their full audio duration. **Follow along** scrolls only
+when the playing sentence is no longer wholly visible below the pinned player,
+then brings it a quarter of the way down the rest of the screen: the text turns
+like pages instead of sliding at every sentence, so a figure stays in view
+while its description is read. Paragraph-era sidecars retain estimated sentence cues only when
 word alignment is unavailable. Older MP3s without reader metadata remain
 playable but have no synchronized text.
 

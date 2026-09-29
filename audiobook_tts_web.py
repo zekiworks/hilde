@@ -8311,6 +8311,24 @@ function renderReaderOriginals(originals) {
   return content.querySelector(".reader-original") !== null;
 }
 
+function followReaderSentence(element) {
+  // Scroll only once the playing sentence leaves the text visible below the
+  // pinned player, then bring it a quarter of the way down. The text turns
+  // like pages instead of sliding at every sentence, and a figure stays in
+  // view while its description is read.
+  const player = $("artifact-player").getBoundingClientRect();
+  const top = Math.max(player.bottom, 0);
+  const bottom = window.innerHeight;
+  const box = element.getBoundingClientRect();
+  if (box.top >= top && box.bottom <= bottom) return;
+  // Once the text scrolls, the player is pinned to the top of the screen.
+  window.scrollBy({
+    top: box.top - player.height - (bottom - player.height) / 4,
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto" : "smooth",
+  });
+}
+
 function updateReaderHighlight() {
   if (!readerAudio || !readerSampleRate) return;
   const sample = Math.round(readerAudio.currentTime * readerSampleRate);
@@ -8329,13 +8347,8 @@ function updateReaderHighlight() {
     const parts = readerBlocks[nextBlock] || [];
     for (const part of parts) part.classList.add("active");
     parts[0]?.closest(".reader-paragraph").classList.add("active");
-    if (parts.length && $("reader-follow").checked && !readerAudio.paused) {
-      parts[0].scrollIntoView({
-        block:"center",
-        behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto" : "smooth",
-      });
-    }
+    if (parts.length && $("reader-follow").checked && !readerAudio.paused)
+      followReaderSentence(parts[0]);
   }
   const nextWord = wordCue ? wordCue.position : -1;
   if (nextWord === activeReaderWord) return;
