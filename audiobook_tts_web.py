@@ -240,6 +240,13 @@ LIST_ITEM_PATTERN = re.compile(r"^(?:[-*+•]|\d{1,3}[.)])[ \t]")
 FIGURE_PART_KINDS = frozenset({"image", "labels", "table", "panel"})
 # What may sit between the halves of a sentence a page break split.
 PAGE_BREAK_SKIPPED_KINDS = FIGURE_PART_KINDS | {"caption", "footnote", "furniture"}
+# Words that tell a listener a description of a visual begins, looked for in
+# the first twelve words of one.
+VISUAL_CUE_PATTERN = re.compile(
+    r"\b(?:figures?|fig\.|tables?|diagrams?|charts?|graphs?|plots?|equations?|"
+    r"formulas?|formulae|illustrations?|images?|pictures?|photographs?|schematics?|maps?)\b",
+    flags=re.IGNORECASE,
+)
 
 BATCH_LINE = re.compile(r"^Generating batch \d+ \(chunks \d+-(\d+)/(\d+)\)")
 CHUNK_LINE = re.compile(r"^Requesting chunk (\d+)/(\d+)")
@@ -5007,9 +5014,10 @@ class PaperRun(Run):
         batch_ends = dict(batches)
         # Extraction writes a figure's panel titles as headings; the model is
         # told what they are, so it does not read them out as sections.
+        kinds = _layout_kinds(paragraphs)
         requested = [
             f"Panel title: {_layout_text(paragraph)}" if kind == "panel" else paragraph
-            for paragraph, kind in zip(paragraphs, _layout_kinds(paragraphs))
+            for paragraph, kind in zip(paragraphs, kinds)
         ]
         summaries = []
         results = {}
@@ -5119,6 +5127,24 @@ class PaperRun(Run):
                             },
                         )
                         results[start] = (end, narration, summary)
+                        # A listener hears no border between the author's
+                        # text and a description of a figure, table, or
+                        # equation, so the description must name what it is.
+                        visual = set(kinds[start - 1:end])
+                        if (
+                            narration
+                            and visual & FIGURE_PART_KINDS
+                            and visual <= FIGURE_PART_KINDS | {"caption"}
+                            and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12]))
+                        ):
+                            label = f"{start}-{end}" if end > start else str(start)
+                            opening = " ".join(narration.split()[:8])
+                            self.publish(
+                                "log",
+                                f"Paragraph{'s' if end > start else ''} {label}/{total}: "
+                                "the description does not open by naming what it "
+                                f"describes: \"{opening}…\"\n",
+                            )
                         completed_count += end - start + 1
                     commit_ready()
                     committed = next_commit - 1

@@ -1436,6 +1436,51 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertNotIn("# Scaled Dot-Product Attention", figure)
         self.assertIn("# 3.2.2 Multi-Head Attention", requests["paragraphs-5-5"])
 
+    def test_a_description_that_does_not_say_what_it_describes_is_logged(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "The model has an encoder and a decoder.\n\n"
+            "![](images/architecture.png)\n\nFigure 1: The Transformer.\n\n"
+            "Attention weighs the values.\n\n"
+            "![](images/attention.png)\n\n"
+            "The paper ends with its logo.\n\n"
+            "![](images/logo.png)",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        answers = {
+            "paragraphs-1-1": "The model has an encoder and a decoder.",
+            "paragraphs-2-3": "Figure 1 shows the Transformer, an encoder beside a decoder.",
+            "paragraphs-4-4": "Attention weighs the values.",
+            # An equation printed as an image, described without saying so.
+            "paragraphs-5-5": "Attention is the softmax of the scaled scores times the values.",
+            "paragraphs-6-6": "The paper ends with its logo.",
+            # A figure the model leaves out adds nothing to check.
+            "paragraphs-7-7": "",
+        }
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                narration = answers[request_path.stem]
+                return f"<NARRATION>{narration}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(
+            source, root / "prepared.txt", "utf-8", in_flight=1, prompt_path=prompt
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        flagged = [
+            str(data) for event, data in run.history
+            if event == "log" and "does not open by naming" in str(data)
+        ]
+        self.assertEqual(len(flagged), 1)
+        self.assertIn("Paragraph 5/7", flagged[0])
+
     def test_pdf_figures_are_not_overprinted_with_ocr_text(self):
         import pymupdf
         import pymupdf4llm

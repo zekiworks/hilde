@@ -422,6 +422,10 @@ Figures reach OpenAI and Anthropic models as images, and a local model too once
 extracted from each figure instead, and equations printed as images, which
 carry no text, are left out.
 
+Each description of a figure, a table, or an equation opens with a spoken cue
+such as "Figure 2 shows…" or "The equation says…", so a listener hears where
+the author's text stops. The job log names any description that doesn't.
+
 In a PDF, a sentence that a page break splits is joined back together before
 the model sees it, even when a footnote or a figure sat between its halves;
 these then follow the sentence. The job log counts the sentences it rejoined.

@@ -262,7 +262,7 @@ or to `paper_batches()` bumps the extraction identity's `schema`.
 
 When adaptation is enabled:
 
-- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; the author's prose stays word for word;
+- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word;
 - `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
 - compacted prior summaries provide bounded continuity context;
 - referenced extracted figures become image inputs for OpenAI and Anthropic models, and for a local model when the browser's `local_vision` is set (**This model sees images** in Add local); otherwise a local server receives only their extracted text, since it may run a text-only model;
@@ -274,6 +274,7 @@ When adaptation is enabled:
   it adds no text, the log names it with that summary, and the reader shows
   its visuals after the text before it;
 - format-control-only narration paragraphs are removed;
+- a batch made only of a figure, table, or equation (with its labels or caption) whose narration names none of them (`VISUAL_CUE_PATTERN`) in its first twelve words is named in the log; the job goes on, since a listener would otherwise hear no border between the author's text and the description;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.
 
@@ -630,7 +631,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 89 tests. It covers voice persistence
+The regression suite currently has 90 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -670,7 +671,9 @@ titles and caption, a footnote and a hyphenated word, a caption broken above
 its table, and an italic first line read as a heading) while a new section or
 capitalized paragraph stays apart, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
-with panel titles marked as titles rather than sent as section headings,
+with panel titles marked as titles rather than sent as section headings, a
+figure or equation description that does not say what it describes named in
+the log while prose and left-out figures are not,
 adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
 when the library sits inside the project folder, PDF figures rendered
