@@ -74,8 +74,9 @@ four RTX PRO 6000 GPUs:
 | Chollet, “On the Measure of Intelligence” | 64 | 2 h 45 min | 32 min | 266 of 328 |
 
 <sub>¹ Keeping at least 95% of the author's words of four letters or more. The
-paragraphs that lost the most had notation turned into words or a reference such
-as "described in Section 3.2" dropped, as the adaptation instructions ask.</sub>
+paragraphs that kept the least were dense with notation, such as `SituationSpace`
+right after the words “situation space”, or lost a cross-reference such as “as
+described in Section 3.2.2”; the adaptation instructions leave both out.</sub>
 
 ## Quickstart
 
