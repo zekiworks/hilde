@@ -101,7 +101,11 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
 
 - **Adaptation is done by a language model.** It is told to keep every
   sentence of the author's prose, but it can occasionally drop, reword, or
-  misdescribe something. The reader shows exactly the text that was narrated.
+  misdescribe something. The reader shows exactly the text that was narrated,
+  and the job log names every prose paragraph that lost more than a fifth of
+  its words; a paragraph the model left out whole is named with its reason
+  instead. That count measures dropped wording, not meaning: a sentence
+  reworded with the same words, or an added claim, goes unnoticed.
 - **Figure descriptions are model-generated and can be wrong.** Check the
   original figure before relying on a number or a trend.
 - **Text-only local models never see the figure.** They describe it from the
@@ -281,7 +285,9 @@ User/
   text. URL downloads use an optional filename or infer one from the response.
 - **Audiobooks** contains completed MP3 files. Hidden `.readers` and `.versions`
   directories hold content-addressed Markdown/timing sidecars and their commit
-  records.
+  records. A book's record in `.versions` also keeps the model that adapted it,
+  how many prose paragraphs kept at least 95% of the author's words, how long
+  each stage of the run that finished it took, and the length of its audio.
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   and narration chunks for unfinished jobs. It is removed for a job only after
   its final audiobook is committed.

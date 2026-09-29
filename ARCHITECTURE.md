@@ -189,7 +189,7 @@ For remote narration, the remote server voice ID supplies `<voice-name>`.
 
 `file_version()` hashes document bytes. A local voice version hashes both owned files and their names; descriptions and previews are not part of it. A remote voice version hashes endpoint, model, and voice ID.
 
-After a successful audiobook run, `.versions/<output-name>.json` records the input and voice versions plus the committed synchronized-reader sidecars. `/api/run` returns HTTP 409 with `confirmation_required` only when:
+After a successful audiobook run, `.versions/<output-name>.json` records the input and voice versions plus the committed synchronized-reader sidecars, then what the run measured: `adaptation` (the concrete model and `adaptation_fidelity()`'s prose summary, or `null` without adaptation), `seconds` for each stage this run performed (`reading`, `adapting`, `narrating`, `aligning`; a resumed run that reused its adaptation has no `reading` or `adapting`), and `audio_seconds`. `/api/run` returns HTTP 409 with `confirmation_required` only when:
 
 - the target MP3 exists;
 - its version record has the same input hash; and
@@ -275,6 +275,7 @@ When adaptation is enabled:
   its visuals after the text before it;
 - format-control-only narration paragraphs are removed;
 - a batch made only of a figure, table, or equation (with its labels or caption) whose narration names none of them (`VISUAL_CUE_PATTERN`) in its first twelve words is named in the log; the job goes on, since a listener would otherwise hear no border between the author's text and the description;
+- a batch of the author's prose (`TEXT_KINDS`) is scored by `prose_kept()`: the share of its words of four letters or more (`CONTENT_WORD_PATTERN`, any script) its narration still contains, after citation marks, superscripts, and links are set aside. Passages under `PROSE_KEPT_MIN_WORDS` are not judged; one under `PROSE_KEPT_LOW` (80%) is named in the log with its missing words, and the job goes on. A passage the model left out whole is not scored: the log already names it with the model's reason, and it is usually apparatus, such as a reference entry extraction glued to the text. The score catches dropped wording, not changed meaning or added claims. Once adaptation ends, or when a finished adaptation is reused, `adaptation_fidelity()` summarizes the saved checkpoints (narrated passages judged, how many kept at least 95%, how many fell under 80%, the lowest, and how many were left out whole) into the log and the audiobook's record;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.
 
@@ -631,7 +632,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 90 tests. It covers voice persistence
+The regression suite currently has 92 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -673,7 +674,10 @@ capitalized paragraph stays apart, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
 with panel titles marked as titles rather than sent as section headings, a
 figure or equation description that does not say what it describes named in
-the log while prose and left-out figures are not,
+the log while prose and left-out figures are not, prose that lost its wording
+named in the log and summarized while citation marks and short passages do not
+count, each book's record keeping its adapting model, prose summary, stage
+times, and audio length even when Continue reuses the adaptation,
 adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
 when the library sits inside the project folder, PDF figures rendered

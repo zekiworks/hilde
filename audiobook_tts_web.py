@@ -247,6 +247,15 @@ VISUAL_CUE_PATTERN = re.compile(
     r"formulas?|formulae|illustrations?|images?|pictures?|photographs?|schematics?|maps?)\b",
     flags=re.IGNORECASE,
 )
+# How much of the author's prose a narration keeps: the share of a passage's
+# words of four letters or more that it still contains. Shorter passages say
+# too little to judge; a passage under PROSE_KEPT_LOW is named in the log.
+CONTENT_WORD_PATTERN = re.compile(r"[^\W\d_]{4,}")
+PROSE_KEPT_MIN_WORDS = 8
+PROSE_KEPT_LOW = 0.8
+PROSE_KEPT_INTACT = 0.95
+# Paragraph kinds that hold the author's prose.
+TEXT_KINDS = frozenset({"prose", "heading", "footnote"})
 
 BATCH_LINE = re.compile(r"^Generating batch \d+ \(chunks \d+-(\d+)/(\d+)\)")
 CHUNK_LINE = re.compile(r"^Requesting chunk (\d+)/(\d+)")
@@ -3199,6 +3208,64 @@ def paper_batches(paragraphs, per_worker):
     return batches
 
 
+def _content_words(text):
+    """Words of four letters or more, without citation marks, superscripts, or links."""
+    text = re.sub(r"<sup>.*?</sup>|\[[\d,\s–-]+\]|https?://\S+", " ", text)
+    return set(CONTENT_WORD_PATTERN.findall(unicodedata.normalize("NFKC", text).casefold()))
+
+
+def prose_kept(source, narration):
+    """Return the share of a passage's content words its narration keeps and
+    the words it lost, or (None, []) when the passage is too short to judge."""
+    words = _content_words(source)
+    if len(words) < PROSE_KEPT_MIN_WORDS:
+        return None, []
+    lost = words - _content_words(narration)
+    return 1 - len(lost) / len(words), sorted(lost)
+
+
+def adaptation_fidelity(paragraphs, checkpoint_dir):
+    """Summarize how much of the author's prose the saved narration kept.
+
+    A passage the model left out whole is counted apart: the log already
+    names it with the model's reason, and it is usually apparatus the prompt
+    asks to drop, such as a stray reference entry. The share measures dropped
+    wording, not changed meaning: a sentence reworded with the same words, or
+    an added claim, goes unnoticed.
+    """
+    kinds = _layout_kinds(paragraphs)
+    shares, left_out = [], 0
+    for path in sorted(Path(checkpoint_dir).glob("*.json")):
+        data = read_json_file(path)
+        try:
+            start = int(path.stem.split("-", 1)[0])
+        except ValueError:
+            continue
+        end = data.get("end") if data else None
+        narration = data.get("narration") if data else None
+        if not isinstance(end, int) or not isinstance(narration, str) or not 1 <= start <= end <= len(paragraphs):
+            continue
+        if set(kinds[start - 1:end]) <= TEXT_KINDS:
+            share, _ = prose_kept("\n\n".join(paragraphs[start - 1:end]), narration)
+            if share is None:
+                continue
+            if narration.strip():
+                shares.append((share, start))
+            else:
+                left_out += 1
+    if not shares and not left_out:
+        return None
+    lowest, lowest_start = min(shares) if shares else (None, None)
+    return {
+        "prose_passages": len(shares),
+        "kept_95": sum(share >= PROSE_KEPT_INTACT for share, _ in shares),
+        "below_80": sum(share < PROSE_KEPT_LOW for share, _ in shares),
+        "lowest": round(lowest, 3) if shares else None,
+        "lowest_paragraph": lowest_start,
+        "left_out": left_out,
+    }
+
+
 def paper_system_prompt(task):
     return f"""{task.rstrip()}
 
@@ -4697,6 +4764,10 @@ class PaperRun(Run):
         self.adapt = bool(adapt)
         # Whether the local server's model sees images, as the user says.
         self.local_vision = bool(local_vision)
+        # What the adaptation kept of the author's prose, and how long this
+        # run took to read and adapt the document.
+        self.fidelity = None
+        self.seconds = {}
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -5127,24 +5198,38 @@ class PaperRun(Run):
                             },
                         )
                         results[start] = (end, narration, summary)
+                        named = (
+                            f"Paragraphs {start}-{end}/{total}" if end > start
+                            else f"Paragraph {start}/{total}"
+                        )
+                        batch_kinds = set(kinds[start - 1:end])
                         # A listener hears no border between the author's
                         # text and a description of a figure, table, or
                         # equation, so the description must name what it is.
-                        visual = set(kinds[start - 1:end])
                         if (
                             narration
-                            and visual & FIGURE_PART_KINDS
-                            and visual <= FIGURE_PART_KINDS | {"caption"}
+                            and batch_kinds & FIGURE_PART_KINDS
+                            and batch_kinds <= FIGURE_PART_KINDS | {"caption"}
                             and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12]))
                         ):
-                            label = f"{start}-{end}" if end > start else str(start)
                             opening = " ".join(narration.split()[:8])
                             self.publish(
                                 "log",
-                                f"Paragraph{'s' if end > start else ''} {label}/{total}: "
-                                "the description does not open by naming what it "
-                                f"describes: \"{opening}…\"\n",
+                                f"{named}: the description does not open by naming "
+                                f"what it describes: \"{opening}…\"\n",
                             )
+                        # The author's prose should come through word for word;
+                        # one that lost much of its wording is worth a look.
+                        if narration and batch_kinds <= TEXT_KINDS:
+                            share, lost = prose_kept(
+                                "\n\n".join(paragraphs[start - 1:end]), narration
+                            )
+                            if share is not None and share < PROSE_KEPT_LOW:
+                                self.publish(
+                                    "log",
+                                    f"{named} kept {share:.0%} of the author's words; "
+                                    f"missing: {', '.join(lost[:8])}.\n",
+                                )
                         completed_count += end - start + 1
                     commit_ready()
                     committed = next_commit - 1
@@ -5168,9 +5253,31 @@ class PaperRun(Run):
             raise
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
+        self.fidelity = adaptation_fidelity(paragraphs, checkpoint_dir)
+        self.publish_fidelity()
+
+    def publish_fidelity(self):
+        fidelity = self.fidelity
+        if not fidelity:
+            return
+        parts = []
+        if fidelity["prose_passages"]:
+            parts.append(
+                f"{fidelity['kept_95']} of {fidelity['prose_passages']} narrated "
+                "prose paragraphs kept at least 95% of the author's words; the "
+                f"lowest, paragraph {fidelity['lowest_paragraph']}, kept "
+                f"{fidelity['lowest']:.0%}"
+            )
+        if fidelity["left_out"]:
+            parts.append(
+                f"{fidelity['left_out']} more were left out whole, each named "
+                "above with the model's reason"
+            )
+        self.publish("log", "; ".join(parts) + ".\n")
 
     def prepare_document(self, scratch):
         scratch.mkdir(mode=0o750, parents=True, exist_ok=True)
+        started = time.monotonic()
         input_path = (
             self.download_source(scratch)
             if self.input_url
@@ -5228,6 +5335,19 @@ class PaperRun(Run):
                 "progress",
                 {"done": 1, "total": 1, "unit": "document"},
             )
+            # Nothing was read or adapted this time; the kept prose is still
+            # measured from the saved adaptation.
+            if self.adapt:
+                stored = scratch / "document.md"
+                if not stored.is_file():
+                    stored = input_path
+                paragraphs, _ = narrated_source_paragraphs(stored.read_text(
+                    encoding="utf-8" if stored.name == "document.md" else self.encoding
+                ))
+                self.fidelity = adaptation_fidelity(
+                    paragraphs, scratch / "paragraph-checkpoints"
+                )
+                self.publish_fidelity()
             return self.output_path
         if manifest is None or any(
             manifest.get(key) != value for key, value in identity.items()
@@ -5272,9 +5392,11 @@ class PaperRun(Run):
                 f"{'s' if self.paragraphs_per_worker != 1 else ''} "
                 "per worker.\n",
             )
+            adapting_started = time.monotonic()
             self.process_paragraphs(
                 scratch, paragraphs, image_paths, system_prompt
             )
+            self.seconds["adapting"] = round(time.monotonic() - adapting_started, 1)
         else:
             temporary = self.output_path.with_name(
                 f".{self.output_path.name}.tmp"
@@ -5293,6 +5415,9 @@ class PaperRun(Run):
                 {"done": 1, "total": 1, "unit": "document"},
             )
         write_json_atomic(manifest_path, {**identity, "complete": True})
+        self.seconds["reading"] = round(
+            time.monotonic() - started - self.seconds.get("adapting", 0.0), 1
+        )
         return self.output_path
 
     def pump(self):
@@ -5347,6 +5472,10 @@ class AudiobookRun(Run):
         self.prepared_input = None
         self.stop_requested = threading.Event()
         self.paper_run = None
+        # How long this run took per stage, and the audio it made, for the
+        # audiobook's record.
+        self.seconds = {}
+        self.audio_seconds = None
 
     def assign_workers(self, workers):
         """Bind a queued job to its local and SSH chunk workers."""
@@ -5583,6 +5712,9 @@ class AudiobookRun(Run):
             markdown, encoding="utf-8", newline="\n"
         )
         write_json_atomic(staged_sync, synchronization)
+        self.audio_seconds = round(
+            synchronization["duration_samples"] / synchronization["sample_rate"], 2
+        )
         return staged_markdown, staged_sync
 
     def _publish_reader(
@@ -5617,6 +5749,15 @@ class AudiobookRun(Run):
                     "sync": sync_path.name,
                     "audio_sha256": audio_version,
                 },
+                # Which model adapted the book and how much of the author's
+                # prose it kept, then how long this run took, per stage.
+                "adaptation": (
+                    {"model": self.paper_run.model, "prose": self.paper_run.fidelity}
+                    if self.paper_run is not None and self.paper_run.adapt
+                    else None
+                ),
+                "seconds": self.seconds,
+                "audio_seconds": self.audio_seconds,
             },
         )
         keep = {markdown_path.name, sync_path.name}
@@ -5674,18 +5815,23 @@ class AudiobookRun(Run):
                     extraction_dir
                 )
                 self._publish_prepared_document(narration_input)
+                self.seconds.update(self.paper_run.seconds)
             if self.stop_requested.is_set():
                 raise InterruptedError("audiobook workflow stopped")
 
             self.set_phase("narration", "Narration")
+            started = time.monotonic()
             staged_output = self._run_narration(narration_input)
+            self.seconds["narrating"] = round(time.monotonic() - started, 1)
             self.set_phase("alignment", "Word alignment")
+            started = time.monotonic()
             staged_markdown, staged_sync = self._stage_reader(
                 input_path,
                 narration_input,
                 needs_extraction,
                 extraction_dir,
             )
+            self.seconds["aligning"] = round(time.monotonic() - started, 1)
             output_path = Path(self.values["output"])
             output_path.parent.mkdir(
                 mode=0o750, parents=True, exist_ok=True

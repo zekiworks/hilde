@@ -6,6 +6,7 @@ import http.client
 import http.cookiejar
 import json
 import os
+import re
 import stat
 import struct
 import sys
@@ -1312,6 +1313,99 @@ class UnifiedWorkflowTests(unittest.TestCase):
             list(range(1, requests["count"] + 1)),
         )
 
+    def test_each_book_records_its_model_prose_kept_and_times_across_a_resume(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        storage = web.SharedStorage(root / "library")
+        storage.ensure()
+        document = storage.documents / "paper.md"
+        document.write_text(
+            "Attention maps a query together with a set of key and value pairs onto an output vector.\n\n"
+            "The output is computed as a weighted sum of the values, where each "
+            "weight comes from comparing the query with its key.",
+            encoding="utf-8",
+        )
+        buffer = io.BytesIO()
+        sf.write(buffer, np.linspace(-0.2, 0.2, 1200, dtype=np.float32), 24000,
+                 format="WAV", subtype="PCM_16")
+        speech = buffer.getvalue()
+        speech_fails = threading.Event()
+        speech_fails.set()
+
+        class SpeechHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if speech_fails.is_set():
+                    self.send_error(500, "speech server is down")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(speech)))
+                self.end_headers()
+                self.wfile.write(speech)
+
+            def log_message(self, format, *args):
+                pass
+
+        def echo(self, request_path, system_prompt, attachments=()):
+            # A faithful model: it narrates each source paragraph as written.
+            source = re.findall(
+                r"<SOURCE_PARAGRAPH[^>]*>\n(.*?)\n</SOURCE_PARAGRAPH>",
+                request_path.read_text(encoding="utf-8"), flags=re.DOTALL,
+            )
+            return f"<NARRATION>{chr(10).join(source)}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        runs = []
+        with ThreadingHTTPServer(("127.0.0.1", 0), SpeechHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            models = {
+                "design": {"source": "missing"},
+                "clone": {
+                    "source": "server",
+                    "server": f"http://127.0.0.1:{server.server_port}/v1",
+                    "server_model": "tts-1",
+                },
+            }
+            values = web.values_of(normalize({"audiobook": {
+                "document": document.name, "server_voice": "alloy", "adapt": True,
+                "model": "lm-studio/faithful", "local_server": "127.0.0.1:9",
+                "local_provider": "lm-studio",
+            }}), models, storage)
+            input_version, voice_version = web.audiobook_versions(values)
+            try:
+                with mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
+                        mock.patch.object(web.PaperRun, "model_response", echo):
+                    # The first attempt adapts the book, then narration fails;
+                    # Continue reuses the adaptation.
+                    for _ in range(2):
+                        run = web.AudiobookRun(
+                            values, storage, input_version, voice_version,
+                            web.audiobook_job_id(input_version, voice_version),
+                        )
+                        run.pump()
+                        runs.append(run)
+                        speech_fails.clear()
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual([run.code for run in runs], [1, 0])
+        record = json.loads(web.audiobook_version_path(
+            storage, storage.audiobooks / "paper-alloy.mp3"
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(record["adaptation"]["model"], "lm-studio/faithful")
+        # Measured from the saved adaptation, though this run reused it.
+        self.assertEqual(
+            (record["adaptation"]["prose"]["prose_passages"],
+             record["adaptation"]["prose"]["kept_95"]),
+            (2, 2),
+        )
+        # The times are this run's: it adapted nothing.
+        self.assertEqual(set(record["seconds"]), {"narrating", "aligning"})
+        self.assertGreater(record["audio_seconds"], 0)
+
     def test_pdf_figures_reach_reader_and_model_with_the_library_under_the_project(self):
         import pymupdf
 
@@ -1480,6 +1574,59 @@ class UnifiedWorkflowTests(unittest.TestCase):
         ]
         self.assertEqual(len(flagged), 1)
         self.assertIn("Paragraph 5/7", flagged[0])
+
+    def test_prose_that_lost_its_wording_is_logged_and_summarized(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        paragraphs = [
+            "Recurrent models compute hidden states one position after another, "
+            "which prevents parallel training within long training examples.",
+            "Attention mechanisms have become an integral part of sequence models. "
+            "They allow modeling dependencies without regard to their distance "
+            "in the input or output sequences.",
+            "The Transformer relies entirely on attention [12] to draw global "
+            "dependencies<sup>3</sup> between input and output, as https://arxiv.org/abs/1706.03762 shows.",
+            "See Figure 1.",
+            "Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey Hinton. Layer normalization. "
+            "arXiv preprint, July 2016.",
+        ]
+        source.write_text("\n\n".join(paragraphs), encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        answers = {
+            "paragraphs-1-1": paragraphs[0],
+            # The model dropped the second sentence.
+            "paragraphs-2-2": "Attention mechanisms have become an integral part of sequence models.",
+            # Citation marks, a superscript, and a link are not the author's words.
+            "paragraphs-3-3": "The Transformer relies entirely on attention to draw global "
+                              "dependencies between input and output, as the paper shows.",
+            "paragraphs-4-4": "The figure shows the model.",
+            # A stray reference entry the model rightly leaves out whole.
+            "paragraphs-5-5": "",
+        }
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                return f"<NARRATION>{answers[request_path.stem]}</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "prepared.txt", "utf-8", in_flight=1, prompt_path=prompt)
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        logs = [str(data) for event, data in run.history if event == "log"]
+        low = [line for line in logs if "of the author's words; missing" in line]
+        self.assertEqual(len(low), 1)
+        self.assertIn("Paragraph 2/5", low[0])
+        self.assertIn("dependencies", low[0])
+        # The short paragraph is too short to judge, and the reference entry
+        # left out whole is counted apart rather than as a loss.
+        self.assertEqual(
+            {key: run.fidelity[key] for key in ("prose_passages", "kept_95", "below_80", "lowest_paragraph", "left_out")},
+            {"prose_passages": 3, "kept_95": 2, "below_80": 1, "lowest_paragraph": 2, "left_out": 1},
+        )
+        self.assertTrue(any("2 of 3 narrated prose paragraphs kept" in line for line in logs))
 
     def test_pdf_figures_are_not_overprinted_with_ocr_text(self):
         import pymupdf
