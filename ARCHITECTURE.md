@@ -598,7 +598,7 @@ playable but have no synchronized text.
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
+| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, read from the first line of a block since a figure printed above the title rides in the heading's block, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
 | `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then the Anthropic key's, with the default a job uses when none is chosen and per-source errors. |
@@ -713,8 +713,9 @@ into the acknowledgements and first entry still starting the bibliography while
 bold titles in running prose do not, and the first heading after a
 bibliography ending it, the first page's title read past an arXiv margin stamp
 and small capitals and spelled by a matching metadata title only, and restored
-as page one's heading unless the page already holds it, library titles that
-fall back to the document name when the first heading is an abstract,
+as page one's heading unless the page already holds it, library titles read
+from a heading block that carries a figure and falling back to the document
+name when the first heading is an abstract,
 sentences split by page breaks
 rejoined in page layouts taken from real papers (across a figure's panel
 titles and caption, a footnote and a hyphenated word, a caption broken above

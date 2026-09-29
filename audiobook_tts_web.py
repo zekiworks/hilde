@@ -866,9 +866,12 @@ def audiobook_title(markdown, fallback):
     """Name a book by its first top-level Markdown heading near the start,
     unless that heading opens a section such as the abstract."""
     for source in _reader_markdown_sources(markdown)[:8]:
-        heading = MARKDOWN_HEADING_PATTERN.fullmatch(source.strip())
+        # A block can carry a figure after its heading, such as a logo that
+        # was printed above the title.
+        first = source.strip().split("\n", 1)[0]
+        heading = MARKDOWN_HEADING_PATTERN.fullmatch(first)
         if heading is not None and len(heading.group(1)) == 1:
-            if _paper_heading_title(source) in OPENING_SECTION_TITLES:
+            if _paper_heading_title(first) in OPENING_SECTION_TITLES:
                 return fallback
             title = re.sub(r"[*_`]+", "", heading.group(2)).strip()
             if title:

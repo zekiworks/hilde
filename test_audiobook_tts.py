@@ -3331,7 +3331,9 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             )
         (self.storage.audiobooks / "notes.txt").write_text("not a book", encoding="utf-8")
         (self.storage.readers / "paper.md").write_text(
+            # A figure before the title shows after its heading, in its block.
             "<!-- audiobook-tts:block=0 -->\n\n# Attention Is *All* You Need\n\n"
+            "![](data:image/png;base64,iVBORw0KGgo=)\n\n"
             "<!-- audiobook-tts:block=1 -->\n\nBody text.",
             encoding="utf-8",
         )
