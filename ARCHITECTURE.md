@@ -219,7 +219,17 @@ Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; Same
 
 PDF work is page-addressable:
 
-1. a short-lived child obtains the page count;
+1. a short-lived child (`_PDF_OVERVIEW`) obtains the page count and the first
+   page's title: its largest horizontal text in the top half, when that is at
+   least 1.3 times the body size. An arXiv stamp runs up the margin in larger
+   type, and small capitals mix sizes within a line, so whole lines holding the
+   largest size are read. When the metadata title has the same words, its
+   spelling wins over capitals. `pymupdf4llm`'s layout model can take a first
+   page's title for a running header, which `header=False` drops, so
+   `with_title_heading()` heads page one with the title, turns a paragraph
+   that is only the title into the heading, and leaves a title found anywhere
+   else on the page alone rather than read it twice; the log says when it
+   restored one;
 2. one converter child writes each missing `pdf-pages/<page>.md` checkpoint;
 3. extracted figures remain under `images/`, linked as `images/<file>`: the
    converter runs from the extraction folder because `pymupdf4llm` links
@@ -588,7 +598,7 @@ playable but have no synchronized text.
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, else the document name), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
+| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
 | `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then the Anthropic key's, with the default a job uses when none is chosen and per-source errors. |
@@ -664,7 +674,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 95 tests. It covers voice persistence
+The regression suite currently has 97 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -701,7 +711,11 @@ inside it, and a list of figures) while a numbered chapter heading after them
 and a real section titled Contents stay, a references title PDF extraction ran
 into the acknowledgements and first entry still starting the bibliography while
 bold titles in running prose do not, and the first heading after a
-bibliography ending it, sentences split by page breaks
+bibliography ending it, the first page's title read past an arXiv margin stamp
+and small capitals and spelled by a matching metadata title only, and restored
+as page one's heading unless the page already holds it, library titles that
+fall back to the document name when the first heading is an abstract,
+sentences split by page breaks
 rejoined in page layouts taken from real papers (across a figure's panel
 titles and caption, a footnote and a hyphenated word, a caption broken above
 its table, and an italic first line read as a heading) while a new section or

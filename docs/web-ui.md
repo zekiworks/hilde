@@ -91,7 +91,9 @@ restart, submit unfinished document/voice pairs again to resume their durable
 ## Listen
 
 Open **Listen** to find a completed audiobook in a table of titles, durations,
-and source names. Search looks only at titles; every word you type must
+and source names. A title is the book's first heading, or its document's name
+when that heading is a section such as Abstract. Search looks only at titles;
+every word you type must
 appear, in any order and case. **Delete** removes an audiobook and its
 synchronized text after you confirm. **Listen** opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,

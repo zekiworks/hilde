@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -437,6 +438,87 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertEqual(
             web.narrated_source_paragraphs("\n\n".join(section)), (section, 0)
         )
+
+    def test_the_first_page_title_is_read_past_margin_stamps_and_small_capitals(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+
+        def overview(name, metadata=None, title=True):
+            path = root / name
+            with pymupdf.open() as pdf:
+                page = pdf.new_page()
+                # arXiv stamps run up the margin in the largest type.
+                page.insert_text(
+                    (30, 600), "arXiv:2609.22682v1 [cs.AI] 19 Sep 2026",
+                    fontsize=20, rotate=90,
+                )
+                if title:
+                    # Small capitals: each word's first letter set larger.
+                    writer, x = pymupdf.TextWriter(page.rect), 110
+                    for text, size in (
+                        ("S", 17.2), ("ELF", 13.8), ("-O", 17.2), ("RGANIZING ", 13.8),
+                        ("A", 17.2), ("GENT ", 13.8), ("T", 17.2), ("EAMS", 13.8),
+                    ):
+                        x = writer.append((x, 100), text, fontsize=size)[1].x
+                    writer.write_text(page)
+                    page.insert_text((110, 125), "LEARN TO REASON TOGETHER", fontsize=17.2)
+                for line in range(20):
+                    page.insert_text(
+                        (110, 160 + 14 * line),
+                        "Collective intelligence depends on how a team organizes its work.",
+                        fontsize=10,
+                    )
+                if metadata:
+                    pdf.set_metadata({"title": metadata})
+                pdf.save(path)
+            return json.loads(subprocess.run(
+                [sys.executable, "-c", web._PDF_OVERVIEW, str(path)],
+                capture_output=True, text=True, check=True,
+            ).stdout)
+
+        # A metadata title with the same words spells the title properly;
+        # one that names something else is not trusted.
+        self.assertEqual(
+            overview("paper.pdf", "Self-Organizing Agent Teams Learn to Reason Together"),
+            {"pages": 1, "title": "Self-Organizing Agent Teams Learn to Reason Together"},
+        )
+        self.assertEqual(
+            overview("draft.pdf", "Microsoft Word - draft.docx")["title"],
+            "SELF-ORGANIZING AGENT TEAMS LEARN TO REASON TOGETHER",
+        )
+        # Without text that stands out, a page has no title.
+        self.assertEqual(overview("chapter.pdf", title=False)["title"], "")
+
+    def test_a_title_the_layout_dropped_heads_the_first_page(self):
+        title = "Self-Organizing Agent Teams Learn to Reason Together"
+        page = (
+            "**Aneesh Pappu**<sup>1</sup> **James Zou**<sup>1</sup>\n\n"
+            "# ABSTRACT\n\n"
+            "We introduce Self-Organizing Agent Teams, or SAT.\n\n"
+            # Figures are named after the PDF, often named after its title.
+            "![](images/SELF-ORGANIZING_AGENT_TEAMS_LEARN_TO_REASON_TOGETHER.pdf-0001-05.png)"
+        )
+
+        self.assertEqual(
+            web.split_paper_paragraphs(web.with_title_heading(page, title))[:2],
+            [f"# {title}", "**Aneesh Pappu**<sup>1</sup> **James Zou**<sup>1</sup>"],
+        )
+        # A title printed as a paragraph of its own becomes the heading.
+        self.assertEqual(
+            web.split_paper_paragraphs(web.with_title_heading(
+                "SELF-ORGANIZING AGENT TEAMS LEARN TO REASON TOGETHER\n\n" + page, title
+            ))[:2],
+            [f"# {title}", "**Aneesh Pappu**<sup>1</sup> **James Zou**<sup>1</sup>"],
+        )
+        # One already a heading, or split over two lines, is never read twice.
+        for kept in (
+            "# **Self-Organizing Agent Teams Learn to Reason Together**<sup>∗</sup>\n\n" + page,
+            "SELF-ORGANIZING AGENT TEAMS\n\nLEARN TO REASON TOGETHER\n\n" + page,
+        ):
+            self.assertEqual(web.with_title_heading(kept, title), kept)
 
     def test_each_narrated_paragraph_knows_the_pdf_page_it_starts_on(self):
         markdown, starts, rejoined = web.join_pdf_pages([
@@ -3240,7 +3322,9 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
     def test_library_lists_titles_durations_and_sources_newest_first(self):
         paper = self.storage.audiobooks / "paper-Martin.mp3"
         novel = self.storage.audiobooks / "great_expectations-Sarah.mp3"
-        for output in (paper, novel):
+        # A paper whose title was never a heading opens with its abstract.
+        teams = self.storage.audiobooks / "teams-Eir.mp3"
+        for output in (paper, novel, teams):
             sf.write(
                 output, np.zeros(24000, dtype=np.float32), 24000,
                 format="MP3", subtype="MPEG_LAYER_III",
@@ -3251,6 +3335,17 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             "<!-- audiobook-tts:block=1 -->\n\nBody text.",
             encoding="utf-8",
         )
+        (self.storage.readers / "teams.md").write_text(
+            "<!-- audiobook-tts:block=0 -->\n\nAneesh Pappu and James Zou.\n\n"
+            "<!-- audiobook-tts:block=1 -->\n\n# 1 ABSTRACT\n\n"
+            "<!-- audiobook-tts:block=2 -->\n\nBody text.",
+            encoding="utf-8",
+        )
+        web.write_json_atomic(
+            web.audiobook_version_path(self.storage, teams),
+            {"document": "agent_teams.pdf", "voice": "Eir", "reader": {"markdown": "teams.md"}},
+        )
+        os.utime(teams, ns=(1_750_000_000_000_000_000,) * 2)
         web.write_json_atomic(
             web.audiobook_version_path(self.storage, paper),
             {"document": "paper.pdf", "voice": "Martin", "reader": {"markdown": "paper.md"}},
@@ -3271,6 +3366,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             [
                 ("great_expectations-Sarah.mp3", "great expectations",
                  "great_expectations.txt", "Sarah"),
+                ("teams-Eir.mp3", "agent teams", "agent_teams.pdf", "Eir"),
                 ("paper-Martin.mp3", "Attention Is All You Need", "paper.pdf", "Martin"),
             ],
         )

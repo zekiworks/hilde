@@ -204,6 +204,20 @@ POST_REFERENCE_SECTION_PREFIXES = (
     "supplementary material",
     "supplemental material",
 )
+# Sections that open a document whose title is not a heading, so a book
+# named after one is named after its document instead.
+OPENING_SECTION_TITLES = frozenset({
+    "abstract",
+    "contents",
+    "executive summary",
+    "foreword",
+    "introduction",
+    "keywords",
+    "overview",
+    "preface",
+    "summary",
+    "table of contents",
+})
 MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 SECTION_NUMBER_PATTERN = re.compile(
     r"^(?:(?:chapter|section)[ \t]+)?"
@@ -322,12 +336,63 @@ if mps is not None and mps.is_available():
 print(json.dumps(devices))
 """
 
-_PDF_PAGE_COUNT = """\
+_PDF_OVERVIEW = """\
+import collections
+import json
+import re
 import sys
+import unicodedata
+
 import pymupdf
 
+
+def words(text):
+    return re.findall(r"[^\\W_]+", unicodedata.normalize("NFKC", text).casefold())
+
+
+def first_page_title(document):
+    # The largest horizontal text in the top half of the first page, when it
+    # stands out from the body text. An arXiv stamp runs up the margin in the
+    # largest type on the page; small capitals set a title's first letters
+    # larger than the rest of its line.
+    page = document[0]
+    lines = [
+        (
+            max(span["size"] for span in line["spans"] if span["text"].strip()),
+            line["bbox"][1],
+            "".join(span["text"] for span in line["spans"]),
+        )
+        for block in page.get_text("dict")["blocks"]
+        for line in block.get("lines", ())
+        if abs(line["dir"][0] - 1) < 0.01
+        and any(span["text"].strip() for span in line["spans"])
+    ]
+    if not lines:
+        return ""
+    weight = collections.Counter()
+    for size, _, text in lines:
+        weight[round(size, 1)] += len(text.strip())
+    body = weight.most_common(1)[0][0]
+    largest = max(size for size, _, _ in lines)
+    if largest < 1.3 * body:
+        return ""
+    title = unicodedata.normalize("NFKC", " ".join(" ".join(
+        text for size, top, text in lines
+        if size >= largest - 0.5 and top < page.rect.height / 2
+    ).split()))
+    if len(title.split()) > 30:
+        return ""
+    # A metadata title is often a file name, but when its words match it
+    # spells a title printed in capitals properly.
+    metadata = " ".join(((document.metadata or {}).get("title") or "").split())
+    return metadata if title and words(metadata) == words(title) else title
+
+
 with pymupdf.open(sys.argv[1]) as document:
-    print(document.page_count)
+    print(json.dumps({
+        "pages": document.page_count,
+        "title": first_page_title(document) if document.page_count else "",
+    }))
 """
 
 _PDF_CONVERTER = """\
@@ -798,10 +863,13 @@ _LIBRARY_LOCK = threading.Lock()
 
 
 def audiobook_title(markdown, fallback):
-    """Name a book by its first top-level Markdown heading near the start."""
+    """Name a book by its first top-level Markdown heading near the start,
+    unless that heading opens a section such as the abstract."""
     for source in _reader_markdown_sources(markdown)[:8]:
         heading = MARKDOWN_HEADING_PATTERN.fullmatch(source.strip())
         if heading is not None and len(heading.group(1)) == 1:
+            if _paper_heading_title(source) in OPENING_SECTION_TITLES:
+                return fallback
             title = re.sub(r"[*_`]+", "", heading.group(2)).strip()
             if title:
                 return title
@@ -3335,6 +3403,42 @@ def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
     return True
 
 
+def _title_words(text):
+    """The words of a title or of page text, leaving out image links (named
+    after the PDF, which is often named after its title), figure labels,
+    superscripts, markup, and case."""
+    text = PICTURE_TEXT_PATTERN.sub(" ", MARKDOWN_IMAGE_PATTERN.sub(" ", text))
+    text = re.sub(r"<sup>.*?</sup>", " ", text)
+    return re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text).casefold())
+
+
+def with_title_heading(markdown, title):
+    """Head a first page's Markdown with the document's title.
+
+    The layout model can take a first page's title for a running header,
+    which extraction then leaves out. A title already written as a paragraph
+    of its own becomes the heading; one found anywhere else on the page, such
+    as split over two lines, is left as it is rather than read twice.
+    """
+    target = _title_words(title)
+    if not target:
+        return markdown
+    paragraphs = split_paper_paragraphs(markdown)
+    for index, paragraph in enumerate(paragraphs):
+        if _title_words(paragraph) == target:
+            if MARKDOWN_HEADING_PATTERN.fullmatch(paragraph):
+                return markdown
+            paragraphs[index] = f"# {title}"
+            return "\n\n".join(paragraphs)
+    found = _title_words(markdown)
+    if any(
+        found[start:start + len(target)] == target
+        for start in range(len(found) - len(target) + 1)
+    ):
+        return markdown
+    return f"# {title}\n\n{markdown}"
+
+
 def join_pdf_pages(pages):
     """Join per-page Markdown; return it, the page each of its blocks starts
     on, and how many sentences were rejoined.
@@ -5114,12 +5218,13 @@ class PaperRun(Run):
         image_path.mkdir(mode=0o750, parents=True, exist_ok=True)
         page_path.mkdir(mode=0o750, parents=True, exist_ok=True)
         try:
-            page_count = int(self.child_output(
-                [sys.executable, "-c", _PDF_PAGE_COUNT, str(input_path)],
-                "PDF page counter",
-            ).strip())
-        except ValueError as exc:
-            raise RuntimeError("PDF page counter returned an invalid count") from exc
+            overview = json.loads(self.child_output(
+                [sys.executable, "-c", _PDF_OVERVIEW, str(input_path)],
+                "PDF reader",
+            ))
+            page_count, title = int(overview["pages"]), str(overview["title"])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise RuntimeError("PDF reader returned an invalid overview") from exc
         if page_count <= 0:
             raise ValueError("PDF contains no pages")
         for page in range(page_count):
@@ -5148,10 +5253,15 @@ class PaperRun(Run):
                 "progress",
                 {"done": page + 1, "total": page_count, "unit": "page"},
             )
-        markdown, starts, rejoined = join_pdf_pages([
+        pages = [
             (page_path / f"{page + 1:06d}.md").read_text(encoding="utf-8")
             for page in range(page_count)
-        ])
+        ]
+        titled = with_title_heading(pages[0], title)
+        if titled != pages[0]:
+            pages[0] = titled
+            self.publish("log", f"Restored the title as a heading: {title}\n")
+        markdown, starts, rejoined = join_pdf_pages(pages)
         # The reader's Original view names the page each paragraph starts on.
         write_json_atomic(scratch / "document-pages.json", {"pages": starts})
         if rejoined:
@@ -5490,9 +5600,10 @@ class PaperRun(Run):
         )
         identity = {
             # Bump whenever the paragraphs or batches a job adapts change,
-            # through join_pdf_pages(), narrated_source_paragraphs(), or
-            # paper_batches(): checkpoints and the reader number paragraphs.
-            "schema": 5,
+            # through with_title_heading(), join_pdf_pages(),
+            # narrated_source_paragraphs(), or paper_batches(): checkpoints
+            # and the reader number paragraphs.
+            "schema": 6,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,

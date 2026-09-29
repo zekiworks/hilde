@@ -50,6 +50,9 @@ the author's text stops. The job log names any description that doesn't.
 In a PDF, a sentence that a page break splits is joined back together before
 the model sees it, even when a footnote or a figure sat between its halves;
 these then follow the sentence. The job log counts the sentences it rejoined.
+A paper's title, which PDF extraction can mistake for a page header and leave
+out, is put back at the top as a heading, so the narration opens with it; the
+job log says when it did.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted
