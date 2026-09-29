@@ -210,6 +210,30 @@ CONTENTS_PAGE_PATTERN = re.compile(
     r"(?:^|[\s.|*_])(?:\d{1,4}|(?=[ivx])x{0,3}(?:ix|iv|v?i{0,3}))[\s*_|]*$",
     flags=re.IGNORECASE,
 )
+# The labels PDF extraction reads from inside a figure sit between these markers.
+PICTURE_TEXT_PATTERN = re.compile(
+    r"<!-- Start of picture text -->.*?(?:<!-- End of picture text -->|$)",
+    flags=re.DOTALL,
+)
+# A caption as extracted: "**Figure 2:** (left) …" or "Table 4. …", but not
+# a sentence that starts "Figure 2 shows".
+CAPTION_PATTERN = re.compile(
+    r"^(?:figure|fig\.|table)[ \t]*\d+(?:\.\d+)*[a-z]?[ \t]*[:.](?:\s|$)",
+    flags=re.IGNORECASE,
+)
+# A footnote as extracted: a quoted block, or its number glued to its first
+# word, as in "1Turing's imitation game …".
+FOOTNOTE_PATTERN = re.compile(r"^\d{1,2}[A-Z][a-z]")
+PAGE_NUMBER_PATTERN = re.compile(
+    r"\d{1,4}|(?=[ivx])x{0,3}(?:ix|iv|v?i{0,3})", flags=re.IGNORECASE
+)
+# The end of a sentence; closing quotes and brackets may follow.
+SENTENCE_END_PATTERN = re.compile(r"[.?!:;][\"'”’)\]]*$")
+LIST_ITEM_PATTERN = re.compile(r"^(?:[-*+•]|\d{1,3}[.)])[ \t]")
+# Parts of one figure or table, which reach the model in one request.
+FIGURE_PART_KINDS = frozenset({"image", "labels", "table", "panel"})
+# What may sit between the halves of a sentence a page break split.
+PAGE_BREAK_SKIPPED_KINDS = FIGURE_PART_KINDS | {"caption", "footnote", "furniture"}
 
 BATCH_LINE = re.compile(r"^Generating batch \d+ \(chunks \d+-(\d+)/(\d+)\)")
 CHUNK_LINE = re.compile(r"^Requesting chunk (\d+)/(\d+)")
@@ -2919,6 +2943,193 @@ def narrated_source_paragraphs(text):
     return kept, len(paragraphs) - len(kept)
 
 
+def _layout_text(paragraph):
+    """Paragraph text without heading marks, emphasis, or superscripts."""
+    text = re.sub(r"<sup>.*?</sup>", "", paragraph.strip())
+    heading = MARKDOWN_HEADING_PATTERN.fullmatch(text)
+    if heading is not None:
+        text = heading.group(2)
+    return re.sub(r"[*_]", "", text).strip()
+
+
+def _layout_kinds(paragraphs):
+    """Classify extracted paragraphs for page joining and figure batching."""
+    kinds = []
+    for paragraph in paragraphs:
+        text = paragraph.strip()
+        plain = _layout_text(text)
+        if not _reader_source_is_visible(text):
+            kind = "furniture"
+        elif is_markdown_table(text):
+            kind = "table"
+        elif not PICTURE_TEXT_PATTERN.sub("", MARKDOWN_IMAGE_PATTERN.sub("", text)).strip():
+            kind = "image" if MARKDOWN_IMAGE_PATTERN.search(text) else "labels"
+        elif MARKDOWN_HEADING_PATTERN.fullmatch(text):
+            kind = "heading"
+        elif CAPTION_PATTERN.match(plain):
+            kind = "caption"
+        elif text.startswith(">") or FOOTNOTE_PATTERN.match(plain):
+            kind = "footnote"
+        elif PAGE_NUMBER_PATTERN.fullmatch(plain):
+            kind = "furniture"
+        else:
+            kind = "prose"
+        kinds.append(kind)
+    # A title printed above a figure panel comes out as an unnumbered heading
+    # directly before its image.
+    for index, kind in enumerate(kinds[:-1]):
+        if (
+            kind == "heading"
+            and kinds[index + 1] == "image"
+            and not SECTION_NUMBER_PATTERN.match(_layout_text(paragraphs[index]))
+        ):
+            kinds[index] = "panel"
+    return kinds
+
+
+def _ends_sentence(paragraph):
+    return SENTENCE_END_PATTERN.search(_layout_text(paragraph)) is not None
+
+
+def _starts_lowercase(paragraph):
+    return _layout_text(paragraph).lstrip("\"'“‘([")[:1].islower()
+
+
+def _join_halves(first, second, vocabulary):
+    """Join text a break split, mending a word the break hyphenated."""
+    first, second = first.rstrip(), second.lstrip()
+    hyphenated = re.search(r"(\w+)-$", first)
+    word = re.match(r"\w+", second)
+    if hyphenated and word:
+        # Keep the hyphen of a compound the document spells that way
+        # elsewhere, as in "self-attention"; drop it inside "ex-plicit".
+        compound = f"{hyphenated.group(1)}-{word.group(0)}".casefold()
+        if re.search(rf"(?<!\w){re.escape(compound)}(?!\w)", vocabulary):
+            return first + second
+        return first[:-1] + second
+    return f"{first} {second}"
+
+
+def _mend_split_captions(paragraphs, vocabulary):
+    """Rejoin a caption broken above its table or figure; return the kinds."""
+    kinds = _layout_kinds(paragraphs)
+    index = 0
+    while index + 2 < len(paragraphs):
+        if (
+            kinds[index] == "caption"
+            and kinds[index + 1] == "prose"
+            and kinds[index + 2] in FIGURE_PART_KINDS
+            and not _ends_sentence(paragraphs[index])
+            and _starts_lowercase(paragraphs[index + 1])
+        ):
+            paragraphs[index] = _join_halves(
+                paragraphs[index], paragraphs[index + 1], vocabulary
+            )
+            del paragraphs[index + 1], kinds[index + 1]
+            continue
+        index += 1
+    return kinds
+
+
+def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
+    """Join the sentence a page break split; return whether one was joined."""
+    tail = len(before) - 1
+    while tail >= 0 and before_kinds[tail] in PAGE_BREAK_SKIPPED_KINDS:
+        tail -= 1
+    head = 0
+    while head < len(after) and after_kinds[head] in PAGE_BREAK_SKIPPED_KINDS:
+        head += 1
+    if (
+        tail < 0
+        or head == len(after)
+        or before_kinds[tail] != "prose"
+        or _ends_sentence(before[tail])
+    ):
+        return False
+    continuation = after[head].strip()
+    if after_kinds[head] == "heading":
+        # A page's first line set in bold or italics can come out as a
+        # heading. A real heading does not begin in lowercase.
+        continuation = MARKDOWN_HEADING_PATTERN.fullmatch(continuation).group(2)
+    elif after_kinds[head] != "prose":
+        return False
+    if not _starts_lowercase(continuation) or LIST_ITEM_PATTERN.match(continuation):
+        return False
+    before[tail] = _join_halves(before[tail], continuation, vocabulary)
+    del after[head], after_kinds[head]
+    return True
+
+
+def join_pdf_pages(pages):
+    """Join per-page Markdown; return it and how many sentences were rejoined.
+
+    A page break ends a paragraph, even inside a sentence. When a page's last
+    sentence is unfinished and the next page continues it in lowercase, the
+    halves become one paragraph again, and the footnotes, page numbers, and
+    figures or tables that sat between them follow it. A caption broken above
+    its table or figure is mended too.
+    """
+    vocabulary = "\n".join(pages).casefold()
+    document, kinds, rejoined = [], [], 0
+    for page in pages:
+        paragraphs = split_paper_paragraphs(page)
+        page_kinds = _mend_split_captions(paragraphs, vocabulary)
+        if document and _rejoin_page_break(
+            document, kinds, paragraphs, page_kinds, vocabulary
+        ):
+            rejoined += 1
+        document.extend(paragraphs)
+        kinds.extend(page_kinds)
+    return "\n\n".join(document), rejoined
+
+
+def _paper_units(kinds):
+    """Group paragraph indexes into a whole figure or table, or one paragraph."""
+    units = []
+    index = 0
+    while index < len(kinds):
+        start = index
+        captioned = (
+            kinds[index] == "caption"
+            and index + 1 < len(kinds)
+            and kinds[index + 1] in FIGURE_PART_KINDS
+        )
+        if captioned:
+            index += 1  # a caption printed above its table or figure
+        if kinds[index] in FIGURE_PART_KINDS:
+            while index + 1 < len(kinds) and kinds[index + 1] in FIGURE_PART_KINDS:
+                index += 1
+            if not captioned and index + 1 < len(kinds) and kinds[index + 1] == "caption":
+                index += 1  # a caption printed below
+                captioned = True
+        # Without a caption to tie them together, titled images stand alone,
+        # as labelled equations do.
+        cuts = [] if captioned else [
+            position for position in range(start + 1, index + 1)
+            if kinds[position] == "panel"
+        ]
+        units.extend(zip([start, *cuts], [*(cut - 1 for cut in cuts), index]))
+        index += 1
+    return units
+
+
+def paper_batches(paragraphs, per_worker):
+    """Plan adaptation batches as 1-based inclusive paragraph ranges.
+
+    A batch holds up to per_worker consecutive paragraphs, but a figure or
+    table is never split: its panel titles, images, the labels read from
+    inside it, and its caption reach the model in one request, so it is
+    described once, knowing its caption. A larger figure gets its own batch.
+    """
+    batches = []
+    for start, end in _paper_units(_layout_kinds(paragraphs)):
+        if batches and end + 2 - batches[-1][0] <= per_worker:
+            batches[-1] = (batches[-1][0], end + 1)
+        else:
+            batches.append((start + 1, end + 1))
+    return batches
+
+
 def paper_system_prompt(task):
     return f"""{task.rstrip()}
 
@@ -4592,16 +4803,18 @@ class PaperRun(Run):
                 "progress",
                 {"done": page + 1, "total": page_count, "unit": "page"},
             )
+        markdown, rejoined = join_pdf_pages([
+            (page_path / f"{page + 1:06d}.md").read_text(encoding="utf-8")
+            for page in range(page_count)
+        ])
+        if rejoined:
+            self.publish(
+                "log",
+                f"Rejoined {rejoined} sentence{'s' if rejoined != 1 else ''} "
+                "that page breaks split.\n",
+            )
         temporary = markdown_path.with_name(f".{markdown_path.name}.tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as combined:
-            for page in range(page_count):
-                if page:
-                    combined.write("\n\n")
-                combined.write(
-                    (page_path / f"{page + 1:06d}.md").read_text(
-                        encoding="utf-8"
-                    ).strip()
-                )
+        temporary.write_text(markdown, encoding="utf-8", newline="\n")
         temporary.replace(markdown_path)
         images = tuple(
             path for path in sorted(image_path.iterdir()) if path.is_file()
@@ -4719,12 +4932,13 @@ class PaperRun(Run):
         total = len(paragraphs)
         checkpoint_dir = scratch / "paragraph-checkpoints"
         checkpoint_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-        batches = [
-            (
-                start,
-                min(total, start + self.paragraphs_per_worker - 1),
-            )
-            for start in range(1, total + 1, self.paragraphs_per_worker)
+        batches = paper_batches(paragraphs, self.paragraphs_per_worker)
+        batch_ends = dict(batches)
+        # Extraction writes a figure's panel titles as headings; the model is
+        # told what they are, so it does not read them out as sections.
+        requested = [
+            f"Panel title: {_layout_text(paragraph)}" if kind == "panel" else paragraph
+            for paragraph, kind in zip(paragraphs, _layout_kinds(paragraphs))
         ]
         summaries = []
         results = {}
@@ -4756,14 +4970,14 @@ class PaperRun(Run):
         )
 
         def submit(start):
-            end = min(total, start + self.paragraphs_per_worker - 1)
+            end = batch_ends[start]
             summary_context, _ = paper_summary_context(
                 summaries, self.summary_context_chars
             )
             future = executor.submit(
                 self.paragraph_batch_response,
                 scratch,
-                tuple(paragraphs[start - 1:end]),
+                tuple(requested[start - 1:end]),
                 summary_context,
                 start,
                 end,
@@ -4871,9 +5085,10 @@ class PaperRun(Run):
             else None
         )
         identity = {
-            # Bump whenever narrated_source_paragraphs() changes: checkpoints
-            # and the reader number paragraphs in its list.
-            "schema": 3,
+            # Bump whenever the paragraphs or batches a job adapts change,
+            # through join_pdf_pages(), narrated_source_paragraphs(), or
+            # paper_batches(): checkpoints and the reader number paragraphs.
+            "schema": 4,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,

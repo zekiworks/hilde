@@ -222,7 +222,19 @@ PDF work is page-addressable:
    converter runs from the extraction folder because `pymupdf4llm` links
    images relative to its working directory, and the reader and figure
    attachments resolve links against that folder;
-4. page Markdown is joined into `document.md` in source order.
+4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
+   order, mending what page breaks split. A page break always ends a
+   paragraph, and the model sees each batch without the narration before it,
+   so a sentence left in halves could never be repaired later. When a page's
+   last prose paragraph ends without `. ? ! : ;` and the next page's first
+   prose paragraph starts in lowercase, the halves become one paragraph; a
+   word the break hyphenated loses its hyphen unless the document spells it
+   hyphenated elsewhere ("self-attention"). Footnotes, page numbers, and
+   figures or tables between the halves are skipped over and follow the joined
+   paragraph. A heading ends the search, except a figure's panel title (an
+   unnumbered heading directly above an image) and a page's first line read as
+   a heading when it starts in lowercase. A caption broken above its table or
+   figure is mended the same way. The job log counts the rejoined sentences.
 
 Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process. `pymupdf4llm` writes OCR text onto the page before it renders figures, so the converter hands it an OCR function whose text is inserted invisibly (render mode 3): the text is still extracted, including a figure's picture text, but figures render as the PDF draws them instead of with every OCR-read label printed a second time.
 
@@ -245,13 +257,13 @@ kinds of section are left out:
   stay.
 
 Adaptation checkpoints and the reader both number paragraphs in this list, so
-both take it from this one function, and any change to it bumps the
-extraction identity's `schema`.
+both take it from this one function. Any change to it, to `join_pdf_pages()`,
+or to `paper_batches()` bumps the extraction identity's `schema`.
 
 When adaptation is enabled:
 
 - `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; the author's prose stays word for word;
-- a rolling pool dispatches bounded consecutive paragraph batches to the chosen model;
+- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
 - compacted prior summaries provide bounded continuity context;
 - referenced extracted figures become image inputs for OpenAI and Anthropic models; a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
@@ -617,7 +629,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 81 tests. It covers voice persistence
+The regression suite currently has 85 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -651,7 +663,14 @@ started again, adaptation in which a left-out reference adds no text while
 figures keep their place in the reader, tables of contents left out before
 any model sees them (a contents table with wrapped rows, a page-break artifact
 inside it, and a list of figures) while a numbered chapter heading after them
-and a real section titled Contents stay, adaptation redone after the harness
+and a real section titled Contents stay, sentences split by page breaks
+rejoined in page layouts taken from real papers (across a figure's panel
+titles and caption, a footnote and a hyphenated word, a caption broken above
+its table, and an italic first line read as a heading) while a new section or
+capitalized paragraph stays apart, each figure or table reaching the model in
+one request with its caption, from real PDF extraction through adaptation,
+with panel titles marked as titles rather than sent as section headings,
+adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
 when the library sits inside the project folder, PDF figures rendered
 without OCR text printed over their labels, ChatGPT device sign-in stored

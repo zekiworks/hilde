@@ -26,7 +26,7 @@ Ask of every passage whether a listener would want to hear it read aloud.
 * Notation: since the narration names quantities in words, a sentence that only assigns a symbol, as in "we denote the maximum skill as Θ", is left out. When a sentence also introduces an idea, as in "we denote by C the space of curricula that reach sufficient skill", keep the idea and drop the symbol.
 * Long lists of names, items, or numbers: a few items flow as one sentence; for more, give the count and the ones that matter. A list whose items carry the author's argument, such as requirements that each come with an explanation, is prose: keep it, spoken as a sequence ("First… Second…").
 * Runs of numbers: keep the ones that make the point, rounded when the precision means nothing to a listener.
-* Figures: describe each figure once, where it is introduced, in a few sentences: what it shows and what it means, not every label. Text between "Start of picture text" and "End of picture text" markers holds the labels printed inside a figure; use it to understand the figure, and never read it out as a list.
+* Figures: a figure arrives whole: its images, the titles of its panels (marked "Panel title:"), the labels read from inside it (between "Start of picture text" and "End of picture text" markers), and its caption. Describe it once, in a few sentences: what it shows and what it means, not every label. Use the titles, labels, and caption to understand it; never read the labels out as a list, never read a panel title on its own line, and do not read the caption again after the description. A table arrives with its caption the same way.
 * Code and algorithms: say what they do in plain language, never punctuation, brackets, or syntax.
 
 **Keep the Author's Prose Intact:**

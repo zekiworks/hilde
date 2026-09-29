@@ -24,7 +24,8 @@ Audiobooks made from it are kept, and a job already queued keeps its own copy.
 
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:
-1. A PDF is extracted page by page. Text and Markdown skip extraction unless
+1. A PDF is extracted page by page, and a sentence a page break splits is
+   joined back together. Text and Markdown skip extraction unless
    **Adapt the text for listening** is selected.
 2. Optional adaptation runs the chosen language model in bounded concurrent
    paragraph batches; see [Text adaptation](../README.md#text-adaptation).

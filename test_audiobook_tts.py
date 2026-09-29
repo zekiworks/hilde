@@ -413,6 +413,115 @@ class PaperWorkflowTests(unittest.TestCase):
             web.narrated_source_paragraphs("\n\n".join(section)), (section, 0)
         )
 
+    def test_page_breaks_do_not_split_sentences(self):
+        def joined(*pages):
+            return web.split_paper_paragraphs(web.join_pdf_pages(list(pages))[0])
+
+        # Page breaks as PDF extraction writes them for real papers. Attention
+        # Is All You Need, pages 3 and 4: the figure's panel titles come out as
+        # headings between the halves of the sentence.
+        figure = [
+            "# Scaled Dot-Product Attention",
+            "![](images/p4-1.png)",
+            "<!-- Start of picture text -->MatMul<br>SoftMax<!-- End of picture text -->",
+            "# Multi-Head Attention",
+            "![](images/p4-3.png)",
+            "**Figure 2:** (left) Scaled Dot-Product Attention.",
+        ]
+        self.assertEqual(joined(
+            "Attention maps a query to an output. The output is computed as a weighted sum",
+            "\n\n".join([*figure, "of the values, where each weight comes from a key."]),
+        ), [
+            "Attention maps a query to an output. The output is computed as a "
+            "weighted sum of the values, where each weight comes from a key.",
+            *figure,
+        ])
+        # On the Measure of Intelligence, page 3: a footnote closes the page
+        # between the halves of a hyphenated word.
+        footnote = "> 1Turing's imitation game was meant as an argumentative device."
+        self.assertEqual(joined(
+            f"This is a mistake, as the absence of widely-accepted ex-\n\n{footnote}",
+            "plicit definitions has been substituted with implicit ones.",
+        ), [
+            "This is a mistake, as the absence of widely-accepted explicit "
+            "definitions has been substituted with implicit ones.",
+            footnote,
+        ])
+        # Attention, page 10: a caption broken above its table.
+        table = "|Parser|WSJ 23 F1|\n|---|---|\n|Transformer (4 layers)|91.3|"
+        self.assertEqual(joined(
+            "During inference, we",
+            "Table 4: The Transformer generalizes well (Results are on Section 23"
+            f"\n\nof WSJ)\n\n{table}\n\nincreased the maximum output length.",
+        ), [
+            "During inference, we increased the maximum output length.",
+            "Table 4: The Transformer generalizes well (Results are on Section 23 of WSJ)",
+            table,
+        ])
+        # On the Measure of Intelligence, page 39: an italic first line read
+        # as a heading.
+        self.assertEqual(joined(
+            "Intelligence is measured with respect to priors, experience, and",
+            "# _generalization difficulty.”_\n\nWe consider an intelligent system.",
+        ), [
+            "Intelligence is measured with respect to priors, experience, and "
+            "_generalization difficulty.”_",
+            "We consider an intelligent system.",
+        ])
+        # A compound the paper spells hyphenated keeps its hyphen.
+        self.assertEqual(joined(
+            "Self-attention relates positions. We call it self-",
+            "attention, as every position attends to all others.",
+        ), [
+            "Self-attention relates positions. We call it self-attention, as "
+            "every position attends to all others.",
+        ])
+        # A new section or paragraph after an unfinished line stays apart.
+        for page in (
+            "# 4 Why Self-Attention\n\nthis section compares layer types.",
+            "Deep Learning is a connectionist framework.",
+        ):
+            with self.subTest(page=page):
+                self.assertEqual(
+                    joined("The model is trained on", page),
+                    ["The model is trained on", *web.split_paper_paragraphs(page)],
+                )
+
+    def test_figures_reach_the_model_whole(self):
+        paragraphs = [
+            "The output is a weighted sum of the values.",
+            "# Scaled Dot-Product Attention",
+            "![](images/a.png)",
+            "<!-- Start of picture text -->MatMul<br>SoftMax<!-- End of picture text -->",
+            "# Multi-Head Attention",
+            "![](images/b.png)",
+            "Figure 2: (left) Scaled Dot-Product Attention.",
+            "## 3.2.2 Multi-Head Attention",
+            "Table 1: Maximum path lengths.",
+            "|Layer|Complexity|\n|---|---|\n|Self-Attention|O(n2 d)|",
+            "Instead of one attention function, we use several.",
+        ]
+        # Each figure or table is one request, with its panel titles, labels,
+        # and caption, whether the caption sits below or above it.
+        self.assertEqual(
+            web.paper_batches(paragraphs, 1),
+            [(1, 1), (2, 7), (8, 8), (9, 10), (11, 11)],
+        )
+        # Larger batches still never split one, and a figure larger than a
+        # batch gets its own.
+        self.assertEqual(web.paper_batches(paragraphs, 4), [(1, 1), (2, 7), (8, 11)])
+        # A numbered section heading above a figure is not one of its titles,
+        # and labelled equations without a caption stay apart.
+        self.assertEqual(web.paper_batches([
+            "## 3 Model Architecture",
+            "![](images/c.png)",
+            "Figure 1: The Transformer.",
+            "# Intelligence of a system (sufficient case):",
+            "![](images/sufficient.png)",
+            "# Intelligence of a system (optimal case):",
+            "![](images/optimal.png)",
+        ], 1), [(1, 1), (2, 3), (4, 5), (6, 7)])
+
     def test_browser_cookie_state_isolated_between_clients(self):
         web._DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
         storage_temp = tempfile.TemporaryDirectory()
@@ -1243,6 +1352,89 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertIn(
             "](data:image/png;base64,", web.embed_reader_images(markdown, (stage,))
         )
+
+    def test_split_sentence_and_its_figure_reach_the_model_whole(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        # Laid out like Attention Is All You Need, pages 3 and 4: a sentence
+        # breaks off at the foot of a page, and the next opens with a figure.
+        source = root / "paper.pdf"
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 72), "Attention maps a query and key-value pairs to an output.")
+            page.insert_text((72, 700), "The output is computed as a weighted sum")
+            page = pdf.new_page()
+            figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+            figure.clear_with(200)
+            page.insert_image(pymupdf.Rect(72, 72, 372, 372), pixmap=figure)
+            page.insert_text((72, 400), "Figure 2: Scaled Dot-Product Attention.")
+            page.insert_text((72, 460), "of the values, where each weight comes from a key.")
+            pdf.save(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        requests = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requests.append((request_path.read_text(encoding="utf-8"), attachments))
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(
+            source, stage / "prepared.txt", "utf-8", in_flight=1,
+            prompt_path=prompt, scratch_path=stage,
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        self.assertEqual(sum(
+            "The output is computed as a weighted sum of the values, where each "
+            "weight comes from a key." in text
+            for text, _ in requests
+        ), 1)
+        # The request that sends the figure also holds its caption, and no
+        # other request does.
+        [figure_request] = [text for text, attached in requests if attached]
+        self.assertIn("Figure 2: Scaled Dot-Product Attention.", figure_request)
+        self.assertEqual(sum("Figure 2:" in text for text, _ in requests), 1)
+
+    def test_panel_titles_reach_the_model_as_titles_not_sections(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "The output is a weighted sum of the values.\n\n"
+            "# Scaled Dot-Product Attention\n\n![](images/a.png)\n\n"
+            "Figure 2: Scaled Dot-Product Attention.\n\n"
+            "# 3.2.2 Multi-Head Attention\n\n"
+            "Instead of one attention function, we use several.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        requests = {}
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requests[request_path.stem] = request_path.read_text(encoding="utf-8")
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(
+            source, root / "prepared.txt", "utf-8", in_flight=1, prompt_path=prompt
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        # Extraction writes a panel title as a heading; the model must not
+        # read it out as a section of its own.
+        figure = requests["paragraphs-2-4"]
+        self.assertIn("Panel title: Scaled Dot-Product Attention", figure)
+        self.assertNotIn("# Scaled Dot-Product Attention", figure)
+        self.assertIn("# 3.2.2 Multi-Head Attention", requests["paragraphs-5-5"])
 
     def test_pdf_figures_are_not_overprinted_with_ocr_text(self):
         import pymupdf

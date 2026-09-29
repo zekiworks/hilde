@@ -405,10 +405,16 @@ While adaptation is selected, its settings appear under **Advanced** in
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
 - **Workers** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
-  paragraphs each batch holds.
+  paragraphs each batch holds. A figure or table is never split: its image,
+  the labels read from inside it, and its caption always go to the model
+  together, so it is described once.
 
 Figures reach OpenAI and Anthropic models as images. A local server may run a
 text-only model, so it receives the text extracted from each figure instead.
+
+In a PDF, a sentence that a page break splits is joined back together before
+the model sees it, even when a footnote or a figure sat between its halves;
+these then follow the sentence. The job log counts the sentences it rejoined.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted
