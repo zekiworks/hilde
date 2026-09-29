@@ -253,8 +253,13 @@ kinds of section are left out:
   heading such as "Chapter 1" stays. A Contents heading over prose names a real
   section and stays;
 - standalone References/Bibliography/Works Cited/Literature Cited/Reference
-  List sections, while inline attributions and recognized later appendices
-  stay.
+  List sections, while inline attributions and later sections stay. The first
+  `#` heading ends one, since entries are never `#` headings, and so does a
+  recognized later title such as Acknowledgements or Appendix. PDF extraction
+  can run a bold references title into the paragraph before it and the first
+  entry (`… inspiration. **References** [1] Ba, …`);
+  `_split_run_in_reference_title()` splits it out first when it starts the
+  paragraph, a line, or a sentence and what follows does not continue one.
 
 Adaptation checkpoints and the reader both number paragraphs in this list, so
 both take it from this one function. Any change to it, to `join_pdf_pages()`,

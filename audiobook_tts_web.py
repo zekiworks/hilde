@@ -2983,17 +2983,46 @@ def _is_contents_entry(paragraph):
     return bool(lines) and 2 * paged >= len(lines)
 
 
+# A bold title inside a paragraph, as PDF extraction writes a run-in heading.
+RUN_IN_TITLE_PATTERN = re.compile(r"(\*\*|__)(?=\S)([^*_\n]+?)(?<=\S)\1")
+
+
+def _split_run_in_reference_title(paragraph):
+    """Split out a references title that extraction ran into its neighbors.
+
+    A PDF can join the paragraph before the title, the title, and the first
+    entry into one: "… inspiration. **References** [1] Ba, …". The title must
+    start the paragraph, a line, or a sentence, and what follows it must not
+    continue a sentence, so bold prose such as "**References** to earlier
+    work" stays whole.
+    """
+    for match in RUN_IN_TITLE_PATTERN.finditer(paragraph):
+        if _paper_heading_title(match.group(2)) not in REFERENCE_SECTION_TITLES:
+            continue
+        before = paragraph[:match.start()].rstrip(" \t")
+        after = paragraph[match.end():].strip()
+        if before and not before.endswith("\n") and not _ends_sentence(before):
+            continue
+        if after and _starts_lowercase(after):
+            continue
+        if not before and not after:
+            break
+        return [part for part in (before.strip(), match.group(0), after) if part]
+    return [paragraph]
+
+
 def narrated_source_paragraphs(text):
     """Return the paragraphs a narration covers and how many were left out.
 
     Tables of contents and standalone bibliographies are left out, while later
-    appendices stay. Adaptation checkpoints and the reader both number
+    sections stay. Adaptation checkpoints and the reader both number
     paragraphs in this list, so both must take it from here.
     """
     paragraphs = [
-        paragraph
+        part
         for paragraph in split_paper_paragraphs(text)
         if _reader_source_is_visible(paragraph)
+        for part in _split_run_in_reference_title(paragraph)
     ]
     kept = []
     in_contents = in_references = False
@@ -3011,9 +3040,12 @@ def narrated_source_paragraphs(text):
         if heading in REFERENCE_SECTION_TITLES:
             in_references = True
             continue
+        # Entries are never "#" headings, so one starts a later section,
+        # such as an appendix titled only "A Proofs".
         if in_references and heading is not None and (
             heading in POST_REFERENCE_SECTION_TITLES
             or heading.startswith(POST_REFERENCE_SECTION_PREFIXES)
+            or MARKDOWN_HEADING_PATTERN.fullmatch(paragraph)
         ):
             in_references = False
         if not in_references:
@@ -5292,7 +5324,7 @@ class PaperRun(Run):
             # Bump whenever the paragraphs or batches a job adapts change,
             # through join_pdf_pages(), narrated_source_paragraphs(), or
             # paper_batches(): checkpoints and the reader number paragraphs.
-            "schema": 4,
+            "schema": 5,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,

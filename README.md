@@ -394,7 +394,9 @@ tables of contents, lists of sections, section numbers, page numbers, citation
 marks, and the bibliography. Whatever the ear cannot hold is tuned down to its
 point: tables, formulas, long lists, and runs of numbers. A table of contents
 or bibliography under its own heading is removed before the model sees the
-text, even without adaptation. Inline attributions and appendices remain.
+text, even without adaptation and even when the PDF runs the heading into the
+paragraph before it. Inline attributions and the sections after the
+bibliography, such as appendices, remain.
 While adaptation is selected, its settings appear under **Advanced** in
 **Text adaptation**:
 

@@ -380,6 +380,30 @@ class PaperWorkflowTests(unittest.TestCase):
         ])
         self.assertEqual(omitted, 2)
 
+    def test_a_references_title_run_into_the_text_still_starts_the_bibliography(self):
+        # As PDF extraction wrote the Attention paper: the acknowledgements,
+        # the references title, and the first entry in one paragraph, and an
+        # appendix whose title has no "Appendix" in it.
+        kept, omitted = web.narrated_source_paragraphs(
+            # Bold titles in running prose are not headings.
+            "Earlier work matters. **References** to it appear in the method, "
+            "and the **Bibliography** Tool lists them.\n\n"
+            "**Acknowledgements** We are grateful to Nal Kalchbrenner for his comments. "
+            "**References** [1] Jimmy Lei Ba and Geoffrey Hinton. Layer normalization. 2016.\n\n"
+            "- [2] Dzmitry Bahdanau and Yoshua Bengio. Neural machine translation. 2014.\n\n"
+            "# **Attention Visualizations**\n\n"
+            "Figure 3: The attention mechanism following long-distance dependencies."
+        )
+
+        self.assertEqual(kept, [
+            "Earlier work matters. **References** to it appear in the method, "
+            "and the **Bibliography** Tool lists them.",
+            "**Acknowledgements** We are grateful to Nal Kalchbrenner for his comments.",
+            "# **Attention Visualizations**",
+            "Figure 3: The attention mechanism following long-distance dependencies.",
+        ])
+        self.assertEqual(omitted, 3)
+
     def test_tables_of_contents_are_never_narrated(self):
         # As PDF extraction writes them: a contents table whose wrapped rows
         # lose their page number, a format-control paragraph from the page
