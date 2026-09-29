@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="assets/hilde-dark.png" alt="Hilde logo" width="128">
+  <img width="400" height="400" alt="hilde-avatar-light" src="https://github.com/user-attachments/assets/22672d4b-1c01-4589-a6e0-70910e516fa4" />
 </p>
 
 <h1 align="center">Hilde</h1>
