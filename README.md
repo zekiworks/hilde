@@ -108,9 +108,11 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   text extracted from it (labels, numbers, caption), so a figure with few
   labels gets a thin description. OpenAI and Anthropic models receive figures
   as images.
-- **Cloud providers receive your document.** With OpenAI or Anthropic
-  connected, the text and figures of each adapted document are sent to that
-  provider. Use a local model server for private documents.
+- **Cloud providers receive your document.** A document goes to OpenAI or
+  Anthropic when you choose one of their models, or, with **Model** left on
+  Default, when you have added no local server. The text and figures of each
+  adapted document are then sent to that provider. Use a local model server for
+  private documents.
 - **Expression can still vary.** The saved reference keeps the speaker the
   same, but pacing and energy are sampled per chunk and can shift between
   sentences.
@@ -389,9 +391,12 @@ text, even without adaptation. Inline attributions and appendices remain.
 While adaptation is selected, its settings appear under **Advanced** in
 **Text adaptation**:
 
-- **Model** picks the model that rewrites the text. Without a choice, a job uses
-  the first one listed: OpenAI's first model once signed in, then Anthropic's,
-  then the local server's.
+- **Model** picks the model that rewrites the text. Left on Default, a job uses
+  your local server's first model once you add one under **Add local**; if that
+  server does not answer, the job stops rather than send your document to a
+  cloud provider. Without a local server, Default is OpenAI's first model once
+  signed in, then Anthropic's. A cloud provider that is busy or has a passing
+  error is asked again, up to four times.
 - **Providers** connects cloud models. **OpenAI** signs this server in with a
   ChatGPT account: open the sign-in page it shows and enter the code; the
   sign-in renews itself. **Anthropic** takes an API key from the

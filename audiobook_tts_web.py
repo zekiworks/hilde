@@ -138,8 +138,14 @@ ANTHROPIC_MODEL_PROVIDER = "anthropic"
 # provider takes an API key from the Claude Console.
 ANTHROPIC_API_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
-# A busy or rate-limited Anthropic API is asked again this many times.
-ANTHROPIC_RETRIES = 4
+# A busy or rate-limited cloud provider is asked again this many times, after
+# its retry-after or 1, 2, 4, then 8 seconds.
+MODEL_RETRIES = 4
+# Statuses that mean "come back later": a rate limit, a server error, a
+# gateway failure, or Anthropic's overload.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
+# Codes of an OpenAI error event that asking again may clear.
+OPENAI_BUSY_CODES = frozenset({"rate_limit_exceeded", "server_error", "server_is_overloaded", "slow_down"})
 # Output limit of one Messages request. Every model Anthropic still serves
 # accepts it, and always-on thinking counts toward it. Anthropic's rate limit
 # counts only the tokens a model produces, so a generous limit costs nothing.
@@ -2463,7 +2469,48 @@ def _stream_failure(response, label):
     return RuntimeError(f"{label} refused the request (HTTP {response.status}): {detail}")
 
 
-def openai_response(model, system_prompt, text, images, open_stream):
+class ModelBusy(RuntimeError):
+    """A provider failure that asking again may clear."""
+
+
+def _retry_delay(response, attempt):
+    """Seconds before asking a busy provider again: its retry-after, else 2^attempt."""
+    try:
+        delay = float(response.getheader("retry-after"))
+    except (AttributeError, TypeError, ValueError):
+        delay = 2.0 ** attempt
+    return min(max(delay, 0.0), 60.0)
+
+
+def _openai_text(response):
+    """Collect the answer of one streamed Responses request."""
+    parts = []
+    for data in sse_events(response):
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        kind = event.get("type") if isinstance(event, dict) else None
+        if kind == "response.output_text.delta":
+            parts.append(str(event.get("delta") or ""))
+        elif kind == "response.completed":
+            return "".join(parts)
+        elif kind in ("response.failed", "response.incomplete", "error"):
+            message = _model_error(event, kind)
+            failure = f"OpenAI stopped the response: {message}"
+            nested = event.get("response") if isinstance(event.get("response"), dict) else {}
+            error = nested.get("error") if isinstance(nested.get("error"), dict) else event.get("error")
+            code = error.get("code") if isinstance(error, dict) else event.get("code")
+            # When its own servers fail, OpenAI says so, often asking for a retry.
+            if kind != "response.incomplete" and (
+                code in OPENAI_BUSY_CODES or "retry" in message.casefold()
+            ):
+                raise ModelBusy(failure)
+            raise RuntimeError(failure)
+    raise ModelBusy("OpenAI ended the response before it completed.")
+
+
+def openai_response(model, system_prompt, text, images, open_stream, pause):
     """Adapt one batch with a ChatGPT model through the Codex backend."""
     content = [{"type": "input_text", "text": text}]
     for path in images:
@@ -2481,7 +2528,8 @@ def openai_response(model, system_prompt, text, images, open_stream):
     }).encode("utf-8")
     session = uuid.uuid4().hex
     refused = None
-    for _ in range(2):
+    attempt = 0
+    while True:
         credentials = openai_access(refused)
         headers = {
             "Authorization": f"Bearer {credentials['access_token']}",
@@ -2494,28 +2542,27 @@ def openai_response(model, system_prompt, text, images, open_stream):
             "Content-Type": "application/json",
         }
         with open_stream(f"{CHATGPT_CODEX_URL}/responses", headers, body) as response:
-            if response.status == 401 and refused is None:
+            if response.status == 401:
+                if refused is not None:
+                    raise RuntimeError(
+                        "OpenAI refused the renewed sign-in; sign in again in Providers."
+                    )
                 refused = credentials["access_token"]
                 continue
-            if response.status != 200:
+            if response.status in RETRYABLE_STATUSES and attempt < MODEL_RETRIES:
+                delay = _retry_delay(response, attempt)
+            elif response.status != 200:
                 raise _stream_failure(response, "OpenAI")
-            parts = []
-            for data in sse_events(response):
+            else:
                 try:
-                    event = json.loads(data)
-                except ValueError:
-                    continue
-                kind = event.get("type") if isinstance(event, dict) else None
-                if kind == "response.output_text.delta":
-                    parts.append(str(event.get("delta") or ""))
-                elif kind == "response.completed":
-                    return "".join(parts)
-                elif kind in ("response.failed", "response.incomplete", "error"):
-                    raise RuntimeError(
-                        f"OpenAI stopped the response: {_model_error(event, kind)}"
-                    )
-            raise RuntimeError("OpenAI ended the response before it completed.")
-    raise RuntimeError("OpenAI refused the renewed sign-in; sign in again in Providers.")
+                    return _openai_text(response)
+                except ModelBusy:
+                    if attempt == MODEL_RETRIES:
+                        raise
+                    delay = _retry_delay(None, attempt)
+        if pause(delay):
+            raise InterruptedError("document processing stopped")
+        attempt += 1
 
 
 def local_model_response(server, model, system_prompt, text, open_stream):
@@ -2720,19 +2767,15 @@ def anthropic_response(model, system_prompt, text, images, open_stream, pause):
         "stream": True,
     }).encode("utf-8")
     headers = _anthropic_headers(key, "text/event-stream")
-    for attempt in range(ANTHROPIC_RETRIES + 1):
+    for attempt in range(MODEL_RETRIES + 1):
         with open_stream(f"{ANTHROPIC_API_URL}/v1/messages", headers, body) as response:
-            # 429 is a rate limit and 529 an overload: both mean come back later.
-            if response.status in (429, 500, 502, 503, 504, 529) and attempt < ANTHROPIC_RETRIES:
-                try:
-                    delay = float(response.getheader("retry-after"))
-                except (TypeError, ValueError):
-                    delay = 2.0 ** attempt
+            if response.status in RETRYABLE_STATUSES and attempt < MODEL_RETRIES:
+                delay = _retry_delay(response, attempt)
             elif response.status != 200:
                 raise _stream_failure(response, "Anthropic")
             else:
                 return _anthropic_text(response)
-        if pause(min(max(delay, 0.0), 60.0)):
+        if pause(delay):
             raise InterruptedError("document processing stopped")
     raise AssertionError("unreachable Anthropic retry loop")
 
@@ -2824,14 +2867,22 @@ def local_model_names(local_server, provider):
 
 
 def paper_model_catalog(local_server="", local_provider=""):
-    """List the models of this server's providers, then of the local server."""
+    """List the local server's models, then those of this server's providers."""
     local_server = normalize_local_server(local_server)
-    models = []
+    local_models, cloud_models = [], []
     openai_error = anthropic_error = local_error = ""
+    if local_server:
+        try:
+            local_models = [
+                {"provider": local_provider, "selector": f"{local_provider}/{name}"}
+                for name in local_model_names(local_server, local_provider)
+            ]
+        except RuntimeError as exc:
+            local_error = str(exc)
     openai_connected = read_openai_credentials() is not None
     if openai_connected:
         try:
-            models += [
+            cloud_models += [
                 {"provider": OPENAI_MODEL_PROVIDER, "selector": f"{OPENAI_MODEL_PROVIDER}/{slug}"}
                 for slug in openai_model_names()
             ]
@@ -2840,25 +2891,21 @@ def paper_model_catalog(local_server="", local_provider=""):
     anthropic_connected = read_anthropic_key() is not None
     if anthropic_connected:
         try:
-            models += [
+            cloud_models += [
                 {"provider": ANTHROPIC_MODEL_PROVIDER, "selector": f"{ANTHROPIC_MODEL_PROVIDER}/{name}"}
                 for name in anthropic_model_names()
             ]
         except RuntimeError as exc:
             anthropic_error = str(exc)
-    if local_server:
-        try:
-            models += [
-                {"provider": local_provider, "selector": f"{local_provider}/{name}"}
-                for name in local_model_names(local_server, local_provider)
-            ]
-        except RuntimeError as exc:
-            local_error = str(exc)
+    # Without a chosen model a job uses the local server's first model when
+    # this browser added one, and nothing while it does not answer: a
+    # document goes to a cloud provider only when chosen, or when no local
+    # server was added. Then OpenAI's first model once signed in comes first,
+    # then Anthropic's.
+    defaults = local_models if local_server else cloud_models
     return {
-        "models": models,
-        # Without a chosen model a job uses the first one: OpenAI's first once
-        # signed in, then Anthropic's, then the local server's.
-        "default_model": models[0]["selector"] if models else "",
+        "models": local_models + cloud_models,
+        "default_model": defaults[0]["selector"] if defaults else "",
         "local_server": local_server,
         "local_provider": local_provider,
         "local_error": local_error,
@@ -4826,7 +4873,8 @@ class PaperRun(Run):
         provider, _, name = self.model.partition("/")
         if provider == OPENAI_MODEL_PROVIDER:
             return openai_response(
-                name, system_prompt, text, attachments, self.model_stream
+                name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
             )
         if provider == ANTHROPIC_MODEL_PROVIDER:
             return anthropic_response(
@@ -5538,12 +5586,17 @@ class AudiobookRun(Run):
                 prepared_path = extraction_dir / "prepared.txt"
                 model = self.values["model"]
                 if self.values["adapt"] and not model:
-                    # No model chosen: the first one this server offers.
-                    model = paper_model_catalog(
+                    # No model chosen: the default this browser's settings give.
+                    catalog = paper_model_catalog(
                         self.values["local_server"], self.values["local_provider"]
-                    )["default_model"]
+                    )
+                    model = catalog["default_model"]
                     if not model:
                         raise RuntimeError(
+                            "Your local model server did not answer, and a document "
+                            "goes to a cloud provider only when you choose one under "
+                            f"Advanced: {catalog['local_error']}"
+                            if catalog["local_error"] else
                             "No text-adaptation model is available: connect a provider "
                             "or add a local model server under Advanced."
                         )
@@ -8891,7 +8944,8 @@ function applyPaperCatalog(catalog) {
   fallback.value = "";
   fallback.textContent = catalog.default_model
     ? `Default — ${catalog.default_model}`
-    : "No model yet: sign in with OpenAI or add a local server";
+    : catalog.local_error ? "Default — your local server, once it answers"
+    : "No model yet: connect a provider or add a local server";
   select.append(fallback);
   const groups = new Map();
   for (const model of catalog.models || []) {

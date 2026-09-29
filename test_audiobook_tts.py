@@ -2016,6 +2016,28 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         self.assertEqual(names, ("deepseek-v4-flash:latest", "qwen3.8:27b"))
 
+    def test_an_added_local_server_is_the_default_and_never_gives_way_to_the_cloud(self):
+        with mock.patch.object(web, "read_openai_credentials", return_value={}), \
+                mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None):
+            with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
+                catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
+            self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
+            self.assertEqual(
+                [model["selector"] for model in catalog["models"]],
+                ["lm-studio/deepseek", "openai-codex/gpt-a"],
+            )
+            # While it does not answer, a job gets no default rather than
+            # sending the document to OpenAI.
+            with mock.patch.object(
+                web, "local_model_names", side_effect=RuntimeError("Cannot reach it")
+            ):
+                catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
+            self.assertEqual(catalog["default_model"], "")
+            self.assertEqual(catalog["local_error"], "Cannot reach it")
+            # Without a local server, OpenAI is the default once signed in.
+            self.assertEqual(web.paper_model_catalog()["default_model"], "openai-codex/gpt-a")
+
     def test_adaptation_accepts_only_models_this_server_can_reach(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -2306,6 +2328,119 @@ class OpenAISignInTests(unittest.TestCase):
             json.loads((home / "openai.json").read_text(encoding="utf-8"))["refresh_token"],
             "refresh-2",
         )
+
+
+class OpenAIRetryTests(unittest.TestCase):
+    SUCCESS = (200, [
+        {"type": "response.output_text.delta", "delta": "<NARRATION>Narrated.</NARRATION>"},
+        {"type": "response.output_text.delta", "delta": "<SUMMARY>Summary.</SUMMARY>"},
+        {"type": "response.completed", "response": {}},
+    ])
+
+    def start(self, answers):
+        """Start one paragraph's adaptation against a Codex backend answering in turn."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+
+        class CodexHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                status, events = answers[min(len(requests), len(answers) - 1)]
+                requests.append(self.path)
+                self.send_response(status)
+                if status != 200:
+                    body = json.dumps({"error": {"message": "upstream connect error"}}).encode()
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Retry-After", str(events))
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for event in events:
+                    self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CodexHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop_server():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        self.addCleanup(stop_server)
+        for name, value in (
+            ("CHATGPT_CODEX_URL", f"http://127.0.0.1:{server.server_port}/backend-api/codex"),
+            ("HILDE_HOME", root / ".hilde"),
+        ):
+            patcher = mock.patch.object(web, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        web.save_openai_credentials({
+            "access_token": "access", "refresh_token": "refresh",
+            "id_token": fake_jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct"}}),
+        })
+        source = root / "paper.md"
+        source.write_text("One paragraph to adapt.", encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        run = PaperRun(
+            source, root / "prepared.txt", "utf-8", model="openai-codex/gpt-a",
+            in_flight=1, prompt_path=prompt,
+        )
+        worker = threading.Thread(target=run.pump)
+        worker.start()
+        self.addCleanup(worker.join, 10)
+        return run, worker, requests
+
+    def test_busy_backend_is_asked_again_until_it_answers(self):
+        # Failures OpenAI's backend gave during real adaptation runs, ordered
+        # so the waits between attempts stay short.
+        run, worker, requests = self.start([
+            (200, [{"type": "error", "message": "Unable to verify model access right now. Please retry."}]),
+            (200, [{"type": "response.failed", "response": {"error": {
+                "code": "server_error", "message": "An error occurred while processing your request.",
+            }}}]),
+            (503, 0),
+            self.SUCCESS,
+        ])
+        worker.join(30)
+
+        self.assertEqual(run.code, 0)
+        self.assertEqual(len(requests), 4)
+
+    def test_a_refused_request_is_not_repeated(self):
+        run, worker, requests = self.start([
+            (200, [{"type": "response.failed", "response": {"error": {
+                "code": "invalid_prompt", "message": "Your prompt was flagged.",
+            }}}]),
+            self.SUCCESS,
+        ])
+        worker.join(30)
+
+        self.assertEqual(run.code, 1)
+        self.assertEqual(len(requests), 1)
+
+    def test_stop_cuts_the_wait_before_asking_again(self):
+        run, worker, requests = self.start([(503, 30)])
+        deadline = time.monotonic() + 10
+        while not requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        started = time.monotonic()
+        run.stop()
+        worker.join(10)
+
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(run.code, 130)
+        self.assertEqual(len(requests), 1)
+
 
 
 class AnthropicProviderTests(unittest.TestCase):
