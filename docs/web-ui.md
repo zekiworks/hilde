@@ -121,7 +121,12 @@ interval remains active for its complete audio cue instead of advancing to the
 next text block. Standalone invisible PDF format-control artifacts are removed
 before new narration; an existing audiobook's artifact interval is assigned to
 the following visible block. When adaptation changes the prose, the reader
-shows only the narration-ready version, not a second original-source view. If
+shows the narration-ready version, and a description the model wrote of a
+figure, table, or equation carries a **Description** label. **Original**
+shows the author's text muted beneath the passage made from it, headed with the
+PDF page it starts on, and shows passages the model left out, such as a
+copyright notice, as **Not narrated**. Books narrated without adaptation, or
+adapted before Hilde recorded the original text, have no **Original**. If
 forced alignment is partially or fully unavailable, exact sentence timing
 remains usable. Existing paragraph-era reader sidecars receive estimated
 sentence cues. Audiobooks created before reader sidecars were introduced remain

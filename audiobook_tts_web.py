@@ -1072,7 +1072,7 @@ def _adapted_reader_groups(narration, source_paragraphs, checkpoint_dir):
             or end > len(source_paragraphs)
         ):
             return None
-        groups.append((adapted.strip(), source_paragraphs[start - 1:end]))
+        groups.append((adapted.strip(), start, source_paragraphs[start - 1:end]))
     # A batch left out entirely, such as a reference entry, adds no text.
     if "\n\n".join(group[0] for group in groups if group[0]) != narration.strip():
         return None
@@ -1214,7 +1214,35 @@ def _reader_sentence_markdown(paragraph):
     return sentences
 
 
-def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
+def _original_markdown(paragraphs, kinds):
+    """The author's words in a batch of source paragraphs, for the reader.
+
+    Images, tables, and the labels inside figures already show beside the
+    narration, page furniture is no one's words, and an extracted image path
+    would not load in the browser.
+    """
+    return "\n\n".join(
+        text
+        for paragraph, kind in zip(paragraphs, kinds)
+        if kind not in FIGURE_PART_KINDS | {"furniture"}
+        and (text := PICTURE_TEXT_PATTERN.sub(
+            "", MARKDOWN_IMAGE_PATTERN.sub("", paragraph)
+        ).strip())
+    )
+
+
+def _spoken_words(text):
+    """The words of Markdown text, without markup, case, or punctuation."""
+    return [
+        word
+        for paragraph in split_paper_paragraphs(text)
+        for word in re.findall(r"\w+", _layout_text(paragraph).casefold())
+    ]
+
+
+def _reader_blocks(
+    narration, source, max_chars, adaptation_checkpoints=None, source_pages=None
+):
     source_paragraphs = split_paper_paragraphs(source)
     groups = (
         _adapted_reader_groups(
@@ -1223,11 +1251,19 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
         if adaptation_checkpoints is not None
         else None
     )
-    if groups is None:
+    # For each adapted batch: the narration paragraphs made from it, its PDF
+    # page, whether the model described a visual, and the author's text.
+    # Without adaptation the narration is the author's text.
+    originals = None
+    if groups is not None:
+        originals = []
+        kinds = _layout_kinds(source_paragraphs)
+    else:
         narration_paragraphs = split_paper_paragraphs(narration)
         groups = [
             (
                 paragraph,
+                index + 1,
                 source_paragraphs[index:index + 1]
                 if index < len(source_paragraphs)
                 else (),
@@ -1240,7 +1276,23 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
     chunk_blocks = []
     flattened_chunks = []
     leading_visuals = []
-    for adapted, source_group in groups:
+    for adapted, start, source_group in groups:
+        first_paragraph = paragraphs[-1] + 1 if paragraphs else 0
+        if originals is not None:
+            group_kinds = kinds[start - 1:start - 1 + len(source_group)]
+            original = _original_markdown(source_group, group_kinds)
+            # Read word for word, the text already shows as the narration.
+            unchanged = bool(adapted) and _spoken_words(original) == _spoken_words(adapted)
+            originals.append({
+                "paragraphs": None,
+                "page": source_pages[start - 1] if source_pages else None,
+                "description": (
+                    bool(adapted) and not unchanged
+                    and _describes_visual(set(group_kinds))
+                ),
+                "unchanged": unchanged,
+                "markdown": "" if unchanged else original,
+            })
         if not adapted:
             # A batch left out of the narration, such as a figure the model
             # could not describe, keeps its visuals after the text before it.
@@ -1303,6 +1355,8 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
                 blocks[group_blocks[-1]] = (
                     f"{blocks[group_blocks[-1]]}\n\n{visuals}"
                 )
+        if originals is not None and group_blocks:
+            originals[-1]["paragraphs"] = [first_paragraph, paragraphs[-1]]
     if leading_visuals and blocks:
         blocks[0] = "\n\n".join((blocks[0], *leading_visuals))
 
@@ -1310,6 +1364,8 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
         narration, max_chars, sentence_chunks=True
     )
     if flattened_chunks != expected_chunks:
+        # Blocks come from the narration alone, so no batch maps onto them.
+        originals = None
         blocks = []
         paragraphs = []
         chunk_blocks = []
@@ -1328,7 +1384,7 @@ def _reader_blocks(narration, source, max_chars, adaptation_checkpoints=None):
                 chunk_blocks.extend([block_index] * len(chunks))
     if flattened_chunks != expected_chunks:
         raise ValueError("reader text does not match narration chunks")
-    return blocks, paragraphs, expected_chunks, chunk_blocks
+    return blocks, paragraphs, expected_chunks, chunk_blocks, originals
 
 
 def build_reader_artifacts(
@@ -1338,6 +1394,7 @@ def build_reader_artifacts(
     audio_checkpoints,
     *,
     adaptation_checkpoints=None,
+    source_pages=None,
     image_roots=(),
     word_aligner=None,
     alignment_progress=None,
@@ -1345,8 +1402,8 @@ def build_reader_artifacts(
     """Build embedded Markdown and exact sentence cues from completed WAVs."""
     import soundfile as sf
 
-    blocks, paragraphs, chunks, chunk_blocks = _reader_blocks(
-        narration, source, max_chars, adaptation_checkpoints
+    blocks, paragraphs, chunks, chunk_blocks, originals = _reader_blocks(
+        narration, source, max_chars, adaptation_checkpoints, source_pages
     )
     if not chunks:
         raise ValueError("reader narration is empty")
@@ -1416,7 +1473,7 @@ def build_reader_artifacts(
         if alignment_failures
         else "aligned"
     )
-    return markdown, {
+    synchronization = {
         "schema": 3,
         "sample_rate": sample_rate,
         "duration_samples": current_sample,
@@ -1429,6 +1486,9 @@ def build_reader_artifacts(
         "aligned_chunks": aligned_chunks,
         "alignment_failures": alignment_failures,
     }
+    if originals is not None:
+        synchronization["originals"] = originals
+    return markdown, synchronization
 
 
 def _reader_markdown_sources(markdown):
@@ -1460,6 +1520,19 @@ def _render_reader_sources(sources):
 def render_reader_blocks(markdown):
     """Render generated marked blocks with raw HTML disabled."""
     return _render_reader_sources(_reader_markdown_sources(markdown))
+
+
+def render_reader_original(markdown):
+    """Render the author's text with raw HTML disabled.
+
+    Extraction writes superscripts and subscripts as tags, which would show
+    literally; only a balanced pair around already escaped text is restored.
+    """
+    return re.sub(
+        r"&lt;(sup|sub)&gt;(.*?)&lt;/\1&gt;",
+        r"<\1>\2</\1>",
+        READER_MARKDOWN.render(markdown),
+    )
 
 
 def _upgrade_legacy_reader(sources, cues):
@@ -1880,6 +1953,11 @@ def audiobook_reader_payload(storage, name):
         previous_word_end = end
     if word_timing == "aligned" and not word_cues:
         raise ValueError("reader word synchronization is empty")
+    # Checked against the sidecar's own paragraphs, which the collapse below
+    # may thin out; the browser places a batch by the paragraphs it finds.
+    originals = _render_reader_originals(
+        synchronization.get("originals", []), paragraphs
+    )
     sources, paragraphs, cues, word_cues, dropped_word_cues, held_blocks = (
         _collapse_invisible_reader_blocks(sources, paragraphs, cues, word_cues)
     )
@@ -1910,7 +1988,60 @@ def audiobook_reader_payload(storage, name):
                 _render_reader_sources(sources), paragraphs, strict=True
             )
         ],
+        "originals": originals,
     }
+
+
+def _render_reader_originals(originals, paragraphs):
+    """Validate the Original view's batches and render their text.
+
+    Narrated batches cover increasing ranges of the reader's paragraphs; a
+    batch left out of the narration covers none.
+    """
+    if not isinstance(originals, list):
+        raise ValueError("reader originals are invalid")
+    last = paragraphs[-1] if paragraphs else -1
+    previous = -1
+    rendered = []
+    for original in originals:
+        if not isinstance(original, dict):
+            raise ValueError("reader originals are invalid")
+        narrated = original.get("paragraphs")
+        page = original.get("page")
+        description = original.get("description")
+        unchanged = original.get("unchanged")
+        markdown = original.get("markdown")
+        if narrated is not None:
+            if (
+                not isinstance(narrated, list)
+                or len(narrated) != 2
+                or not all(
+                    isinstance(value, int) and not isinstance(value, bool)
+                    for value in narrated
+                )
+                or not previous < narrated[0] <= narrated[1] <= last
+            ):
+                raise ValueError("reader originals are invalid")
+            previous = narrated[1]
+        if (
+            not isinstance(markdown, str)
+            or not isinstance(description, bool)
+            or not isinstance(unchanged, bool)
+            or unchanged and narrated is None
+            or page is not None and (
+                not isinstance(page, int) or isinstance(page, bool) or page < 1
+            )
+        ):
+            raise ValueError("reader originals are invalid")
+        rendered.append({
+            "paragraphs": narrated,
+            "page": page,
+            "description": description,
+            "unchanged": unchanged,
+            "html": render_reader_original(markdown) if markdown else "",
+        })
+    return rendered
+
 
 
 def _mp3_layer3_frame(header):
@@ -3011,24 +3142,24 @@ def _split_run_in_reference_title(paragraph):
     return [paragraph]
 
 
-def narrated_source_paragraphs(text):
-    """Return the paragraphs a narration covers and how many were left out.
+def _narrated_source(text):
+    """Pair each paragraph a narration covers with the index of the block of
+    `text` it comes from; return them and how many paragraphs were left out.
 
     Tables of contents and standalone bibliographies are left out, while later
-    sections stay. Adaptation checkpoints and the reader both number
-    paragraphs in this list, so both must take it from here.
+    sections stay.
     """
     paragraphs = [
-        part
-        for paragraph in split_paper_paragraphs(text)
+        (block, part)
+        for block, paragraph in enumerate(split_paper_paragraphs(text))
         if _reader_source_is_visible(paragraph)
         for part in _split_run_in_reference_title(paragraph)
     ]
     kept = []
     in_contents = in_references = False
-    for index, paragraph in enumerate(paragraphs):
+    for index, (block, paragraph) in enumerate(paragraphs):
         heading = _paper_heading_title(paragraph)
-        following = paragraphs[index + 1] if index + 1 < len(paragraphs) else ""
+        following = paragraphs[index + 1][1] if index + 1 < len(paragraphs) else ""
         # Over prose instead of entries, a heading such as "Contents" names a
         # real section.
         if heading in CONTENTS_SECTION_TITLES and _is_contents_entry(following):
@@ -3049,8 +3180,36 @@ def narrated_source_paragraphs(text):
         ):
             in_references = False
         if not in_references:
-            kept.append(paragraph)
+            kept.append((block, paragraph))
     return kept, len(paragraphs) - len(kept)
+
+
+def narrated_source_paragraphs(text):
+    """Return the paragraphs a narration covers and how many were left out.
+
+    Adaptation checkpoints and the reader both number paragraphs in this
+    list, so both must take it from here.
+    """
+    kept, left_out = _narrated_source(text)
+    return [paragraph for _, paragraph in kept], left_out
+
+
+def narrated_source_pages(text, block_pages):
+    """Return the PDF page of each paragraph narrated_source_paragraphs()
+    returns, or None when `block_pages`, the page each block of `text` starts
+    on, does not describe `text`.
+    """
+    if (
+        not isinstance(block_pages, list)
+        or len(block_pages) != len(split_paper_paragraphs(text))
+        or not all(
+            isinstance(page, int) and not isinstance(page, bool) and page > 0
+            for page in block_pages
+        )
+    ):
+        return None
+    kept, _ = _narrated_source(text)
+    return [block_pages[block] for block, _ in kept]
 
 
 def _layout_text(paragraph):
@@ -3095,6 +3254,12 @@ def _layout_kinds(paragraphs):
         ):
             kinds[index] = "panel"
     return kinds
+
+
+def _describes_visual(kinds):
+    """Whether a batch of these layout kinds is a figure, table, or equation
+    with at most its caption, whose narration the model writes itself."""
+    return bool(kinds & FIGURE_PART_KINDS) and kinds <= FIGURE_PART_KINDS | {"caption"}
 
 
 def _ends_sentence(paragraph):
@@ -3171,7 +3336,8 @@ def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
 
 
 def join_pdf_pages(pages):
-    """Join per-page Markdown; return it and how many sentences were rejoined.
+    """Join per-page Markdown; return it, the page each of its blocks starts
+    on, and how many sentences were rejoined.
 
     A page break ends a paragraph, even inside a sentence. When a page's last
     sentence is unfinished and the next page continues it in lowercase, the
@@ -3180,8 +3346,8 @@ def join_pdf_pages(pages):
     its table or figure is mended too.
     """
     vocabulary = "\n".join(pages).casefold()
-    document, kinds, rejoined = [], [], 0
-    for page in pages:
+    document, kinds, starts, rejoined = [], [], [], 0
+    for number, page in enumerate(pages, 1):
         paragraphs = split_paper_paragraphs(page)
         page_kinds = _mend_split_captions(paragraphs, vocabulary)
         if document and _rejoin_page_break(
@@ -3190,7 +3356,8 @@ def join_pdf_pages(pages):
             rejoined += 1
         document.extend(paragraphs)
         kinds.extend(page_kinds)
-    return "\n\n".join(document), rejoined
+        starts.extend([number] * len(paragraphs))
+    return "\n\n".join(document), starts, rejoined
 
 
 def _paper_units(kinds):
@@ -4981,10 +5148,12 @@ class PaperRun(Run):
                 "progress",
                 {"done": page + 1, "total": page_count, "unit": "page"},
             )
-        markdown, rejoined = join_pdf_pages([
+        markdown, starts, rejoined = join_pdf_pages([
             (page_path / f"{page + 1:06d}.md").read_text(encoding="utf-8")
             for page in range(page_count)
         ])
+        # The reader's Original view names the page each paragraph starts on.
+        write_json_atomic(scratch / "document-pages.json", {"pages": starts})
         if rejoined:
             self.publish(
                 "log",
@@ -5240,8 +5409,7 @@ class PaperRun(Run):
                         # equation, so the description must name what it is.
                         if (
                             narration
-                            and batch_kinds & FIGURE_PART_KINDS
-                            and batch_kinds <= FIGURE_PART_KINDS | {"caption"}
+                            and _describes_visual(batch_kinds)
                             and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12]))
                         ):
                             opening = " ".join(narration.split()[:8])
@@ -5390,7 +5558,7 @@ class PaperRun(Run):
                 "paragraph-checkpoints",
             ):
                 shutil.rmtree(scratch / directory_name, ignore_errors=True)
-            for file_name in ("document.md",):
+            for file_name in ("document.md", "document-pages.json"):
                 (scratch / file_name).unlink(missing_ok=True)
             self.output_path.unlink(missing_ok=True)
         write_json_atomic(manifest_path, {**identity, "complete": False})
@@ -5690,9 +5858,13 @@ class AudiobookRun(Run):
             if source_path == extraction_dir / "document.md"
             else self.values["encoding"]
         )
-        source_paragraphs, _ = narrated_source_paragraphs(
-            source_path.read_text(encoding=source_encoding)
-        )
+        source = source_path.read_text(encoding=source_encoding)
+        source_paragraphs, _ = narrated_source_paragraphs(source)
+        source_pages = None
+        if source_path == extraction_dir / "document.md":
+            recorded = read_json_file(extraction_dir / "document-pages.json")
+            if recorded is not None:
+                source_pages = narrated_source_pages(source, recorded.get("pages"))
         narration_dir = self.stage / "narration"
         word_aligner = None
         with WORD_ALIGNMENT_LOCK:
@@ -5711,6 +5883,7 @@ class AudiobookRun(Run):
                     int(self.values["chunk_max_chars"]),
                     narration_dir / "chunks",
                     adaptation_checkpoints=adaptation_checkpoints,
+                    source_pages=source_pages,
                     image_roots=image_roots,
                     word_aligner=word_aligner,
                     alignment_progress=lambda done, total, failed: self.publish(
@@ -7129,6 +7302,16 @@ audio { height:36px; }
 .reader-block th { background:var(--raised); }
 .reader-block td { overflow-wrap:normal; word-break:normal; }
 .reader-block code { white-space:pre-wrap; }
+/* Original: the author's text behind adapted narration, muted beneath it. */
+.reader-original { display:none; margin:2px 12px 10px 15px; padding:6px 12px;
+                   border-left:3px solid var(--line); color:var(--dim);
+                   font-size:.94em; line-height:1.55; }
+.show-original .reader-original { display:block; }
+.reader-original > * { margin:0; }
+.reader-original > * + * { margin-top:.5em; }
+.reader-original :is(h1,h2,h3,h4,h5,h6) { font-size:1em; }
+.reader-label { color:var(--dim); font-size:12px; font-weight:650;
+                letter-spacing:.04em; text-transform:uppercase; }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
 dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
@@ -7510,6 +7693,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div class="player-actions">
             <label class="check note"><input id="reader-follow" type="checkbox" checked>
               Follow along</label>
+            <label id="reader-original-toggle" class="check note hidden"><input
+              id="reader-original" type="checkbox"
+              onchange="$('reader-content').classList.toggle('show-original', this.checked)">
+              Original</label>
             <button type="button" onclick="downloadBook()">Download MP3</button>
           </div>
         </div>
@@ -7904,6 +8091,7 @@ function clearReader() {
   $("reader-content").replaceChildren();
   $("reader-panel").classList.add("hidden");
   $("reader-unavailable").classList.add("hidden");
+  $("reader-original-toggle").classList.add("hidden");
 }
 
 function readerCueAt(sample) {
@@ -8029,6 +8217,7 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
     if (!paragraph || item.paragraph !== paragraphId) {
       paragraph = document.createElement("section");
       paragraph.className = "reader-paragraph";
+      paragraph.dataset.paragraph = item.paragraph;
       content.append(paragraph);
       paragraphId = item.paragraph; line = null;
     }
@@ -8076,6 +8265,50 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
     parts[item.id] = own;
   }
   return parts;
+}
+
+function renderReaderOriginals(originals) {
+  // The author's text follows the narration made from it, with the PDF page
+  // it starts on; a passage read word for word shows only its page, and
+  // passages left out of the narration show in place. A description the
+  // model wrote of a figure, table, or equation says so. Returns whether
+  // there is anything to show.
+  const content = $("reader-content");
+  const sections = new Map([...content.querySelectorAll(".reader-paragraph")]
+    .map((section) => [Number(section.dataset.paragraph), section]));
+  let anchor = null;
+  for (const original of originals) {
+    if (original.paragraphs) {
+      const [first, last] = original.paragraphs;
+      if (original.description && sections.has(first)) {
+        const label = document.createElement("p");
+        label.className = "reader-label";
+        label.textContent = "Description";
+        sections.get(first).prepend(label);
+      }
+      for (let id = last; id >= first; id--)
+        if (sections.has(id)) { anchor = sections.get(id); break; }
+    }
+    if (!original.html && !original.unchanged) continue;
+    const aside = document.createElement("aside");
+    aside.className = "reader-original";
+    const label = document.createElement("p");
+    label.className = "reader-label";
+    label.textContent = [
+      !original.paragraphs ? "Not narrated"
+        : original.unchanged ? "Unchanged" : "Original",
+      original.page ? "PDF p. " + original.page : "",
+    ].filter(Boolean).join(" · ");
+    const template = document.createElement("template");
+    template.innerHTML = original.html;
+    for (const link of template.content.querySelectorAll("a")) {
+      link.target = "_blank"; link.rel = "noopener";
+    }
+    aside.append(label, template.content);
+    if (anchor) anchor.after(aside); else content.prepend(aside);
+    anchor = aside;
+  }
+  return content.querySelector(".reader-original") !== null;
 }
 
 function updateReaderHighlight() {
@@ -8166,6 +8399,9 @@ async function openAudiobook(name, focus) {
     }
     readerSampleRate = Number(payload.sample_rate) || 0;
     readerBlocks = renderReaderBlocks(payload.blocks || [], wordCuesByBlock);
+    $("reader-original-toggle").classList.toggle(
+      "hidden", !renderReaderOriginals(payload.originals || [])
+    );
     details.push(payload.word_timing !== "unavailable"
       ? "Words highlight as they're read"
       : payload.timing_precision === "estimated"

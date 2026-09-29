@@ -29,7 +29,9 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   description, then cloned for every chunk of every book, across sessions.
   Eight stock voices are included.
 - **A reader that follows along.** The current word lights up as it is spoken;
-  click any word to jump there.
+  click any word to jump there. **Original** shows the author's text and its
+  PDF page beneath each adapted passage, and model-written figure
+  descriptions are labelled.
 - **Every GPU in the house.** Narration spreads across all local GPUs and, over
   SSH, other machines. A busy local GPU joins once it has room, and one that
   runs out of memory hands its chunks to the others.
@@ -102,6 +104,7 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
 - **Adaptation is done by a language model.** It is told to keep every
   sentence of the author's prose, but it can occasionally drop, reword, or
   misdescribe something. The reader shows exactly the text that was narrated,
+  with the author's text beneath it under **Original**,
   and the job log names every prose paragraph that lost more than a fifth of
   its words; a paragraph the model left out whole is named with its reason
   instead. That count measures dropped wording, not meaning: a sentence

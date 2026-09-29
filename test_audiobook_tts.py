@@ -438,6 +438,33 @@ class PaperWorkflowTests(unittest.TestCase):
             web.narrated_source_paragraphs("\n\n".join(section)), (section, 0)
         )
 
+    def test_each_narrated_paragraph_knows_the_pdf_page_it_starts_on(self):
+        markdown, starts, rejoined = web.join_pdf_pages([
+            "# Introduction\n\n"
+            "Attention maps a query to an output. The output is a weighted",
+            "sum of the values.\n\nA second paragraph starts here.",
+            "**Acknowledgements** We thank our colleagues. "
+            "**References** [1] A. Author. A paper. 2016.\n\n"
+            "# Attention Visualizations\n\n"
+            "Figure 3: Attention heads.",
+        ])
+
+        self.assertEqual(rejoined, 1)
+        kept, _ = web.narrated_source_paragraphs(markdown)
+        # A sentence a page break split starts on the earlier page, and a
+        # paragraph split off another keeps that one's page.
+        self.assertEqual(list(zip(kept, web.narrated_source_pages(markdown, starts))), [
+            ("# Introduction", 1),
+            ("Attention maps a query to an output. The output is a weighted "
+             "sum of the values.", 1),
+            ("A second paragraph starts here.", 2),
+            ("**Acknowledgements** We thank our colleagues.", 3),
+            ("# Attention Visualizations", 3),
+            ("Figure 3: Attention heads.", 3),
+        ])
+        # Pages recorded for other text are not trusted.
+        self.assertIsNone(web.narrated_source_pages(markdown + "\n\nMore.", starts))
+
     def test_page_breaks_do_not_split_sentences(self):
         def joined(*pages):
             return web.split_paper_paragraphs(web.join_pdf_pages(list(pages))[0])
@@ -2001,6 +2028,105 @@ class ReaderArtifactTests(unittest.TestCase):
             [cue["block"] for cue in payload["word_cues"]],
             [0, 0, 0, 1, 1, 1],
         )
+
+    def test_reader_shows_each_batch_original_text_page_and_whether_the_model_wrote_it(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        root = Path(temporary.name) / "stage"
+        (root / "images").mkdir(parents=True)
+        (root / "images" / "figure-1.png").write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
+            "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        ))
+        source = [
+            "Provided proper attribution is given, Google grants permission.",
+            "## **Abstract**",
+            "The Transformer<sup>1</sup> relies on <b>attention</b> [5].",
+            "# Scaled Dot-Product Attention",
+            "![](images/figure-1.png)",
+            "<!-- Start of picture text -->Q<br>K<!-- End of picture text -->",
+            "Figure 1: The model architecture.",
+            "Recurrent models are slow. They read tokens in order.",
+            "Attention runs in parallel.",
+        ]
+        batches = {
+            (1, 1): "",  # boilerplate the model left out
+            (2, 2): "## Abstract",  # read word for word
+            (3, 3): "The Transformer relies on attention.",
+            (4, 7): "Figure 1 shows the model. It stacks attention layers.",
+            (8, 9): "Recurrent models are slow. They read tokens one by one.\n\n"
+                    "Attention runs in parallel.",
+        }
+        adaptation = root / "paragraph-checkpoints"
+        for (start, end), narration in batches.items():
+            web.write_json_atomic(
+                adaptation / f"{start:06d}-{end:06d}.json",
+                {"end": end, "narration": narration, "summary": "S."},
+            )
+        narration = "\n\n".join(text for text in batches.values() if text)
+        chunks = web.split_text(narration, 500, sentence_chunks=True)
+        for index in range(1, len(chunks) + 1):
+            sf.write(
+                root / f"chunk-{index:06d}.wav",
+                np.linspace(-0.1, 0.1, 1200, dtype=np.float32),
+                24000,
+                subtype="FLOAT",
+            )
+
+        markdown, synchronization = web.build_reader_artifacts(
+            narration,
+            "\n\n".join(source),
+            500,
+            root,
+            adaptation_checkpoints=adaptation,
+            source_pages=[1, 1, 2, 3, 3, 3, 3, 4, 5],
+            image_roots=(root,),
+        )
+
+        self.assertEqual(synchronization["paragraphs"], [0, 1, 2, 2, 3, 3, 4])
+        # The figure's title, image, and labels already show beside its
+        # description, and text read word for word shows as the narration.
+        self.assertEqual(synchronization["originals"], [
+            {"paragraphs": None, "page": 1, "description": False,
+             "unchanged": False, "markdown": source[0]},
+            {"paragraphs": [0, 0], "page": 1, "description": False,
+             "unchanged": True, "markdown": ""},
+            {"paragraphs": [1, 1], "page": 2, "description": False,
+             "unchanged": False, "markdown": source[2]},
+            {"paragraphs": [2, 2], "page": 3, "description": True,
+             "unchanged": False, "markdown": "Figure 1: The model architecture."},
+            {"paragraphs": [3, 4], "page": 4, "description": False,
+             "unchanged": False, "markdown": f"{source[7]}\n\n{source[8]}"},
+        ])
+
+        output = storage.audiobooks / "paper.mp3"
+        output.write_bytes(b"audio")
+        (storage.readers / "paper.md").write_text(markdown, encoding="utf-8")
+        web.write_json_atomic(storage.readers / "paper.json", synchronization)
+        web.write_json_atomic(web.audiobook_version_path(storage, output), {
+            "schema": 3,
+            "reader": {"markdown": "paper.md", "sync": "paper.json"},
+        })
+        payload = web.audiobook_reader_payload(storage, output.name)
+
+        self.assertEqual(
+            [(item["paragraphs"], item["page"], item["description"], item["unchanged"])
+             for item in payload["originals"]],
+            [(None, 1, False, False), ([0, 0], 1, False, True), ([1, 1], 2, False, False),
+             ([2, 2], 3, True, False), ([3, 4], 4, False, False)],
+        )
+        # Extraction's superscript tags render as superscripts; any other
+        # markup in the source stays text.
+        self.assertIn("Transformer<sup>1</sup>", payload["originals"][2]["html"])
+        self.assertIn("&lt;b&gt;attention&lt;/b&gt;", payload["originals"][2]["html"])
+
+        # A batch placed out of order is not trusted.
+        synchronization["originals"][4]["paragraphs"] = [2, 4]
+        web.write_json_atomic(storage.readers / "paper.json", synchronization)
+        with self.assertRaises(ValueError):
+            web.audiobook_reader_payload(storage, output.name)
 
 class BatchingTests(unittest.TestCase):
     class Model:

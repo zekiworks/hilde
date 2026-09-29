@@ -235,6 +235,11 @@ PDF work is page-addressable:
    unnumbered heading directly above an image) and a page's first line read as
    a heading when it starts in lowercase. A caption broken above its table or
    figure is mended the same way. The job log counts the rejoined sentences.
+   It also returns the page each block of `document.md` starts on, which
+   `convert_pdf()` stores as `document-pages.json` (`{"pages": [...]}`); a
+   rejoined sentence keeps the earlier page. `narrated_source_pages()` maps
+   them onto the narrated paragraphs for the reader, and returns nothing when
+   the record does not describe the document.
 
 Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process. `pymupdf4llm` writes OCR text onto the page before it renders figures, so the converter hands it an OCR function whose text is inserted invisibly (render mode 3): the text is still extracted, including a figure's picture text, but figures render as the PDF draws them instead of with every OCR-read label printed a second time.
 
@@ -520,6 +525,22 @@ the accent bar, and the current word is filled with a lighter accent under
 dark ink (7.7:1 contrast). The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
+An adapted book's sidecar also records `originals`, one entry per adaptation
+batch in order: the narration paragraphs made from it (`[first, last]`, or
+`null` for a batch the model left out), the PDF page it starts on (or `null`),
+whether it is a `description` (a figure, table, or equation with at most its
+caption, per `_describes_visual()`, which the log's cue check shares), and the
+author's Markdown without images, figure labels, panel titles, tables, or page
+furniture, which already show beside the narration or are no one's words.
+Unadapted books, and books whose blocks had to be rebuilt from the narration
+alone, have none. `/api/reader` validates the ranges as increasing within the
+sidecar's paragraphs and renders the text with raw HTML off, restoring only
+balanced `<sup>`/`<sub>` pairs, since extraction writes superscripts as tags.
+The browser labels a description's first paragraph **Description** and, when
+there is any original text, offers **Original**: it shows each batch's text,
+headed "Original · PDF p. N", muted beneath the narration made from it, and a
+left-out batch as "Not narrated" in its place.
+
 The reader player requests `/api/audio?name=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
 requested time while decoding audio from elsewhere (measured in Chrome: up to
@@ -637,7 +658,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 92 tests. It covers voice persistence
+The regression suite currently has 95 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -671,7 +692,10 @@ started again, adaptation in which a left-out reference adds no text while
 figures keep their place in the reader, tables of contents left out before
 any model sees them (a contents table with wrapped rows, a page-break artifact
 inside it, and a list of figures) while a numbered chapter heading after them
-and a real section titled Contents stay, sentences split by page breaks
+and a real section titled Contents stay, a references title PDF extraction ran
+into the acknowledgements and first entry still starting the bibliography while
+bold titles in running prose do not, and the first heading after a
+bibliography ending it, sentences split by page breaks
 rejoined in page layouts taken from real papers (across a figure's panel
 titles and caption, a footnote and a hyphenated word, a caption broken above
 its table, and an italic first line read as a heading) while a new section or
@@ -682,7 +706,12 @@ figure or equation description that does not say what it describes named in
 the log while prose and left-out figures are not, prose that lost its wording
 named in the log and summarized while citation marks and short passages do not
 count, each book's record keeping its adapting model, prose summary, stage
-times, and audio length even when Continue reuses the adaptation,
+times, and audio length even when Continue reuses the adaptation, each
+narrated paragraph's PDF page across a rejoined page break, the reader's
+original text, page, and description flag for each batch (a left-out one, a
+figure without its image, labels, or title, and a batch of two paragraphs)
+with only superscripts turned back into markup and batches out of order
+refused,
 adaptation redone after the harness
 instructions change, PDF figures that reach both the reader and the model
 when the library sits inside the project folder, PDF figures rendered
