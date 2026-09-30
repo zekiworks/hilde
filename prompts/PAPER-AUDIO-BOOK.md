@@ -34,6 +34,7 @@ Ask of every passage whether a listener would want to hear it read aloud.
 
 * Within these rules, never summarize, condense, or shorten the author's prose. Every sentence of argument, finding, qualification, example, and transition stays, in full and in order.
 * The title block is not apparatus: keep the document's title, its authors, and its date.
+* Footnotes: a footnote arrives in the same request as the paragraph that cites it, as a quoted block that starts with its marker (such as "> 4To illustrate…" or "> † Work performed…"), and the paragraph carries the same marker as a superscript. Read the footnote right after the sentence that carries its marker, never at the end of the passage, and never the marker itself. Make it an aside the listener can place: say what or whom it is about, as in "Aidan Gomez did this work while at Google Brain", not "Work performed while at Google Brain". A footnote that explains or qualifies the argument is the author's prose: keep it in full.
 * Make only the changes speech needs: expand an acronym on its first spoken use when the text defines it; replace visual references such as "see the table below" with spoken connectors; mend print artifacts such as broken line-break hyphenation and ligature glitches; and paragraph and punctuate so the speech engine pauses naturally.
 
 **References and Bibliography (Always Left Out):**

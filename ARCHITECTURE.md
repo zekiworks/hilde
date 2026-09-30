@@ -235,7 +235,14 @@ PDF work is page-addressable:
 3. extracted figures remain under `images/`, linked as `images/<file>`: the
    converter runs from the extraction folder because `pymupdf4llm` links
    images relative to its working directory, and the reader and figure
-   attachments resolve links against that folder;
+   attachments resolve links against that folder. The converter asks for
+   `page_chunks`, whose `page_boxes` give each table's box and its span in
+   the page Markdown. Cells rebuilt from the layout split words across
+   columns ("BL|EU") and carry stray emphasis and tags, so each table becomes
+   `![Table](images/page-NNNN-table-K.png)`, cut from its box at 200 dpi,
+   followed by its cells between picture-text markers: kinds `image` and
+   `labels`, the same parts as a figure, so the reader shows the table as
+   printed and the model gets the picture and the cells;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a
    paragraph, and the model sees each batch without the narration before it,
@@ -265,11 +272,19 @@ PDF work is page-addressable:
    2 and 3", "Tables 1–4"), on its own page or the next, to follow that
    paragraph, so a description never comes before the author introduces its
    figure; one already after its first mention, or mentioned only pages away,
-   stays. The job log counts the rejoined sentences and the moved figures and
-   tables. `join_pdf_pages()` also returns the page each block of
+   stays. `_place_footnotes()`, which runs first, moves each footnote
+   (`_footnote_marker()`: a number glued to its first word, "4To
+   illustrate", or a symbol, "_†_ Work performed") to follow the nearest
+   earlier paragraph on its page or the one before whose superscripts carry
+   that marker (`_cited_markers()`: "<sup>4</sup>", "<sup>_∗†_</sup>" as ∗
+   and †), so it is no longer read where the page printed it; and
+   `paper_batches()` sends it in one request with that paragraph, where the
+   prompt has it read right after the citing sentence, naming whom or what it
+   is about. The job log counts the rejoined sentences and the moved figures,
+   tables, and footnotes. `join_pdf_pages()` also returns the page each block of
    `document.md` starts on, which
    `convert_pdf()` stores as `document-pages.json` (`{"pages": [...]}`); a
-   rejoined sentence keeps the earlier page, and a moved figure its own.
+   rejoined sentence keeps the earlier page, and a moved figure or footnote its own.
    `narrated_source_pages()` maps them onto the narrated paragraphs for the
    reader, and returns nothing when the record does not describe the document.
 
@@ -694,7 +709,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 99 tests. It covers voice persistence
+The regression suite currently has 101 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -747,7 +762,11 @@ stays inside it, figures and tables printed before their first mention moving
 after it (lists and ranges of numbers included) while ones already after it or
 mentioned only pages away stay, a line stopping on "for" continued across a
 table into a capitalized word while a line that could end a sentence is not,
-an equation inside a sentence batched with both halves, each figure or table reaching the model in
+an equation inside a sentence batched with both halves, footnotes (affiliation
+notes cited from author lines by combined symbols, and a numbered note cited
+mid-paragraph) moved after and batched with the nearest paragraph citing them
+while one cited only pages away stays, a PDF table from the real converter
+shown as a picture cut from its page with its cells kept as its text, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
 with panel titles marked as titles rather than sent as section headings, a
 figure or equation description that does not say what it describes named in

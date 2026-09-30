@@ -443,9 +443,10 @@ class InvisibleOcrText:
 
 
 engine = select_ocr_function()
-markdown = pymupdf4llm.to_markdown(
+chunk = pymupdf4llm.to_markdown(
     str(source),
     pages=[page],
+    page_chunks=True,
     header=False,
     footer=False,
     write_images=True,
@@ -458,9 +459,38 @@ markdown = pymupdf4llm.to_markdown(
         if engine else None
     ),
     show_progress=False,
-)
+)[0]
+markdown = chunk.get("text")
 if not isinstance(markdown, str):
     raise RuntimeError(f"PDF page {page + 1} returned invalid Markdown")
+
+# A table's cells come out of the layout unreliably: words split across
+# columns ("BL|EU"), stray emphasis, and tags. Show each table as printed,
+# cut from the page, and keep its cells behind the picture as its text, as
+# figures keep the labels read from inside them.
+tables = [
+    box for box in chunk.get("page_boxes") or ()
+    if box.get("class") == "table" and box.get("pos") and box.get("bbox")
+]
+if tables:
+    import pymupdf
+
+    with pymupdf.open(source) as document:
+        sheet = document[page]
+        for number, box in reversed(list(enumerate(tables, 1))):
+            start, end = box["pos"]
+            cells = markdown[start:end].strip()
+            if not cells.startswith("|"):
+                continue
+            clip = (pymupdf.Rect(box["bbox"]) + (-4, -4, 4, 4)) & sheet.rect
+            name = f"page-{page + 1:04d}-table-{number}.png"
+            sheet.get_pixmap(clip=clip, dpi=200).save(images / name)
+            markdown = (
+                markdown[:start]
+                + f"\\n\\n![Table](images/{name})\\n\\n"
+                + f"<!-- Start of picture text -->\\n{cells}\\n<!-- End of picture text -->\\n\\n"
+                + markdown[end:]
+            )
 output.write_text(markdown, encoding="utf-8")
 print(f"Extracted PDF page {page + 1} ({len(markdown)} Markdown characters).")
 """
@@ -3667,6 +3697,11 @@ def _place_after_mentions(document, kinds, starts):
         if first is not None and first > end:
             following.setdefault(first, []).extend(range(start, end + 1))
             moved += 1
+    return _reorder(document, kinds, starts, following) + (moved,)
+
+
+def _reorder(document, kinds, starts, following):
+    """Put the blocks listed under an index right after that block."""
     moving = {index for indexes in following.values() for index in indexes}
     order = []
     for index in range(len(document)):
@@ -3677,22 +3712,74 @@ def _place_after_mentions(document, kinds, starts):
         [document[index] for index in order],
         [kinds[index] for index in order],
         [starts[index] for index in order],
-        moved,
     )
+
+
+# A footnote's marker as extracted: a number glued to its first word
+# ("4To illustrate"), or a symbol ("_†_ Work performed").
+FOOTNOTE_SYMBOLS = "∗†‡§¶‖"
+FOOTNOTE_MARK_PATTERN = re.compile(rf"(\d{{1,2}})(?![\d.,])|([{FOOTNOTE_SYMBOLS}])")
+
+
+def _footnote_marker(paragraph):
+    """The marker a footnote starts with, such as "4" or "†", or None."""
+    text = paragraph.strip().lstrip(">").strip().lstrip("_").strip()
+    match = FOOTNOTE_MARK_PATTERN.match(text)
+    return (match.group(1) or match.group(2)) if match else None
+
+
+def _cited_markers(paragraph):
+    """The footnote markers a passage's superscripts carry: numbers whole,
+    symbols one by one, as in "<sup>_∗†_</sup>"."""
+    marks = set()
+    for superscript in re.findall(r"<sup>(.*?)</sup>", paragraph):
+        text = re.sub(r"[_*\s,]", "", superscript)
+        marks.update(re.findall(r"\d{1,2}", text))
+        marks.update(symbol for symbol in text if symbol in FOOTNOTE_SYMBOLS)
+    return marks
+
+
+def _place_footnotes(document, kinds, starts):
+    """Move each footnote to follow the nearest paragraph before it, on its
+    page or the one before, whose superscript carries its marker.
+
+    A footnote read where the page put it, at the bottom, sounds like a
+    random aside in the middle of another passage. Return the reordered
+    lists and how many footnotes moved.
+    """
+    following = {}
+    for index, kind in enumerate(kinds):
+        marker = _footnote_marker(document[index]) if kind == "footnote" else None
+        if marker is None:
+            continue
+        citing = index - 1
+        while citing >= 0 and starts[citing] >= starts[index] - 1:
+            if kinds[citing] == "prose" and marker in _cited_markers(document[citing]):
+                following.setdefault(citing, []).append(index)
+                break
+            citing -= 1
+    moved = sum(
+        1 for citing, notes in following.items()
+        for position, note in enumerate(notes)
+        if note != citing + 1 + position
+    )
+    return _reorder(document, kinds, starts, following) + (moved,)
 
 
 def join_pdf_pages(pages):
     """Join per-page Markdown; return it, the page each of its blocks starts
-    on, how many sentences were rejoined, and how many figures and tables
-    were moved after their first mention.
+    on, how many sentences were rejoined, how many figures and tables were
+    moved after their first mention, and how many footnotes were moved after
+    the paragraph that cites them.
 
     A page break ends a paragraph, even inside a sentence. When a page's last
     sentence is unfinished and the next page continues it in lowercase, the
     halves become one paragraph again, and the footnotes, page numbers, and
     figures or tables that sat between them follow it; a figure, table, or
     footnote that cuts a sentence within a page follows it the same way. A
-    caption broken above its table or figure is mended too. Last, a figure
-    or table printed before the text introduces it moves after that text.
+    caption broken above its table or figure is mended too. Then each
+    footnote moves after the paragraph that cites it, and a figure or table
+    printed before the text introduces it moves after that text.
     """
     vocabulary = "\n".join(pages).casefold()
     document, kinds, starts, rejoined = [], [], [], 0
@@ -3707,8 +3794,9 @@ def join_pdf_pages(pages):
         document.extend(paragraphs)
         kinds.extend(page_kinds)
         starts.extend([number] * len(paragraphs))
+    document, kinds, starts, notes = _place_footnotes(document, kinds, starts)
     document, kinds, starts, moved = _place_after_mentions(document, kinds, starts)
-    return "\n\n".join(document), starts, rejoined, moved
+    return "\n\n".join(document), starts, rejoined, moved, notes
 
 
 def _paper_units(kinds):
@@ -3757,6 +3845,15 @@ def paper_batches(paragraphs, per_worker):
     units = []
     for unit in _paper_units(kinds):
         start, end = unit
+        # A footnote goes with the paragraph citing it, so the model can say
+        # what or whom it is about.
+        marker = _footnote_marker(paragraphs[start]) if kinds[start:end + 1] == ["footnote"] else None
+        if marker is not None and units and any(
+            kinds[index] == "prose" and marker in _cited_markers(paragraphs[index])
+            for index in range(units[-1][0], units[-1][1] + 1)
+        ):
+            units[-1] = (units[-1][0], end)
+            continue
         inline = (
             units
             and set(kinds[start:end + 1]) <= FIGURE_PART_KINDS
@@ -5557,7 +5654,7 @@ class PaperRun(Run):
         if titled != pages[0]:
             pages[0] = titled
             self.publish("log", f"Restored the title as a heading: {title}\n")
-        markdown, starts, rejoined, moved = join_pdf_pages(pages)
+        markdown, starts, rejoined, moved, notes = join_pdf_pages(pages)
         # The reader's Original view names the page each paragraph starts on.
         write_json_atomic(scratch / "document-pages.json", {"pages": starts})
         if rejoined:
@@ -5572,6 +5669,12 @@ class PaperRun(Run):
                 f"Moved {moved} figure{'s' if moved != 1 else ''} or "
                 f"table{'s' if moved != 1 else ''} to follow the paragraph that "
                 f"first mentions {'them' if moved != 1 else 'it'}.\n",
+            )
+        if notes:
+            self.publish(
+                "log",
+                f"Moved {notes} footnote{'s' if notes != 1 else ''} to follow the "
+                f"paragraph that cites {'them' if notes != 1 else 'it'}.\n",
             )
         temporary = markdown_path.with_name(f".{markdown_path.name}.tmp")
         temporary.write_text(markdown, encoding="utf-8", newline="\n")
@@ -5908,7 +6011,7 @@ class PaperRun(Run):
             # through with_title_heading(), join_pdf_pages(),
             # narrated_source_paragraphs(), or paper_batches(): checkpoints
             # and the reader number paragraphs.
-            "schema": 8,
+            "schema": 9,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,

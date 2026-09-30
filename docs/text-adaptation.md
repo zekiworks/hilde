@@ -66,8 +66,13 @@ to the model with it, so the sentence is read through. A figure
 or table printed before the text that first mentions it ("as Figure 3
 shows…"), on the same page or the next, moves after that text, so its
 description never comes before the author introduces it or in the middle of
-the argument. The job log counts the sentences it rejoined and the figures and
-tables it moved.
+the argument. A footnote moves to the paragraph that cites it and goes to the
+model with that paragraph, which reads it right after the sentence carrying its
+marker, saying whom or what it is about ("Aidan Gomez did this work while at
+Google Brain"). A PDF table goes to the model as its picture and the cells
+read from it; the model says what the table shows, and the cells are never read
+aloud. The job log counts the sentences it rejoined and the figures, tables,
+and footnotes it moved.
 A paper's title, which PDF extraction can mistake for a page header and leave
 out, is put back at the top as a heading, so the narration opens with it; the
 job log says when it did.

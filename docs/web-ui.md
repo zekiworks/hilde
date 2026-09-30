@@ -117,10 +117,12 @@ the text like pages: it scrolls only once the playing sentence leaves the
 screen, bringing it a quarter of the way down, so a figure stays in view while
 its description is read. The web shell is served with `Cache-Control:
 no-store`, so subsequent ordinary refreshes load
-the current player code. Straightforward extracted tables remain selectable
-Markdown tables, and extracted figures and formulas remain embedded as validated raster
+the current player code. A table in a PDF shows as printed, a picture cut from
+its page, because the cells PDF extraction rebuilds can split words and carry
+stray markup; tables in Markdown or text documents remain selectable tables.
+Extracted figures and formulas remain embedded as validated raster
 images. Narration-ready descriptions above those visuals receive word timing;
-raw table cells and image markup do not consume spoken-word cues. A visual-only
+table cells are never read aloud, and image markup does not consume spoken-word cues. A visual-only
 interval remains active for its complete audio cue instead of advancing to the
 next text block. Standalone invisible PDF format-control artifacts are removed
 before new narration; an existing audiobook's artifact interval is assigned to

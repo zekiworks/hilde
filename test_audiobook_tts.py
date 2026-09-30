@@ -524,7 +524,7 @@ class PaperWorkflowTests(unittest.TestCase):
             self.assertEqual(web.with_title_heading(kept, title), kept)
 
     def test_each_narrated_paragraph_knows_the_pdf_page_it_starts_on(self):
-        markdown, starts, rejoined, _ = web.join_pdf_pages([
+        markdown, starts, rejoined, _, _ = web.join_pdf_pages([
             "# Introduction\n\n"
             "Attention maps a query to an output. The output is a weighted",
             "sum of the values.\n\nA second paragraph starts here.",
@@ -638,7 +638,7 @@ class PaperWorkflowTests(unittest.TestCase):
 
     def test_figures_follow_the_sentence_they_cut_and_the_text_that_introduces_them(self):
         def joined(*pages):
-            markdown, _, _, moved = web.join_pdf_pages(list(pages))
+            markdown, _, _, moved, _ = web.join_pdf_pages(list(pages))
             return web.split_paper_paragraphs(markdown), moved
 
         labels = "<!-- Start of picture text -->Search<br>Read<!-- End of picture text -->"
@@ -731,6 +731,92 @@ class PaperWorkflowTests(unittest.TestCase):
             "Page four says nothing of figures.",
             "Page five says Figure 3 shows attention heads.",
         ], 4))
+
+    def test_footnotes_follow_and_go_to_the_model_with_the_paragraph_citing_them(self):
+        # Attention Is All You Need, pages 1 and 4, as extracted: affiliation
+        # notes cited from the author lines, and note 4 cited mid-paragraph,
+        # all printed at the bottom of their page.
+        authors = "**Aidan N. Gomez**<sup>_∗†_</sup> **Łukasz Kaiser**<sup>_∗_</sup> Google Research"
+        last_author = "**Illia Polosukhin**<sup>_∗‡_</sup> illia@example.com"
+        abstract = "The dominant sequence transduction models are based on recurrent networks."
+        equal, brain, research = (
+            "> _∗_ Equal contribution. Listing order is random.",
+            "> _†_ Work performed while at Google Brain.",
+            "> _‡_ Work performed while at Google Research.",
+        )
+        cited = ("The dot products grow large, pushing the softmax into regions with "
+                 "extremely small gradients<sup>4</sup>. We scale them to counteract this.")
+        squared = "The cost grows with n<sup>2</sup> in the sequence length."
+        heads = "Multi-head attention attends to several representation subspaces at once."
+        note = "> 4To illustrate why the dot products get large, assume independent components."
+        # Cited only on a page two pages back, or by nothing: stays put.
+        stray = "> 2This note names no nearby passage."
+        markdown, _, _, _, notes = web.join_pdf_pages([
+            "\n\n".join([authors, last_author, abstract, equal, brain, research]),
+            "\n\n".join([squared, "Recurrent layers are slow."]),
+            "Attention layers are fast.",
+            "\n\n".join([cited, heads, note, stray]),
+        ])
+        paragraphs = web.split_paper_paragraphs(markdown)
+
+        self.assertEqual(paragraphs, [
+            authors, brain, last_author, equal, research, abstract,
+            squared, "Recurrent layers are slow.", "Attention layers are fast.",
+            cited, note, heads, stray,
+        ])
+        self.assertEqual(notes, 4)
+        # The model gets each footnote with its paragraph, so it can say whom
+        # a note is about and read it after the sentence citing it.
+        self.assertEqual(web.paper_batches(paragraphs, 1), [
+            (1, 2), (3, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 11), (12, 12), (13, 13),
+        ])
+
+    def test_pdf_tables_show_as_printed_while_the_model_gets_their_cells(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "table.pdf"
+        rows = [("Model", "BLEU EN-DE", "Training Cost (FLOPs)"), ("ByteNet", "23.75", ""),
+                ("GNMT + RL", "24.6", "2.3 · 10^19"), ("Transformer (big)", "28.4", "2.3 · 10^19")]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 80), "Table 2: The Transformer achieves better BLEU scores.", fontsize=10)
+            edges = [100, 250, 360, 510]
+            for row, cells in enumerate(rows):
+                for column, cell in enumerate(cells):
+                    page.insert_text((edges[column] + 5, 109 + row * 20), cell, fontsize=10)
+            for row in range(len(rows) + 1):
+                page.draw_line((edges[0], 95 + row * 20), (edges[-1], 95 + row * 20))
+            for edge in edges:
+                page.draw_line((edge, 95), (edge, 95 + len(rows) * 20))
+            for line in range(12):
+                page.insert_text((72, 220 + 14 * line),
+                                 "The Transformer outperforms the best reported models.", fontsize=10)
+            pdf.save(source)
+        stage = root / "stage"
+        stage.mkdir()
+        output = stage / "page.md"
+        subprocess.run(
+            [sys.executable, "-c", web._PDF_CONVERTER, str(source), str(output),
+             str(stage / "images"), "0"],
+            check=True, capture_output=True,
+        )
+        paragraphs = web.split_paper_paragraphs(output.read_text(encoding="utf-8"))
+        kinds = web._layout_kinds(paragraphs)
+
+        # The table as printed, then its cells as the text behind it: never
+        # a Markdown table rebuilt from the layout, which the reader would show.
+        self.assertEqual(kinds[:3], ["caption", "image", "labels"])
+        self.assertNotIn("table", kinds)
+        image = re.fullmatch(r"!\[Table\]\((images/[^)]+\.png)\)", paragraphs[1])
+        self.assertIsNotNone(image)
+        with pymupdf.open(stage / image.group(1)) as picture:
+            self.assertGreater(picture[0].rect.width, 300)
+        self.assertIn("|ByteNet|23.75|", paragraphs[2].replace(" ", ""))
+        # The caption, picture, and cells reach the model in one request.
+        self.assertEqual(web.paper_batches(paragraphs, 1)[0], (1, 3))
 
     def test_figures_reach_the_model_whole(self):
         paragraphs = [
