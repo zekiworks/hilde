@@ -40,7 +40,7 @@ SoX, and FlashAttention notes below apply to both ways of installing.
 
 Python **3.12** is the tested version. Shell examples use Bash; on Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell instead.
 
-## 1. Get the code
+### 1. Get the code
 
 ```bash
 git clone https://github.com/zekiworks/hilde.git
@@ -49,7 +49,7 @@ cd hilde
 
 Run the remaining commands from this directory.
 
-## 2. Create an environment
+### 2. Create an environment
 
 ```bash
 python3.12 -m venv .venv
@@ -57,7 +57,7 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## 3. Install PyTorch, TorchAudio, and the dependencies
+### 3. Install PyTorch, TorchAudio, and the dependencies
 
 Choose **one** build appropriate for your platform. Keep PyTorch and TorchAudio versions matched, from the same CPU/CUDA build family: a mismatched TorchAudio fails with undefined-symbol errors, even when the same package imports successfully elsewhere. See the [official PyTorch installation guidance](https://pytorch.org/get-started/locally/) for other platforms and CUDA builds.
 
@@ -92,7 +92,7 @@ python -m pip install -r requirements.txt
   1.2 GB MMS model through TorchAudio. Alignment runs on CPU after narration, so
   it does not compete with the narration workers for GPU memory.
 
-## 4. Optional: install FlashAttention 2
+### 4. Optional: install FlashAttention 2
 
 FlashAttention is needed only when selecting `--attn-implementation flash_attention_2`. It requires compatible CUDA hardware and a compatible build for your PyTorch installation. It cannot be used with CPU or float32 inference.
 
@@ -107,7 +107,7 @@ The GPU workflow has been exercised on Linux with Python 3.12, PyTorch/TorchAudi
 
 You can skip FlashAttention and select SDPA attention instead: `--attn-implementation sdpa`, or `sdpa` under **Advanced** in the web UI. CPU inference with SDPA has also been exercised.
 
-## 5. Download the models
+### 5. Download the models
 
 Hilde uses two Qwen3-TTS models:
 
