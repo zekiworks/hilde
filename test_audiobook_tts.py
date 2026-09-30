@@ -31,6 +31,9 @@ from audiobook_tts import read_voice, save_voice, speech_endpoint
 from audiobook_tts_web import GIB, Handler, PaperRun, local_model_names, normalize
 from audiobook_tts_web import parse_paper_response
 
+# Tests never reach the Claude Code installed on the machine running them.
+web.CLAUDE_CODE_CANDIDATES = ()
+
 
 class FakeWordAligner:
     def _align(self, frame_count, text, block, start_sample, word_index):
@@ -3168,6 +3171,113 @@ class AnthropicProviderTests(unittest.TestCase):
             (image["source"]["type"], image["source"]["media_type"]), ("base64", "image/png")
         )
         base64.b64decode(image["source"]["data"], validate=True)
+
+
+FAKE_CLAUDE_CODE = """\
+#!{python}
+import json, os, sys
+from pathlib import Path
+
+state = Path({state!r})
+if sys.argv[1:3] == ["auth", "status"]:
+    print(json.dumps({{"loggedIn": (state / "signed-in").exists(), "subscriptionType": "max"}}))
+    sys.exit(0)
+message = json.loads(sys.stdin.readline())
+with (state / "calls.jsonl").open("a") as calls:
+    calls.write(json.dumps({{"argv": sys.argv[1:], "cwd": os.getcwd(), "message": message}}) + "\\n")
+print(json.dumps({{"type": "system", "subtype": "init", "model": "claude-sonnet"}}))
+if (state / "limit").exists():
+    print(json.dumps({{"type": "result", "subtype": "success", "is_error": True,
+                      "result": "You've hit your limit · resets 5pm"}}))
+    sys.exit(1)
+images = [part for part in message["message"]["content"] if part["type"] == "image"]
+answer = ("<NARRATION>Figure one is described.</NARRATION><SUMMARY>Figure.</SUMMARY>" if images
+          else "<NARRATION>Prose stays.</NARRATION><SUMMARY>Prose.</SUMMARY>")
+print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": answer}}]}}}}))
+print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": answer}}))
+"""
+
+
+class ClaudeCodeProviderTests(unittest.TestCase):
+    def test_own_signed_in_claude_code_adapts_with_figures_and_reports_its_limits(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        state = root / "claude-state"
+        state.mkdir()
+        claude = root / "bin" / "claude"
+        claude.parent.mkdir()
+        claude.write_text(FAKE_CLAUDE_CODE.format(python=sys.executable, state=str(state)))
+        claude.chmod(0o755)
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        home = root / ".hilde"
+
+        def run(stage):
+            job = PaperRun(
+                source, stage / "prepared.txt", "utf-8", model="claude-code/sonnet",
+                in_flight=1, prompt_path=prompt, scratch_path=stage,
+            )
+            job.pump()
+            return job
+
+        with mock.patch.object(web, "CLAUDE_CODE_CANDIDATES", (str(claude),)), \
+                mock.patch.object(web, "HILDE_HOME", home), \
+                mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None):
+            # Installed but signed out: no models, and the job is refused.
+            catalog = web.paper_model_catalog()
+            self.assertEqual((catalog["models"], catalog["claude_code_connected"]), ([], False))
+            self.assertIn("not signed in", catalog["claude_code_status"])
+            values = {"adapt": True, "model": "claude-code/sonnet", "local_server": "",
+                      "in_flight": 1, "paragraphs_per_worker": 1}
+            self.assertIsNotNone(web._adaptation_problem(values))
+
+            (state / "signed-in").touch()
+            catalog = web.paper_model_catalog()
+            self.assertIsNone(web._adaptation_problem(values))
+            finished = run(root / "extraction")
+            (state / "limit").touch()
+            limited = run(root / "limited")
+
+        self.assertEqual(catalog["default_model"], "claude-code/sonnet")
+        self.assertEqual(
+            [model["selector"] for model in catalog["models"]],
+            ["claude-code/sonnet", "claude-code/opus", "claude-code/haiku"],
+        )
+        self.assertEqual(finished.code, 0)
+        self.assertIn(
+            "Figure one is described.",
+            (root / "extraction" / "prepared.txt").read_text(encoding="utf-8"),
+        )
+        calls = [json.loads(line) for line in (state / "calls.jsonl").read_text().splitlines()]
+        call = next(
+            call for call in calls
+            if any(part["type"] == "image" for part in call["message"]["message"]["content"])
+        )
+        argv = call["argv"]
+        # One answer and no actions: Hilde's instructions, every tool off,
+        # and never --bare, which would skip the subscription sign-in.
+        self.assertEqual(argv[:3], ["-p", "--model", "sonnet"])
+        self.assertIn("Adapt every paragraph.", argv[argv.index("--system-prompt") + 1])
+        self.assertEqual(argv[argv.index("--tools") + 1], "")
+        self.assertNotIn("--bare", argv)
+        # Run outside the project, so no instructions file joins the prompt.
+        self.assertEqual(Path(call["cwd"]).resolve(), home.resolve())
+        image = next(
+            part for part in call["message"]["message"]["content"] if part["type"] == "image"
+        )
+        self.assertEqual(image["source"]["media_type"], "image/png")
+        base64.b64decode(image["source"]["data"], validate=True)
+        # A plan's usage limit ends the job with Claude Code's own words,
+        # not as a reply that fails to parse.
+        self.assertNotEqual(limited.code, 0)
+        self.assertTrue(any(
+            "Claude Code: You've hit your limit" in str(data)
+            for event, data in limited.history if event == "log"
+        ))
 
 
 class DocumentDownloadTests(unittest.TestCase):

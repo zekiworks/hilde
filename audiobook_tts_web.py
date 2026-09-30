@@ -136,6 +136,16 @@ HILDE_HOME = Path.home() / ".hilde"
 ANTHROPIC_MODEL_PROVIDER = "anthropic"
 # Anthropic keeps Claude subscription sign-ins to its own apps, so this
 # provider takes an API key from the Claude Console.
+CLAUDE_CODE_MODEL_PROVIDER = "claude-code"
+# A Claude subscription reaches Hilde only through the user's own Claude Code:
+# Hilde runs the unmodified `claude` command for each batch, and the sign-in
+# stays with Claude Code, completed through Anthropic's own flow. The aliases
+# name each family's latest model.
+CLAUDE_CODE_MODELS = ("sonnet", "opus", "haiku")
+# The command, then where Claude Code's installer puts it, for a server
+# started without it on PATH.
+CLAUDE_CODE_CANDIDATES = ("claude", "~/.local/bin/claude", "~/.claude/local/claude")
+CLAUDE_CODE_STATUS_TIMEOUT = 20
 ANTHROPIC_API_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 # A busy or rate-limited cloud provider is asked again this many times, after
@@ -2987,11 +2997,8 @@ def _anthropic_text(response):
     raise RuntimeError("Anthropic ended the response before it completed.")
 
 
-def anthropic_response(model, system_prompt, text, images, open_stream, pause):
-    """Adapt one batch with a Claude model through Anthropic's Messages API."""
-    key = read_anthropic_key()
-    if key is None:
-        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+def _claude_content(text, images):
+    """A batch as Claude message content: its text, then its figures."""
     content = [{"type": "text", "text": text}]
     for path in images:
         content.append({"type": "image", "source": {
@@ -2999,6 +3006,15 @@ def anthropic_response(model, system_prompt, text, images, open_stream, pause):
             "media_type": mimetypes.guess_type(path.name)[0] or "image/png",
             "data": base64.b64encode(path.read_bytes()).decode("ascii"),
         }})
+    return content
+
+
+def anthropic_response(model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with a Claude model through Anthropic's Messages API."""
+    key = read_anthropic_key()
+    if key is None:
+        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+    content = _claude_content(text, images)
     body = json.dumps({
         "model": model,
         "max_tokens": ANTHROPIC_MAX_TOKENS,
@@ -3018,6 +3034,84 @@ def anthropic_response(model, system_prompt, text, images, open_stream, pause):
         if pause(delay):
             raise InterruptedError("document processing stopped")
     raise AssertionError("unreachable Anthropic retry loop")
+
+
+def claude_code_command():
+    """The path of the user's Claude Code, or None when it is not installed."""
+    for candidate in CLAUDE_CODE_CANDIDATES:
+        path = shutil.which(os.path.expanduser(candidate))
+        if path:
+            return path
+    return None
+
+
+def claude_code_status():
+    """Whether this server's Claude Code is signed in, and what to tell the user.
+
+    Returns (signed_in, message). Claude Code reports its own sign-in; Hilde
+    never reads its credentials.
+    """
+    command = claude_code_command()
+    if command is None:
+        return False, "Claude Code is not installed on this server."
+    try:
+        answer = subprocess.run(
+            [command, "auth", "status"], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=CLAUDE_CODE_STATUS_TIMEOUT,
+        )
+        status = json.loads(answer.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False, "Claude Code did not report its sign-in; run claude in a terminal to check it."
+    if not isinstance(status, dict) or status.get("loggedIn") is not True:
+        return False, "Claude Code is installed but not signed in: run claude in a terminal and sign in."
+    plan = status.get("subscriptionType")
+    return True, (
+        f"Signed in with a Claude {plan.capitalize()} plan." if isinstance(plan, str) and plan
+        else "Signed in."
+    )
+
+
+def claude_code_request(model, system_prompt, text, images):
+    """The command line and standard input that adapt one batch with Claude Code.
+
+    Print mode with every tool, MCP server, and skill turned off and Hilde's
+    instructions in place of Claude Code's: one answer, no actions. The batch
+    goes in as a stream-json message, so figures travel as image blocks.
+    """
+    command = [
+        claude_code_command() or "claude", "-p",
+        "--model", model,
+        "--system-prompt", system_prompt,
+        "--tools", "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+    ]
+    message = {"type": "user", "message": {
+        "role": "user", "content": _claude_content(text, images),
+    }}
+    return command, json.dumps(message) + "\n"
+
+
+def claude_code_answer(output):
+    """The answer in Claude Code's stream-json output, or its error."""
+    result = None
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event
+    if result is None:
+        raise RuntimeError("Claude Code ended without an answer.")
+    answer = result.get("result")
+    if result.get("is_error") or result.get("subtype") != "success" or not isinstance(answer, str):
+        raise RuntimeError(f"Claude Code: {answer or result.get('subtype') or 'failed'}")
+    return answer
 
 
 def local_server_json(local_server, path, label):
@@ -3128,6 +3222,12 @@ def paper_model_catalog(local_server="", local_provider=""):
             ]
         except RuntimeError as exc:
             openai_error = str(exc)
+    claude_code_connected, claude_code_message = claude_code_status()
+    if claude_code_connected:
+        cloud_models += [
+            {"provider": CLAUDE_CODE_MODEL_PROVIDER, "selector": f"{CLAUDE_CODE_MODEL_PROVIDER}/{name}"}
+            for name in CLAUDE_CODE_MODELS
+        ]
     anthropic_connected = read_anthropic_key() is not None
     if anthropic_connected:
         try:
@@ -3141,7 +3241,7 @@ def paper_model_catalog(local_server="", local_provider=""):
     # this browser added one, and nothing while it does not answer: a
     # document goes to a cloud provider only when chosen, or when no local
     # server was added. Then OpenAI's first model once signed in comes first,
-    # then Anthropic's.
+    # then Claude Code's, then Anthropic's, whose key is billed per request.
     defaults = local_models if local_server else cloud_models
     return {
         "models": local_models + cloud_models,
@@ -3153,6 +3253,8 @@ def paper_model_catalog(local_server="", local_provider=""):
         "openai_connected": openai_connected,
         "anthropic_error": anthropic_error,
         "anthropic_connected": anthropic_connected,
+        "claude_code_connected": claude_code_connected,
+        "claude_code_status": claude_code_message,
     }
 
 
@@ -4236,6 +4338,7 @@ def _adaptation_problem(values):
         if (
             read_openai_credentials() is None
             and read_anthropic_key() is None
+            and not claude_code_status()[0]
             and not values["local_server"]
         ):
             return (
@@ -4248,6 +4351,10 @@ def _adaptation_problem(values):
     elif provider == ANTHROPIC_MODEL_PROVIDER:
         if read_anthropic_key() is None:
             return "Add an Anthropic API key in Providers, under Advanced, to use this model."
+    elif provider == CLAUDE_CODE_MODEL_PROVIDER:
+        signed_in, status = claude_code_status()
+        if not signed_in:
+            return status
     elif provider not in LOCAL_MODEL_PROVIDERS:
         return "This adaptation model is no longer available; choose one under Advanced."
     elif not values["local_server"]:
@@ -5261,16 +5368,18 @@ class PaperRun(Run):
                 self.streams.discard(stream)
             stream.close()
 
-    def child_output(self, command, label, environment=None):
+    def run_child(self, command, label, environment=None, input_text=None, cwd=ROOT):
+        """Run a child Stop can end; return its exit code, output, and errors."""
         try:
             process = subprocess.Popen(
                 command,
-                cwd=str(ROOT),
+                cwd=str(cwd),
                 env=environment,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL if input_text is None else subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
             )
         except OSError as exc:
@@ -5281,21 +5390,40 @@ class PaperRun(Run):
         if should_stop:
             process.terminate()
         try:
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(input_text)
         finally:
             with self.process_lock:
                 self.processes.discard(process)
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
-        if process.returncode != 0:
+        return process.returncode, stdout, stderr
+
+    def child_output(self, command, label, environment=None):
+        code, stdout, stderr = self.run_child(command, label, environment)
+        if code != 0:
             details = (stderr or stdout).strip()
             if len(details) > 4000:
                 details = details[-4000:]
             raise RuntimeError(
-                f"{label} exited with {process.returncode}"
+                f"{label} exited with {code}"
                 + (f": {details}" if details else "")
             )
         return stdout
+
+    def claude_code_response(self, model, system_prompt, text, images):
+        """Adapt one batch with the user's own Claude Code."""
+        command, message = claude_code_request(model, system_prompt, text, images)
+        # Outside the project, so no instructions files are picked up.
+        HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        code, stdout, stderr = self.run_child(
+            command, "Claude Code", input_text=message, cwd=HILDE_HOME,
+        )
+        try:
+            return claude_code_answer(stdout)
+        except RuntimeError:
+            if code != 0 and stderr.strip():
+                raise RuntimeError(f"Claude Code exited with {code}: {stderr.strip()[-2000:]}") from None
+            raise
 
     def terminate_children(self):
         with self.process_lock:
@@ -5466,6 +5594,8 @@ class PaperRun(Run):
                 name, system_prompt, text, attachments, self.model_stream,
                 self.stop_requested.wait,
             )
+        if provider == CLAUDE_CODE_MODEL_PROVIDER:
+            return self.claude_code_response(name, system_prompt, text, attachments)
         if provider in LOCAL_MODEL_PROVIDERS and self.local_server:
             return local_model_response(
                 self.local_server, name, system_prompt, text, attachments,
@@ -8024,10 +8154,24 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div>
   </section>
   <section class="provider">
-    <h3>Anthropic</h3>
-    <p class="note">Anthropic allows Claude subscriptions only in its own apps, so this
-      uses an API key from the Claude Console. This server keeps it in
-      ~/.hilde/anthropic.json, readable only by its user.</p>
+    <h3>Claude Code</h3>
+    <p class="note">Uses your Claude subscription through your own Claude Code: this
+      server runs the claude command for each passage, with its tools off, and
+      Claude Code keeps its sign-in to itself. Install Claude Code on this server
+      and sign in by running claude once in a terminal. Passages count against
+      your plan's usage limits.</p>
+    <div class="row"><label>Status:</label><div>
+      <strong id="paper-claude-code-status"></strong>
+    </div></div>
+    <div class="footer">
+      <span class="grow"></span>
+      <button onclick="refreshPaperModels()">Check again</button>
+    </div>
+  </section>
+  <section class="provider">
+    <h3>Anthropic API</h3>
+    <p class="note">An API key from the Claude Console, billed per use. This server
+      keeps it in ~/.hilde/anthropic.json, readable only by its user.</p>
     <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
       <input id="paper-anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-…">
     </div></div>
@@ -9744,6 +9888,7 @@ function applyPaperCatalog(catalog) {
   paperOpenAIConnected = !!catalog.openai_connected;
   paperAnthropicConnected = !!catalog.anthropic_connected;
   renderPaperAnthropic(catalog.anthropic_error);
+  $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
   $("paper-local").textContent = state.audiobook.local_server ? "Local" : "Add local";
   const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error;
   $("paper-model-status").textContent = problem ||

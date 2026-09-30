@@ -17,16 +17,27 @@ While adaptation is selected, its settings appear under **Advanced** in
   your local server's first model once you add one under **Add local**; if that
   server does not answer, the job stops rather than send your document to a
   cloud provider. Without a local server, Default is OpenAI's first model once
-  signed in, then Anthropic's. A cloud provider that is busy or has a passing
-  error is asked again, up to four times.
-- **Providers** connects cloud models. **OpenAI** signs this server in with a
-  ChatGPT account: open the sign-in page it shows and enter the code; the
-  sign-in renews itself. **Anthropic** takes an API key from the
-  [Claude Console](https://platform.claude.com/), since Anthropic allows
-  Claude subscriptions only in its own apps; usage is billed to that key. The
-  server keeps both in `~/.hilde/`, readable only by the user running it.
-  **Remove** deletes the Anthropic key; delete `~/.hilde/openai.json` to sign
-  out of OpenAI.
+  signed in, then Claude Code's, then the Anthropic API's. A cloud provider
+  that is busy or has a passing error is asked again, up to four times.
+- **Providers** connects cloud models.
+  - **OpenAI** signs this server in with a ChatGPT account: open the sign-in
+    page it shows and enter the code; the sign-in renews itself. Delete
+    `~/.hilde/openai.json` to sign out.
+  - **Claude Code** uses a Claude Pro or Max subscription through your own
+    [Claude Code](https://code.claude.com/): install it on the machine running
+    Hilde and sign in by running `claude` once in a terminal. Hilde then runs
+    `claude` for each passage, with its tools turned off and Hilde's
+    instructions in place of Claude Code's, and offers `sonnet`, `opus`, and
+    `haiku`. Hilde never sees the sign-in, which Anthropic permits only
+    inside its own apps, and passages count against your plan's usage limits;
+    a limit reached ends the job with Claude Code's message. **Check again**
+    looks for Claude Code after you install it or sign in.
+  - **Anthropic API** takes an API key from the
+    [Claude Console](https://platform.claude.com/), billed per use. **Remove**
+    deletes it.
+
+  The server keeps the ChatGPT sign-in and the API key in `~/.hilde/`,
+  readable only by the user running it.
 - **Add local** connects a model server on your network. Choose its type,
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
@@ -38,7 +49,7 @@ While adaptation is selected, its settings appear under **Advanced** in
   the labels read from inside it, and its caption always go to the model
   together, so it is described once.
 
-Figures reach OpenAI and Anthropic models as images, and a local model too once
+Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
 extracted from each figure instead, and equations printed as images, which
 carry no text, are left out.

@@ -36,8 +36,8 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   SSH, other machines. A busy local GPU joins once it has room, and one that
   runs out of memory hands its chunks to the others.
 - **Local first.** Speech is generated on your own hardware by default. Text
-  adaptation runs on a local model server, or on OpenAI or Anthropic if you
-  connect one.
+  adaptation runs on a local model server, or on OpenAI or Claude, through
+  your ChatGPT or Claude subscription or an Anthropic API key.
 - **Resumable.** Press **Stop** or restart the server: finished chunks are kept,
   and creating the same audiobook again picks up where it left off.
 
@@ -98,7 +98,7 @@ update; your library in `~/hilde/User` stays.
 The page opens at `http://127.0.0.1:8800/`, reachable only from this computer,
 with eight stock voices. Each speech model, about 4.3 GB, downloads the first
 time it is used. Text adaptation needs a language model: connect a provider
-(OpenAI or Anthropic) or add a local model server under **Advanced**, or clear
+(ChatGPT, your own Claude Code, or an Anthropic API key) or add a local model server under **Advanced**, or clear
 **Adapt the text for listening** before you create an audiobook; see
 [Text adaptation](docs/text-adaptation.md).
 [Installation](docs/installation.md) covers the installer's settings, installing
@@ -136,10 +136,10 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
 - **Text-only local models never see the figure.** They describe it from the
   text extracted from it (labels, numbers, caption), so a figure with few
   labels gets a thin description, and an equation printed as an image is left
-  out. OpenAI and Anthropic models, and a local model marked as seeing images,
+  out. OpenAI and Claude models, and a local model marked as seeing images,
   receive figures as images.
 - **Cloud providers receive your document.** A document goes to OpenAI or
-  Anthropic when you choose one of their models, or, with **Model** left on
+  Anthropic (directly, or through Claude Code) when you choose one of their models, or, with **Model** left on
   Default, when you have added no local server. The text and figures of each
   adapted document are then sent to that provider. Use a local model server for
   private documents.
@@ -180,7 +180,7 @@ each browser changes only its own settings, under **Advanced**.
 - [batch size](docs/configuration.md#batch-size) and GPU memory.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a
-document for listening: a local model server, OpenAI, or Anthropic.
+document for listening: a local model server, ChatGPT, Claude Code, or the Anthropic API.
 
 ## Access and security
 
