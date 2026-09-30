@@ -7737,6 +7737,8 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
 dialog h3 { margin:0 0 6px; font-size:15px; }
 .provider + .provider { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
 #paper-providers-dialog { width:min(620px,92vw); }
+/* One click selects the whole sign-in code. */
+#paper-openai-code { user-select:all; -webkit-user-select:all; font-size:1.1em; }
 @media (max-width:640px) {
   main { padding:14px 14px 4px; }
   .brand-logo { width:36px; height:36px; border-radius:9px; }
@@ -8144,7 +8146,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <strong id="paper-openai-status"></strong>
       <div id="paper-openai-device" class="hidden">
         <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
-        <p>Enter code: <code id="paper-openai-code"></code></p>
+        <p>Enter code: <code id="paper-openai-code"></code>
+          <button id="paper-openai-copy" type="button" class="link" onclick="copyPaperOpenAICode()">Copy</button></p>
       </div>
     </div></div>
     <div class="footer">
@@ -9904,17 +9907,36 @@ async function refreshPaperModels() {
   }
 }
 
+// The sign-in status is polled every second; rewriting unchanged text would
+// replace it and drop the user's selection of the code.
+function setText(element, text) {
+  if (element.textContent !== text) element.textContent = text;
+}
 function renderPaperOpenAI(info) {
   const connected = paperOpenAIConnected || info.status === "connected";
-  $("paper-openai-status").textContent = info.status === "idle"
+  setText($("paper-openai-status"), info.status === "idle"
     ? connected ? "OpenAI OAuth is connected." : "OpenAI OAuth is not connected."
-    : (info.message || info.status);
+    : (info.message || info.status));
   const hasDevice = !!(info.url || info.code);
   $("paper-openai-device").classList.toggle("hidden", !hasDevice);
   $("paper-openai-link").href = info.url || "#";
-  $("paper-openai-code").textContent = info.code || "waiting…";
+  setText($("paper-openai-code"), info.code || "waiting…");
+  $("paper-openai-copy").classList.toggle("hidden", !info.code);
   $("paper-openai-start").disabled = !!info.active;
   $("paper-openai-cancel").classList.toggle("hidden", !info.active);
+}
+async function copyPaperOpenAICode() {
+  const code = $("paper-openai-code").textContent;
+  try {
+    await navigator.clipboard.writeText(code);
+    setText($("paper-openai-copy"), "Copied");
+  } catch (_) {
+    // The clipboard needs a secure page, as on another device over plain
+    // HTTP; select the code for the user to copy instead.
+    getSelection().selectAllChildren($("paper-openai-code"));
+    setText($("paper-openai-copy"), "Press ⌘C or Ctrl+C");
+  }
+  setTimeout(() => setText($("paper-openai-copy"), "Copy"), 2000);
 }
 async function pollPaperOpenAI() {
   clearTimeout(paperOAuthTimer);

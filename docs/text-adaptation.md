@@ -21,7 +21,8 @@ While adaptation is selected, its settings appear under **Advanced** in
   that is busy or has a passing error is asked again, up to four times.
 - **Providers** connects cloud models.
   - **OpenAI** signs this server in with a ChatGPT account: open the sign-in
-    page it shows and enter the code; the sign-in renews itself. Delete
+    page it shows and enter the code, which **Copy** puts on the clipboard (or
+    one click selects); the sign-in renews itself. Delete
     `~/.hilde/openai.json` to sign out.
   - **Claude Code** uses a Claude Pro or Max subscription through your own
     [Claude Code](https://code.claude.com/): install it on the machine running
