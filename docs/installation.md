@@ -1,5 +1,43 @@
 # Installation
 
+## One command
+
+On Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zekiworks/hilde/main/install.sh | sh
+```
+
+`install.sh` needs `git` and `curl`, and no sudo. It:
+
+1. installs [uv](https://docs.astral.sh/uv/) into `~/.local/bin` if it is
+   missing; uv downloads Python 3.12 when the system has none;
+2. clones Hilde into `~/hilde`, or pulls the latest version if it is there;
+3. creates `~/hilde/.venv` and installs PyTorch 2.10: the CUDA 13.0 build for
+   an NVIDIA driver 580 or newer, CUDA 12.6 for 525 or newer, otherwise the CPU
+   build; on macOS, the standard build, which uses the GPU through MPS;
+4. installs `requirements.txt` and checks that everything imports;
+5. writes a `hilde` command into `~/.local/bin` that starts the web server with
+   both Qwen3-TTS models from Hugging Face, downloaded on first use. Arguments
+   pass through, and a repeated option replaces the built-in one, so
+   `hilde --voice-clone-model /path/to/Base` uses a local folder.
+
+Running it again updates Hilde and its dependencies. Your library in
+`~/hilde/User` is never touched; an update stops if you changed tracked files
+in `~/hilde`. Optional settings:
+
+| Variable | Default / meaning |
+| --- | --- |
+| `HILDE_HOME` | `~/hilde`: where Hilde and its environment live. |
+| `HILDE_BIN_DIR` | `~/.local/bin`: where the `hilde` command goes. |
+| `HILDE_TORCH` | Chosen from the driver: `cu130`, `cu128`, `cu126`, or `cpu` forces a PyTorch build (Linux). |
+| `HILDE_REPO` | This repository: the Git URL or path to clone. |
+
+For example, `curl -fsSL …/install.sh | HILDE_TORCH=cpu sh`. MP3 writing,
+SoX, and FlashAttention notes below apply to both ways of installing.
+
+## By hand
+
 Python **3.12** is the tested version. Shell examples use Bash; on Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell instead.
 
 ## 1. Get the code

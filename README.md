@@ -82,26 +82,27 @@ both.</sub>
 
 ## Quickstart
 
+On Linux or macOS:
+
 ```bash
-git clone https://github.com/zekiworks/hilde.git && cd hilde
-python3.12 -m venv .venv && source .venv/bin/activate
-python -m pip install torch==2.10.0 torchaudio==2.10.0 \
-  --index-url https://download.pytorch.org/whl/cu130
-python -m pip install -r requirements.txt
-python audiobook_tts_web.py --open --allow-model-downloads \
-  --voice-clone-model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --voice-design-model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+curl -fsSL https://raw.githubusercontent.com/zekiworks/hilde/main/install.sh | sh
+hilde --open
 ```
 
-Without an NVIDIA GPU, replace `cu130` with `cpu` in the third command. The
-page opens at `http://127.0.0.1:8800/`, reachable only from this computer, with
-eight stock voices. Each model, about 4.3 GB, downloads the first time it is
-used. Text adaptation needs a language model: connect a provider (OpenAI or
-Anthropic) or add a local model server under **Advanced**, or clear **Adapt the
-text for listening** before you create an audiobook; see
+The installer needs only `git` and `curl`, and no sudo. It puts Hilde in
+`~/hilde` with its own Python 3.12 (through [uv](https://docs.astral.sh/uv/),
+which it installs if missing), picks the PyTorch build for your NVIDIA driver
+or the CPU, and adds the `hilde` command to `~/.local/bin`. Run it again to
+update; your library in `~/hilde/User` stays.
+
+The page opens at `http://127.0.0.1:8800/`, reachable only from this computer,
+with eight stock voices. Each speech model, about 4.3 GB, downloads the first
+time it is used. Text adaptation needs a language model: connect a provider
+(OpenAI or Anthropic) or add a local model server under **Advanced**, or clear
+**Adapt the text for listening** before you create an audiobook; see
 [Text adaptation](docs/text-adaptation.md).
-[Installation](docs/installation.md) covers other platforms, local model
-folders, and FlashAttention.
+[Installation](docs/installation.md) covers the installer's settings, installing
+by hand, Windows, local model folders, and FlashAttention.
 
 ## About
 
