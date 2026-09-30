@@ -49,7 +49,8 @@ the author's text stops. The job log names any description that doesn't.
 
 In a PDF, a sentence that a page break, a figure, or a footnote splits is
 joined back together before the model sees it; what split it then follows the
-sentence. An equation printed as a picture stays inside its sentence. A figure
+sentence. An equation printed as a picture stays inside its sentence and goes
+to the model with it, so the sentence is read through. A figure
 or table printed before the text that first mentions it ("as Figure 3
 shows…"), on the same page or the next, moves after that text, so its
 description never comes before the author introduces it or in the middle of

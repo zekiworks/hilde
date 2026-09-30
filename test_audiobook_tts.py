@@ -610,16 +610,28 @@ class PaperWorkflowTests(unittest.TestCase):
             "Self-attention relates positions. We call it self-attention, as "
             "every position attends to all others.",
         ])
-        # A new section or paragraph after an unfinished line stays apart.
+        # A new section, or a capitalized paragraph after a line that could
+        # end a sentence, stays apart.
         for page in (
             "# 4 Why Self-Attention\n\nthis section compares layer types.",
             "Deep Learning is a connectionist framework.",
         ):
             with self.subTest(page=page):
                 self.assertEqual(
-                    joined("The model is trained on", page),
-                    ["The model is trained on", *web.split_paper_paragraphs(page)],
+                    joined("The model is trained on large corpora", page),
+                    ["The model is trained on large corpora", *web.split_paper_paragraphs(page)],
                 )
+        # Procedural Graphs, pages 19 and 20: a line that stops on a word no
+        # sentence ends on goes on across a table, even into a capital.
+        table = ["Table 5 | Dataset statistics.", "|Benchmark|Train|\n|---|---|\n|HotpotQA|1,000|"]
+        self.assertEqual(joined(
+            "The validation set never overlaps the test set; its size is 1,000 for",
+            "\n\n".join([*table, "HotpotQA and 100 for MultiChallenge."]),
+        ), [
+            "The validation set never overlaps the test set; its size is 1,000 for "
+            "HotpotQA and 100 for MultiChallenge.",
+            *table,
+        ])
 
     def test_figures_follow_the_sentence_they_cut_and_the_text_that_introduces_them(self):
         def joined(*pages):
@@ -751,6 +763,18 @@ class PaperWorkflowTests(unittest.TestCase):
             "# Intelligence of a system (optimal case):",
             "![](images/optimal.png)",
         ], 1), [(1, 1), (2, 3), (4, 5), (6, 7)])
+        # Procedural Graphs, page 3: an equation printed inside a sentence
+        # goes to the model with both halves, so the sentence is read through.
+        self.assertEqual(web.paper_batches([
+            "The design mirrors a familiar structure.",
+            "Formally, a Procedural Graph is a directed, attributed graph",
+            "![](images/g.png)",
+            "<!-- Start of picture text -->G = (V, R, E)<!-- End of picture text -->",
+            "where V is the set of abstract nodes and each edge is a triplet",
+            "![](images/e.png)",
+            "stating that one node may follow another.",
+            "Each node abstracts a tool action.",
+        ], 1), [(1, 1), (2, 7), (8, 8)])
 
     def test_browser_cookie_state_isolated_between_clients(self):
         web._DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]

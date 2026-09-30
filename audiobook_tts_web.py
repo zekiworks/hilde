@@ -3420,9 +3420,11 @@ def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
         # A page's first line set in bold or italics can come out as a
         # heading. A real heading does not begin in lowercase.
         continuation = MARKDOWN_HEADING_PATTERN.fullmatch(continuation).group(2)
-    elif after_kinds[head] != "prose":
+    elif after_kinds[head] != "prose" or not _continues_sentence(before[tail], continuation):
         return False
-    if not _starts_lowercase(continuation) or LIST_ITEM_PATTERN.match(continuation):
+    if not _starts_lowercase(continuation) and after_kinds[head] == "heading":
+        return False
+    if LIST_ITEM_PATTERN.match(continuation):
         return False
     before[tail] = _join_halves(before[tail], continuation, vocabulary)
     del after[head], after_kinds[head]
@@ -3465,6 +3467,28 @@ def with_title_heading(markdown, title):
     return f"# {title}\n\n{markdown}"
 
 
+# Words a sentence does not end on, so text after one continues it even when
+# it starts with a capital, as in "its size is 1,000 for | HotpotQA and …".
+DANGLING_END_PATTERN = re.compile(
+    r"\b(?:a|an|the|and|or|but|nor|of|for|to|in|on|at|by|with|from|into|onto|"
+    r"than|as|via|per|between|among|over|under|about|through|within|without|"
+    r"its|their|our|his|her|whose|is|are|was|were)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _continues_sentence(before, after):
+    """Whether `after` goes on with the unfinished sentence `before` ends
+    with: it starts in lowercase, or `before` stops on a word no sentence
+    ends on and `after` starts with a letter or digit."""
+    if _starts_lowercase(after):
+        return True
+    start = _layout_text(after).lstrip("\"'“‘([")[:1]
+    return bool(start) and start.isalnum() and bool(
+        DANGLING_END_PATTERN.search(_layout_text(before))
+    )
+
+
 def _rejoin_cut_sentences(paragraphs, kinds, vocabulary):
     """Join a sentence that a figure, table, or footnote cuts within a page;
     what cut it then follows. Return how many were joined."""
@@ -3481,7 +3505,7 @@ def _rejoin_cut_sentences(paragraphs, kinds, vocabulary):
             and after < len(paragraphs)
             and kinds[after] == "prose"
             and not _ends_sentence(paragraphs[index])
-            and _starts_lowercase(paragraphs[after])
+            and _continues_sentence(paragraphs[index], paragraphs[after])
             and not LIST_ITEM_PATTERN.match(paragraphs[after].strip())
         ):
             paragraphs[index] = _join_halves(paragraphs[index], paragraphs[after], vocabulary)
@@ -3622,9 +3646,32 @@ def paper_batches(paragraphs, per_worker):
     table is never split: its panel titles, images, the labels read from
     inside it, and its caption reach the model in one request, so it is
     described once, knowing its caption. A larger figure gets its own batch.
+    An image without a caption inside a sentence, usually an equation
+    printed as a picture ("a graph [equation] where V is …"), goes with the
+    sentence around it, so the model reads the sentence through instead of
+    describing the equation between its halves.
     """
+    kinds = _layout_kinds(paragraphs)
+    units = []
+    for unit in _paper_units(kinds):
+        start, end = unit
+        inline = (
+            units
+            and set(kinds[start:end + 1]) <= FIGURE_PART_KINDS
+            and kinds[units[-1][1]] == "prose"
+            and not _ends_sentence(paragraphs[units[-1][1]])
+            and end + 1 < len(kinds)
+            and kinds[end + 1] == "prose"
+            and _continues_sentence(paragraphs[units[-1][1]], paragraphs[end + 1])
+        )
+        if inline:
+            units[-1] = (units[-1][0], end + 1)
+        elif units and start <= units[-1][1]:
+            continue  # the sentence's second half, already taken in
+        else:
+            units.append(unit)
     batches = []
-    for start, end in _paper_units(_layout_kinds(paragraphs)):
+    for start, end in units:
         if batches and end + 2 - batches[-1][0] <= per_worker:
             batches[-1] = (batches[-1][0], end + 1)
         else:
@@ -5731,7 +5778,7 @@ class PaperRun(Run):
             # through with_title_heading(), join_pdf_pages(),
             # narrated_source_paragraphs(), or paper_batches(): checkpoints
             # and the reader number paragraphs.
-            "schema": 7,
+            "schema": 8,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,

@@ -240,7 +240,10 @@ PDF work is page-addressable:
    paragraph, and the model sees each batch without the narration before it,
    so a sentence left in halves could never be repaired later. When a page's
    last prose paragraph ends without `. ? ! : ;` and the next page's first
-   prose paragraph starts in lowercase, the halves become one paragraph; a
+   prose paragraph continues it (`_continues_sentence()`: it starts in
+   lowercase, or the first half stops on a word no sentence ends on, per
+   `DANGLING_END_PATTERN`, such as "for", "and", or "via", and the second
+   starts with a letter or digit), the halves become one paragraph; a
    word the break hyphenated loses its hyphen unless the document spells it
    hyphenated elsewhere ("self-attention"). Footnotes, page numbers, and
    figures or tables between the halves are skipped over and follow the joined
@@ -253,7 +256,8 @@ PDF work is page-addressable:
    between the halves to be footnotes, page furniture, or a figure or table
    with its caption: an image without a caption is usually an equation
    printed as a picture ("the complexity is [equation] where …") and stays
-   inside its sentence. Captions are recognized as "Figure 2:", "Table 4.",
+   inside its sentence; `paper_batches()` then sends it with both halves.
+   Captions are recognized as "Figure 2:", "Table 4.",
    or "Figure 1 | …". A caption broken above its table or figure is mended
    too. Last, `_place_after_mentions()` moves each numbered figure or table
    printed before the paragraph that first mentions it ("Figure 3(b)", "Figs.
@@ -300,7 +304,7 @@ or to `paper_batches()` bumps the extraction identity's `schema`.
 When adaptation is enabled:
 
 - `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word;
-- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
+- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
 - compacted prior summaries provide bounded continuity context;
 - referenced extracted figures become image inputs for OpenAI and Anthropic models, and for a local model when the browser's `local_vision` is set (**This model sees images** in Add local); otherwise a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
@@ -739,7 +743,9 @@ written "Figure 1 | …", a float mid-column, a panel title between labels and
 caption) following the joined sentence while an equation printed as a picture
 stays inside it, figures and tables printed before their first mention moving
 after it (lists and ranges of numbers included) while ones already after it or
-mentioned only pages away stay, each figure or table reaching the model in
+mentioned only pages away stay, a line stopping on "for" continued across a
+table into a capitalized word while a line that could end a sentence is not,
+an equation inside a sentence batched with both halves, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
 with panel titles marked as titles rather than sent as section headings, a
 figure or equation description that does not say what it describes named in
