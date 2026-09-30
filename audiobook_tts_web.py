@@ -467,9 +467,38 @@ if not isinstance(markdown, str):
 # A table's cells come out of the layout unreliably: words split across
 # columns ("BL|EU"), stray emphasis, and tags. Show each table as printed,
 # cut from the page, and keep its cells behind the picture as its text, as
-# figures keep the labels read from inside them.
+# figures keep the labels read from inside them. The cells only reach the
+# model, so emphasis marks and tags come out; "10<sup>20</sup>" stays a power.
+boxes = chunk.get("page_boxes") or []
+
+
+def plain(text):
+    text = text.replace("<br>", " ").replace("<sup>", "^").replace("</sup>", "")
+    for mark in ("<sub>", "</sub>", "**", "__", "_", "`"):
+        text = text.replace(mark, "")
+    return text
+
+
+def caption_near(position):
+    # A table's caption sits right above or below it on the page, sometimes
+    # broken over consecutive boxes.
+    for step in (-1, 1):
+        parts, other = [], position + step
+        while 0 <= other < len(boxes) and boxes[other].get("class") == "caption":
+            start, end = boxes[other].get("pos") or (0, 0)
+            parts.append(markdown[start:end])
+            other += step
+        if step < 0:
+            parts.reverse()
+        text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
+        if text:
+            return text[:200]
+    return "Table"
+
+
 tables = [
-    box for box in chunk.get("page_boxes") or ()
+    (position, box, caption_near(position))
+    for position, box in enumerate(boxes)
     if box.get("class") == "table" and box.get("pos") and box.get("bbox")
 ]
 if tables:
@@ -477,7 +506,7 @@ if tables:
 
     with pymupdf.open(source) as document:
         sheet = document[page]
-        for number, box in reversed(list(enumerate(tables, 1))):
+        for number, (_, box, caption) in reversed(list(enumerate(tables, 1))):
             start, end = box["pos"]
             cells = markdown[start:end].strip()
             if not cells.startswith("|"):
@@ -485,10 +514,12 @@ if tables:
             clip = (pymupdf.Rect(box["bbox"]) + (-4, -4, 4, 4)) & sheet.rect
             name = f"page-{page + 1:04d}-table-{number}.png"
             sheet.get_pixmap(clip=clip, dpi=200).save(images / name)
+            # Screen readers announce the caption; the spoken description
+            # sits beside the picture as text.
             markdown = (
                 markdown[:start]
-                + f"\\n\\n![Table](images/{name})\\n\\n"
-                + f"<!-- Start of picture text -->\\n{cells}\\n<!-- End of picture text -->\\n\\n"
+                + f"\\n\\n![{caption}](images/{name})\\n\\n"
+                + f"<!-- Start of picture text -->\\n{plain(cells)}\\n<!-- End of picture text -->\\n\\n"
                 + markdown[end:]
             )
 output.write_text(markdown, encoding="utf-8")
@@ -3469,6 +3500,23 @@ def _layout_kinds(paragraphs):
             and not SECTION_NUMBER_PATTERN.match(_layout_text(paragraphs[index]))
         ):
             kinds[index] = "panel"
+    # A figure with panels has more than one title; a single title opening a
+    # captioned figure is the section that figure starts, as "Attention
+    # Visualizations" opens Figure 3 in Attention Is All You Need, unless the
+    # caption repeats it, as a one-panel figure's caption does.
+    for index, kind in enumerate(kinds):
+        if kind != "panel" or index > 0 and kinds[index - 1] in FIGURE_PART_KINDS:
+            continue
+        end = index + 1
+        while end < len(kinds) and kinds[end] in FIGURE_PART_KINDS:
+            end += 1
+        if (
+            end < len(kinds)
+            and kinds[end] == "caption"
+            and "panel" not in kinds[index + 1:end]
+            and not set(_title_words(paragraphs[index])) <= set(_title_words(paragraphs[end]))
+        ):
+            kinds[index] = "heading"
     return kinds
 
 
@@ -4017,7 +4065,33 @@ def paper_summary_context(summaries, max_chars):
     return "\n".join((first, marker, *reversed(recent))), omitted
 
 
-def paper_request(paragraphs, compacted_summaries, start, end, total, attempt=1):
+# An acronym the author defines: "Wall Street Journal (WSJ)", "byte-pair
+# encoding (BPE)". Its long form is the words before it, one per letter.
+ACRONYM_DEFINITION_PATTERN = re.compile(r"\(([A-Z][A-Za-z]{0,5}[A-Z])s?\)")
+
+
+def defined_acronyms(paragraphs):
+    """The acronyms the author spells out in these paragraphs, in order, as
+    "WSJ (Wall Street Journal)"."""
+    found = {}
+    for paragraph in paragraphs:
+        text = _layout_text(paragraph)
+        for match in ACRONYM_DEFINITION_PATTERN.finditer(text):
+            acronym = match.group(1)
+            letters = sum(1 for char in acronym if char.isupper())
+            words = re.findall(r"[A-Za-z][\w'’]*", text[:match.start()])
+            long_form = words[-letters:] if len(words) >= letters else []
+            # The long form's words start with the acronym's letters.
+            if acronym not in found and long_form and all(
+                word[0].upper() == letter
+                for word, letter in zip(long_form, [c for c in acronym if c.isupper()])
+            ):
+                found[acronym] = " ".join(long_form)
+    return [f"{acronym} ({long_form})" for acronym, long_form in found.items()]
+
+
+def paper_request(paragraphs, compacted_summaries, start, end, total, attempt=1,
+                  acronyms=()):
     source = "\n\n".join(
         f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
         for number, paragraph in enumerate(paragraphs, start)
@@ -4033,7 +4107,11 @@ Transport retry attempt {attempt} of {PAPER_RESPONSE_ATTEMPTS}:
 The prior response could not be parsed. Adapt the same source batch again under
 the same rules, with one NARRATION element followed by one nonempty SUMMARY
 element. Do not discuss the retry or add text outside those elements."""
-    return f"""Compacted summaries from earlier source batches completed before dispatch:
+    defined = (
+        "Acronyms the author already spelled out in earlier paragraphs; never "
+        f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
+    )
+    return f"""{defined}Compacted summaries from earlier source batches completed before dispatch:
 {compacted_summaries}
 Some immediately preceding batches may still be processing and therefore absent
 from this snapshot. Adapt the current source independently rather than inventing
@@ -5718,6 +5796,7 @@ class PaperRun(Run):
         total,
         system_prompt,
         image_paths,
+        acronyms=(),
     ):
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
@@ -5755,6 +5834,7 @@ class PaperRun(Run):
                     end,
                     total,
                     attempt,
+                    acronyms,
                 ),
                 encoding="utf-8",
             )
@@ -5853,6 +5933,9 @@ class PaperRun(Run):
                 total,
                 system_prompt,
                 image_paths,
+                # From the source before this batch, so it does not depend on
+                # which batches happen to finish first.
+                tuple(defined_acronyms(requested[:start - 1])),
             )
             futures[future] = (start, end)
 
@@ -6011,7 +6094,7 @@ class PaperRun(Run):
             # through with_title_heading(), join_pdf_pages(),
             # narrated_source_paragraphs(), or paper_batches(): checkpoints
             # and the reader number paragraphs.
-            "schema": 9,
+            "schema": 10,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,
@@ -7612,9 +7695,12 @@ a { color:var(--accent); }
 .brand-logo { width:48px; height:48px; border-radius:12px; flex:0 0 auto; }
 .brand-name { font-size:24px; }
 .brand-tagline { color:var(--dim); font-size:13px; }
-.signature { display:flex; align-items:center; justify-content:center; gap:6px;
-             padding:28px 16px 24px; color:var(--dim); font-size:12px; }
-.signature img { width:16px; height:16px; border-radius:4px; }
+/* Inline, not flex: flex drops the spaces around the mark, so copied text
+   read "byZeki Works". */
+.signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
+             text-align:center; }
+.signature img { width:16px; height:16px; border-radius:4px; vertical-align:-3px;
+                 margin-right:4px; }
 input[type=text], input[type=search], input[type=number], select, textarea {
   background:var(--field); color:var(--text); border:1px solid var(--line);
   border-radius:8px; padding:9px 12px; font:inherit; min-width:0;
@@ -8237,7 +8323,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <option value="shimmer"><option value="verse">
   </datalist>
 </main>
-<footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt=""> Zeki Works</footer>
+<footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt="">Zeki Works</footer>
 
 <dialog id="paper-providers-dialog">
   <h2>Providers</h2>

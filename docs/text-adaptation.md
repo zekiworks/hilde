@@ -73,6 +73,14 @@ Google Brain"). A PDF table goes to the model as its picture and the cells
 read from it; the model says what the table shows, and the cells are never read
 aloud. The job log counts the sentences it rejoined and the figures, tables,
 and footnotes it moved.
+
+A few more rules keep the narration exact. A formula's operation is said as it
+is: "divided by the square root of", never "scaled by". Each author is paired
+with an affiliation only when the title block lists exactly one per name. A
+figure description says only what the caption states or the image plainly
+shows. A link the text depends on becomes where in words ("in the tensor2tensor
+repository on GitHub"). An acronym is expanded only where the author spells it
+out, once; the rest, such as GPU, stay acronyms.
 A paper's title, which PDF extraction can mistake for a page header and leave
 out, is put back at the top as a heading, so the narration opens with it; the
 job log says when it did.

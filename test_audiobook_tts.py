@@ -810,8 +810,12 @@ class PaperWorkflowTests(unittest.TestCase):
         # a Markdown table rebuilt from the layout, which the reader would show.
         self.assertEqual(kinds[:3], ["caption", "image", "labels"])
         self.assertNotIn("table", kinds)
-        image = re.fullmatch(r"!\[Table\]\((images/[^)]+\.png)\)", paragraphs[1])
-        self.assertIsNotNone(image)
+        # Screen readers announce the table by its caption.
+        image = re.fullmatch(
+            r"!\[Table 2: The Transformer achieves better BLEU scores\.\]\((images/[^)]+\.png)\)",
+            paragraphs[1],
+        )
+        self.assertIsNotNone(image, paragraphs[1])
         with pymupdf.open(stage / image.group(1)) as picture:
             self.assertGreater(picture[0].rect.width, 300)
         self.assertIn("|ByteNet|23.75|", paragraphs[2].replace(" ", ""))
@@ -864,6 +868,67 @@ class PaperWorkflowTests(unittest.TestCase):
             "stating that one node may follow another.",
             "Each node abstracts a tool action.",
         ], 1), [(1, 1), (2, 7), (8, 8)])
+
+    def test_a_lone_title_over_a_figure_its_caption_does_not_name_is_a_section(self):
+        # Attention Is All You Need, page 13: the appendix heading sits right
+        # above Figure 3, whose caption says nothing of it.
+        kinds = web._layout_kinds([
+            "# **Attention Visualizations**",
+            "![](images/p13.png)",
+            "Figure 3: An example of the attention mechanism following dependencies.",
+            "# Scaled Dot-Product Attention",
+            "![](images/p4.png)",
+            "Figure 2: Scaled Dot-Product Attention.",
+            "# Scaled Dot-Product Attention",
+            "![](images/p4-1.png)",
+            "# Multi-Head Attention",
+            "![](images/p4-2.png)",
+            "Figure 2: Two attention mechanisms side by side.",
+        ])
+        # A title the caption repeats, and the titles of a figure with
+        # several panels, stay panel titles.
+        self.assertEqual(kinds, [
+            "heading", "image", "caption",
+            "panel", "image", "caption",
+            "panel", "image", "panel", "image", "caption",
+        ])
+
+    def test_each_request_lists_the_acronyms_the_author_defined_earlier(self):
+        paragraphs = [
+            "Recurrent neural networks, RNNs, run on GPUs.",
+            "We trained on the **Wall Street Journal** (WSJ) portion of the Penn Treebank.",
+            "Words use byte-pair encoding (BPE), as in prior work (Sennrich, 2016).",
+            # Parentheses whose words do not spell the letters define nothing.
+            "We report scores on the test split (FT) and in a table (Table 4).",
+        ]
+        self.assertEqual(web.defined_acronyms(paragraphs), [
+            "WSJ (Wall Street Journal)", "BPE (byte pair encoding)",
+        ])
+
+        # Each request lists those defined before it, whichever batch runs first.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text("\n\n".join(paragraphs), encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        requests = {}
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requests[request_path.stem] = request_path.read_text(encoding="utf-8")
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "prepared.txt", "utf-8", in_flight=4, prompt_path=prompt)
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        self.assertNotIn("never expand", requests["paragraphs-2-2"])
+        self.assertIn("never expand them again: WSJ (Wall Street Journal).", requests["paragraphs-3-3"])
+        self.assertIn(
+            "WSJ (Wall Street Journal), BPE (byte pair encoding).", requests["paragraphs-4-4"]
+        )
 
     def test_browser_cookie_state_isolated_between_clients(self):
         web._DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
@@ -2338,7 +2403,7 @@ class ReaderArtifactTests(unittest.TestCase):
             "# Scaled Dot-Product Attention",
             "![](images/figure-1.png)",
             "<!-- Start of picture text -->Q<br>K<!-- End of picture text -->",
-            "Figure 1: The model architecture.",
+            "Figure 1: Scaled Dot-Product Attention.",
             "Recurrent models are slow. They read tokens in order.",
             "Attention runs in parallel.",
         ]
@@ -2387,7 +2452,7 @@ class ReaderArtifactTests(unittest.TestCase):
             {"paragraphs": [1, 1], "page": 2, "description": False,
              "unchanged": False, "markdown": source[2]},
             {"paragraphs": [2, 2], "page": 3, "description": True,
-             "unchanged": False, "markdown": "Figure 1: The model architecture."},
+             "unchanged": False, "markdown": "Figure 1: Scaled Dot-Product Attention."},
             {"paragraphs": [3, 4], "page": 4, "description": False,
              "unchanged": False, "markdown": f"{source[7]}\n\n{source[8]}"},
         ])
