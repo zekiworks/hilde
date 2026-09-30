@@ -245,14 +245,28 @@ PDF work is page-addressable:
    hyphenated elsewhere ("self-attention"). Footnotes, page numbers, and
    figures or tables between the halves are skipped over and follow the joined
    paragraph. A heading ends the search, except a figure's panel title (an
-   unnumbered heading directly above an image) and a page's first line read as
-   a heading when it starts in lowercase. A caption broken above its table or
-   figure is mended the same way. The job log counts the rejoined sentences.
-   It also returns the page each block of `document.md` starts on, which
+   unnumbered heading directly above an image, or between a figure's parts
+   and its caption) and a page's first line read as a heading when it starts
+   in lowercase. Within a page, `_rejoin_cut_sentences()` does the same for a
+   figure, table, or footnote that cuts a sentence, as a float placed
+   mid-column does. Either way `_interrupts_sentence()` requires what sits
+   between the halves to be footnotes, page furniture, or a figure or table
+   with its caption: an image without a caption is usually an equation
+   printed as a picture ("the complexity is [equation] where …") and stays
+   inside its sentence. Captions are recognized as "Figure 2:", "Table 4.",
+   or "Figure 1 | …". A caption broken above its table or figure is mended
+   too. Last, `_place_after_mentions()` moves each numbered figure or table
+   printed before the paragraph that first mentions it ("Figure 3(b)", "Figs.
+   2 and 3", "Tables 1–4"), on its own page or the next, to follow that
+   paragraph, so a description never comes before the author introduces its
+   figure; one already after its first mention, or mentioned only pages away,
+   stays. The job log counts the rejoined sentences and the moved figures and
+   tables. `join_pdf_pages()` also returns the page each block of
+   `document.md` starts on, which
    `convert_pdf()` stores as `document-pages.json` (`{"pages": [...]}`); a
-   rejoined sentence keeps the earlier page. `narrated_source_pages()` maps
-   them onto the narrated paragraphs for the reader, and returns nothing when
-   the record does not describe the document.
+   rejoined sentence keeps the earlier page, and a moved figure its own.
+   `narrated_source_pages()` maps them onto the narrated paragraphs for the
+   reader, and returns nothing when the record does not describe the document.
 
 Existing page checkpoints are reported and reused. The converter uses `pymupdf4llm`; OCR and layout handling remain outside the long-lived HTTP process. `pymupdf4llm` writes OCR text onto the page before it renders figures, so the converter hands it an OCR function whose text is inserted invisibly (render mode 3): the text is still extracted, including a figure's picture text, but figures render as the PDF draws them instead of with every OCR-read label printed a second time.
 
@@ -674,7 +688,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 97 tests. It covers voice persistence
+The regression suite currently has 98 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -720,7 +734,12 @@ sentences split by page breaks
 rejoined in page layouts taken from real papers (across a figure's panel
 titles and caption, a footnote and a hyphenated word, a caption broken above
 its table, and an italic first line read as a heading) while a new section or
-capitalized paragraph stays apart, each figure or table reaching the model in
+capitalized paragraph stays apart, a figure that cuts a sentence (a caption
+written "Figure 1 | …", a float mid-column, a panel title between labels and
+caption) following the joined sentence while an equation printed as a picture
+stays inside it, figures and tables printed before their first mention moving
+after it (lists and ranges of numbers included) while ones already after it or
+mentioned only pages away stay, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
 with panel titles marked as titles rather than sent as section headings, a
 figure or equation description that does not say what it describes named in

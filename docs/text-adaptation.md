@@ -47,9 +47,14 @@ Each description of a figure, a table, or an equation opens with a spoken cue
 such as "Figure 2 shows…" or "The equation says…", so a listener hears where
 the author's text stops. The job log names any description that doesn't.
 
-In a PDF, a sentence that a page break splits is joined back together before
-the model sees it, even when a footnote or a figure sat between its halves;
-these then follow the sentence. The job log counts the sentences it rejoined.
+In a PDF, a sentence that a page break, a figure, or a footnote splits is
+joined back together before the model sees it; what split it then follows the
+sentence. An equation printed as a picture stays inside its sentence. A figure
+or table printed before the text that first mentions it ("as Figure 3
+shows…"), on the same page or the next, moves after that text, so its
+description never comes before the author introduces it or in the middle of
+the argument. The job log counts the sentences it rejoined and the figures and
+tables it moved.
 A paper's title, which PDF extraction can mistake for a page header and leave
 out, is put back at the top as a heading, so the narration opens with it; the
 job log says when it did.

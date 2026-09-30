@@ -521,7 +521,7 @@ class PaperWorkflowTests(unittest.TestCase):
             self.assertEqual(web.with_title_heading(kept, title), kept)
 
     def test_each_narrated_paragraph_knows_the_pdf_page_it_starts_on(self):
-        markdown, starts, rejoined = web.join_pdf_pages([
+        markdown, starts, rejoined, _ = web.join_pdf_pages([
             "# Introduction\n\n"
             "Attention maps a query to an output. The output is a weighted",
             "sum of the values.\n\nA second paragraph starts here.",
@@ -620,6 +620,102 @@ class PaperWorkflowTests(unittest.TestCase):
                     joined("The model is trained on", page),
                     ["The model is trained on", *web.split_paper_paragraphs(page)],
                 )
+
+    def test_figures_follow_the_sentence_they_cut_and_the_text_that_introduces_them(self):
+        def joined(*pages):
+            markdown, _, _, moved = web.join_pdf_pages(list(pages))
+            return web.split_paper_paragraphs(markdown), moved
+
+        labels = "<!-- Start of picture text -->Search<br>Read<!-- End of picture text -->"
+        # Procedural Graphs, pages 1 and 2: a caption written "Figure 1 | …"
+        # sat between the halves of a sentence, and the figure was described
+        # in the middle of it.
+        figure = [
+            "![](images/p2-1.png)",
+            labels,
+            "Figure 1 | **From knowledge to procedure.** A Knowledge Graph organizes facts.",
+        ]
+        self.assertEqual(joined(
+            "We argue that an agent needs procedural knowledge that is responsive "
+            "to its current progress,",
+            "\n\n".join([*figure, "and able to improve from experience. The design "
+                         "mirrors a familiar structure (Figure 1)."]),
+        ), ([
+            "We argue that an agent needs procedural knowledge that is responsive to "
+            "its current progress, and able to improve from experience. The design "
+            "mirrors a familiar structure (Figure 1).",
+            *figure,
+        ], 0))
+        # Hermes, page 2: a figure cuts a sentence within a column.
+        figure = ["![](images/p2-9.png)", labels, "Figure 1: Policy deployment."]
+        self.assertEqual(joined("\n\n".join([
+            "Figure 1 illustrates the stages. It begins with an objective, such as “reduce",
+            *figure,
+            "network energy consumption by 2%”. The intent is then translated.",
+        ])), ([
+            "Figure 1 illustrates the stages. It begins with an objective, such as "
+            "“reduce network energy consumption by 2%”. The intent is then translated.",
+            *figure,
+        ], 0))
+        # Self-Organizing Agent Teams, pages 5 and 6: a panel's title comes out
+        # as a heading between the figure's labels and its caption.
+        figure = [
+            "![](images/p6-1.png)",
+            labels,
+            "# **(b) From failure diagnosis to a specialized agent role**",
+            "Figure 3: **Team organization is learned offline.**",
+        ]
+        self.assertEqual(joined(
+            "These probes measure whether the mutation transfers; their",
+            "\n\n".join([*figure, "outcomes are written back to the archive."]),
+        ), ([
+            "These probes measure whether the mutation transfers; their outcomes "
+            "are written back to the archive.",
+            *figure,
+        ], 0))
+        # Word2vec, page 3: an equation printed as a picture belongs to its
+        # sentence, on the page and across a page break alike.
+        equation = ["![](images/p3-4.png)", "<!-- Start of picture text -->Q = N × D<!-- End of picture text -->"]
+        for pages in (
+            ["\n\n".join(["The complexity per training example is", *equation,
+                          "where the dominating term is H × V."])],
+            ["The complexity per training example is",
+             "\n\n".join([*equation, "where the dominating term is H × V."])],
+        ):
+            with self.subTest(pages=len(pages)):
+                self.assertEqual(joined(*pages), ([
+                    "The complexity per training example is", *equation,
+                    "where the dominating term is H × V.",
+                ], 0))
+        # Attention, page 3: the figure is printed before the text introduces
+        # it, so its description would come first. Tables 1 and 2 follow the
+        # passage naming them both, and Figure 5 the one naming Figures 4–6; a
+        # figure already after its first mention, or mentioned only pages
+        # away, stays where it is.
+        figure = ["![](images/p3-0.png)", "Figure 1: The Transformer - model architecture."]
+        tables = [
+            "Table 1: Path lengths.", "|Layer|Length|\n|---|---|\n|Self-Attention|O(1)|",
+            "Table 2: Scores.", "|Model|BLEU|\n|---|---|\n|Transformer|28.4|",
+        ]
+        introduced = (
+            "The Transformer follows this overall architecture, shown in the left "
+            "and right halves of Figure 1, respectively."
+        )
+        compared = "Tables 1 and 2 compare layer types and results."
+        early = ["Figure 2 shows attention.", "Attention is a weighted sum.",
+                 "![](images/p3-2.png)", "Figure 2: Scaled dot-product attention."]
+        distant = ["![](images/p3-3.png)", "Figure 3: Attention visualizations."]
+        heads = ["![](images/p3-5.png)", "Figure 5: Heads in later layers."]
+        ranged = "Figures 4–6 show heads in later layers."
+        self.assertEqual(joined(
+            "\n\n".join([*figure, introduced, *tables, compared, *early, *distant, *heads, ranged]),
+            "Page four says nothing of figures.",
+            "Page five says Figure 3 shows attention heads.",
+        ), ([
+            introduced, *figure, compared, *tables, *early, *distant, ranged, *heads,
+            "Page four says nothing of figures.",
+            "Page five says Figure 3 shows attention heads.",
+        ], 4))
 
     def test_figures_reach_the_model_whole(self):
         paragraphs = [

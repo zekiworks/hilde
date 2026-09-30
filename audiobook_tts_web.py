@@ -235,10 +235,17 @@ PICTURE_TEXT_PATTERN = re.compile(
     r"<!-- Start of picture text -->.*?(?:<!-- End of picture text -->|$)",
     flags=re.DOTALL,
 )
-# A caption as extracted: "**Figure 2:** (left) …" or "Table 4. …", but not
-# a sentence that starts "Figure 2 shows".
+# A caption as extracted: "**Figure 2:** (left) …", "Table 4. …", or
+# "Figure 1 | …", but not a sentence that starts "Figure 2 shows".
 CAPTION_PATTERN = re.compile(
-    r"^(?:figure|fig\.|table)[ \t]*\d+(?:\.\d+)*[a-z]?[ \t]*[:.](?:\s|$)",
+    r"^(?:figure|fig\.|table)[ \t]*\d+(?:\.\d+)*[a-z]?[ \t]*[:.|](?:\s|$)",
+    flags=re.IGNORECASE,
+)
+# The figure or table a caption names, and those a passage mentions, as in
+# "Figure 3(b)", "Figs. 2 and 3", or "Tables 1–4".
+CAPTION_NUMBER_PATTERN = re.compile(r"^(fig(?:ure)?\.?|table)[ \t]*(\d+)", flags=re.IGNORECASE)
+VISUAL_MENTION_PATTERN = re.compile(
+    r"\b(fig(?:ure)?s?\.?|tables?)[ \t]*(\d+(?:[ \t]*(?:,|and|&|or|to|–|-)[ \t]*\d+)*)",
     flags=re.IGNORECASE,
 )
 # A footnote as extracted: a quoted block, or its number glued to its first
@@ -3316,11 +3323,17 @@ def _layout_kinds(paragraphs):
             kind = "prose"
         kinds.append(kind)
     # A title printed above a figure panel comes out as an unnumbered heading
-    # directly before its image.
+    # directly before its image, and a later panel's title can come out
+    # between the figure's parts and its caption.
     for index, kind in enumerate(kinds[:-1]):
         if (
             kind == "heading"
-            and kinds[index + 1] == "image"
+            and (
+                kinds[index + 1] == "image"
+                or index > 0
+                and kinds[index - 1] in FIGURE_PART_KINDS
+                and kinds[index + 1] in FIGURE_PART_KINDS | {"caption"}
+            )
             and not SECTION_NUMBER_PATTERN.match(_layout_text(paragraphs[index]))
         ):
             kinds[index] = "panel"
@@ -3377,6 +3390,15 @@ def _mend_split_captions(paragraphs, vocabulary):
     return kinds
 
 
+def _interrupts_sentence(kinds):
+    """Whether what sits between two halves of a sentence interrupts it
+    rather than belonging to it: footnotes, page furniture, or a figure or
+    table with its caption. An image without one, such as an equation
+    printed as a picture ("the complexity is [equation] where …"), is read
+    as part of the sentence and stays inside it."""
+    return "caption" in kinds or not set(kinds) & FIGURE_PART_KINDS
+
+
 def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
     """Join the sentence a page break split; return whether one was joined."""
     tail = len(before) - 1
@@ -3390,6 +3412,7 @@ def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
         or head == len(after)
         or before_kinds[tail] != "prose"
         or _ends_sentence(before[tail])
+        or not _interrupts_sentence(before_kinds[tail + 1:] + after_kinds[:head])
     ):
         return False
     continuation = after[head].strip()
@@ -3442,21 +3465,115 @@ def with_title_heading(markdown, title):
     return f"# {title}\n\n{markdown}"
 
 
+def _rejoin_cut_sentences(paragraphs, kinds, vocabulary):
+    """Join a sentence that a figure, table, or footnote cuts within a page;
+    what cut it then follows. Return how many were joined."""
+    joined = 0
+    index = 0
+    while index < len(paragraphs):
+        after = index + 1
+        while after < len(paragraphs) and kinds[after] in PAGE_BREAK_SKIPPED_KINDS:
+            after += 1
+        if (
+            kinds[index] == "prose"
+            and after > index + 1
+            and _interrupts_sentence(kinds[index + 1:after])
+            and after < len(paragraphs)
+            and kinds[after] == "prose"
+            and not _ends_sentence(paragraphs[index])
+            and _starts_lowercase(paragraphs[after])
+            and not LIST_ITEM_PATTERN.match(paragraphs[after].strip())
+        ):
+            paragraphs[index] = _join_halves(paragraphs[index], paragraphs[after], vocabulary)
+            del paragraphs[after], kinds[after]
+            joined += 1
+            continue
+        index += 1
+    return joined
+
+
+def _mentioned_visuals(text):
+    """The figures and tables a passage mentions, as (kind, number) pairs."""
+    found = set()
+    for match in VISUAL_MENTION_PATTERN.finditer(text):
+        kind = "table" if match.group(1).lower().startswith("tab") else "figure"
+        numbers = {int(number) for number in re.findall(r"\d+", match.group(2))}
+        for low, high in re.findall(r"(\d+)[ \t]*[–-][ \t]*(\d+)", match.group(2)):
+            if 0 < int(high) - int(low) <= 20:
+                numbers.update(range(int(low), int(high) + 1))
+        found.update((kind, number) for number in numbers)
+    return found
+
+
+def _place_after_mentions(document, kinds, starts):
+    """Move each numbered figure or table printed before the paragraph that
+    first mentions it, on its own page or the next, to follow that paragraph.
+
+    A description read before the author introduces its figure, or in the
+    middle of the author's argument, leaves a listener lost. One already
+    after its first mention, or never mentioned nearby, stays. Return the
+    reordered lists and how many moved.
+    """
+    mentions = [
+        _mentioned_visuals(_layout_text(paragraph)) if kind == "prose" else set()
+        for paragraph, kind in zip(document, kinds)
+    ]
+    following, moved = {}, 0
+    for start, end in _paper_units(kinds):
+        if not set(kinds[start:end + 1]) & FIGURE_PART_KINDS:
+            continue
+        caption = next((
+            match
+            for paragraph, kind in zip(document[start:end + 1], kinds[start:end + 1])
+            if kind == "caption"
+            and (match := CAPTION_NUMBER_PATTERN.match(_layout_text(paragraph)))
+        ), None)
+        if caption is None:
+            continue
+        label = (
+            "table" if caption.group(1).lower().startswith("tab") else "figure",
+            int(caption.group(2)),
+        )
+        first = next((
+            index for index, mentioned in enumerate(mentions)
+            if label in mentioned and abs(starts[index] - starts[start]) <= 1
+        ), None)
+        if first is not None and first > end:
+            following.setdefault(first, []).extend(range(start, end + 1))
+            moved += 1
+    moving = {index for indexes in following.values() for index in indexes}
+    order = []
+    for index in range(len(document)):
+        if index not in moving:
+            order.append(index)
+            order.extend(following.get(index, ()))
+    return (
+        [document[index] for index in order],
+        [kinds[index] for index in order],
+        [starts[index] for index in order],
+        moved,
+    )
+
+
 def join_pdf_pages(pages):
     """Join per-page Markdown; return it, the page each of its blocks starts
-    on, and how many sentences were rejoined.
+    on, how many sentences were rejoined, and how many figures and tables
+    were moved after their first mention.
 
     A page break ends a paragraph, even inside a sentence. When a page's last
     sentence is unfinished and the next page continues it in lowercase, the
     halves become one paragraph again, and the footnotes, page numbers, and
-    figures or tables that sat between them follow it. A caption broken above
-    its table or figure is mended too.
+    figures or tables that sat between them follow it; a figure, table, or
+    footnote that cuts a sentence within a page follows it the same way. A
+    caption broken above its table or figure is mended too. Last, a figure
+    or table printed before the text introduces it moves after that text.
     """
     vocabulary = "\n".join(pages).casefold()
     document, kinds, starts, rejoined = [], [], [], 0
     for number, page in enumerate(pages, 1):
         paragraphs = split_paper_paragraphs(page)
         page_kinds = _mend_split_captions(paragraphs, vocabulary)
+        rejoined += _rejoin_cut_sentences(paragraphs, page_kinds, vocabulary)
         if document and _rejoin_page_break(
             document, kinds, paragraphs, page_kinds, vocabulary
         ):
@@ -3464,7 +3581,8 @@ def join_pdf_pages(pages):
         document.extend(paragraphs)
         kinds.extend(page_kinds)
         starts.extend([number] * len(paragraphs))
-    return "\n\n".join(document), starts, rejoined
+    document, kinds, starts, moved = _place_after_mentions(document, kinds, starts)
+    return "\n\n".join(document), starts, rejoined, moved
 
 
 def _paper_units(kinds):
@@ -5264,14 +5382,21 @@ class PaperRun(Run):
         if titled != pages[0]:
             pages[0] = titled
             self.publish("log", f"Restored the title as a heading: {title}\n")
-        markdown, starts, rejoined = join_pdf_pages(pages)
+        markdown, starts, rejoined, moved = join_pdf_pages(pages)
         # The reader's Original view names the page each paragraph starts on.
         write_json_atomic(scratch / "document-pages.json", {"pages": starts})
         if rejoined:
             self.publish(
                 "log",
                 f"Rejoined {rejoined} sentence{'s' if rejoined != 1 else ''} "
-                "that page breaks split.\n",
+                "that a page break, figure, or footnote split.\n",
+            )
+        if moved:
+            self.publish(
+                "log",
+                f"Moved {moved} figure{'s' if moved != 1 else ''} or "
+                f"table{'s' if moved != 1 else ''} to follow the paragraph that "
+                f"first mentions {'them' if moved != 1 else 'it'}.\n",
             )
         temporary = markdown_path.with_name(f".{markdown_path.name}.tmp")
         temporary.write_text(markdown, encoding="utf-8", newline="\n")
@@ -5606,7 +5731,7 @@ class PaperRun(Run):
             # through with_title_heading(), join_pdf_pages(),
             # narrated_source_paragraphs(), or paper_batches(): checkpoints
             # and the reader number paragraphs.
-            "schema": 6,
+            "schema": 7,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,
