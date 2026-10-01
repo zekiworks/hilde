@@ -22,6 +22,11 @@ name, with **Search voices** beside it for finding one by description.
 **Delete** beside the dropdown removes the chosen document after you confirm.
 Audiobooks made from it are kept, and a job already queued keeps its own copy.
 
+A document whose content is already a book, under any file name, shows **You
+already have this one** with **Open** and **Change voice**. Change voice
+continues to the voice step, and **Add this voice** reads the book's own text
+in that voice: no model runs and nothing is written again.
+
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:
 1. A PDF is extracted page by page, and a sentence a page break splits is
@@ -29,19 +34,20 @@ or it waits in the shared queue:
    **Adapt the text for listening** is selected.
 2. Optional adaptation runs the chosen language model in bounded concurrent
    paragraph batches; see [Text adaptation](text-adaptation.md).
-3. Prepared text is saved as
-   `Documents/<input-stem>-narration.txt`.
-4. Narration writes
-   `Audiobooks/<input-stem>-<voice-name>.mp3`.
+3. Narration reads the text in the chosen voice.
+4. The finished book appears in **Listen**: its text, its follow-along view,
+   and the voice's audio, kept together in one folder per book (see
+   [Storage](configuration.md#storage)).
 5. Sentence-aligned completed WAV chunks supply exact sample boundaries for the
    synchronized narration-ready Markdown reader.
 6. TorchAudio `MMS_FA` and Uroman force-align the known transcript to each
    completed chunk on CPU and persist integer-sample word boundaries.
 
-Output directories and filenames are derived; the form never asks for either.
+Output folders and filenames are derived; the form never asks for either.
 For a remote narration backend, the configured server voice ID is used as the
 voice name. When the job finishes, **Start listening** opens the book in
-**Listen** and **Download MP3** saves the retained server copy.
+**Listen** and **Download MP3** saves the voice's audio as
+`<document>-<voice>.mp3`.
 
 While a job runs, Create names its stage in plain words: Reading your
 document, Preparing the narration, Creating the audio, and Finishing your
@@ -60,16 +66,13 @@ workers; SSH targets, server hostnames, speech-server URLs, and filesystem
 paths are not published.
 
 A job ID is derived only from the selected document's content version and the
-voice version. Submitting that same pair while it is preparing, queued, or
-running returns the existing job—even through another browser or under renamed
-assets. The first accepted submission supplies the display names, output name,
-and runtime settings used by that job.
+voice version, plus whether it makes a new voice or remakes the book. Submitting
+the same job while it is preparing, queued, or running returns the existing
+job, even through another browser or under renamed assets. The first accepted
+submission supplies the display names and runtime settings used by that job.
 
-Documents, voices, prepared text, and audiobook outputs may replace an existing
-asset with the same name. The UI asks for confirmation only when the target
-audiobook's recorded input-content version **and** voice version both match the
-current selection. A changed input or changed voice replaces the old output
-without an additional prompt.
+Documents and voices may replace an existing asset with the same name. Making
+a voice the book already has asks for confirmation first.
 
 Extraction and narration are resumable:
 
@@ -79,8 +82,8 @@ Extraction and narration are resumable:
 - restarting the server or pressing **Stop** leaves the job under
   `in_progress`;
 - choosing **Create audiobook** again (or **Continue** / **Try again**) with the
-  same document and voice versions reuses matching checkpoints and completes
-  the final MP3 atomically;
+  same document and voice versions reuses matching checkpoints and publishes
+  the finished book in one step;
 - checkpoint manifests still reject incompatible extraction or inference
   settings even though those settings are not part of the public job ID.
 
@@ -91,13 +94,20 @@ restart, submit unfinished document/voice pairs again to resume their durable
 ## Listen
 
 Open **Listen** to find a completed audiobook in a table of titles, durations,
-source names, and when each was last made. A title is the book's first heading, or its document's name
+source names, and when a voice of it was last made. A title is the book's first heading, or its document's name
 when that heading is a section such as Abstract. Search looks only at titles;
 every word you type must
-appear, in any order and case. **Delete** removes an audiobook and its
-synchronized text after you confirm. **Listen** opens the book's player and
+appear, in any order and case. **Delete** removes an audiobook, every voice of
+it, and its text after you confirm. **Listen** opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
-and **Download MP3** retrieves the retained server copy. Text keeps its paragraphs:
+and **Download MP3** retrieves the voice being played. A book read by more
+than one voice shows a voice picker. **Change voice** reads the same text in
+another saved voice: nothing is rewritten, and the voice you have keeps
+playing until the new one is ready. **Recreate with the latest Hilde** writes
+the book again from its document with the current text adaptation, after you
+confirm; it is the only way a book's text changes. Voices made from the
+earlier text are kept but no longer play against the new one: the book offers
+**Make <voice> again** for each. Text keeps its paragraphs:
 the playing sentence is tinted inside its paragraph, the paragraph is marked
 with an accent bar, and the current word is filled in light orange with dark
 text. Sentence-era readers created before paragraph grouping was recorded still
@@ -136,11 +146,7 @@ shows the author's text muted beneath the passage made from it, headed with the
 PDF page it starts on, and shows passages the model left out, such as a
 copyright notice, as **Not narrated**. Books narrated without adaptation, or
 adapted before Hilde recorded the original text, have no **Original**.
-**Pin descriptions** keeps the book's figure and table descriptions for its
-document: every later audiobook of the same content reads them as they are,
-and **Unpin descriptions** lets the next one describe them anew (see
-[Text adaptation](text-adaptation.md#pinned-descriptions)). A PDF table's
-picture carries its whole caption for screen readers. If
+A PDF table's picture carries its whole caption for screen readers. If
 forced alignment is partially or fully unavailable, exact sentence timing
 remains usable. Existing paragraph-era reader sidecars receive estimated
 sentence cues. Audiobooks created before reader sidecars were introduced remain

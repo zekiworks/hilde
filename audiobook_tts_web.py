@@ -80,8 +80,14 @@ SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
-# Facts a good narration of one document keeps, checked after every run of it.
-GOLDEN_PATH = ROOT / "golden"
+# Hilde's release, recorded in every book; git checkouts also record the commit.
+HILDE_VERSION = "0.1.0"
+# The layout of a book's book.json; narration.json carries its own schema.
+BOOK_SCHEMA = 1
+# Bump whenever the paragraphs or batches a job adapts change, through
+# with_title_heading(), join_pdf_pages(), narrated_source_paragraphs(), or
+# paper_batches(): checkpoints and the reader number paragraphs.
+EXTRACTION_SCHEMA = 11
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -743,11 +749,7 @@ class SharedStorage:
         self.audiobooks = self.root / "Audiobooks"
         self.documents = self.root / "Documents"
         self.in_progress = self.root / "in_progress"
-        self.versions = self.audiobooks / ".versions"
-        self.readers = self.audiobooks / ".readers"
         self.drafts = self.in_progress / "voice-drafts"
-        # Approved figure and table descriptions, by document content.
-        self.pins = self.documents / ".descriptions"
 
     def ensure(self):
         for directory in (
@@ -755,10 +757,7 @@ class SharedStorage:
             self.audiobooks,
             self.documents,
             self.in_progress,
-            self.versions,
-            self.readers,
             self.drafts,
-            self.pins,
         ):
             directory.mkdir(mode=0o750, parents=True, exist_ok=True)
 
@@ -783,6 +782,24 @@ def resolve_asset(directory, name):
     if not clean or clean != str(name).strip():
         raise ValueError("Select a valid asset.")
     return Path(directory) / clean
+
+
+_GIT_COMMIT = []
+
+
+def git_commit():
+    """The commit Hilde runs from, or None outside a git checkout."""
+    if not _GIT_COMMIT:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            commit = result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = ""
+        _GIT_COMMIT.append(commit if re.fullmatch(r"[0-9a-f]{40}", commit) else None)
+    return _GIT_COMMIT[0]
 
 
 def file_version(path):
@@ -891,7 +908,6 @@ def voice_modified(path):
         except OSError:
             pass
     return max(times) if times else None
-    return voices
 
 
 def voice_preview_command(clone_model, voice_dir, output, device):
@@ -953,20 +969,11 @@ def safe_output_component(value, fallback):
 
 
 def narration_output_name(input_name, voice_name):
-    """Derive the one shared MP3 name from its document and narrator."""
+    """Name the MP3 a book's voice downloads as, from its document and narrator."""
     return (
         f"{safe_output_stem(input_name)}-"
         f"{safe_output_component(voice_name, 'voice')}.mp3"
     )
-
-
-def prepared_document_name(input_name):
-    """Derive the retained narration-ready text asset name."""
-    return f"{safe_output_stem(input_name)}-narration.txt"
-
-
-def audiobook_version_path(storage, output_path):
-    return storage.versions / f"{Path(output_path).name}.json"
 
 
 def read_json_file(path):
@@ -975,19 +982,6 @@ def read_json_file(path):
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
-
-
-def audiobook_reader_paths(storage, output_path, audio_version):
-    """Return content-addressed Markdown and timing sidecars for one audiobook."""
-    prefix = f"{Path(output_path).name}.{audio_version[:16]}"
-    return (
-        storage.readers / f"{prefix}.md",
-        storage.readers / f"{prefix}.json",
-    )
-
-
-_LIBRARY_ENTRIES = {}
-_LIBRARY_LOCK = threading.Lock()
 
 
 def audiobook_title(markdown, fallback):
@@ -1007,65 +1001,389 @@ def audiobook_title(markdown, fallback):
     return fallback
 
 
-def library_entry(storage, output):
-    """Describe one retained MP3 by title, duration, source, and narrator."""
-    import soundfile as sf
+# --- books --------------------------------------------------------------------
+#
+# A book is one source document's content, made into narration once. It lives
+# in Audiobooks/<slug>--<first 12 hex of the source's SHA-256>/: book.json, a
+# copy of the source, narration.json (the text read aloud, as passages),
+# reader.md (the follow-along view), and voices/<voice>/ with audio.mp3 and
+# timings.json. Every build is written into a hidden folder and renamed into
+# place, so no half-made book or voice is ever visible.
 
-    metadata = read_json_file(audiobook_version_path(storage, output)) or {}
-    document, voice, reader = (
-        metadata.get(key) for key in ("document", "voice", "reader")
+BOOK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*--[0-9a-f]{12}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+# Passages the model wrote about something the listener cannot see.
+VISUAL_PASSAGE_TYPES = frozenset({"figure", "table", "equation"})
+# Commits of books and voices are serialized, so a recreated book and a voice
+# made at the same time cannot overwrite each other's record.
+_BOOK_LOCK = threading.Lock()
+
+
+class StaleVoiceError(ValueError):
+    """A voice made from a book's earlier text, which never plays against the new one."""
+
+
+def utc_timestamp(seconds=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+def book_slug(title):
+    """Lowercase ASCII words of a title joined by hyphens, at most 60 characters."""
+    text = unicodedata.normalize("NFKD", str(title)).encode("ascii", "ignore").decode("ascii")
+    slug = ""
+    for word in re.findall(r"[a-z0-9]+", text.casefold()):
+        candidate = f"{slug}-{word}" if slug else word[:60]
+        if len(candidate) > 60:
+            break
+        slug = candidate
+    return slug or "book"
+
+
+def book_id(title, source_sha256):
+    return f"{book_slug(title)}--{source_sha256[:12]}"
+
+
+def read_book(storage, book):
+    """Return a book's folder and record by its id, never accepting a path."""
+    book = str(book)
+    if not BOOK_ID_PATTERN.fullmatch(book):
+        raise ValueError("Select a valid audiobook.")
+    path = storage.audiobooks / book
+    record = read_json_file(path / "book.json")
+    if record is None:
+        raise FileNotFoundError("no such audiobook")
+    return path, record
+
+
+def book_for_source(storage, source_sha256):
+    """Return the id of the book made from this document content, or None."""
+    if not SHA256_PATTERN.fullmatch(str(source_sha256)) or not storage.audiobooks.is_dir():
+        return None
+    suffix = f"--{source_sha256[:12]}"
+    for path in storage.audiobooks.iterdir():
+        if path.name.endswith(suffix) and BOOK_ID_PATTERN.fullmatch(path.name):
+            record = read_json_file(path / "book.json")
+            if record and record.get("source_sha256") == source_sha256:
+                return path.name
+    return None
+
+
+def book_voice(record, name):
+    return next(
+        (voice for voice in record.get("voices") or () if voice.get("name") == name), None
     )
-    document = document if isinstance(document, str) else ""
-    stem = Path(document or output.name).stem
-    title = re.sub(r"[-_]+", " ", stem).strip() or stem
-    if isinstance(reader, dict):
-        try:
-            markdown = resolve_asset(
-                storage.readers, str(reader.get("markdown", ""))
-            ).read_text(encoding="utf-8")
-            title = audiobook_title(markdown, title)
-        except (OSError, UnicodeError, ValueError):
-            pass
+
+
+def default_voice(record):
+    """The newest voice that reads the book's current text."""
+    ready = [voice for voice in record.get("voices") or () if voice.get("status") == "ready"]
+    return max(ready, key=lambda voice: voice.get("created_at") or "")["name"] if ready else None
+
+
+def voice_folder(path, name):
+    """A voice's folder in a book; voice names are single safe path components."""
+    clean = safe_asset_name(name)
+    if not clean or clean != name or clean.startswith("."):
+        raise ValueError("Select a valid voice.")
+    return path / "voices" / clean
+
+
+def book_source(storage, path, record):
+    """The book's source document: its own copy, else a document with the
+    same content in Documents, else None."""
+    own = record.get("source_file")
+    if own and (path / own).is_file():
+        return path / own
+    for document in sorted(storage.documents.iterdir()) if storage.documents.is_dir() else ():
+        if document.is_file() and cached_file_version(document) == record.get("source_sha256"):
+            return document
+    return None
+
+
+def read_narration(path):
+    """Return a book's narration.json and the SHA-256 of its bytes, or (None, None)."""
     try:
-        duration = sf.info(str(output)).duration
-    except (OSError, RuntimeError):
-        duration = None
-    return {
-        "name": output.name,
-        "title": title,
-        "duration": duration,
-        "source": document,
-        "voice": voice if isinstance(voice, str) else "",
-    }
+        data = (path / "narration.json").read_bytes()
+        narration = json.loads(data)
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(narration, dict) or not isinstance(narration.get("passages"), list):
+        return None, None
+    return narration, hashlib.sha256(data).hexdigest()
+
+
+def narration_bytes(narration):
+    return (json.dumps(narration, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+
+
+def narration_text(narration):
+    """The text read aloud: every passage the model did not leave out, in order."""
+    return "\n\n".join(
+        passage["text"] for passage in narration["passages"] if passage.get("text")
+    )
+
+
+def narration_originals(narration):
+    """The reader's Original view, one entry per passage, or [] without one."""
+    if not narration or not narration.get("original_view"):
+        return []
+    return [
+        {
+            "paragraphs": passage.get("paragraphs"),
+            "page": passage.get("page"),
+            "description": (
+                passage.get("type") in VISUAL_PASSAGE_TYPES
+                and bool(passage.get("text")) and not passage.get("unchanged")
+            ),
+            "unchanged": bool(passage.get("unchanged")),
+            "markdown": "" if passage.get("unchanged") else passage.get("original_text", ""),
+        }
+        for passage in narration["passages"]
+    ]
+
+
+def swap_into_place(build, final):
+    """Rename a finished folder into place, replacing what was there.
+
+    The old folder steps aside under a hidden name first, so a crash between
+    the two renames leaves both, and recover_books() puts the old one back.
+    """
+    if final.exists():
+        old = final.with_name(f".replaced-{final.name}-{os.urandom(4).hex()}")
+        final.rename(old)
+        build.rename(final)
+        shutil.rmtree(old, ignore_errors=True)
+    else:
+        build.rename(final)
+
+
+def recover_books(storage):
+    """Remove unfinished builds and undo a swap a crash interrupted."""
+    folders = [storage.audiobooks]
+    folders += [
+        path / "voices" for path in storage.audiobooks.iterdir()
+        if BOOK_ID_PATTERN.fullmatch(path.name) and (path / "voices").is_dir()
+    ]
+    for folder in folders:
+        for path in list(folder.iterdir()):
+            if not path.is_dir():
+                continue
+            if path.name.startswith((".build-", ".trash-")):
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.name.startswith(".replaced-"):
+                original = folder / path.name[len(".replaced-"):].rsplit("-", 1)[0]
+                if original.exists():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.rename(original)
+
+
+def _copy_voice_folder(source, target):
+    """Copy one voice's files, as hard links where the file system allows."""
+    target.mkdir(mode=0o750, parents=True)
+    for item in source.iterdir():
+        if item.is_file():
+            try:
+                os.link(item, target / item.name)
+            except OSError:
+                shutil.copy2(item, target / item.name)
+
+
+def commit_book(storage, record, narration, reader_markdown, source, voice, audio, timings):
+    """Publish a book made from its source, with one voice.
+
+    `record` holds the book's fields; `voice` is the voice's entry. A book
+    already made from the same content keeps its folder, its other voices, and
+    the names its source went by; a voice of it whose text differs from the
+    new one becomes stale. Return the book's id.
+    """
+    data = narration_bytes(narration)
+    narration_sha256 = hashlib.sha256(data).hexdigest()
+    with _BOOK_LOCK:
+        existing = book_for_source(storage, record["source_sha256"])
+        build = storage.audiobooks / f".build-{os.urandom(6).hex()}"
+        try:
+            build.mkdir(mode=0o750)
+            if source is not None:
+                shutil.copyfile(source, build / record["source_file"])
+            (build / "narration.json").write_bytes(data)
+            (build / "reader.md").write_text(reader_markdown, encoding="utf-8", newline="\n")
+            folder = voice_folder(build, voice["name"])
+            folder.mkdir(mode=0o750, parents=True)
+            shutil.move(str(audio), folder / "audio.mp3")
+            write_json_atomic(folder / "timings.json", timings)
+            voices = [{**voice, "narration_sha256": narration_sha256, "status": "ready"}]
+            record = {**record, "narration_sha256": narration_sha256}
+            if existing is not None:
+                old_path, old = read_book(storage, existing)
+                names = list(old.get("source_filenames") or [])
+                record["source_filenames"] = names + [
+                    name for name in record["source_filenames"] if name not in names
+                ]
+                record["created_at"] = old.get("created_at", record["created_at"])
+                if old.get("legacy_names"):
+                    record["legacy_names"] = old["legacy_names"]
+                for other in old.get("voices") or ():
+                    if other.get("name") == voice["name"]:
+                        continue
+                    old_folder = voice_folder(old_path, other["name"])
+                    if not old_folder.is_dir():
+                        continue
+                    _copy_voice_folder(old_folder, voice_folder(build, other["name"]))
+                    voices.append({
+                        **other,
+                        "status": (
+                            "ready" if other.get("narration_sha256") == narration_sha256
+                            else "stale"
+                        ),
+                    })
+                final = old_path
+            else:
+                final = storage.audiobooks / book_id(record["title"], record["source_sha256"])
+            record["voices"] = voices
+            write_json_atomic(build / "book.json", record)
+            swap_into_place(build, final)
+        except BaseException:
+            shutil.rmtree(build, ignore_errors=True)
+            raise
+    return final.name
+
+
+def commit_voice(storage, book, narration_sha256, voice, audio, timings):
+    """Publish one voice of a book read from the book's current text.
+
+    The voice's old audio keeps playing until the new folder is renamed into
+    place. A book whose text changed meanwhile refuses the voice.
+    """
+    with _BOOK_LOCK:
+        path, record = read_book(storage, book)
+        if record.get("narration_sha256") != narration_sha256:
+            raise RuntimeError(
+                "The book was made again while this voice was being made; "
+                "make the voice again."
+            )
+        final = voice_folder(path, voice["name"])
+        build = final.parent / f".build-{os.urandom(6).hex()}"
+        try:
+            build.mkdir(mode=0o750, parents=True)
+            shutil.move(str(audio), build / "audio.mp3")
+            write_json_atomic(build / "timings.json", timings)
+            swap_into_place(build, final)
+        except BaseException:
+            shutil.rmtree(build, ignore_errors=True)
+            raise
+        entry = {**voice, "narration_sha256": narration_sha256, "status": "ready"}
+        record["voices"] = [
+            other for other in record.get("voices") or () if other.get("name") != voice["name"]
+        ] + [entry]
+        record["updated_at"] = entry["created_at"]
+        write_json_atomic(path / "book.json", record)
+
+
+def book_audio(storage, book, voice=None):
+    """Return a book's record, the voice's name, and its audio file.
+
+    A stale voice raises StaleVoiceError: its audio and timings belong to
+    the book's earlier text.
+    """
+    path, record = read_book(storage, book)
+    name = voice or default_voice(record)
+    entry = book_voice(record, name) if name else None
+    if entry is None:
+        raise FileNotFoundError("no such voice")
+    if entry.get("status") != "ready":
+        raise StaleVoiceError(
+            f"{name} reads this book's earlier text. Make the voice again to hear it."
+        )
+    return record, name, voice_folder(path, name) / "audio.mp3"
+
+
+def release_migration_backup(storage, book):
+    """Remove a migrated book's backup once its audio has been served."""
+    with _BOOK_LOCK:
+        path, record = read_book(storage, book)
+        backup = record.pop("migration_backup", None)
+        if not backup:
+            return
+        write_json_atomic(path / "book.json", record)
+    if BOOK_ID_PATTERN.fullmatch(str(backup)):
+        shutil.rmtree(storage.audiobooks / ".backup" / backup, ignore_errors=True)
 
 
 def library_catalog(storage):
-    """List retained audiobooks, newest first, reusing unchanged entries."""
+    """List books, newest voice first, with each book's voices."""
     books = []
-    for output in storage.audiobooks.iterdir():
-        if not output.is_file() or output.suffix.lower() != ".mp3":
+    for path in storage.audiobooks.iterdir():
+        if not BOOK_ID_PATTERN.fullmatch(path.name):
             continue
-        try:
-            status = output.stat()
-        except OSError:
+        record = read_json_file(path / "book.json")
+        if record is None:
             continue
-        try:
-            record = audiobook_version_path(storage, output).stat().st_mtime_ns
-        except OSError:
-            record = None
-        # Titles come from reader Markdown of up to a megabyte per book.
-        signature = (status.st_size, status.st_mtime_ns, record)
-        key = str(output)
-        with _LIBRARY_LOCK:
-            cached = _LIBRARY_ENTRIES.get(key)
-        if cached is None or cached[0] != signature:
-            cached = (signature, library_entry(storage, output))
-            with _LIBRARY_LOCK:
-                _LIBRARY_ENTRIES[key] = cached
-        # When the book was last made: its MP3 is replaced only then.
-        books.append((status.st_mtime_ns, {**cached[1], "modified": status.st_mtime}))
-    books.sort(key=lambda item: item[0], reverse=True)
-    return [book for _, book in books]
+        voices = []
+        for voice in record.get("voices") or ():
+            try:
+                audio = voice_folder(path, voice.get("name", "")) / "audio.mp3"
+                modified = audio.stat().st_mtime
+            except (OSError, ValueError):
+                continue
+            voices.append({
+                "name": voice["name"],
+                "status": voice.get("status"),
+                "duration": voice.get("duration"),
+                "modified": modified,
+            })
+        if not voices:
+            continue
+        default = default_voice(record)
+        shown = next((voice for voice in voices if voice["name"] == default), voices[0])
+        filenames = record.get("source_filenames") or []
+        books.append({
+            "id": path.name,
+            "title": record.get("title") or path.name,
+            "source": filenames[0] if filenames else "",
+            "voice": default,
+            "voices": voices,
+            "duration": shown["duration"],
+            # When a voice of the book was last made.
+            "modified": max(voice["modified"] for voice in voices),
+            "legacy_names": record.get("legacy_names") or [],
+            "has_text": (path / "narration.json").is_file() and bool(record.get("narration_sha256")),
+        })
+    books.sort(key=lambda book: book["modified"], reverse=True)
+    return books
+
+
+def delete_book(storage, book):
+    """Delete a book with all its voices; one rename takes it out of the library."""
+    with _BOOK_LOCK:
+        path, _ = read_book(storage, book)
+        trash = storage.audiobooks / f".trash-{os.urandom(6).hex()}"
+        path.rename(trash)
+    shutil.rmtree(trash, ignore_errors=True)
+
+
+_FILE_VERSIONS = {}
+_FILE_VERSIONS_LOCK = threading.Lock()
+
+
+def cached_file_version(path):
+    """file_version(), remembered while the file's size and time stay the same."""
+    try:
+        status = Path(path).stat()
+    except OSError:
+        return None
+    key, signature = str(path), (status.st_size, status.st_mtime_ns)
+    with _FILE_VERSIONS_LOCK:
+        cached = _FILE_VERSIONS.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    try:
+        version = file_version(path)
+    except OSError:
+        return None
+    with _FILE_VERSIONS_LOCK:
+        _FILE_VERSIONS[key] = (signature, version)
+    return version
 
 
 def delete_voice(storage, name):
@@ -1093,84 +1411,267 @@ def delete_document(storage, name):
     document.unlink()
 
 
-def delete_audiobook(storage, name):
-    """Delete one retained MP3 with its version record and reader files."""
-    output = resolve_asset(storage.audiobooks, name)
-    if output.suffix.lower() != ".mp3" or not output.is_file():
-        raise FileNotFoundError("no such audiobook")
-    record = audiobook_version_path(storage, output)
-    reader = (read_json_file(record) or {}).get("reader")
-    named = (
-        {reader.get("markdown"), reader.get("sync")}
-        if isinstance(reader, dict) else set()
-    )
-    output.unlink()
-    record.unlink(missing_ok=True)
-    # Reader files are named for their book and audio version, so earlier
-    # narrations of the same book can have left some behind as well.
-    earlier = re.compile(re.escape(output.name) + r"\.[0-9a-f]{16}\.(?:md|json)")
-    for sidecar in storage.readers.iterdir():
-        if sidecar.name in named or earlier.fullmatch(sidecar.name):
-            sidecar.unlink(missing_ok=True)
-    with _LIBRARY_LOCK:
-        _LIBRARY_ENTRIES.pop(str(output), None)
-
-
-def description_state(storage, record):
-    """How many figure and table descriptions a book's record holds, and
-    whether its document's descriptions are pinned, from which audiobook."""
-    adaptation = record.get("adaptation") if record else None
-    descriptions = adaptation.get("descriptions") if isinstance(adaptation, dict) else None
-    version = str(record.get("input_version", "")) if record else ""
-    pins = (
-        read_json_file(storage.pins / f"{version}.json")
-        if re.fullmatch(r"[0-9a-f]{64}", version) else None
-    )
+def _migrated_passage(number, text, original, pages_known):
+    """A passage of a book made before books kept their text, from the
+    Original view its reader recorded."""
+    original_text = original.get("markdown") or ""
+    sources_text = original_text or text
+    paragraphs = split_paper_paragraphs(sources_text)
+    kinds = _layout_kinds(paragraphs)
+    opening = " ".join(text.split()[:12])
+    if original.get("description"):
+        kind = (
+            "table" if re.match(r"\W*tables?\b", opening, re.IGNORECASE)
+            else "equation" if re.search(r"\b(?:equations?|formulas?)\b", opening, re.IGNORECASE)
+            else "figure"
+        )
+    elif text.lstrip().startswith("#"):
+        kind = "heading"
+    else:
+        kind = "body"
     return {
-        "count": len(descriptions) if isinstance(descriptions, dict) else 0,
-        "pinned": pins is not None,
-        "pinned_from": pins.get("audiobook") if pins else None,
+        "id": number,
+        "type": kind,
+        "page": original.get("page") if pages_known else None,
+        "text": text,
+        "original_text": original_text,
+        "unchanged": bool(original.get("unchanged")),
+        "paragraphs": original.get("paragraphs"),
+        "sources": [
+            {"type": SOURCE_TYPES.get(source_kind, kind), "page": original.get("page"), "text": paragraph}
+            for paragraph, source_kind in zip(paragraphs, kinds)
+            if source_kind != "furniture"
+        ],
     }
 
 
-def pin_descriptions(storage, name, pin):
-    """Pin one audiobook's figure and table descriptions to the content of
-    the document it was made from, or unpin that document's descriptions.
+def _legacy_narration(storage, record, markdown, sync):
+    """Rebuild narration.json for a book made before books kept their text.
 
-    Later audiobooks of the same content read a pinned description as it
-    stands instead of asking the model again. Return the new state.
+    Its text is the prepared document the job stored in Documents, when that
+    still splits into exactly the reader's sentences and chunks. Return the
+    narration and the chunk size the voice was made with, or (None, None).
     """
-    output = resolve_asset(storage.audiobooks, name)
-    if output.suffix.lower() != ".mp3" or not output.is_file():
-        raise FileNotFoundError("no such audiobook")
-    record = read_json_file(audiobook_version_path(storage, output)) or {}
-    version = str(record.get("input_version", ""))
-    if not re.fullmatch(r"[0-9a-f]{64}", version):
-        raise ValueError("This audiobook does not record which document it was made from.")
-    path = storage.pins / f"{version}.json"
-    if not pin:
-        path.unlink(missing_ok=True)
-        return description_state(storage, record)
-    adaptation = record.get("adaptation")
-    descriptions = adaptation.get("descriptions") if isinstance(adaptation, dict) else None
-    if not isinstance(descriptions, dict) or not descriptions or not all(
-        isinstance(label, str) and isinstance(text, str) for label, text in descriptions.items()
-    ):
-        raise ValueError("This audiobook has no figure or table descriptions to pin.")
-    write_json_atomic(path, {
-        "schema": 1,
-        "document": record.get("document"),
-        "audiobook": output.name,
-        "model": adaptation.get("model"),
-        "descriptions": descriptions,
-    })
-    return description_state(storage, record)
+    prepared = storage.documents / f"{safe_output_stem(record.get('document') or '')}-narration.txt"
+    try:
+        paragraphs = split_paper_paragraphs(prepared.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        return None, None
+    block_paragraphs = sync.get("paragraphs")
+    cue_count = len(sync.get("cues") or ())
+    if not paragraphs or not isinstance(block_paragraphs, list):
+        return None, None
+    if len(_reader_markdown_sources(markdown)) != len(block_paragraphs):
+        return None, None
+    text = "\n\n".join(paragraphs)
+    # The chunk size is not recorded; it is the one that gives this many chunks.
+    max_chars = None
+    for candidate in (500, *range(100, 2001, 25)):
+        try:
+            chunks, _, planned = reader_chunk_plan(text, candidate)
+        except ValueError:
+            continue
+        if len(chunks) == cue_count and planned == block_paragraphs:
+            max_chars = candidate
+            break
+    if max_chars is None:
+        return None, None
+    originals = sync.get("originals")
+    passages = []
+    if isinstance(originals, list) and originals:
+        for number, original in enumerate(originals, 1):
+            span = original.get("paragraphs") if isinstance(original, dict) else None
+            passage_text = "\n\n".join(paragraphs[span[0]:span[1] + 1]) if span else ""
+            passages.append(_migrated_passage(number, passage_text, original, True))
+    original_view = bool(passages) and narration_text({"passages": passages}) == text
+    if not original_view:
+        passages = [
+            _migrated_passage(number, paragraph, {"unchanged": True}, False)
+            for number, paragraph in enumerate(paragraphs, 1)
+        ]
+    return {"schema": 1, "original_view": original_view, "passages": passages}, max_chars
+
+
+def _migrated_book_folder(storage, key):
+    suffix = f"--{key[:12]}"
+    for path in storage.audiobooks.iterdir():
+        if path.name.endswith(suffix) and BOOK_ID_PATTERN.fullmatch(path.name):
+            record = read_json_file(path / "book.json")
+            if record and key in (record.get("source_sha256"), record.get("migrated_from")):
+                return path
+    return None
+
+
+def _migrate_book(storage, key, known_source, items):
+    """Move the MP3s of one document, newest first, into one book folder."""
+    import soundfile as sf
+
+    readers = storage.audiobooks / ".readers"
+
+    def reader_files(record):
+        reader = record.get("reader") if isinstance(record.get("reader"), dict) else {}
+        names = [reader.get("markdown"), reader.get("sync")]
+        if not all(isinstance(name, str) and safe_asset_name(name) == name for name in names):
+            return None, None
+        markdown_path, sync_path = (readers / name for name in names)
+        if not markdown_path.is_file() or read_json_file(sync_path) is None:
+            return None, None
+        return markdown_path, sync_path
+
+    newest_mp3, newest = items[0]
+    with _BOOK_LOCK:
+        path = _migrated_book_folder(storage, key)
+        if path is None:
+            markdown_path, sync_path = reader_files(newest)
+            markdown = markdown_path.read_text(encoding="utf-8") if markdown_path else ""
+            document = newest.get("document") or newest_mp3.name
+            stem = Path(document).stem
+            fallback = re.sub(r"[-_]+", " ", stem).strip() or stem
+            title = audiobook_title(markdown, fallback) if markdown else fallback
+            narration, max_chars = (
+                _legacy_narration(storage, newest, markdown, read_json_file(sync_path))
+                if markdown else (None, None)
+            )
+            adaptation = newest.get("adaptation") if isinstance(newest.get("adaptation"), dict) else {}
+            created = utc_timestamp(newest_mp3.stat().st_mtime)
+            build = storage.audiobooks / f".build-{os.urandom(6).hex()}"
+            try:
+                build.mkdir(mode=0o750)
+                (build / "voices").mkdir(mode=0o750)
+                if markdown:
+                    (build / "reader.md").write_text(markdown, encoding="utf-8", newline="\n")
+                narration_sha256 = None
+                if narration is not None:
+                    data = narration_bytes(narration)
+                    (build / "narration.json").write_bytes(data)
+                    narration_sha256 = hashlib.sha256(data).hexdigest()
+                write_json_atomic(build / "book.json", {
+                    "schema": BOOK_SCHEMA,
+                    "source_sha256": key if known_source else None,
+                    "migrated_from": key,
+                    "title": title,
+                    "source_filenames": [document],
+                    "source_file": None,
+                    "created_at": created,
+                    "updated_at": created,
+                    # Made before books recorded what made them.
+                    "hilde_version": None,
+                    "git_commit": None,
+                    "prompt_hash": None,
+                    "schema_version": None,
+                    "model": adaptation.get("model"),
+                    "adapted": bool(adaptation),
+                    "chunk_max_chars": max_chars,
+                    "prose": adaptation.get("prose"),
+                    "seconds": {
+                        stage: value for stage, value in (newest.get("seconds") or {}).items()
+                        if stage in ("reading", "adapting")
+                    },
+                    "narration_sha256": narration_sha256,
+                    "voices": [],
+                    "legacy_names": [],
+                })
+                path = storage.audiobooks / book_id(title, key)
+                swap_into_place(build, path)
+            except BaseException:
+                shutil.rmtree(build, ignore_errors=True)
+                raise
+        record = read_json_file(path / "book.json")
+        book_markdown = (path / "reader.md").read_bytes() if (path / "reader.md").is_file() else None
+        backup = storage.audiobooks / ".backup" / path.name
+        for mp3, legacy in items:
+            name = legacy.get("voice") if isinstance(legacy.get("voice"), str) else ""
+            name = safe_asset_name(name).lstrip(".") or "Narrator"
+            markdown_path, sync_path = reader_files(legacy)
+            if book_voice(record, name) is None:
+                final = voice_folder(path, name)
+                build = final.parent / f".build-{os.urandom(6).hex()}"
+                reads_book = bool(markdown_path) and markdown_path.read_bytes() == book_markdown
+                try:
+                    build.mkdir(mode=0o750, parents=True)
+                    try:
+                        os.link(mp3, build / "audio.mp3")
+                    except OSError:
+                        shutil.copy2(mp3, build / "audio.mp3")
+                    if markdown_path:
+                        timings = read_json_file(sync_path)
+                        timings.pop("originals", None)
+                        write_json_atomic(build / "timings.json", timings)
+                    swap_into_place(build, final)
+                except BaseException:
+                    shutil.rmtree(build, ignore_errors=True)
+                    raise
+                try:
+                    duration = round(sf.info(str(mp3)).duration, 2)
+                except (OSError, RuntimeError):
+                    duration = None
+                record["voices"].append({
+                    "name": name,
+                    "created_at": utc_timestamp(mp3.stat().st_mtime),
+                    "narration_sha256": record.get("narration_sha256") if reads_book else None,
+                    # A voice made from other text than the book's cannot follow its reader.
+                    "status": "ready" if reads_book or not markdown_path else "stale",
+                    "voice_version": legacy.get("voice_version"),
+                    "audio_sha256": (legacy.get("reader") or {}).get("audio_sha256"),
+                    "duration": duration,
+                    "seconds": {
+                        stage: value for stage, value in (legacy.get("seconds") or {}).items()
+                        if stage in ("narrating", "aligning")
+                    },
+                })
+            if mp3.name not in record["legacy_names"]:
+                record["legacy_names"].append(mp3.name)
+            record["migration_backup"] = path.name
+            write_json_atomic(path / "book.json", record)
+            # The earlier files stay aside until the book has played once.
+            backup.mkdir(mode=0o750, parents=True, exist_ok=True)
+            for old in (mp3, markdown_path, sync_path, storage.audiobooks / ".versions" / f"{mp3.name}.json"):
+                if old is not None and old.exists():
+                    old.replace(backup / old.name)
+
+
+def migrate_legacy_books(storage):
+    """Move books kept as Audiobooks/<name>.mp3 with .versions and .readers
+    sidecars into book folders, without calling any model.
+
+    MP3s of the same document content become voices of one book. A voice
+    whose reader text differs from the newest one's is stale. A book's text
+    is rebuilt only from the prepared document its job stored; without it
+    the book still plays but cannot get a new voice until it is recreated.
+    Rerunning finishes a migration a crash interrupted.
+    """
+    if not storage.audiobooks.is_dir():
+        return
+    versions = storage.audiobooks / ".versions"
+    groups = {}
+    for mp3 in sorted(storage.audiobooks.iterdir()):
+        if not mp3.is_file() or mp3.suffix.lower() != ".mp3":
+            continue
+        record = read_json_file(versions / f"{mp3.name}.json") or {}
+        source = str(record.get("input_version", ""))
+        known = bool(SHA256_PATTERN.fullmatch(source))
+        key = source if known else file_version(mp3)
+        groups.setdefault((key, known), []).append((mp3, record))
+    for (key, known), items in groups.items():
+        items.sort(key=lambda item: item[0].stat().st_mtime, reverse=True)
+        try:
+            _migrate_book(storage, key, known, items)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            names = ", ".join(mp3.name for mp3, _ in items)
+            print(f"Could not move {names} into a book folder: {exc}", file=sys.stderr)
+    for folder in (versions, storage.audiobooks / ".readers"):
+        with contextlib.suppress(OSError):
+            folder.rmdir()
 
 
 def prepare_library(storage):
-    """Create the shared folders; a new library starts with the stock voices."""
+    """Create the shared folders, finish or undo what a crash interrupted, and
+    move books kept in the earlier layout into book folders. A new library
+    starts with the stock voices."""
     new = not storage.voices.exists()
     storage.ensure()
+    recover_books(storage)
+    migrate_legacy_books(storage)
     if not new:
         return
     # Each voice is copied whole before it appears, so none is ever half there.
@@ -1491,6 +1992,64 @@ def _spoken_words(text):
     ]
 
 
+def _visual_type(paragraphs, kinds):
+    """Whether the picture in a batch is a figure, a table, or an equation.
+
+    The caption names a figure or a table; a PDF table is cut from its page
+    as page-NNNN-table-K.png. A picture without a caption is an equation
+    printed as an image unless panel titles make it a figure.
+    """
+    for paragraph, kind in zip(paragraphs, kinds):
+        if kind == "caption":
+            match = CAPTION_NUMBER_PATTERN.match(_layout_text(paragraph))
+            if match is not None:
+                return "table" if match.group(1).casefold() == "table" else "figure"
+    if any(kind == "image" and "-table-" in paragraph for paragraph, kind in zip(paragraphs, kinds)):
+        return "table"
+    return "figure" if "panel" in kinds or "caption" in kinds else "equation"
+
+
+# What each layout kind is in a book's narration.json; a figure's parts take
+# the type of the picture they belong to, and page furniture is no one's text.
+SOURCE_TYPES = {"prose": "body", "heading": "heading", "footnote": "footnote", "caption": "caption"}
+
+
+def _narration_passage(number, text, start, paragraphs, kinds, pages, original, unchanged):
+    """One passage of narration.json: what the model narrated together.
+
+    Its sources are the author's paragraphs it was made from, each typed, so
+    a footnote or caption read inside a passage stays recognizable.
+    """
+    visual = _visual_type(paragraphs, kinds)
+    sources = [
+        {
+            "type": SOURCE_TYPES.get(kind, visual),
+            "page": pages[start - 1 + offset] if pages else None,
+            "text": paragraph,
+        }
+        for offset, (paragraph, kind) in enumerate(zip(paragraphs, kinds))
+        if kind != "furniture"
+    ]
+    types = {source["type"] for source in sources}
+    if _describes_visual(set(kinds)):
+        kind = visual
+    elif len(types) == 1 and types <= {"heading", "footnote", "caption"}:
+        kind = next(iter(types))
+    else:
+        kind = "body"
+    return {
+        "id": number,
+        "type": kind,
+        "page": pages[start - 1] if pages and start - 1 < len(pages) else None,
+        "text": text,
+        "original_text": original,
+        "unchanged": unchanged,
+        # The reader paragraphs it became, [first, last], or None.
+        "paragraphs": None,
+        "sources": sources,
+    }
+
+
 def _reader_blocks(
     narration, source, max_chars, adaptation_checkpoints=None, source_pages=None
 ):
@@ -1502,14 +2061,12 @@ def _reader_blocks(
         if adaptation_checkpoints is not None
         else None
     )
-    # For each adapted batch: the narration paragraphs made from it, its PDF
-    # page, whether the model described a visual, and the author's text.
-    # Without adaptation the narration is the author's text.
-    originals = None
-    if groups is not None:
-        originals = []
-        kinds = _layout_kinds(source_paragraphs)
-    else:
+    # One passage per adapted batch: the narration paragraphs made from it,
+    # its PDF page, its type, and the author's text. Without adaptation each
+    # narration paragraph is the author's text and has no Original view.
+    original_view = groups is not None
+    kinds = _layout_kinds(source_paragraphs)
+    if groups is None:
         narration_paragraphs = split_paper_paragraphs(narration)
         groups = [
             (
@@ -1521,6 +2078,7 @@ def _reader_blocks(
             )
             for index, paragraph in enumerate(narration_paragraphs)
         ]
+    passages = []
 
     blocks = []
     paragraphs = []
@@ -1529,21 +2087,16 @@ def _reader_blocks(
     leading_visuals = []
     for adapted, start, source_group in groups:
         first_paragraph = paragraphs[-1] + 1 if paragraphs else 0
-        if originals is not None:
-            group_kinds = kinds[start - 1:start - 1 + len(source_group)]
-            original = _original_markdown(source_group, group_kinds)
-            # Read word for word, the text already shows as the narration.
-            unchanged = bool(adapted) and _spoken_words(original) == _spoken_words(adapted)
-            originals.append({
-                "paragraphs": None,
-                "page": source_pages[start - 1] if source_pages else None,
-                "description": (
-                    bool(adapted) and not unchanged
-                    and _describes_visual(set(group_kinds))
-                ),
-                "unchanged": unchanged,
-                "markdown": "" if unchanged else original,
-            })
+        group_kinds = kinds[start - 1:start - 1 + len(source_group)]
+        original = _original_markdown(source_group, group_kinds) if original_view else ""
+        # Read word for word, the text already shows as the narration.
+        unchanged = not original_view or (
+            bool(adapted) and _spoken_words(original) == _spoken_words(adapted)
+        )
+        passages.append(_narration_passage(
+            len(passages) + 1, adapted, start, source_group, group_kinds,
+            source_pages, original, unchanged,
+        ))
         if not adapted:
             # A batch left out of the narration, such as a figure the model
             # could not describe, keeps its visuals after the text before it.
@@ -1606,8 +2159,8 @@ def _reader_blocks(
                 blocks[group_blocks[-1]] = (
                     f"{blocks[group_blocks[-1]]}\n\n{visuals}"
                 )
-        if originals is not None and group_blocks:
-            originals[-1]["paragraphs"] = [first_paragraph, paragraphs[-1]]
+        if group_blocks:
+            passages[-1]["paragraphs"] = [first_paragraph, paragraphs[-1]]
     if leading_visuals and blocks:
         blocks[0] = "\n\n".join((blocks[0], *leading_visuals))
 
@@ -1616,7 +2169,7 @@ def _reader_blocks(
     )
     if flattened_chunks != expected_chunks:
         # Blocks come from the narration alone, so no batch maps onto them.
-        originals = None
+        original_view = False
         blocks = []
         paragraphs = []
         chunk_blocks = []
@@ -1635,27 +2188,42 @@ def _reader_blocks(
                 chunk_blocks.extend([block_index] * len(chunks))
     if flattened_chunks != expected_chunks:
         raise ValueError("reader text does not match narration chunks")
-    return blocks, paragraphs, expected_chunks, chunk_blocks, originals
+    return blocks, paragraphs, expected_chunks, chunk_blocks, passages, original_view
 
 
-def build_reader_artifacts(
-    narration,
-    source,
-    max_chars,
+def reader_chunk_plan(text, max_chars):
+    """Plan a voice of a book's text: its chunks, each chunk's reader block,
+    and each block's narration paragraph.
+
+    A block is one sentence of a narration paragraph, as _reader_blocks()
+    makes them, so a new voice of the same text maps onto the book's
+    reader.md without the source document.
+    """
+    chunks, chunk_blocks, paragraphs = [], [], []
+    for paragraph_index, paragraph in enumerate(split_paper_paragraphs(text)):
+        for sentence in split_sentences(paragraph) or [paragraph.strip()]:
+            parts = split_text(sentence, max_chars, sentence_chunks=True)
+            chunk_blocks.extend([len(paragraphs)] * len(parts))
+            chunks.extend(parts)
+            paragraphs.append(paragraph_index)
+    if chunks != split_text(text, max_chars, sentence_chunks=True):
+        raise ValueError("the book's text does not split into its reader's sentences")
+    return chunks, chunk_blocks, paragraphs
+
+
+def reader_timings(
+    chunks,
+    chunk_blocks,
+    paragraphs,
     audio_checkpoints,
     *,
-    adaptation_checkpoints=None,
-    source_pages=None,
-    image_roots=(),
     word_aligner=None,
     alignment_progress=None,
 ):
-    """Build embedded Markdown and exact sentence cues from completed WAVs."""
+    """Exact sentence cues, and word cues when an aligner is given, for one
+    voice, from its completed chunk WAVs."""
     import soundfile as sf
 
-    blocks, paragraphs, chunks, chunk_blocks, originals = _reader_blocks(
-        narration, source, max_chars, adaptation_checkpoints, source_pages
-    )
     if not chunks:
         raise ValueError("reader narration is empty")
     cues = []
@@ -1712,11 +2280,6 @@ def build_reader_artifacts(
                     alignment_failures,
                 )
         current_sample = end_sample
-    markdown = "\n\n".join(
-        f"<!-- audiobook-tts:block={index} -->\n\n"
-        f"{embed_reader_images(block, image_roots)}"
-        for index, block in enumerate(blocks)
-    )
     word_timing = (
         "unavailable"
         if word_aligner is None or not word_cues
@@ -1724,11 +2287,11 @@ def build_reader_artifacts(
         if alignment_failures
         else "aligned"
     )
-    synchronization = {
+    return {
         "schema": 3,
         "sample_rate": sample_rate,
         "duration_samples": current_sample,
-        "block_count": len(blocks),
+        "block_count": len(paragraphs),
         # Narration paragraph of each block, so the reader can flow sentences.
         "paragraphs": paragraphs,
         "cues": cues,
@@ -1737,9 +2300,40 @@ def build_reader_artifacts(
         "aligned_chunks": aligned_chunks,
         "alignment_failures": alignment_failures,
     }
-    if originals is not None:
-        synchronization["originals"] = originals
-    return markdown, synchronization
+
+
+def build_reader_artifacts(
+    narration,
+    source,
+    max_chars,
+    audio_checkpoints,
+    *,
+    adaptation_checkpoints=None,
+    source_pages=None,
+    image_roots=(),
+    word_aligner=None,
+    alignment_progress=None,
+):
+    """Build a book's reader Markdown, the timings of its first voice from
+    completed WAVs, and its narration.json."""
+    blocks, paragraphs, chunks, chunk_blocks, passages, original_view = _reader_blocks(
+        narration, source, max_chars, adaptation_checkpoints, source_pages
+    )
+    timings = reader_timings(
+        chunks, chunk_blocks, paragraphs, audio_checkpoints,
+        word_aligner=word_aligner, alignment_progress=alignment_progress,
+    )
+    markdown = "\n\n".join(
+        f"<!-- audiobook-tts:block={index} -->\n\n"
+        f"{embed_reader_images(block, image_roots)}"
+        for index, block in enumerate(blocks)
+    )
+    book_narration = {
+        "schema": 1,
+        "original_view": original_view,
+        "passages": passages,
+    }
+    return markdown, timings, book_narration
 
 
 def _reader_markdown_sources(markdown):
@@ -1951,157 +2545,13 @@ def _reader_word_checkpoint_cues(
     ]
 
 
-def _reader_spoken_text(markdown):
-    """Extract spoken prose while excluding attached tables and images."""
-    words = []
-    for paragraph in split_paper_paragraphs(markdown):
-        if is_markdown_table(paragraph):
-            continue
-        text = MARKDOWN_IMAGE_PATTERN.sub("", paragraph)
-        text = re.sub(r"\[([^\]\n]+)\]\([^)]+\)", r"\1", text)
-        text = html.unescape(text)
-        words.extend(match.group(0) for match in reader_word_matches(text))
-    return " ".join(words)
-
-
-def align_existing_reader_words(
-    storage,
-    name,
-    word_aligner,
-    *,
-    progress=None,
-    force=False,
-):
-    """Persist forced word cues for a retained sentence- or paragraph-era reader."""
-    import soundfile as sf
-
-    output = resolve_asset(storage.audiobooks, name)
-    metadata = read_json_file(audiobook_version_path(storage, output))
-    reader = metadata.get("reader") if metadata else None
-    if not isinstance(reader, dict):
-        raise FileNotFoundError("synchronized reader is unavailable")
-    markdown_path = resolve_asset(storage.readers, reader.get("markdown", ""))
-    sync_path = resolve_asset(storage.readers, reader.get("sync", ""))
-    sources = _reader_markdown_sources(
-        markdown_path.read_text(encoding="utf-8")
-    )
-    synchronization = read_json_file(sync_path)
-    if synchronization is None:
-        raise ValueError("reader synchronization is invalid")
-    if synchronization.get("word_cues") and not force:
-        return synchronization
-    schema = synchronization.get("schema")
-    cues = synchronization.get("cues")
-    sample_rate = synchronization.get("sample_rate")
-    if (
-        schema not in (1, 2, 3)
-        or not isinstance(cues, list)
-        or not isinstance(sample_rate, int)
-        or sample_rate <= 0
-    ):
-        raise ValueError("reader synchronization is invalid")
-
-    plans = []
-    next_block = 0
-    for old_block, source in enumerate(sources):
-        parts = (
-            _reader_sentence_markdown(source) or [source]
-            if schema == 1
-            else [source]
-        )
-        blocks = list(range(next_block, next_block + len(parts)))
-        next_block += len(parts)
-        plans.append((
-            old_block,
-            blocks,
-            [_reader_spoken_text(part) for part in parts],
-        ))
-
-    word_cues = []
-    failures = 0
-    aligned_blocks = 0
-    with sf.SoundFile(output) as audio:
-        if audio.samplerate != sample_rate:
-            raise ValueError("reader audio sample rate does not match its cues")
-        for position, (old_block, blocks, texts) in enumerate(plans, 1):
-            block_cues = [cue for cue in cues if cue.get("block") == old_block]
-            if not block_cues:
-                failures += 1
-                continue
-            start = block_cues[0].get("start_sample")
-            end = block_cues[-1].get("end_sample")
-            if (
-                not isinstance(start, int)
-                or not isinstance(end, int)
-                or not 0 <= start < end <= audio.frames
-            ):
-                failures += 1
-                continue
-            transcript = " ".join(text for text in texts if text)
-            counts = [len(reader_word_matches(text)) for text in texts]
-            if not transcript or not sum(counts):
-                continue
-            try:
-                audio.seek(start)
-                samples = audio.read(
-                    end - start,
-                    dtype="float32",
-                    always_2d=True,
-                )
-                aligned = word_aligner.align_samples(
-                    samples,
-                    sample_rate,
-                    transcript,
-                    blocks[0],
-                    start,
-                )
-                if len(aligned) != sum(counts):
-                    raise ValueError("forced aligner returned an incomplete block")
-            except Exception:
-                failures += 1
-            else:
-                cursor = 0
-                for block, count in zip(blocks, counts, strict=True):
-                    for index, cue in enumerate(aligned[cursor:cursor + count]):
-                        cue["block"] = block
-                        cue["index"] = index
-                    cursor += count
-                word_cues.extend(aligned)
-                aligned_blocks += 1
-            if progress is not None:
-                progress(position, len(plans), failures)
-
-    synchronization["word_timing"] = (
-        "unavailable"
-        if not word_cues
-        else "partial"
-        if failures
-        else "aligned"
-    )
-    synchronization["word_cues"] = word_cues
-    synchronization["aligned_chunks"] = aligned_blocks
-    synchronization["alignment_failures"] = failures
-    write_json_atomic(sync_path, synchronization)
-    return synchronization
-
-
-def audiobook_reader_payload(storage, name):
-    """Return one validated, rendered reader without accepting server paths."""
-    output = resolve_asset(storage.audiobooks, name)
-    if output.suffix.lower() != ".mp3" or not output.is_file():
-        raise FileNotFoundError("audiobook is unavailable")
-    metadata = read_json_file(audiobook_version_path(storage, output))
-    reader = metadata.get("reader") if metadata else None
-    if not isinstance(reader, dict):
-        raise FileNotFoundError("synchronized reader is unavailable")
-    markdown_name = reader.get("markdown")
-    sync_name = reader.get("sync")
-    if not isinstance(markdown_name, str) or not isinstance(sync_name, str):
-        raise ValueError("reader metadata is invalid")
-    markdown_path = resolve_asset(storage.readers, markdown_name)
-    sync_path = resolve_asset(storage.readers, sync_name)
-    markdown = markdown_path.read_text(encoding="utf-8")
-    synchronization = read_json_file(sync_path)
+def audiobook_reader_payload(storage, book, voice=None):
+    """Return one voice's validated, rendered reader without accepting server paths."""
+    record, voice, _ = book_audio(storage, book, voice)
+    path = storage.audiobooks / book
+    markdown = (path / "reader.md").read_text(encoding="utf-8")
+    synchronization = read_json_file(voice_folder(path, voice) / "timings.json")
+    narration, narration_sha256 = read_narration(path)
     if (
         synchronization is None
         or synchronization.get("schema") not in (1, 2, 3)
@@ -2207,7 +2657,9 @@ def audiobook_reader_payload(storage, name):
     # Checked against the sidecar's own paragraphs, which the collapse below
     # may thin out; the browser places a batch by the paragraphs it finds.
     originals = _render_reader_originals(
-        synchronization.get("originals", []), paragraphs
+        narration_originals(narration)
+        if narration_sha256 == record.get("narration_sha256") else [],
+        paragraphs,
     )
     sources, paragraphs, cues, word_cues, dropped_word_cues, held_blocks = (
         _collapse_invisible_reader_blocks(sources, paragraphs, cues, word_cues)
@@ -2224,10 +2676,18 @@ def audiobook_reader_payload(storage, name):
             duration_samples,
             held_blocks,
         )
+    filenames = record.get("source_filenames") or []
     return {
-        "name": output.name,
-        "document": metadata.get("document"),
-        "voice": metadata.get("voice"),
+        "book": book,
+        "voice": voice,
+        "title": record.get("title"),
+        "document": filenames[0] if filenames else "",
+        "voices": [
+            {"name": entry["name"], "status": entry.get("status")}
+            for entry in record.get("voices") or ()
+        ],
+        # A new voice reads the book's own text; it needs that text.
+        "has_text": narration is not None and narration_sha256 == record.get("narration_sha256"),
         "sample_rate": sample_rate,
         "timing_precision": timing_precision,
         "word_timing": word_timing,
@@ -2240,7 +2700,6 @@ def audiobook_reader_payload(storage, name):
             )
         ],
         "originals": originals,
-        "descriptions": description_state(storage, metadata),
     }
 
 
@@ -2586,16 +3045,6 @@ def mp3_mp4_layout(handle):
             del _MP4_LAYOUTS[next(iter(_MP4_LAYOUTS))]
     return layout
 
-
-def output_versions_match(storage, output_path, input_version, voice_version):
-    if not Path(output_path).is_file():
-        return False
-    metadata = read_json_file(audiobook_version_path(storage, output_path))
-    return bool(
-        metadata
-        and metadata.get("input_version") == input_version
-        and metadata.get("voice_version") == voice_version
-    )
 
 def normalize_paper_url(value):
     """Return a safe HTTP(S) document URL, or an empty string for a local path."""
@@ -4128,21 +4577,6 @@ def visual_label(paragraphs, kinds):
     return f"{'Table' if word.casefold() == 'table' else 'Figure'} {int(number)}"
 
 
-def visual_batches(paragraphs, batches):
-    """Map each batch start to the figure or table it describes alone.
-
-    A name two batches share, as when an appendix numbers its tables anew,
-    names neither, since a pinned description could not tell them apart.
-    """
-    kinds = _layout_kinds(paragraphs)
-    labels = {
-        start: visual_label(paragraphs[start - 1:end], kinds[start - 1:end])
-        for start, end in batches
-    }
-    counts = collections.Counter(labels.values())
-    return {start: label for start, label in labels.items() if label and counts[label] == 1}
-
-
 def paper_batches(paragraphs, per_worker):
     """Plan adaptation batches as 1-based inclusive paragraph ranges.
 
@@ -4150,8 +4584,8 @@ def paper_batches(paragraphs, per_worker):
     table is never split: its panel titles, images, the labels read from
     inside it, and its caption reach the model in one request, so it is
     described once, knowing its caption. A captioned figure or table is a
-    batch of its own, so its narration is its description alone, which can
-    be pinned and reused.
+    batch of its own, so its narration is its description alone: one
+    figure or table passage in the book's narration.json.
     An image without a caption inside a sentence, usually an equation
     printed as a picture ("a graph [equation] where V is …"), goes with the
     sentence around it, so the model reads the sentence through instead of
@@ -4252,62 +4686,6 @@ def adaptation_fidelity(paragraphs, checkpoint_dir):
         "lowest_paragraph": lowest_start,
         "left_out": left_out,
     }
-
-
-def adaptation_descriptions(paragraphs, checkpoint_dir, batches):
-    """Return the saved description of each figure and table, by its name."""
-    descriptions, ends = {}, dict(batches)
-    for start, label in visual_batches(paragraphs, batches).items():
-        end = ends[start]
-        data = read_json_file(Path(checkpoint_dir) / f"{start:06d}-{end:06d}.json")
-        narration = data.get("narration") if data else None
-        if isinstance(narration, str) and narration.strip():
-            descriptions[label] = narration.strip()
-    return descriptions
-
-
-def description_pins(storage, input_version):
-    """Return the pinned descriptions of a document's figures and tables, by
-    name, or {} when none were pinned for this content."""
-    if not re.fullmatch(r"[0-9a-f]{64}", str(input_version)):
-        return {}
-    pins = read_json_file(storage.pins / f"{input_version}.json")
-    descriptions = pins.get("descriptions") if pins else None
-    if not isinstance(descriptions, dict):
-        return {}
-    return {
-        label: text for label, text in descriptions.items()
-        if isinstance(label, str) and isinstance(text, str) and text.strip()
-    }
-
-
-def golden_check(text, input_version):
-    """Check a narration against the golden file of its document, if any.
-
-    A golden file names a document by its SHA-256 and lists facts a good
-    narration of it keeps, each a pattern that must match the narration, or
-    with "absent", must not. Return None when no golden file names this
-    document, else the file's name, its number of facts, and the facts the
-    narration broke.
-    """
-    for path in sorted(GOLDEN_PATH.glob("*.json")):
-        golden = read_json_file(path)
-        if not golden or golden.get("sha256") != input_version:
-            continue
-        # Models write the same words with typographic apostrophes, dashes,
-        # and non-breaking hyphens.
-        spoken = " ".join(re.sub(
-            r"[\u2010-\u2015\u2212]", "-",
-            unicodedata.normalize("NFKC", text).replace("\u2019", "'"),
-        ).split())
-        facts = golden.get("facts") or []
-        broken = [
-            fact["fact"] for fact in facts
-            if bool(re.search(fact["pattern"], spoken, flags=re.IGNORECASE))
-            == bool(fact.get("absent"))
-        ]
-        return {"file": path.name, "facts": len(facts), "broken": broken}
-    return None
 
 
 def paper_system_prompt(task):
@@ -4863,7 +5241,8 @@ def _adaptation_problem(values):
     return None
 
 
-def audiobook_problem(values):
+def audiobook_voice_problem(values):
+    """What stops narrating with the chosen voice."""
     problem = model_problem(values["clone"], "clone")
     if problem is not None:
         return problem
@@ -4872,10 +5251,19 @@ def audiobook_problem(values):
             return "Enter the narration voice ID."
     elif not is_saved_voice(values["voice_dir"]):
         return "Choose a voice."
+    return None
+
+
+def audiobook_problem(values, adapting=True):
+    """What stops this audiobook; a new voice of a book with its own text
+    needs no adaptation model."""
+    problem = audiobook_voice_problem(values)
+    if problem is not None:
+        return problem
     problem = _document_problem(values)
     if problem is not None:
         return problem
-    problem = _adaptation_problem(values)
+    problem = _adaptation_problem(values) if adapting else None
     if problem is not None:
         return problem
     return numeric_problem(values)
@@ -5066,7 +5454,7 @@ def normalize(state):
             "mp3_level": stored_text(audiobook, "mp3_level", "0.5"),
         },
         # The book open on the Listen page survives a refresh.
-        "player": {"book": stored_text(player, "book")},
+        "player": {"book": stored_text(player, "book"), "voice": stored_text(player, "voice")},
     }
 
 
@@ -5089,11 +5477,6 @@ def values_of(state, tts_models, storage):
         clone_voice
         if tts_models["clone"]["source"] == "server"
         else audiobook["voice"].strip()
-    )
-    output_name = (
-        narration_output_name(document_name, narrator_name)
-        if document_name and narrator_name
-        else ""
     )
     return {
         "device": resolve_device("auto"),
@@ -5127,49 +5510,69 @@ def values_of(state, tts_models, storage):
         "chunk_max_chars": audiobook["chunk_max_chars"].strip(),
         "batch_size": audiobook["batch_size"].strip(),
         "mp3_level": audiobook["mp3_level"].strip(),
-        "output_name": output_name,
-        "output": str(storage.audiobooks / output_name) if output_name else "",
-        "prepared_name": (
-            prepared_document_name(document_name) if document_name else ""
-        ),
+        "narrator": narrator_name,
+        # Set by /api/run: a new book, a voice of an existing one, or a remake.
+        "book_mode": "create",
+        "book_id": "",
+        "narration_sha256": "",
     }
 
 
-def audiobook_versions(values):
-    input_version = file_version(values["input"])
+def audiobook_voice_version(values):
     if values["clone"]["source"] == "server":
-        voice_version = remote_voice_version(
-            values["clone"], values["clone_voice"]
-        )
-    else:
-        voice_version = saved_voice_version(values["voice_dir"])
-    return input_version, voice_version
+        return remote_voice_version(values["clone"], values["clone_voice"])
+    return saved_voice_version(values["voice_dir"])
 
 
-def audiobook_job_id(document_version, voice_version):
-    """Return the stable identity of one document-version/voice-version pair."""
+def audiobook_versions(values):
+    return file_version(values["input"]), audiobook_voice_version(values)
+
+
+def audiobook_job_id(document_version, voice_version, mode="create"):
+    """Return the stable identity of one document-version/voice-version pair
+    and what is made of it; a new book keeps the pair alone."""
     payload = json.dumps(
-        [document_version, voice_version],
+        [document_version, voice_version] + ([mode] if mode != "create" else []),
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 
+def existing_book(storage, document):
+    """The book already made from a document's content, or None."""
+    version = cached_file_version(document) if document else None
+    book = book_for_source(storage, version) if version else None
+    if book is None:
+        return None
+    path, record = read_book(storage, book)
+    _, narration_sha256 = read_narration(path)
+    return {
+        "id": book,
+        "title": record.get("title"),
+        "voices": [
+            voice["name"] for voice in record.get("voices") or ()
+            if voice.get("status") == "ready"
+        ],
+        # A book with its own text gets new voices without any model.
+        "has_text": bool(narration_sha256) and narration_sha256 == record.get("narration_sha256"),
+    }
+
+
 def derived(state, tts_models, storage):
     values = values_of(state, tts_models, storage)
     tab = state["tab"]
+    book = existing_book(storage, values["input"]) if tab == "audiobook" else None
     if tab == "voice":
         problem = create_voice_problem(values)
     elif tab == "audiobook":
-        problem = audiobook_problem(values)
+        problem = audiobook_problem(values, adapting=not (book and book["has_text"]))
     else:
         problem = None
     target = values["new_voice_dir"]
     return {
         "problem": problem,
-        "output_name": values["output_name"],
-        "prepared_name": values["prepared_name"],
+        "existing_book": book,
         "voice_dir_ok": is_saved_voice(values["voice_dir"]),
         "voice_exists": bool(target) and os.path.lexists(Path(target)),
         "design_server": values["design"]["source"] == "server",
@@ -5196,6 +5599,8 @@ class Run:
         self.temporary_dir = temporary_dir
         self.on_success = on_success
         self.artifact = None
+        # What a finished audiobook run made: its book id, voice, and title.
+        self.result = {}
         self.code = None
         self.history = []
         self.subscribers = []
@@ -5258,6 +5663,7 @@ class Run:
             "code": self.code,
             "artifact": self.artifact,
             "name": Path(self.artifact).name if self.artifact else None,
+            **(self.result if self.code == 0 else {}),
             "phase": self.current_phase,
             "phase_label": self.phase_label,
         }
@@ -5323,6 +5729,7 @@ class Run:
             "kind": self.kind,
             "artifact": self.artifact,
             "name": Path(self.artifact).name if self.artifact else None,
+            **(self.result if code == 0 else {}),
         })
         self.finished.set()
 
@@ -5395,6 +5802,8 @@ class JobQueue:
             "document": record.get("document"),
             "voice": record.get("voice"),
             "output_name": record.get("output_name"),
+            "book": record.get("book") or "",
+            "mode": record.get("mode") or "create",
             "document_version": record.get("document_version"),
             "voice_version": record.get("voice_version"),
         }
@@ -5532,8 +5941,10 @@ class JobQueue:
         output_name,
         requested_device="auto",
         resolved_device=None,
+        mode="create",
+        book="",
     ):
-        job_id = audiobook_job_id(document_version, voice_version)
+        job_id = audiobook_job_id(document_version, voice_version, mode)
         with self.lock:
             existing = self.records.get(job_id)
             if (
@@ -5556,6 +5967,9 @@ class JobQueue:
                 "document": document,
                 "voice": voice,
                 "output_name": output_name,
+                # A job from Listen names its book and what it makes of it.
+                "book": book,
+                "mode": mode,
                 "document_version": document_version,
                 "voice_version": voice_version,
                 "requested_device": (requested_device or "auto").strip(),
@@ -5816,7 +6230,6 @@ class PaperRun(Run):
         scratch_path=None,
         adapt=True,
         local_vision=False,
-        pins=None,
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -5848,13 +6261,7 @@ class PaperRun(Run):
         # run took to read and adapt the document.
         self.fidelity = None
         self.seconds = {}
-        # Approved descriptions to read as they stand, by figure or table;
-        # the description of each one this run read, and which were pinned;
-        # and what the golden check found, when the document has a golden file.
-        self.pins = dict(pins or {})
-        self.descriptions = {}
-        self.pinned = []
-        self.golden = None
+        self.prompt_version = None
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -6242,25 +6649,6 @@ class PaperRun(Run):
                 continue
             results[start] = (end, narration.strip(), summary.strip())
             completed_count += end - start + 1
-        # An approved description is read as it stands; the model is not
-        # asked to describe that figure or table again.
-        labels = visual_batches(paragraphs, batches)
-        for start, end in batches:
-            text = self.pins.get(labels.get(start))
-            if text is None or start in results:
-                continue
-            write_json_atomic(
-                checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                {"end": end, "narration": text, "summary": text},
-            )
-            results[start] = (end, text, text)
-            completed_count += end - start + 1
-        pinned = [label for label in labels.values() if label in self.pins]
-        if pinned:
-            self.publish(
-                "log",
-                f"Reading the pinned descriptions of {', '.join(pinned)}.\n",
-            )
 
         futures = {}
         pending_starts = iter([
@@ -6409,34 +6797,8 @@ class PaperRun(Run):
             raise
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
-        self.measure_adaptation(paragraphs, checkpoint_dir)
-
-    def measure_adaptation(self, paragraphs, checkpoint_dir):
-        """Measure the saved adaptation: the author's prose it kept, and the
-        description of each figure and table, pinned or new."""
         self.fidelity = adaptation_fidelity(paragraphs, checkpoint_dir)
-        self.descriptions = adaptation_descriptions(
-            paragraphs, checkpoint_dir, paper_batches(paragraphs, self.paragraphs_per_worker)
-        )
-        self.pinned = sorted(label for label in self.descriptions if label in self.pins)
         self.publish_fidelity()
-
-    def check_golden(self, input_version):
-        """Compare the narration with its document's golden file, if any."""
-        self.golden = golden_check(
-            self.output_path.read_text(encoding="utf-8"), input_version
-        )
-        if self.golden is None:
-            return
-        broken = self.golden["broken"]
-        self.publish(
-            "log",
-            f"Golden check ({self.golden['file']}): "
-            + (
-                f"{len(broken)} of {self.golden['facts']} facts broken: {'; '.join(broken)}.\n"
-                if broken else f"all {self.golden['facts']} facts kept.\n"
-            ),
-        )
 
     def publish_fidelity(self):
         fidelity = self.fidelity
@@ -6471,11 +6833,7 @@ class PaperRun(Run):
             else None
         )
         identity = {
-            # Bump whenever the paragraphs or batches a job adapts change,
-            # through with_title_heading(), join_pdf_pages(),
-            # narrated_source_paragraphs(), or paper_batches(): checkpoints
-            # and the reader number paragraphs.
-            "schema": 11,
+            "schema": EXTRACTION_SCHEMA,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,
@@ -6502,13 +6860,9 @@ class PaperRun(Run):
                 if input_path.suffix.lower() == ".pdf"
                 else None
             ),
-            # Pinning or unpinning a description changes what is read.
-            "pins": (
-                hashlib.sha256(json.dumps(self.pins, sort_keys=True).encode("utf-8")).hexdigest()
-                if self.adapt and self.pins
-                else None
-            ),
         }
+        # The book records which instructions wrote its text.
+        self.prompt_version = identity["prompt_version"]
         manifest_path = scratch / "extraction.json"
         manifest = read_json_file(manifest_path)
         complete = (
@@ -6533,8 +6887,10 @@ class PaperRun(Run):
                 paragraphs, _ = narrated_source_paragraphs(stored.read_text(
                     encoding="utf-8" if stored.name == "document.md" else self.encoding
                 ))
-                self.measure_adaptation(paragraphs, scratch / "paragraph-checkpoints")
-                self.check_golden(identity["input_version"])
+                self.fidelity = adaptation_fidelity(
+                    paragraphs, scratch / "paragraph-checkpoints"
+                )
+                self.publish_fidelity()
             return self.output_path
         if manifest is None or any(
             manifest.get(key) != value for key, value in identity.items()
@@ -6584,7 +6940,6 @@ class PaperRun(Run):
                 scratch, paragraphs, image_paths, system_prompt
             )
             self.seconds["adapting"] = round(time.monotonic() - adapting_started, 1)
-            self.check_golden(identity["input_version"])
         else:
             temporary = self.output_path.with_name(
                 f".{self.output_path.name}.tmp"
@@ -6640,7 +6995,12 @@ class PaperRun(Run):
 
 
 class AudiobookRun(Run):
-    """Prepare one shared document and narrate it without manual handoffs."""
+    """Make one book, or one voice of a book, without manual handoffs.
+
+    values["book_mode"] is "create" (a new document), "recreate" (an existing
+    book from its source, with the latest Hilde), or "voice" (a new voice
+    read from the book's narration.json, with no model and no source).
+    """
 
     def __init__(
         self,
@@ -6650,7 +7010,7 @@ class AudiobookRun(Run):
         voice_version,
         job_id,
     ):
-        super().__init__([], "audiobook", values["output"])
+        super().__init__([], "audiobook", "")
         self.values = dict(values)
         self.storage = storage
         self.input_version = input_version
@@ -6660,10 +7020,8 @@ class AudiobookRun(Run):
         self.prepared_input = None
         self.stop_requested = threading.Event()
         self.paper_run = None
-        # How long this run took per stage, and the audio it made, for the
-        # audiobook's record.
+        # How long this run took per stage, for the book's record.
         self.seconds = {}
-        self.audio_seconds = None
 
     def assign_workers(self, workers):
         """Bind a queued job to its local and SSH chunk workers."""
@@ -6680,7 +7038,7 @@ class AudiobookRun(Run):
 
     def _migrate_legacy_stage(self):
         legacy = self.storage.in_progress / safe_output_stem(
-            self.values["output_name"]
+            narration_output_name(self.values["document_name"], self.values["narrator"])
         )
         if self.stage.exists() or not legacy.is_dir() or legacy == self.stage:
             return
@@ -6698,6 +7056,8 @@ class AudiobookRun(Run):
         local_voice = self.values["clone"]["source"] != "server"
         voice_dir = self.stage / "voice"
         manifest = read_json_file(manifest_path) or {}
+        # A voice job snapshots the book's narration.json instead of its source.
+        expected = self.values.get("narration_sha256") or self.input_version
         versions_match = (
             manifest.get("input_version") == self.input_version
             and manifest.get("voice_version") == self.voice_version
@@ -6715,7 +7075,7 @@ class AudiobookRun(Run):
             versions_match
             and source_path is not None
             and source_path.is_file()
-            and file_version(source_path) == self.input_version
+            and file_version(source_path) == expected
         )
         if local_voice:
             reusable = bool(
@@ -6727,7 +7087,7 @@ class AudiobookRun(Run):
             for name in ("source", "voice", "extraction", "narration"):
                 shutil.rmtree(self.stage / name, ignore_errors=True)
             source_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-            suffix = Path(self.values["document_name"]).suffix.lower()
+            suffix = Path(self.values["input"]).suffix.lower()
             source_name = f"document{suffix}"
             source_path = source_dir / source_name
             shutil.copyfile(self.values["input"], source_path)
@@ -6745,7 +7105,7 @@ class AudiobookRun(Run):
                 else self.voice_version
             )
             if (
-                copied_input_version != self.input_version
+                copied_input_version != expected
                 or copied_voice_version != self.voice_version
             ):
                 shutil.rmtree(source_dir, ignore_errors=True)
@@ -6775,18 +7135,10 @@ class AudiobookRun(Run):
         self.prepared_input = self._snapshot_assets()
         return self.prepared_input
 
-    def _publish_prepared_document(self, source):
-        target = self.storage.documents / self.values["prepared_name"]
-        temporary = target.with_name(f".{target.name}.tmp")
-        shutil.copyfile(source, temporary)
-        temporary.replace(target)
-        self.publish("log", f"Stored prepared document: {target}\n")
-        return target
-
     def _run_narration(self, input_path):
         narration_dir = self.stage / "narration"
         narration_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
-        staged_output = narration_dir / self.values["output_name"]
+        staged_output = narration_dir / "audio.mp3"
         command_values = {
             **self.values,
             "input": str(input_path),
@@ -6820,13 +7172,32 @@ class AudiobookRun(Run):
             raise RuntimeError("narration did not create its staged MP3")
         return staged_output
 
-    def _stage_reader(
-        self,
-        input_path,
-        narration_input,
-        needs_extraction,
-        extraction_dir,
-    ):
+    def _aligner(self):
+        self.publish("log", "Loading multilingual forced aligner…\n")
+        try:
+            return ForcedWordAligner()
+        except Exception as exc:
+            self.publish("log", f"Word alignment unavailable: {exc}\n")
+            return None
+
+    def _alignment_progress(self, done, total, failed):
+        self.publish(
+            "progress",
+            {"done": done, "total": total, "unit": "sentence", "failed": failed},
+        )
+
+    def _report_alignment(self, timings):
+        if timings["word_timing"] == "aligned":
+            self.publish("log", f"Aligned {len(timings['word_cues'])} words.\n")
+        elif timings["word_timing"] == "partial":
+            self.publish(
+                "log",
+                f"Aligned {len(timings['word_cues'])} words; "
+                f"{timings['alignment_failures']} sentence chunks could not be aligned.\n",
+            )
+
+    def _stage_reader(self, input_path, narration_input, needs_extraction, extraction_dir):
+        """Build the book's reader.md, narration.json, and the voice's timings."""
         narration_encoding = "utf-8" if needs_extraction else self.values["encoding"]
         narration = narration_input.read_text(encoding=narration_encoding)
         source_path = input_path
@@ -6838,9 +7209,7 @@ class AudiobookRun(Run):
                 source_path = extracted
                 image_roots.append(extraction_dir)
             if self.values["adapt"]:
-                adaptation_checkpoints = (
-                    extraction_dir / "paragraph-checkpoints"
-                )
+                adaptation_checkpoints = extraction_dir / "paragraph-checkpoints"
         source_encoding = (
             "utf-8"
             if source_path == extraction_dir / "document.md"
@@ -6853,203 +7222,178 @@ class AudiobookRun(Run):
             recorded = read_json_file(extraction_dir / "document-pages.json")
             if recorded is not None:
                 source_pages = narrated_source_pages(source, recorded.get("pages"))
-        narration_dir = self.stage / "narration"
-        word_aligner = None
         with WORD_ALIGNMENT_LOCK:
-            self.publish("log", "Loading multilingual forced aligner…\n")
+            word_aligner = self._aligner()
             try:
-                word_aligner = ForcedWordAligner()
-            except Exception as exc:
-                self.publish(
-                    "log",
-                    f"Word alignment unavailable: {exc}\n",
-                )
-            try:
-                markdown, synchronization = build_reader_artifacts(
+                markdown, timings, narration_record = build_reader_artifacts(
                     narration,
                     "\n\n".join(source_paragraphs),
                     int(self.values["chunk_max_chars"]),
-                    narration_dir / "chunks",
+                    self.stage / "narration" / "chunks",
                     adaptation_checkpoints=adaptation_checkpoints,
                     source_pages=source_pages,
                     image_roots=image_roots,
                     word_aligner=word_aligner,
-                    alignment_progress=lambda done, total, failed: self.publish(
-                        "progress",
-                        {
-                            "done": done,
-                            "total": total,
-                            "unit": "sentence",
-                            "failed": failed,
-                        },
-                    ),
+                    alignment_progress=self._alignment_progress,
                 )
             finally:
                 if word_aligner is not None:
                     word_aligner.close()
-        if synchronization["word_timing"] == "aligned":
-            self.publish(
-                "log",
-                f"Aligned {len(synchronization['word_cues'])} words.\n",
-            )
-        elif synchronization["word_timing"] == "partial":
-            self.publish(
-                "log",
-                f"Aligned {len(synchronization['word_cues'])} words; "
-                f"{synchronization['alignment_failures']} sentence chunks "
-                "could not be aligned.\n",
-            )
-        staged_markdown = narration_dir / "reader.md"
-        staged_sync = narration_dir / "reader.json"
-        staged_markdown.write_text(
-            markdown, encoding="utf-8", newline="\n"
-        )
-        write_json_atomic(staged_sync, synchronization)
-        self.audio_seconds = round(
-            synchronization["duration_samples"] / synchronization["sample_rate"], 2
-        )
-        return staged_markdown, staged_sync
+        self._report_alignment(timings)
+        return markdown, timings, narration_record
 
-    def _publish_reader(
-        self,
-        staged_output,
-        staged_markdown,
-        staged_sync,
-        output_path,
-    ):
-        audio_version = file_version(staged_output)
-        markdown_path, sync_path = audiobook_reader_paths(
-            self.storage, output_path, audio_version
+    def _voice_timings(self, text):
+        """Time a new voice of the book's text against the book's reader.md."""
+        chunks, chunk_blocks, paragraphs = reader_chunk_plan(
+            text, int(self.values["chunk_max_chars"])
         )
-        staged_markdown.replace(markdown_path)
-        staged_sync.replace(sync_path)
-        staged_output.replace(output_path)
-        write_json_atomic(
-            audiobook_version_path(self.storage, output_path),
-            {
-                "schema": 3,
-                "job_id": self.job_id,
-                "input_version": self.input_version,
-                "voice_version": self.voice_version,
-                "document": self.values["document_name"],
-                "voice": (
-                    self.values["clone_voice"]
-                    if self.values["clone"]["source"] == "server"
-                    else self.values["selected_voice"]
-                ),
-                "reader": {
-                    "markdown": markdown_path.name,
-                    "sync": sync_path.name,
-                    "audio_sha256": audio_version,
-                },
-                # Which model adapted the book and how much of the author's
-                # prose it kept; the description of each figure and table,
-                # which of them were pinned, and the golden check; then how
-                # long this run took, per stage.
-                "adaptation": (
-                    {
-                        "model": self.paper_run.model,
-                        "prose": self.paper_run.fidelity,
-                        "descriptions": self.paper_run.descriptions,
-                        "pinned": self.paper_run.pinned,
-                        "golden": self.paper_run.golden,
-                    }
-                    if self.paper_run is not None and self.paper_run.adapt
-                    else None
-                ),
-                "seconds": self.seconds,
-                "audio_seconds": self.audio_seconds,
+        path, _ = read_book(self.storage, self.values["book_id"])
+        blocks = _reader_markdown_sources((path / "reader.md").read_text(encoding="utf-8"))
+        if len(blocks) != len(paragraphs):
+            raise ValueError(
+                "This book's reader does not match its text; recreate the book "
+                "to give it another voice."
+            )
+        with WORD_ALIGNMENT_LOCK:
+            word_aligner = self._aligner()
+            try:
+                timings = reader_timings(
+                    chunks, chunk_blocks, paragraphs, self.stage / "narration" / "chunks",
+                    word_aligner=word_aligner, alignment_progress=self._alignment_progress,
+                )
+            finally:
+                if word_aligner is not None:
+                    word_aligner.close()
+        self._report_alignment(timings)
+        return timings
+
+    def _voice_entry(self, timings, audio):
+        return {
+            "name": self.values["narrator"],
+            "created_at": utc_timestamp(),
+            "voice_version": self.voice_version,
+            "audio_sha256": file_version(audio),
+            "duration": round(timings["duration_samples"] / timings["sample_rate"], 2),
+            "seconds": {
+                stage: self.seconds[stage]
+                for stage in ("narrating", "aligning") if stage in self.seconds
             },
+        }
+
+    def _make_voice(self, input_path):
+        """Read the book's own narration.json in a new voice; no model runs."""
+        narration = json.loads(input_path.read_text(encoding="utf-8"))
+        text = narration_text(narration)
+        text_path = self.stage / "narration.txt"
+        text_path.write_text(text, encoding="utf-8", newline="\n")
+        self.set_phase("narration", "Narration")
+        started = time.monotonic()
+        audio = self._run_narration(text_path)
+        self.seconds["narrating"] = round(time.monotonic() - started, 1)
+        self.set_phase("alignment", "Word alignment")
+        started = time.monotonic()
+        timings = self._voice_timings(text)
+        self.seconds["aligning"] = round(time.monotonic() - started, 1)
+        commit_voice(
+            self.storage, self.values["book_id"], self.values["narration_sha256"],
+            self._voice_entry(timings, audio), audio, timings,
         )
-        keep = {markdown_path.name, sync_path.name}
-        prefix = f"{output_path.name}."
-        for path in self.storage.readers.iterdir():
-            if (
-                path.is_file()
-                and path.name.startswith(prefix)
-                and path.name not in keep
-            ):
-                path.unlink(missing_ok=True)
+        return self.values["book_id"]
+
+    def _make_book(self, input_path):
+        """Read the source, adapt it, narrate it, and publish the book."""
+        narration_input = input_path
+        extraction_dir = self.stage / "extraction"
+        needs_extraction = input_path.suffix.lower() == ".pdf" or self.values["adapt"]
+        if needs_extraction:
+            self.set_phase("extraction", "Extraction")
+            model = self.values["model"]
+            if self.values["adapt"] and not model:
+                # No model chosen: the default this browser's settings give.
+                catalog = paper_model_catalog(
+                    self.values["local_server"], self.values["local_provider"]
+                )
+                model = catalog["default_model"]
+                if not model:
+                    raise RuntimeError(
+                        "Your local model server did not answer, and a document "
+                        "goes to a cloud provider only when you choose one under "
+                        f"Advanced: {catalog['local_error']}"
+                        if catalog["local_error"] else
+                        "No text-adaptation model is available: connect a provider "
+                        "or add a local model server under Advanced."
+                    )
+            self.paper_run = PaperRun(
+                input_path,
+                extraction_dir / "prepared.txt",
+                self.values["encoding"],
+                model,
+                self.values["local_server"],
+                self.values["in_flight"],
+                self.values["paragraphs_per_worker"],
+                scratch_path=extraction_dir,
+                adapt=self.values["adapt"],
+                local_vision=self.values["local_vision"],
+            )
+            self.paper_run.publish = self.publish
+            self.paper_run.stop_requested = self.stop_requested
+            narration_input = self.paper_run.prepare_document(extraction_dir)
+            self.seconds.update(self.paper_run.seconds)
+        if self.stop_requested.is_set():
+            raise InterruptedError("audiobook workflow stopped")
+        self.set_phase("narration", "Narration")
+        started = time.monotonic()
+        audio = self._run_narration(narration_input)
+        self.seconds["narrating"] = round(time.monotonic() - started, 1)
+        self.set_phase("alignment", "Word alignment")
+        started = time.monotonic()
+        markdown, timings, narration = self._stage_reader(
+            input_path, narration_input, needs_extraction, extraction_dir
+        )
+        self.seconds["aligning"] = round(time.monotonic() - started, 1)
+        document = self.values["document_name"]
+        stem = Path(document).stem
+        adapted = self.paper_run is not None and self.paper_run.adapt
+        now = utc_timestamp()
+        record = {
+            "schema": BOOK_SCHEMA,
+            "source_sha256": self.input_version,
+            "title": audiobook_title(markdown, re.sub(r"[-_]+", " ", stem).strip() or stem),
+            "source_filenames": [document],
+            "source_file": f"source{input_path.suffix.lower()}",
+            "created_at": now,
+            "updated_at": now,
+            # What made the text, so a later Hilde knows which books it would change.
+            "hilde_version": HILDE_VERSION,
+            "git_commit": git_commit(),
+            "prompt_hash": self.paper_run.prompt_version if adapted else None,
+            "schema_version": EXTRACTION_SCHEMA,
+            "model": self.paper_run.model if adapted else None,
+            "adapted": adapted,
+            "chunk_max_chars": int(self.values["chunk_max_chars"]),
+            "prose": self.paper_run.fidelity if adapted else None,
+            "seconds": {
+                stage: self.seconds[stage]
+                for stage in ("reading", "adapting") if stage in self.seconds
+            },
+        }
+        return commit_book(
+            self.storage, record, narration, markdown, input_path,
+            self._voice_entry(timings, audio), audio, timings,
+        )
 
     def pump(self):
         try:
             input_path = self.prepare()
-            narration_input = input_path
-            extraction_dir = self.stage / "extraction"
-            needs_extraction = (
-                input_path.suffix.lower() == ".pdf" or self.values["adapt"]
-            )
-            if needs_extraction:
-                self.set_phase("extraction", "Extraction")
-                prepared_path = extraction_dir / "prepared.txt"
-                model = self.values["model"]
-                if self.values["adapt"] and not model:
-                    # No model chosen: the default this browser's settings give.
-                    catalog = paper_model_catalog(
-                        self.values["local_server"], self.values["local_provider"]
-                    )
-                    model = catalog["default_model"]
-                    if not model:
-                        raise RuntimeError(
-                            "Your local model server did not answer, and a document "
-                            "goes to a cloud provider only when you choose one under "
-                            f"Advanced: {catalog['local_error']}"
-                            if catalog["local_error"] else
-                            "No text-adaptation model is available: connect a provider "
-                            "or add a local model server under Advanced."
-                        )
-                self.paper_run = PaperRun(
-                    input_path,
-                    prepared_path,
-                    self.values["encoding"],
-                    model,
-                    self.values["local_server"],
-                    self.values["in_flight"],
-                    self.values["paragraphs_per_worker"],
-                    scratch_path=extraction_dir,
-                    adapt=self.values["adapt"],
-                    local_vision=self.values["local_vision"],
-                    pins=(
-                        description_pins(self.storage, self.input_version)
-                        if self.values["adapt"] else None
-                    ),
-                )
-                self.paper_run.publish = self.publish
-                self.paper_run.stop_requested = self.stop_requested
-                narration_input = self.paper_run.prepare_document(
-                    extraction_dir
-                )
-                self._publish_prepared_document(narration_input)
-                self.seconds.update(self.paper_run.seconds)
-            if self.stop_requested.is_set():
-                raise InterruptedError("audiobook workflow stopped")
-
-            self.set_phase("narration", "Narration")
-            started = time.monotonic()
-            staged_output = self._run_narration(narration_input)
-            self.seconds["narrating"] = round(time.monotonic() - started, 1)
-            self.set_phase("alignment", "Word alignment")
-            started = time.monotonic()
-            staged_markdown, staged_sync = self._stage_reader(
-                input_path,
-                narration_input,
-                needs_extraction,
-                extraction_dir,
-            )
-            self.seconds["aligning"] = round(time.monotonic() - started, 1)
-            output_path = Path(self.values["output"])
-            output_path.parent.mkdir(
-                mode=0o750, parents=True, exist_ok=True
-            )
-            self._publish_reader(
-                staged_output,
-                staged_markdown,
-                staged_sync,
-                output_path,
-            )
-            self.artifact = str(output_path)
+            if self.values["book_mode"] == "voice":
+                book = self._make_voice(input_path)
+            else:
+                book = self._make_book(input_path)
+            path, record = read_book(self.storage, book)
+            self.artifact = str(voice_folder(path, self.values["narrator"]) / "audio.mp3")
+            self.result = {"book": book, "voice": self.values["narrator"], "title": record.get("title")}
             shutil.rmtree(self.stage, ignore_errors=True)
-            self.publish("log", f"Completed audiobook: {output_path}\n")
+            self.publish("log", f"Completed audiobook: {record.get('title')} read by {self.values['narrator']}\n")
             self.close(0)
         except InterruptedError:
             self.publish(
@@ -7363,8 +7707,12 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/reader":
             try:
                 payload = audiobook_reader_payload(
-                    self.server.storage, query.get("name", [""])[0]
+                    self.server.storage,
+                    query.get("book", [""])[0],
+                    query.get("voice", [""])[0] or None,
                 )
+            except StaleVoiceError as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
             except (FileNotFoundError, OSError, UnicodeError, ValueError):
                 return self.fail(
                     HTTPStatus.NOT_FOUND,
@@ -7375,30 +7723,29 @@ class Handler(BaseHTTPRequestHandler):
                 payload,
                 extra=(("Cache-Control", "no-store"),),
             )
-        if route == "/api/audio" and query.get("name", [""])[0]:
+        if route in ("/api/audio", "/api/download"):
+            book = query.get("book", [""])[0]
             try:
-                target = resolve_asset(
-                    self.server.storage.audiobooks,
-                    query["name"][0],
+                record, voice, target = book_audio(
+                    self.server.storage, book, query.get("voice", [""])[0] or None
                 )
+            except StaleVoiceError as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
-            if target.suffix.lower() != ".mp3":
+            except FileNotFoundError:
                 return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+            if route == "/api/download":
+                filenames = record.get("source_filenames") or [record.get("title") or book]
+                return self.send_file(
+                    str(target), True, narration_output_name(filenames[0], voice)
+                )
+            # A migrated book's earlier files go once it has played.
+            if record.get("migration_backup"):
+                release_migration_backup(self.server.storage, book)
             if query.get("container", [""])[0] == "mp4":
                 return self.send_mp3_as_mp4(target)
             return self.send_file(str(target), False)
-        if route == "/api/download" and query.get("asset", [""])[0]:
-            try:
-                target = resolve_asset(
-                    self.server.storage.audiobooks,
-                    query["asset"][0],
-                )
-            except ValueError as exc:
-                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
-            if target.suffix.lower() != ".mp3":
-                return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
-            return self.send_file(str(target), True, target.name)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
 
     def do_POST(self):
@@ -7420,8 +7767,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_asset("document", body.get("name", ""))
         if route == "/api/audiobooks/delete":
             return self.delete_asset("audiobook", body.get("name", ""))
-        if route in ("/api/audiobooks/pin", "/api/audiobooks/unpin"):
-            return self.pin_asset(body.get("name", ""), route.endswith("/pin"))
         if route == "/api/voices/save":
             return self.save_draft(
                 str(body.get("draft", "")), str(body.get("name", "")).strip()
@@ -7500,7 +7845,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc)
                 )
-            return self.run(state, bool(body.get("confirmed")), headers)
+            return self.run(
+                state, bool(body.get("confirmed")), headers,
+                book=str(body.get("book") or ""), mode=str(body.get("mode") or ""),
+                voice=str(body.get("voice") or ""),
+            )
         if route == "/api/stop":
             count = self.server.jobs.stop_all()
             return self.reply(
@@ -7740,7 +8089,7 @@ class Handler(BaseHTTPRequestHandler):
             elif kind == "document":
                 delete_document(storage, name)
             else:
-                delete_audiobook(storage, name)
+                delete_book(storage, name)
         except ValueError as exc:
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
         except FileNotFoundError:
@@ -7753,22 +8102,6 @@ class Handler(BaseHTTPRequestHandler):
                 f"Could not delete {name}: {exc.strerror or 'file system error'}.",
             )
         return self.reply(HTTPStatus.OK, {"assets": asset_catalog(storage)})
-
-    def pin_asset(self, name, pin):
-        try:
-            state = pin_descriptions(self.server.storage, name, pin)
-        except ValueError as exc:
-            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
-        except FileNotFoundError:
-            return self.fail(HTTPStatus.NOT_FOUND, "That audiobook no longer exists.")
-        except OSError as exc:
-            # Operating-system messages name server paths; browsers get the reason.
-            return self.fail(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                f"Could not {'pin' if pin else 'unpin'} the descriptions: "
-                f"{exc.strerror or 'file system error'}.",
-            )
-        return self.reply(HTTPStatus.OK, {"descriptions": state})
 
     def save_draft(self, draft_id, name):
         storage = self.server.storage
@@ -7794,20 +8127,26 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
-    def run(self, state, confirmed=False, state_headers=()):
+    def run(self, state, confirmed=False, state_headers=(), book="", mode="", voice=""):
+        """Start a job: a voice design, a new book, a new voice of a book (no
+        model), or a book made again from its source with the latest Hilde.
+
+        Create names a document; a document whose content is already a book
+        with its own text becomes a new voice of that book. Listen names the
+        book itself, with `mode` "voice" or "recreate" and the voice.
+        """
+        storage = self.server.storage
+        if book:
+            return self.run_book(state, confirmed, state_headers, book, mode, voice)
         if state["tab"] == "player":
             return self.fail(
                 HTTPStatus.BAD_REQUEST,
                 "The Listen page cannot start a job.",
             )
-        facts = derived(
-            state, self.server.tts_models, self.server.storage
-        )
+        facts = derived(state, self.server.tts_models, storage)
         if facts["problem"] is not None:
             return self.fail(HTTPStatus.BAD_REQUEST, facts["problem"])
-        values = values_of(
-            state, self.server.tts_models, self.server.storage
-        )
+        values = values_of(state, self.server.tts_models, storage)
         if state["tab"] == "voice":
             draft = new_voice_draft(self.server.storage)
             # Designing runs alone, so it takes the GPU with the most room.
@@ -7832,7 +8171,6 @@ class Handler(BaseHTTPRequestHandler):
                     "queued": False,
                     "duplicate": False,
                     "kind": run.kind,
-                    "output_name": values["output_name"],
                     "runs": self.server.jobs.active_snapshots(),
                     "queue": self.server.jobs.snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
@@ -7852,7 +8190,106 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST,
                 f"Cannot version the selected assets: {exc}",
             )
-        job_id = audiobook_job_id(input_version, voice_version)
+        found = book_for_source(storage, input_version)
+        if found is None:
+            return self.queue_audiobook(values, input_version, voice_version, state_headers)
+        path, record = read_book(storage, found)
+        narration, narration_sha256 = read_narration(path)
+        if narration is not None and narration_sha256 == record.get("narration_sha256"):
+            return self.run_book(
+                state, confirmed, state_headers, found, "voice", values["narrator"]
+            )
+        if not confirmed:
+            return self.reply(HTTPStatus.CONFLICT, {
+                "confirmation_required": True,
+                "message": (
+                    f"You already have {record.get('title')}, made before Hilde kept "
+                    "a book's text, so a new voice needs the text written again. "
+                    "Make it again from this document? Its other voices will need "
+                    "to be made again too."
+                ),
+            })
+        values.update(book_mode="recreate", book_id=found)
+        return self.queue_audiobook(values, input_version, voice_version, state_headers)
+
+    def run_book(self, state, confirmed, state_headers, book, mode, voice):
+        """Queue a new voice of a book, read from its narration.json, or the
+        book made again from its source."""
+        storage = self.server.storage
+        if mode not in ("voice", "recreate"):
+            return self.fail(HTTPStatus.BAD_REQUEST, "Choose a new voice or recreate.")
+        try:
+            path, record = read_book(storage, book)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileNotFoundError:
+            return self.fail(HTTPStatus.NOT_FOUND, "That audiobook no longer exists.")
+        values = values_of(state, self.server.tts_models, storage)
+        voice = voice.strip()
+        if values["clone"]["source"] == "server":
+            values.update(clone_voice=voice)
+        else:
+            values.update(selected_voice=voice, voice_dir=_optional_asset(storage.voices, voice))
+        values["narrator"] = voice
+        problem = audiobook_voice_problem(values) or numeric_problem(values)
+        if problem is None and mode == "recreate":
+            problem = _adaptation_problem(values)
+        if problem is not None:
+            return self.fail(HTTPStatus.BAD_REQUEST, problem)
+        filenames = record.get("source_filenames") or [record.get("title") or book]
+        values.update(book_mode=mode, book_id=book, document_name=filenames[0])
+        if mode == "voice":
+            narration, narration_sha256 = read_narration(path)
+            if (
+                narration is None
+                or narration_sha256 != record.get("narration_sha256")
+                or not record.get("chunk_max_chars")
+            ):
+                return self.fail(
+                    HTTPStatus.CONFLICT,
+                    "This book was made before Hilde kept a book's text. Recreate "
+                    "it to give it another voice.",
+                )
+            values.update(
+                input=str(path / "narration.json"),
+                narration_sha256=narration_sha256,
+                # The book's reader splits its text at this size.
+                chunk_max_chars=str(record["chunk_max_chars"]),
+            )
+            input_version = record.get("source_sha256") or record.get("migrated_from")
+        else:
+            source = book_source(storage, path, record)
+            if source is None:
+                return self.fail(
+                    HTTPStatus.CONFLICT,
+                    "This book's original document is missing. Add it to your "
+                    "documents again, then recreate the book.",
+                )
+            values["input"] = str(source)
+            input_version = cached_file_version(source)
+        try:
+            voice_version = audiobook_voice_version(values)
+        except OSError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, f"Cannot version the voice: {exc}")
+        entry = book_voice(record, voice)
+        if (
+            mode == "voice"
+            and not confirmed
+            and entry is not None
+            and entry.get("status") == "ready"
+            and entry.get("voice_version") == voice_version
+        ):
+            return self.reply(HTTPStatus.CONFLICT, {
+                "confirmation_required": True,
+                "message": f"{record.get('title')} already has {voice}. Make it again?",
+            })
+        return self.queue_audiobook(
+            values, input_version, voice_version, state_headers, title=record.get("title")
+        )
+
+    def queue_audiobook(self, values, input_version, voice_version, state_headers, title=None):
+        mode = values["book_mode"]
+        label = f"{title or Path(values['document_name']).stem} · {values['narrator']}"
 
         def reply_job(job, duplicate=False):
             queued = job["status"] != "running"
@@ -7863,7 +8300,6 @@ class Handler(BaseHTTPRequestHandler):
                     "queued": queued,
                     "duplicate": duplicate,
                     "kind": "audiobook",
-                    "output_name": values["output_name"],
                     "job": job,
                     "runs": self.server.jobs.active_snapshots(),
                     "queue": self.server.jobs.snapshot(),
@@ -7872,43 +8308,22 @@ class Handler(BaseHTTPRequestHandler):
                 extra=state_headers,
             )
 
-        existing = self.server.jobs.existing(job_id)
+        existing = self.server.jobs.existing(
+            audiobook_job_id(input_version, voice_version, mode)
+        )
         if existing is not None:
             return reply_job(existing, duplicate=True)
-        if (
-            not confirmed
-            and output_versions_match(
-                self.server.storage,
-                values["output"],
-                input_version,
-                voice_version,
-            )
-        ):
-            return self.reply(
-                HTTPStatus.CONFLICT,
-                {
-                    "confirmation_required": True,
-                    "message": (
-                        f"{values['output_name']} already contains this "
-                        "document version narrated by this voice version. "
-                        "Queue it again and overwrite the current output?"
-                    ),
-                },
-            )
-        narrator = (
-            values["clone_voice"]
-            if values["clone"]["source"] == "server"
-            else values["selected_voice"]
-        )
         try:
             record, created = self.server.jobs.reserve_audiobook(
                 input_version,
                 voice_version,
-                values["document_name"],
-                narrator,
-                values["output_name"],
+                title or values["document_name"],
+                values["narrator"],
+                label,
                 values["requested_device"],
                 values["device"],
+                mode=mode,
+                book=values["book_id"],
             )
         except ValueError as exc:
             return self.fail(HTTPStatus.CONFLICT, str(exc))
@@ -8518,6 +8933,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <input id="download-name" type="text" placeholder="For example paper.pdf">
             </div>
           </details>
+          <div id="existing-book" class="notice hidden" role="status">
+            <p><strong>You already have this one:</strong>
+              <span id="existing-book-title"></span>.
+              <span id="existing-book-detail"></span></p>
+            <div class="line">
+              <button type="button" onclick="openAudiobook(facts.existing_book.id, true)">Open</button>
+              <button id="existing-book-voice" class="primary" type="button"
+                onclick="continueFromBook()">Change voice</button>
+            </div>
+          </div>
           <div class="actions">
             <button id="book-continue" class="primary" type="button"
               onclick="continueFromBook()">Continue</button>
@@ -8569,7 +8994,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div class="actions">
             <button id="run" class="primary" type="button"
               onclick="startAudiobook()">Create audiobook</button>
-            <span id="output-name" class="note"></span>
+            <span id="create-note" class="note"></span>
           </div>
         </div>
       </li>
@@ -8726,10 +9151,30 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               id="reader-original" type="checkbox"
               onchange="$('reader-content').classList.toggle('show-original', this.checked)">
               Original</label>
-            <button id="reader-pin" type="button" class="hidden"
-              onclick="toggleReaderPins()">Pin descriptions</button>
+            <label for="reader-voice" class="visually-hidden">Voice</label>
+            <select id="reader-voice" class="hidden"
+              onchange="openAudiobook(state.player.book, false, this.value)"></select>
+            <button id="reader-change-voice" type="button" class="hidden"
+              onclick="openChangeVoice()">Change voice</button>
             <button type="button" onclick="downloadBook()">Download MP3</button>
           </div>
+        </div>
+        <div id="change-voice" class="change-voice hidden">
+          <div class="field">
+            <label for="change-voice-name">New voice</label>
+            <div class="line">
+              <select id="change-voice-name"></select>
+              <button id="change-voice-start" class="primary" type="button"
+                onclick="startBookJob('voice', $('change-voice-name').value)">Create</button>
+              <button class="link" type="button" onclick="closeChangeVoice()">Cancel</button>
+            </div>
+          </div>
+          <p class="note">The new voice reads the same text; nothing is written again.</p>
+        </div>
+        <p id="reader-stale" class="notice hidden"></p>
+        <div class="line">
+          <button id="reader-recreate" class="link" type="button"
+            onclick="recreateBook()">Recreate with the latest Hilde</button>
         </div>
       </section>
       <div id="artifact-player" class="player-controls"></div>
@@ -9113,14 +9558,15 @@ function updateEta(done, total, elapsed, streamElapsed) {
   etaSample = sample; renderEta();
 }
 
-function readerPlayer(name) {
+function readerPlayer(book, voice) {
   // Browsers seek VBR MP3 through a coarse table and then report the requested
   // time for audio from elsewhere. The MP4 index maps every frame exactly; the
   // MP3 remains a fallback for browsers without MP3-in-MP4 playback.
   const audio = document.createElement("audio");
   audio.controls = true;
   audio.preload = "metadata";
-  const url = "/api/audio?name=" + encodeURIComponent(name) + "&v=" + Date.now();
+  const url = "/api/audio?book=" + encodeURIComponent(book)
+    + "&voice=" + encodeURIComponent(voice) + "&v=" + Date.now();
   for (const [src, type] of [[url + "&container=mp4", "audio/mp4"], [url, "audio/mpeg"]]) {
     const source = document.createElement("source");
     source.src = src; source.type = type;
@@ -9194,7 +9640,10 @@ function clearReader() {
   $("reader-panel").classList.add("hidden");
   $("reader-unavailable").classList.add("hidden");
   $("reader-original-toggle").classList.add("hidden");
-  $("reader-pin").classList.add("hidden");
+  $("reader-voice").classList.add("hidden");
+  $("reader-change-voice").classList.add("hidden");
+  $("reader-stale").classList.add("hidden");
+  $("change-voice").classList.add("hidden");
 }
 
 function readerCueAt(sample) {
@@ -9488,25 +9937,29 @@ function formatDuration(seconds) {
   return minutes ? `${hours} h ${minutes} min` : `${hours} h`;
 }
 
-function bookTitle(name) {
-  return books.find((book) => book.name === name)?.title || name;
+function bookById(id) {
+  return books.find((book) => book.id === id) || null;
 }
 
-async function openAudiobook(name, focus) {
-  if (!name) return;
+// A book's voices all read its one text; the reader plays one of them.
+async function openAudiobook(id, focus, voiceName) {
+  if (!id) return;
   stopPreview();
   clearReader();
-  state.player.book = name;
+  const book = bookById(id);
+  const voice = voiceName
+    || (state.player.book === id && state.player.voice) || (book ? book.voice : "") || "";
+  state.player.book = id; state.player.voice = voice;
   state.tab = "player";
   render(); queueSync();
-  const book = books.find((item) => item.name === name);
+  const heard = book ? book.voices.find((item) => item.name === voice) : null;
   const details = book
-    ? [book.voice && `Read by ${book.voice}`, formatDuration(book.duration), book.source]
+    ? [voice && `Read by ${voice}`, formatDuration(heard ? heard.duration : book.duration), book.source]
     : [];
-  $("reader-title").textContent = book ? book.title : name;
+  $("reader-title").textContent = book ? book.title : id;
   $("reader-meta").textContent = details.filter(Boolean).join(" · ");
   if (focus) $("reader-title").focus();
-  const audio = readerPlayer(name);
+  const audio = readerPlayer(id, voice);
   $("artifact-player").replaceChildren(audio);
   readerAudio = audio;
   audio.addEventListener("timeupdate", updateReaderHighlight);
@@ -9518,9 +9971,10 @@ async function openAudiobook(name, focus) {
   audio.addEventListener("pause", () => playDownloadedBook());
   try {
     const payload = await jsonRequest(
-      "/api/reader?name=" + encodeURIComponent(name)
+      "/api/reader?book=" + encodeURIComponent(id) + "&voice=" + encodeURIComponent(voice)
     );
     if (readerAudio !== audio) return;
+    showBookVoices(payload);
     readerCues = payload.cues || [];
     readerWordCues = (payload.word_cues || []).map(
       (cue, position) => ({...cue, position})
@@ -9537,7 +9991,6 @@ async function openAudiobook(name, focus) {
     $("reader-original-toggle").classList.toggle(
       "hidden", !renderReaderOriginals(payload.originals || [])
     );
-    showReaderPins(payload.descriptions);
     details.push(payload.word_timing !== "unavailable"
       ? "Words highlight as they're read"
       : payload.timing_precision === "estimated"
@@ -9554,52 +10007,86 @@ async function openAudiobook(name, focus) {
   }
 }
 
+// The voice picker lists the voices that read the book's current text; a
+// voice made from its earlier text is offered to be made again instead.
+function showBookVoices(payload) {
+  const ready = payload.voices.filter((item) => item.status === "ready");
+  const stale = payload.voices.filter((item) => item.status !== "ready");
+  const select = $("reader-voice");
+  select.replaceChildren(...ready.map((item) => {
+    const option = new Option(item.name, item.name);
+    option.selected = item.name === payload.voice;
+    return option;
+  }));
+  select.classList.toggle("hidden", ready.length < 2);
+  $("reader-change-voice").classList.toggle("hidden", !payload.has_text);
+  const notice = $("reader-stale");
+  notice.replaceChildren();
+  if (stale.length && payload.has_text) {
+    notice.append(
+      `${stale.map((item) => item.name).join(", ")} ${stale.length > 1 ? "read" : "reads"} `
+      + "this book's earlier text. ");
+    for (const item of stale) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "link";
+      button.textContent = `Make ${item.name} again`;
+      button.addEventListener("click", () => startBookJob("voice", item.name));
+      notice.append(button, " ");
+    }
+  }
+  notice.classList.toggle("hidden", !notice.childNodes.length);
+}
+
+function openChangeVoice() {
+  const book = bookById(state.player.book);
+  const taken = new Set((book ? book.voices : [])
+    .filter((item) => item.status === "ready").map((item) => item.name));
+  const select = $("change-voice-name");
+  select.replaceChildren(...voices.filter((voice) => !taken.has(voice.name))
+    .map((voice) => new Option(voice.name, voice.name)));
+  $("change-voice-start").disabled = !select.options.length;
+  $("change-voice").classList.remove("hidden");
+  select.focus();
+}
+function closeChangeVoice() {
+  $("change-voice").classList.add("hidden");
+  $("reader-change-voice").focus();
+}
+
+async function recreateBook() {
+  const book = bookById(state.player.book);
+  if (!book) return;
+  if (!window.confirm(
+    `Recreate ${book.title} from its document with the latest Hilde? Its text and `
+    + "descriptions are written again, and its other voices will need to be made again."
+  )) return;
+  startBookJob("recreate", state.player.voice || book.voice);
+}
+
+// A new voice or a remake of the open book; its progress shows on Create.
+async function startBookJob(mode, voice) {
+  const book = state.player.book;
+  if (!book || !voice || submitting) return;
+  submitting = true;
+  try {
+    const answer = await requestRun(false, { book, mode, voice });
+    if (answer) showStartedJob(answer);
+  } finally {
+    submitting = false; render();
+  }
+}
+
 function closeBook() {
   clearReader();
-  state.player.book = "";
+  state.player.book = ""; state.player.voice = "";
   render(); queueSync();
   $("book-search").focus();
 }
 
 function downloadBook() {
   if (state.player.book)
-    location.href = "/api/download?asset=" + encodeURIComponent(state.player.book);
-}
-
-// A pinned description is read as it stands whenever the same document is
-// made into an audiobook again; unpinning lets the next one describe anew.
-function showReaderPins(descriptions) {
-  const { count = 0, pinned = false, pinned_from: from = "" } = descriptions || {};
-  const button = $("reader-pin");
-  button.classList.toggle("hidden", !count && !pinned);
-  button.dataset.pinned = pinned ? "true" : "";
-  button.textContent = pinned ? "Unpin descriptions" : "Pin descriptions";
-  button.title = pinned
-    ? `This document's figure and table descriptions are pinned${from ? ` from ${from}` : ""}. `
-      + "Unpin them to have the next audiobook of it describe them anew."
-    : `Keep this audiobook's ${count} figure and table descriptions: later `
-      + "audiobooks of this document read them as they are.";
-}
-async function toggleReaderPins() {
-  const name = state.player.book, button = $("reader-pin");
-  if (!name) return;
-  const pin = !button.dataset.pinned;
-  button.disabled = true;
-  try {
-    const answer = await jsonRequest(`/api/audiobooks/${pin ? "pin" : "unpin"}`, {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ name }),
-    });
-    if (state.player.book !== name) return;
-    showReaderPins(answer.descriptions);
-    setStatus(pin
-      ? "Pinned the figure and table descriptions."
-      : "Unpinned the figure and table descriptions.");
-  } catch (error) {
-    setStatus(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
+    location.href = "/api/download?book=" + encodeURIComponent(state.player.book)
+      + "&voice=" + encodeURIComponent(state.player.voice);
 }
 
 async function refreshLibrary(restore) {
@@ -9612,9 +10099,18 @@ async function refreshLibrary(restore) {
   }
   renderLibrary(); renderResult();
   if (!restore || !state.player.book) return;
-  // Reopen the book that was open before a refresh, unless it is gone.
-  if (!books.some((book) => book.name === state.player.book)) {
-    state.player.book = ""; render(); queueSync();
+  // Reopen the book that was open before a refresh, unless it is gone. A
+  // name from before books had folders is the book that took its MP3 in.
+  const legacy = books.find((book) => book.legacy_names.includes(state.player.book));
+  if (legacy) {
+    const name = state.player.book;
+    state.player.book = legacy.id;
+    state.player.voice = (legacy.voices.find((voice) => name.endsWith(`-${voice.name}.mp3`))
+      || {}).name || legacy.voice;
+    queueSync();
+  }
+  if (!bookById(state.player.book)) {
+    state.player.book = ""; state.player.voice = ""; render(); queueSync();
   } else if (state.tab === "player" && !readerAudio) {
     openAudiobook(state.player.book);
   }
@@ -9651,9 +10147,10 @@ function bookRow(book) {
   const name = document.createElement("div");
   name.className = "book-title"; name.textContent = book.title;
   title.append(name);
-  if (book.voice) {
+  const narrators = book.voices.filter((voice) => voice.status === "ready").map((voice) => voice.name);
+  if (narrators.length) {
     const narrator = document.createElement("div");
-    narrator.className = "note"; narrator.textContent = `Read by ${book.voice}`;
+    narrator.className = "note"; narrator.textContent = `Read by ${narrators.join(", ")}`;
     title.append(narrator);
   }
   const duration = cell("duration", "Duration");
@@ -9664,7 +10161,7 @@ function bookRow(book) {
   const listen = document.createElement("button");
   listen.type = "button"; listen.textContent = "Listen";
   listen.setAttribute("aria-label", `Listen to ${book.title}`);
-  listen.addEventListener("click", () => openAudiobook(book.name, true));
+  listen.addEventListener("click", () => openAudiobook(book.id, true));
   action.append(listen, deleteButton(`Delete ${book.title}`, (button) => deleteBook(book, button)));
   row.append(title, duration, source, modifiedCell(book.modified), action);
   return row;
@@ -9830,8 +10327,8 @@ async function deleteVoice(name, button) {
   await refreshVoices();
 }
 async function deleteBook(book, button) {
-  const answer = await deleteAsset("audiobooks", book.name,
-    `Delete the audiobook ${book.title}? The MP3 and its synchronized text are removed for good.`,
+  const answer = await deleteAsset("audiobooks", book.id,
+    `Delete the audiobook ${book.title}? Every voice of it and its text are removed for good.`,
     button);
   if (!answer) return;
   setStatus(`Deleted the audiobook ${book.title}.`);
@@ -9959,6 +10456,11 @@ function retryResult() {
   // Continue the job this card reports, not whatever the form holds by now.
   const { document: book, voice } = resultInfo;
   createView = "compose";
+  if (resultInfo.book && resultInfo.mode !== "create") {
+    // A new voice or a remake names its book, not a document.
+    return requestRun(false, { book:resultInfo.book, mode:resultInfo.mode, voice })
+      .then((answer) => answer ? showStartedJob(answer) : render());
+  }
   if (!book || !voice) return setStep("create");
   state.audiobook.document = book;
   state.audiobook[facts.clone_server ? "server_voice" : "voice"] = voice;
@@ -9969,10 +10471,10 @@ function retryResult() {
   startAudiobook();
 }
 function startListening() {
-  const name = resultInfo ? resultInfo.name : "";
+  const info = resultInfo || {};
   createView = "compose";
   state.audiobook.step = "book";
-  if (name) openAudiobook(name, true);
+  if (info.book) openAudiobook(info.book, true, info.voice);
 }
 
 function stageFor(phase, unit) {
@@ -10016,8 +10518,24 @@ function renderCreate() {
     ? state.audiobook.server_voice.trim() : state.audiobook.voice;
   $("voice-summary").textContent = step !== "voice" && done.voice ? voiceName : "";
   $("voice-change").classList.toggle("hidden", step === "voice" || !done.book);
+  // A document that is already a book with its own text gets a new voice,
+  // read from that text without any model.
+  const existing = state.tab === "audiobook" && facts.tab === "audiobook" && bookReady()
+    ? facts.existing_book : null;
+  const voiceOnly = !!(existing && existing.has_text);
+  $("existing-book").classList.toggle("hidden", !existing || step !== "book");
+  if (existing) {
+    $("existing-book-title").textContent = existing.title;
+    $("existing-book-detail").textContent = existing.has_text
+      ? (existing.voices.length ? `Read by ${existing.voices.join(", ")}.` : "")
+      : "It was made before Hilde kept a book's text, so a new voice writes the text again.";
+  }
+  $("existing-book-voice").classList.toggle("hidden", !voiceOnly);
+  $("book-continue").classList.toggle("hidden", voiceOnly && step === "book");
   $("book-continue").disabled =
     submitting || !(done.book || state.audiobook.source_url.trim());
+  $("adapt").closest(".field").classList.toggle("hidden", voiceOnly);
+  $("run").textContent = voiceOnly ? "Add this voice" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
   $("clone-voice-row").classList.toggle("hidden", !facts.clone_server);
@@ -10028,7 +10546,8 @@ function renderCreate() {
   $("create-problem").textContent = problem || "";
   $("create-problem").classList.toggle("hidden", !problem);
   $("run").disabled = submitting || !current || !!facts.problem;
-  $("output-name").textContent = facts.output_name ? `Saved as ${facts.output_name}` : "";
+  $("create-note").textContent = voiceOnly
+    ? `Reads ${existing.title} in this voice, from the book's own text; no model is used.` : "";
   const background = running && runKind === "audiobook" && composing;
   $("create-banner").classList.toggle("hidden", !background);
   $("create-banner-text").textContent = background ? `Creating ${progressSubject()}…` : "";
@@ -10058,7 +10577,7 @@ function renderResult() {
   const ok = info.code === 0, stopped = info.code === 130;
   $("result-title").textContent = ok ? "Your audiobook is ready"
     : stopped ? "Stopped" : "We couldn't finish this audiobook";
-  $("result-text").textContent = ok ? bookTitle(info.name)
+  $("result-text").textContent = ok ? (info.title || "")
     : stopped ? "Everything finished so far is kept. Continue whenever you like."
     : "Everything finished so far is kept, so trying again continues from there.";
   $("result-primary").textContent = ok ? "Start listening" : stopped ? "Continue" : "Try again";
@@ -10330,14 +10849,16 @@ function log(text) {
   recentLog = recentLog.concat(lines).slice(-4);
 }
 
-async function requestRun(confirmed) {
+// `extra` names a book, with mode "voice" or "recreate" and the voice, for
+// a job started from Listen; Create sends the form alone.
+async function requestRun(confirmed, extra) {
   const response = await fetch("/api/run", {
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ state, confirmed:!!confirmed }),
+    body:JSON.stringify({ state, confirmed:!!confirmed, ...(extra || {}) }),
   });
   const answer = await response.json().catch(() => ({}));
   if (response.status === 409 && answer.confirmation_required) {
-    if (window.confirm(answer.message)) return requestRun(true);
+    if (window.confirm(answer.message)) return requestRun(true, extra);
     setStatus("Nothing was replaced.");
     return null;
   }
@@ -10360,26 +10881,35 @@ async function startAudiobook() {
     collect();
     const answer = await requestRun(false);
     if (!answer) return;
-    jobs = answer.queue || jobs; runs = answer.runs || runs;
-    consumers = answer.consumers || consumers;
-    const job = answer.job;
-    const active = job
-      ? runs.find((item) => item.active && item.job_id === job.id) : null;
-    if (active) {
-      createView = "progress";
-      followActive(active, false);
-      started = true;
-    } else if (job) {
-      waitingJobId = job.id;
-      setStatus(answer.duplicate
-        ? `${job.output_name} is already waiting to be created.`
-        : `${job.output_name} will start when the audiobook ahead of it finishes.`);
-    }
+    started = showStartedJob(answer);
   } finally {
     submitting = false; render();
     // Disabling the button dropped focus; return it to the view now shown.
     $(started ? "progress-title" : "run").focus();
   }
+}
+
+// Follow a job that started on Create's progress card, or say when it will.
+function showStartedJob(answer) {
+  jobs = answer.queue || jobs; runs = answer.runs || runs;
+  consumers = answer.consumers || consumers;
+  const job = answer.job;
+  const active = job
+    ? runs.find((item) => item.active && item.job_id === job.id) : null;
+  if (active) {
+    if (state.tab !== "audiobook") setTab("audiobook");
+    createView = "progress";
+    followActive(active, false);
+    render();
+    return true;
+  }
+  if (job) {
+    waitingJobId = job.id;
+    setStatus(answer.duplicate
+      ? `${job.output_name} is already waiting to be created.`
+      : `${job.output_name} will start when the audiobook ahead of it finishes.`);
+  }
+  return false;
 }
 
 async function listenVoice() {
@@ -10492,11 +11022,14 @@ function watch(jobId="") {
       if (createView === "progress") {
         createView = "result";
         // Continue and Try again resubmit this job, whatever the form holds by then.
-        resultInfo = { ...info, document:job ? job.document : "", voice:job ? job.voice : "" };
+        resultInfo = {
+          ...info, document:job ? job.document : "", voice:job ? job.voice : info.voice,
+          book:info.book || (job ? job.book : ""), mode:job ? job.mode : "create",
+        };
         resultDetail = info.code !== 0 && info.code !== 130 ? recentLog.join("\n") : "";
         if (state.tab === "audiobook") focus = "result-title";
       } else if (info.code === 0) {
-        if (info.name) setStatus(`${info.name} is ready in Listen.`);
+        if (info.title) setStatus(`${info.title} is ready in Listen.`);
       } else {
         // Away from its progress card, a stop or failure is only a notice.
         const subject = job ? `${job.document} with ${job.voice}` : "An audiobook";
@@ -10573,8 +11106,9 @@ async function cancelJob(id) {
 }
 
 function downloadArtifact() {
-  if (resultInfo && resultInfo.code === 0 && resultInfo.name)
-    location.href = "/api/download?asset=" + encodeURIComponent(resultInfo.name);
+  if (resultInfo && resultInfo.code === 0 && resultInfo.book)
+    location.href = "/api/download?book=" + encodeURIComponent(resultInfo.book)
+      + "&voice=" + encodeURIComponent(resultInfo.voice);
 }
 async function sendAirdrop() {
   try {

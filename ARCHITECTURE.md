@@ -25,7 +25,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
-| `golden/` | Golden files: the facts a good narration of one document keeps, as patterns, named by the document's SHA-256 and checked after every adaptation of it. `attention-is-all-you-need.json` covers that paper's Table 3 values and caveat, both English-to-French BLEU scores, the scaling factor (never inverted into "divide by one over"), equations said in steps, the equal-contribution note, and both rows of affiliations. |
+| `qa/` | The QA records reviewers and the fixer share: bug classes, findings, runs, papers, decisions, open questions, golden assertions per paper (`golden/<paper>.yaml`), and `qa.py` (`validate`, `check`, `report`, `next`). `qa/AGENTS.md` is its protocol. Golden checks run only here, on an output text; the app never reads `qa/`. Output texts under `qa/outputs/` stay out of git. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
@@ -161,53 +161,121 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 <root>/
 ├── Voices/
 ├── Audiobooks/
-│   ├── .readers/
-│   └── .versions/
+│   └── <slug>--<hash12>/
+│       ├── book.json
+│       ├── source.<ext>
+│       ├── narration.json
+│       ├── reader.md
+│       └── voices/<voice>/
+│           ├── audio.mp3
+│           └── timings.json
 ├── Documents/
-│   └── .descriptions/
 └── in_progress/
     └── voice-drafts/
 ```
 
-Browser state contains only flat asset names. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser. File-serving and AirDrop paths must resolve inside the shared root.
+Browser state contains only flat asset names and book ids. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser; `read_book()` accepts only an id matching `BOOK_ID_PATTERN` and `voice_folder()` only a single safe component. File-serving and AirDrop paths must resolve inside the shared root.
 
-`asset_catalog()` returns sorted shared voice and document names; the Listen page reads retained audiobooks from `GET /api/library`. Existing files are not migrated automatically when the root changes.
+`asset_catalog()` returns sorted shared voice and document names; the Listen page reads books from `GET /api/library`. Existing files are not migrated automatically when the root changes.
 
-`prepare_library()` runs at startup. It creates the layout and, only when it
+`prepare_library()` runs at startup. It creates the layout, runs `recover_books()` and `migrate_legacy_books()`, and, only when it
 creates `Voices/`, copies in each stock voice from `STOCK_VOICES_PATH` whole:
 staged under a hidden folder, hidden files skipped, then renamed into place. An
 existing library is never reseeded, so a deleted stock voice stays deleted.
 
+### Books
+
+A book is one document's content made into narration once. Its identity is
+the SHA-256 of the source bytes; the file name is not part of it. Its folder is
+`book_id()`: `book_slug()` of the title (lowercase ASCII words joined by
+hyphens, at most 60 characters, `book` when none) then `--` and the first 12
+hexadecimal digits of the hash. `book_for_source()` finds a book by that suffix
+and the full hash in `book.json`.
+
+- `book.json` (`BOOK_SCHEMA` 1): `source_sha256`, `title`, `source_filenames`
+  (every name the content came under), `source_file` (`source.<ext>`, or
+  `null` for a migrated book), `created_at`, `updated_at`, `hilde_version`
+  (`HILDE_VERSION`), `git_commit` (`git rev-parse HEAD`, or `null` outside a
+  checkout), `prompt_hash` (the SHA-256 of the system prompt, `null` without
+  adaptation), `schema_version` (`EXTRACTION_SCHEMA`), `model`, `adapted`,
+  `chunk_max_chars` (the chunk size its reader splits the text at), `prose`
+  (`adaptation_fidelity()`), `seconds` for reading and adapting, and
+  `narration_sha256`, the SHA-256 of `narration.json`'s bytes. `voices` lists
+  each voice: `name`, `created_at`, `narration_sha256` (the text it read),
+  `status` (`ready`, or `stale` once the book's text changed), `voice_version`,
+  `audio_sha256`, `duration`, and its `seconds` for narrating and aligning.
+  A migrated book also has `migrated_from`, `legacy_names` (its earlier MP3
+  names), and, until it first plays, `migration_backup`.
+- `narration.json` (`schema` 1): `original_view` (whether passages map onto
+  the reader's paragraphs) and `passages`, one per adaptation batch, or per
+  paragraph without adaptation: `id`, `type` (`body`, `heading`, `figure`,
+  `table`, `equation`, or `footnote` or `caption` for a passage of only those),
+  `page`, `text` (what is read aloud; empty for a batch left out),
+  `original_text`, `unchanged`, `paragraphs` (`[first, last]` reader
+  paragraphs), and `sources`, the author's paragraphs it came from, each
+  `{type, page, text}` with type `body`, `heading`, `figure`, `table`,
+  `equation`, `footnote`, or `caption`. The model narrates a footnote and a
+  caption inside the passage that cites or carries it, so they are typed as
+  sources. `_visual_type()` names a picture from its caption, a PDF table's
+  image name, or panel titles; an uncaptioned picture is an equation.
+  `narration_text()` joins the passages' text: exactly what the first voice
+  read and every later voice reads.
+- `reader.md` is the follow-along view: block-marked Markdown with pictures
+  embedded. Its blocks are the sentences of the narration's paragraphs, so
+  any voice's timings map onto it.
+- `voices/<voice>/audio.mp3` and `timings.json` (the reader sync of schema
+  1–3: sample rate, duration, block paragraphs, sentence cues, word cues).
+  A voice's timings are never paired with another voice's audio.
+
+`commit_book()` publishes a book with one voice: it writes everything into a
+hidden `Audiobooks/.build-<random>` folder, `book.json` last, and
+`swap_into_place()` renames it to the book's folder. A book of the same content
+keeps its folder name, `created_at`, and file names; its other voices are
+hard-linked into the new folder, `ready` when they read the same
+`narration_sha256` and `stale` otherwise. The old folder steps aside as
+`.replaced-<id>-<random>` before the new one is renamed in, so a crash between
+the renames leaves both, and `recover_books()` at the next start puts the old
+one back and removes `.build-` and `.trash-` folders, at the top level and in
+each book's `voices/`. `commit_voice()` publishes one voice the same way inside
+`voices/` and then rewrites `book.json`; it refuses when the book's
+`narration_sha256` changed since the job started. Commits hold `_BOOK_LOCK`.
+`delete_book()` renames the folder to `.trash-<random>` and removes it.
+
+`migrate_legacy_books()` moves the earlier layout (`Audiobooks/<name>.mp3`,
+`.versions/<name>.json`, `.readers/<name>.<hash>.md|json`) into book folders
+without calling any model. MP3s of the same `input_version` become voices of
+one book, newest first: the newest one's reader becomes `reader.md`, and a
+voice whose reader differs is `stale`. An MP3 without a record becomes a book
+keyed by its own hash with no source hash or text. `_legacy_narration()`
+rebuilds `narration.json` from the `Documents/<stem>-narration.txt` the job
+stored, only when it splits into exactly the reader's blocks and cue count at
+some chunk size (500 first), and from the sidecar's `originals`; otherwise the
+book plays but has no text for a new voice. Audio is hard-linked; the earlier
+files move to `Audiobooks/.backup/<id>/` and stay until the book's audio is
+first served (`release_migration_backup()`). The empty `.versions` and
+`.readers` folders go. Rerunning finishes a migration a crash interrupted.
+
 ### Naming
 
 - Saved voice: `Voices/<voice-name>/reference.wav` plus `transcript.txt`, with `description.txt` and an optional rendered `preview.wav`.
-- Prepared document: `Documents/<input-stem>-narration.txt`.
-- Final audiobook: `Audiobooks/<input-stem>-<voice-name>.mp3`.
-- Unfinished workflow: `in_progress/<audiobook-output-stem>/`.
+- Book: `Audiobooks/<slug>--<hash12>/`, as above. A voice's download is named
+  `<document-stem>-<voice-name>.mp3` (`narration_output_name()`).
+- Unfinished workflow: `in_progress/<job-id>/`.
 - Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
-- Synchronized reader: content-addressed Markdown and timing JSON under
-  `Audiobooks/.readers/`, referenced by the audiobook version record.
-- Pinned descriptions: `Documents/.descriptions/<sha256>.json`, one per
-  document content, holding `schema`, the `document` and `audiobook` they were
-  pinned from, its `model`, and `descriptions`, each figure or table's
-  narration by name ("Table 3"). The document list shows files only, and
-  `resolve_asset()` refuses dot-names, so no browser request can reach the
-  folder by name. Deleting an audiobook keeps its document's pins.
 
 For remote narration, the remote server voice ID supplies `<voice-name>`.
 
-### Versions and overwrite confirmation
+### Versions and confirmation
 
-`file_version()` hashes document bytes. A local voice version hashes both owned files and their names; descriptions and previews are not part of it. A remote voice version hashes endpoint, model, and voice ID.
+`file_version()` hashes document bytes; `cached_file_version()` remembers the hash while a file's size and modification time stay the same. A local voice version hashes both owned files and their names; descriptions and previews are not part of it. A remote voice version hashes endpoint, model, and voice ID.
 
-After a successful audiobook run, `.versions/<output-name>.json` records the input and voice versions plus the committed synchronized-reader sidecars, then what the run measured: `adaptation` (the concrete model; `adaptation_fidelity()`'s prose summary; `descriptions`, each figure and table's narration by name from `adaptation_descriptions()`; `pinned`, the names read from pins; and `golden`, `golden_check()`'s result or `null`; or `null` without adaptation), `seconds` for each stage this run performed (`reading`, `adapting`, `narrating`, `aligning`; a resumed run that reused its adaptation has no `reading` or `adapting`), and `audio_seconds`. `/api/run` returns HTTP 409 with `confirmation_required` only when:
-
-- the target MP3 exists;
-- its version record has the same input hash; and
-- its version record has the same voice hash.
-
-The browser then asks whether to overwrite and retries with `confirmed: true`. A changed input, changed voice, or output without matching metadata is replaced without another confirmation. Document uploads/downloads and voice creation also replace same-named assets.
+`/api/run` returns HTTP 409 with `confirmation_required` when a new voice
+would remake a voice the book already has `ready` with the same voice
+version, and when Create names a document already made into a book that has
+no text of its own (a migrated book without one), since a new voice then
+needs the text written again. The browser asks and retries with
+`confirmed: true`.
 
 ## Canonical browser state
 
@@ -216,7 +284,7 @@ The browser then asks whether to overwrite and retries with `confirmed: true`. A
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, local model server, its type: `ollama`, `lm-studio`, or empty, and `local_vision`, whether its model sees images, true only when stored as `true`), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the audiobook open on Listen, so a refresh reopens it.
+- `player`: the book open on Listen and the voice playing, so a refresh reopens them. A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies. TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -361,9 +429,7 @@ When adaptation is enabled:
 - a batch made only of a figure, table, or equation (with its labels or caption) whose narration names none of them (`VISUAL_CUE_PATTERN`) in its first twelve words is named in the log; the job goes on, since a listener would otherwise hear no border between the author's text and the description;
 - a batch of the author's prose (`TEXT_KINDS`) is scored by `prose_kept()`: the share of its words of four letters or more (`CONTENT_WORD_PATTERN`, any script) its narration still contains, after citation marks, superscripts, and links are set aside. Passages under `PROSE_KEPT_MIN_WORDS` are not judged; one under `PROSE_KEPT_LOW` (80%) is named in the log with its missing words, and the job goes on. A passage the model left out whole is not scored: the log already names it with the model's reason, and it is usually apparatus, such as a reference entry extraction glued to the text. The score catches dropped wording, not changed meaning or added claims. Once adaptation ends, or when a finished adaptation is reused, `adaptation_fidelity()` summarizes the saved checkpoints (narrated passages judged, how many kept at least 95%, how many fell under 80%, the lowest, and how many were left out whole) into the log and the audiobook's record;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
-- completed batches may finish out of order, but narration and summaries commit in source order;
-- a figure or table with a pinned description (`description_pins()`, keyed by the document's SHA-256 and the batch's name) is read as it stands: its checkpoint is written from the pin and the model is not asked, and the log names the pinned descriptions. `measure_adaptation()` then collects the narration of every named batch (`adaptation_descriptions()`) and which came from pins, for the audiobook's record;
-- `golden_check()` compares the finished narration with the golden file in `golden/` whose `sha256` names this document, if any: each fact is a case-insensitive pattern that must match, or with `"absent": true` must not, on text with typographic apostrophes, dashes, and non-breaking hyphens made plain. The log reports the facts kept or broken, by name, after every adaptation and when a finished one is reused, and the result goes into the record.
+- completed batches may finish out of order, but narration and summaries commit in source order.
 
 On restart, committed checkpoints populate the result buffer before only missing batches are submitted. With adaptation disabled, normalized body paragraphs are written directly.
 
@@ -380,52 +446,73 @@ ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex
 
 Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps and forbid other applications to collect, store, or intermediate them, so Hilde offers a subscription only through the user's own Claude Code, and otherwise a Console API key. `connect_anthropic()` trims the pasted key, lists the key's models to prove Anthropic accepts it, and only then writes `~/.hilde/anthropic.json` through the same private temporary file. **Remove** deletes that file.
 
-`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, whether a local model sees images, worker configuration, the complete system prompt (the prompt file plus the transport contract), the pinned descriptions in use, and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones, pinning or unpinning redoes the adaptation with or without the pins, and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
+`extraction.json` binds checkpoints to the paragraph-selection `schema` (`EXTRACTION_SCHEMA`), input bytes, adaptation toggle, model selector and local endpoint, whether a local model sees images, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
-**Create audiobook** submits an `AudiobookRun` to the shared consumer queue:
+An `AudiobookRun` makes one book or one voice of a book; `values["book_mode"]`
+says which:
+
+- `create`: **Create audiobook** for a document no book was made from;
+- `voice`: a new voice of a book, from **Change voice** on Listen or from
+  Create when the document's content is already a book with its own text. It
+  reads `narration.json`; no source, extraction, or model is involved;
+- `recreate`: **Recreate with the latest Hilde** on Listen, or Create for a
+  migrated book without text: the whole pipeline again from the book's
+  `source.<ext>` (`book_source()` falls back to a document in `Documents`
+  with the same content).
 
 ```mermaid
 flowchart LR
-    A[Shared document and voice] --> B[Snapshot into in_progress]
-    B --> C{PDF or adaptation enabled?}
-    C -- yes --> D[Resume extraction/adaptation]
-    D --> E[Publish prepared text to Documents]
-    C -- no --> F[Use source snapshot]
-    E --> G[Resume narration chunks]
-    F --> G
-    G --> H[Build Markdown reader and sentence cues]
-    H --> I[Force-align transcript words on CPU]
-    I --> J[Publish MP3 and reader sidecars]
-    J --> K[Write version metadata]
-    K --> L[Remove completed in_progress job]
+    A[Document or book, and voice] --> B[Snapshot into in_progress]
+    B --> C{Mode}
+    C -- create or recreate --> D[Resume extraction and adaptation]
+    D --> E[Resume narration chunks]
+    C -- voice --> F[narration.json text]
+    F --> E
+    E --> G[Sentence cues and forced word alignment]
+    G --> H{Mode}
+    H -- create or recreate --> I[commit_book: build folder, swap into place]
+    H -- voice --> J[commit_voice: voice folder, then book.json]
+    I --> K[Remove completed in_progress job]
+    J --> K
 ```
 
-At queue submission, source bytes and any local voice files are copied into a stage named by the job ID. Matching snapshots are reused; changed source/voice versions use a different stage. This prevents another client replacing a shared asset while the job waits or runs from changing that job's identity.
-
-PDF extraction always runs. Adaptation is independently optional. Prepared text is copied to shared `Documents`, while narration reads the durable staged preparation so a concurrent document replacement cannot affect it.
+At queue submission, the source bytes (for a voice, the book's `narration.json`)
+and any local voice files are copied into a stage named by the job ID; a voice
+job checks the copy against the book's `narration_sha256`. Matching snapshots
+are reused; changed source/voice versions use a different stage. This prevents
+another client replacing a shared asset while the job waits or runs from
+changing that job's identity.
 
 Narration always invokes the CLI with `--resume-dir`, `--sentence-chunks`, and
-`--overwrite` against a staged MP3. The web process uses completed WAV
-checkpoints for exact sentence boundaries, combines narration with extracted
-Markdown tables and embedded raster visuals, then aligns the known words in
-each chunk with TorchAudio `MMS_FA` plus Uroman. Alignment is serialized through
-one CPU model and stores integer source-sample boundaries. A failed chunk
-produces partial word timing; failure to load the aligner leaves the exact
-sentence timing usable. The reader sidecars and MP3 publish before the version
-record, which is the commit marker. Failure or Stop leaves the stage; success
-removes it.
+`--overwrite` against a staged MP3. For a new book, `build_reader_artifacts()`
+makes the reader blocks from the narration and the extracted source
+(`_reader_blocks()`, which also returns the typed passages), and
+`reader_timings()` takes exact sentence boundaries from the completed WAV
+checkpoints and aligns the known words in each chunk with TorchAudio `MMS_FA`
+plus Uroman. A voice job plans its chunks with `reader_chunk_plan()`: each
+narration paragraph split into sentences, each sentence into chunks at the
+book's `chunk_max_chars`, the same blocks `_reader_blocks()` makes, checked
+against the book's `reader.md` block count; then `reader_timings()` as for a
+new book. Alignment is serialized through one CPU model and stores integer
+source-sample boundaries. A failed chunk produces partial word timing; failure
+to load the aligner leaves the exact sentence timing usable. Failure or Stop
+leaves the stage; success publishes the book or voice, then removes the stage.
+A finished run's `done` event carries `book`, `voice`, and `title`.
 
 `AudiobookRun.stop()` signals document workers, terminates converter children, cuts off in-flight model requests, stops the narration child, and closes the run with code 130. Restarting with the same assets/settings resumes from the durable state.
 
 ## Audiobook worker pool
 
 `audiobook_job_id()` hashes exactly the document content version and voice
-version. Filenames, browser identity, output names, and inference controls are
-not part of the job identity. A submission matching a preparing, queued, or
-running pair returns that existing record; the first submission owns its
-labels, output path, and execution settings.
+version, plus the mode for a new voice or a remake, so those do not share a
+stage with the job that made the book. Filenames, browser identity, and
+inference controls are not part of the job identity. A submission matching a
+preparing, queued, or running job returns that existing record; the first
+submission owns its labels and execution settings. A job record names its
+`book` and `mode`, so **Continue** and **Try again** resubmit a new voice or a
+remake as one.
 
 For a local narration model, `audiobook_consumers()` creates one worker
 descriptor per CUDA GPU visible to the server process and appends passwordless
@@ -524,9 +611,19 @@ the active tab is flush with an accent top edge and opens into the page below.
   and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
   only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
-  audiobook**. **Listen** opens the book view: title, narrator, duration,
-  source, **Follow along**, **Original** (adapted books), **Pin descriptions** or **Unpin descriptions** (books with figure or table descriptions, or whose document has pins), **Download MP3**, the player, and the synchronized
-  reader; **All audiobooks** returns to the table.
+  audiobook**. Each row is a book; its note lists the voices that read its
+  current text. **Listen** opens the book view: title, narrator, duration,
+  source, **Follow along**, **Original** (adapted books), a voice picker (more
+  than one ready voice), **Change voice** (books with their own text), **Download MP3**,
+  **Recreate with the latest Hilde**, a notice offering **Make <voice> again**
+  for each stale voice, the player, and the synchronized reader; **All
+  audiobooks** returns to the table. **Change voice** lists the saved voices
+  the book does not have yet. **Recreate** asks first. Both start a job whose
+  progress shows on **Create**.
+- On **Create**, a document whose content is already a book shows **You
+  already have this one** with **Open** and **Change voice** in step 1. For a
+  book with its own text, step 3 hides adaptation and offers **Add this
+  voice**, which reads the book's text without any model.
 
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
 while its request runs. Deleting the selected voice or document clears that
@@ -602,34 +699,29 @@ the accent bar, and the current word is filled with a lighter accent under
 dark ink (7.7:1 contrast). The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
-An adapted book's sidecar also records `originals`, one entry per adaptation
-batch in order: the narration paragraphs made from it (`[first, last]`, or
-`null` for a batch the model left out), the PDF page it starts on (or `null`),
-whether it is a `description` (a figure, table, or equation with at most its
-caption, per `_describes_visual()`, which the log's cue check shares), and the
-author's Markdown without images, figure labels, panel titles, tables, or page
-furniture, which already show beside the narration or are no one's words.
-Unadapted books, and books whose blocks had to be rebuilt from the narration
-alone, have none. `/api/reader` validates the ranges as increasing within the
-sidecar's paragraphs and renders the text with raw HTML off, restoring only
+An adapted book's Original view comes from its `narration.json`
+(`narration_originals()`): one entry per passage in order, with the narration
+paragraphs made from it (`[first, last]`, or `null` for a batch the model left
+out), the PDF page it starts on (or `null`), whether it is a `description` (a
+figure, table, or equation passage the model wrote), and the author's Markdown
+without images, figure labels, panel titles, tables, or page furniture, which
+already show beside the narration or are no one's words. Unadapted books, and
+books whose blocks had to be rebuilt from the narration alone, have none
+(`original_view` false), and so does a book whose `narration.json` no longer
+matches its record. `/api/reader` validates the ranges as increasing within
+the voice's paragraphs and renders the text with raw HTML off, restoring only
 balanced `<sup>`/`<sub>` pairs, since extraction writes superscripts as tags.
 The browser labels a description's first paragraph **Description** and, when
 there is any original text, offers **Original**: it shows each batch's text,
 headed "Original · PDF p. N", muted beneath the narration made from it, and a
 left-out batch as "Not narrated" in its place.
 
-`/api/reader` also returns `descriptions` (`description_state()`): how many
-figure and table descriptions the book's record holds, whether its document's
-descriptions are pinned, and from which audiobook. **Pin descriptions**
-(`POST /api/audiobooks/pin`) copies the record's descriptions into
-`Documents/.descriptions/<sha256>.json`; later audiobooks of the same content
-read them as they stand, whatever the model, prompt, or file name, and only
-those figures and tables the pins name. **Unpin descriptions**
-(`POST /api/audiobooks/unpin`) deletes that file, so the next audiobook of the
-document describes them anew. The button reflects the document, so every
-audiobook of the same content shows its pins.
+`/api/reader` also returns the book's `voices` with their status and
+`has_text`, whether the book's `narration.json` is its current text, which a
+new voice needs. A stale voice's reader and audio are refused with HTTP 409:
+its timings belong to the earlier text.
 
-The reader player requests `/api/audio?name=...&container=mp4` first. Browsers
+The reader player requests `/api/audio?book=...&voice=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
 requested time while decoding audio from elsewhere (measured in Chrome: up to
 ±12 s on a 47-minute book, ±60 s on a 4-hour book, persisting until the next
@@ -675,18 +767,17 @@ playable but have no synchronized text.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
-| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook takes its version record, the reader files that record names, and older `<name>.<audio-hash>` reader files. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
-| `POST /api/audiobooks/pin`, `POST /api/audiobooks/unpin` | Pin the figure and table descriptions of the audiobook named by JSON `name` to the content of its document, or delete that document's pins, and return the new `descriptions` state. A book without descriptions or without a recorded document version returns HTTP 400, a missing one HTTP 404. |
-| `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
 | `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later is not a change. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, read from the first line of a block since a figure printed above the title rides in the heading's block, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, narrator, and `modified`, the MP3's modification time in Unix seconds, which changes only when the book is made again; entries are cached until the MP3 or its version record changes. |
-| `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
-| `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook, its Original view's batches, and its `descriptions` state. |
+| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), and `has_text`. |
+| `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
+| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, and its Original view's batches. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, with the default a job uses when none is chosen, Claude Code's status line, and per-source errors. |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove` | Save an Anthropic API key once Anthropic accepts it, or delete it; both return the refreshed catalog. |
@@ -709,10 +800,10 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
 - Prepared narration reads staged content, not a mutable shared copy.
-- Final audiobook publication is atomic; a failed/stopped unified run does not publish a partial MP3.
-- An `in_progress` stage is removed only after final output and version metadata are committed.
-- Reader sidecars are published before their version record; the record names
-  content-addressed files matching the current MP3.
+- Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.
+- An `in_progress` stage is removed only after its book or voice is published.
+- A voice's `timings.json` lives with its `audio.mp3`, and a voice whose `narration_sha256` differs from the book's is stale: its audio and reader are refused, never shown against the new text.
+- A new voice reads `narration.json` exactly as stored; no model writes a book's text again except an explicit **Recreate**.
 - Reader word cues must reference a valid rendered block and remain within the
   committed audio duration; invalid sidecars are rejected rather than trusted
   by the browser.
@@ -762,27 +853,35 @@ python -m unittest -v test_audiobook_tts
 
 The regression suite currently has 109 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
-shared naming and versions, document/voice-only job identity, gang scheduling
+book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
 deduplication, GPU enumeration when CUDA cannot open one device, public worker
-and model configuration without hosts or paths, exact overwrite confirmation,
-GPU-preferred resolution, extensionless document
+and model configuration without hosts or paths, GPU-preferred resolution, extensionless document
 URL inference, remote chunk reuse, resumable paragraph adaptation with bounded
 concurrency and context and ordered commits, real PDF
-extraction flowing directly into MP3 and an exact sentence reader through a
+extraction flowing directly into a book folder and an exact sentence reader through a
 fake speech service, Listen-page, Create-step, and open-book persistence, the
 fixed passage for every new voice, voice catalog preview comparability and
 traversal refusal, preview refusal for voice folders linked from outside the
-library, preview rendering that never publishes a failed clip, library
-titles/durations/sources newest first and refreshed after a book is narrated
-again, legacy sentence-cue conversion, persisted word cues,
+library, preview rendering that never publishes a failed clip, books listed
+newest voice first with their voices, a book's record of what made its text
+(Hilde version, commit, prompt, schema, model, prose kept, stage times), the
+same document under another name found as the book already made with no model
+asked and no new folder, a new voice read from the book's own text through
+`/api/run` with no model call and `narration.json` byte for byte unchanged,
+each voice keeping its own audio and timings, a remake that changes the text
+leaving the other voices stale and refused, no half-made book ever visible
+when a commit fails and a crash between a swap's renames undone at the next
+start, books in the earlier layout moved into book folders with their audio,
+reader, Original view, and text, idempotently, keeping a backup until they
+play, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
-audio with keep-alive byte ranges, safe retained-MP3 downloads,
+audio with keep-alive byte ranges, safe book downloads,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried
 one chunk at a time after running out of memory, the batch-size default for
 older browser state, and deletion of voices (a link, never its target),
-documents, and audiobooks with their reader files, refusing traversal, missing
+documents, and whole books with every voice, refusing traversal, missing
 assets, and other origins, stock voices that seed only a new library, stock
 voices that each preview the fixed passage with a prompt, and voice drafts:
 Listen leaves the saved voice alone, Save keeps exactly the clip heard and
@@ -799,9 +898,9 @@ into the acknowledgements and first entry still starting the bibliography while
 bold titles in running prose do not, and the first heading after a
 bibliography ending it, the first page's title read past an arXiv margin stamp
 and small capitals and spelled by a matching metadata title only, and restored
-as page one's heading unless the page already holds it, library titles read
+as page one's heading unless the page already holds it, titles read
 from a heading block that carries a figure and falling back to the document
-name when the first heading is an abstract,
+name when the first heading is an abstract, a book's folder slug,
 sentences split by page breaks
 rejoined in page layouts taken from real papers (across a figure's panel
 titles and caption, a footnote and a hyphenated word, a caption broken above
@@ -825,16 +924,13 @@ caption, its cells kept as its text, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
 with panel titles marked as titles rather than sent as section headings, and
 numbered section headings sent as their titles only in a document that numbers
-them, each figure or table a batch of its own whose pinned description is read
-as it stands without asking the model, pins that stay with their document's
-content until unpinned, a golden check that names each broken fact on text with
-typographic hyphens and checks only the document it names, shipped golden files
-whose patterns compile, a
+them, each figure or table a batch of its own, typed passages whose sources
+keep a caption inside a figure's passage typed as a caption, a
 figure or equation description that does not say what it describes named in
 the log while prose and left-out figures are not, prose that lost its wording
 named in the log and summarized while citation marks and short passages do not
 count, each book's record keeping its adapting model, prose summary, stage
-times, and audio length even when Continue reuses the adaptation, each
+times, and voice lengths even when Continue reuses the adaptation, each
 narrated paragraph's PDF page across a rejoined page break, the reader's
 original text, page, and description flag for each batch (a left-out one, a
 figure without its image, labels, or title, and a batch of two paragraphs)

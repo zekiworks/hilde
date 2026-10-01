@@ -1,0 +1,133 @@
+# Narrator voices for research papers, technical text and PDF reading.
+# Source: Can's "Hilde_Ses_Tarifleri_Can_1.docx". Pace values are recipe targets, not measurements.
+# status: locked (never change) · approved (keep the saved voice; recipe is documentation) · pending (needs a listening check)
+shared_direction: >
+  The Nordic names are just names. Reading is natural, adult and explanatory; never fairy-tale,
+  novel performance or a theatrical character voice.
+
+todo:
+  - Save Bragi's and Mimir's approved voices themselves (reference audio, plus seed or speaker embedding if the engine has one). Most voice-design models give a different voice on each run, so the recipe alone cannot bring them back.
+  - Listening check for each pending voice on one dense technical passage (e.g. Attention's scaled dot-product section) against its "Avoid" list.
+  - Measure real pace (words per minute) from Hilde's word-highlight timings; compare with target_wpm.
+  - Any voice change regenerates audio and word-highlight timings together.
+  - If an avoided trait appears anyway, try a shorter "Avoid" list; some text-to-voice models drift toward words they are told to avoid.
+
+voices:
+  - name: Eir
+    status: locked
+    goal: Unchanged. Voice, pace, timbre, reference recording and settings stay as they are.
+    recipe: null
+
+  - name: Bragi
+    gender: male
+    status: approved
+    goal: Ordinary conversational naturalness, fluent pace; not novel performance.
+    target_wpm: [145, 150]
+    measured_wpm: null
+    reference_audio: null   # TODO: path to the approved sample
+    seed: null
+    recipe: >
+      A natural adult male voice in an ordinary middle speaking register, with a clean tone and relaxed,
+      unforced articulation. Read research papers and technical articles as a colleague calmly presenting
+      information in a normal conversation. Use matter-of-fact phrasing, small pitch movements, even volume,
+      and light sentence endings. Maintain a steady, connected pace of approximately 145–150 words per minute
+      in ordinary prose, with brief pauses only where they help comprehension. Pronounce technical terms
+      clearly without making them sound momentous. Keep neutral statements emotionally neutral and use
+      emphasis only to clarify meaning. Avoid literary performance, dramatic cadence, suspenseful pauses,
+      elongated vowels, breathy intimacy, artificial bass, and emotional coloring. Sound attentive and human,
+      not theatrical or robotic.
+
+  - name: Mimir
+    gender: male
+    status: approved
+    goal: Natural middle speaking pitch; no exaggerated bass or rumble.
+    measured_wpm: null
+    reference_audio: null   # TODO
+    seed: null
+    recipe: >
+      A mature male voice in a natural middle speaking register, with balanced resonance, a mostly smooth
+      texture, and thoughtful, precise phrasing. Read academic papers, philosophy, research reviews, and
+      analytical nonfiction with the clarity of a knowledgeable colleague discussing the material. Sound
+      experienced through articulation and well-shaped sentences rather than unusually low pitch. Keep a
+      moderate, fluid pace, relaxed breath control, and brief pauses around conceptual transitions.
+      Distinguish claims, evidence, and limitations with subtle emphasis while maintaining an even volume.
+      Preserve natural tonal variation without performing authority. Avoid exaggerated bass, chest-heavy
+      rumble, forced gravel, vocal fry, ceremonial slowness, and a portentous or cinematic delivery.
+
+  - name: Sigrun
+    gender: female
+    status: pending
+    goal: Livelier and clearer; no sighs, drawn-out breaths or faint tone.
+    target_wpm: [145, 150]
+    measured_wpm: null
+    recipe: >
+      An adult female voice with a clear, natural middle register, a lightly bright tone, and an alert,
+      matter-of-fact delivery. Read research papers and technical articles like an engaged colleague
+      explaining the material in ordinary conversation. Use clean vocal onsets, distinct articulation, and
+      quick, unobtrusive breaths between phrases. Maintain connected pacing at approximately 145–150 words
+      per minute in ordinary prose, with short pauses that clarify meaning. Keep sentence endings clearly
+      voiced rather than fading away. Use small, natural pitch changes and consistent conversational volume.
+      The voice should sound attentive and comfortably energetic, without rushing or performing. Avoid sighs,
+      drawn-out exhalations, breathy softness, sleepy phrasing, mournful intonation, stretched vowels, and
+      dramatic emphasis.
+
+  - name: Freyja
+    gender: female
+    status: pending
+    goal: Relaxed, steady volume; no shouting or sharp onsets.
+    measured_wpm: null
+    recipe: >
+      An adult female voice with a warm, clear middle register, smooth resonance, and an approachable
+      conversational manner. Read academic papers, articles, and explanatory nonfiction as though speaking
+      comfortably to one nearby adult listener. Maintain an even, moderate volume, gentle vocal onset, relaxed
+      breathing, and clear but soft-edged articulation. Interest should come from meaningful phrasing and
+      subtle pitch variation, not projection or loudness. Keep sentences flowing at a comfortable pace, with
+      brief pauses that clarify the reasoning. Important findings should sound clear and engaged without
+      becoming announcements. Avoid shouting, sharp high notes, forceful sentence openings, theatrical emotion,
+      breathy whispering, and sudden changes in intensity.
+
+  - name: Idun
+    gender: female
+    status: pending
+    goal: Light, clear timbre; an adult, serious, natural reading.
+    measured_wpm: null
+    recipe: >
+      An adult female voice with a light, clear upper-middle register and a natural, intelligent
+      conversational delivery. The tone is fresh and attentive while remaining fully adult, composed, and
+      suitable for serious material. Read scientific papers, educational articles, and technical explanations
+      with crisp articulation, smooth breath control, and steady forward movement. Give unfamiliar
+      terminology enough space to be understood without slowing every sentence. Use restrained melodic
+      variation to separate examples, evidence, and conclusions. Keep the volume consistent and the phrasing
+      connected during long passages. Avoid a girlish sound, squeaky brightness, sing-song rhythms,
+      exaggerated enthusiasm, rising intonation on every statement, and children's-story performance.
+
+  - name: Vidar
+    gender: male
+    status: pending
+    goal: Direct and clear on technical text; not harsh or mechanical.
+    measured_wpm: null
+    recipe: >
+      An adult male voice with a clean middle-to-low register, restrained warmth, and a direct, matter-of-fact
+      delivery. Read technical reports, methods sections, engineering papers, and quantitative analysis with
+      precise articulation and a steady conversational pulse. Make numbers, units, acronyms, and multi-part
+      explanations easy to follow through careful enunciation and logical phrase grouping. Use controlled
+      breathing and short pauses between ideas without making the reading clipped or mechanical. Keep pitch
+      and volume comfortably stable, with modest variation to signal contrast or qualification. The overall
+      presence is focused and approachable rather than stern. Avoid a military tone, forceful emphasis,
+      dramatic tension, booming resonance, and monotonous recitation.
+
+  - name: Balder
+    gender: male
+    status: pending
+    goal: Clear, balanced, conversational; no presenter or ad tone.
+    measured_wpm: null
+    recipe: >
+      An adult male voice with a clear middle-to-upper speaking register, smooth texture, and an open, lightly
+      warm tone. Read research summaries, interdisciplinary papers, explanatory articles, and general
+      nonfiction with relaxed clarity, as if walking a colleague through unfamiliar material. Maintain a
+      natural conversational pace, connected phrasing, easy breath control, and distinct articulation without
+      over-pronouncing words. Use gentle variations in pitch to reveal the structure of an explanation while
+      keeping volume even. Dense passages should remain attentive and composed rather than hurried or
+      overexcited. Preserve an adult, credible presence throughout long listening sessions. Avoid advertising
+      enthusiasm, presenter-style projection, sing-song delivery, theatrical dialogue, and artificially deep
+      resonance.

@@ -49,7 +49,7 @@ While adaptation is selected, its settings appear under **Advanced** in
   paragraphs each batch holds. A figure or table is never split: its image,
   the labels read from inside it, and its caption always go to the model
   together, so it is described once. A figure or table with a caption is
-  always a batch of its own, so its description can be pinned (below).
+  always a passage of its own in the book's text.
 
 Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
@@ -115,29 +115,3 @@ section, the model leaves them out one by one. The log shows each as `Paragraph
 149/174 has nothing to read aloud: …` with the model's reason, and nothing is
 narrated for it. A figure the model leaves out still shows in the reader, after
 the text before it.
-
-## Pinned descriptions
-
-A model describes figures and tables anew on every run, and a different model,
-or the same one on another day, may describe them worse. Once a book's
-descriptions are right, open it on **Listen** and press **Pin descriptions**.
-Every later audiobook of the same document reads those descriptions as they
-stand, whichever model adapts the rest, and the model is not asked about those
-figures and tables again; the job log names the ones it read. Pins belong to
-the document's content, not its file name, so a copy saved as "Attention Is
-All You Need New.pdf" uses them too. Deleting the audiobook keeps them. To have
-the next audiobook describe them anew, open any audiobook of that document and
-press **Unpin descriptions**. Books made before Hilde recorded descriptions
-have nothing to pin.
-
-## Golden files
-
-A golden file in `golden/` lists facts a good narration of one document keeps,
-each as a pattern, and names the document by the SHA-256 of its content. After
-every adaptation of that document, the job log reports the facts it kept or
-broke, such as `Golden check (attention-is-all-you-need.json): 1 of 22 facts
-broken: Table 3: the base model's perplexity is 4.92.`, and the audiobook's
-record keeps the result. A fact marked `"absent": true` is broken when its
-pattern appears, as "the scaling factor of the square root" or "divide each by
-one over the square root" does. Hilde ships one for *Attention Is All You
-Need* (arXiv 1706.03762v7).

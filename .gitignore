@@ -5,3 +5,5 @@ __pycache__/
 ._*
 # The library: voices, documents, audiobooks, and unfinished jobs.
 /User/
+# QA outputs hold adapted paper text; qa/outputs/README.md explains them.
+/qa/outputs/*.txt

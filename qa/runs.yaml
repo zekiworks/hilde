@@ -1,0 +1,74 @@
+# Every reviewed Hilde run. Add a run before adding its findings.
+# output_file is relative to qa/. pdf_sha256 names the exact PDF; a book's folder ends in its first 12 hex digits.
+runs:
+  - id: R1
+    date: 2026-09-30
+    papers: [attention]
+    hilde_commit: null      # before 23dd760; exact commit not recorded
+    model: null
+    voice: Eir
+    output_file: outputs/R1-attention.txt
+    pdf_sha256: null
+    reviewers: [claude, chatgpt]
+
+  - id: R1b
+    date: 2026-09-30
+    papers: [attention, chollet]
+    hilde_commit: 23dd760
+    model: gpt-5.6-sol
+    output_file: null       # re-run in a temporary library; outputs not kept
+    reviewers: [can]
+    notes: >
+      Can's re-run after the first fix pass: 105 tests pass; all 9 planted bugs caught.
+      Chollet: all 10 footnotes placed at their citing sentence (9 read right after it);
+      "divided by" 11 times, "scaled by" never.
+
+  - id: R2
+    date: 2026-10-01
+    papers: [attention]
+    source_file: Attention Is All You Need New.pdf
+    hilde_commit: null
+    model: lm-studio/gemma-4-31B-it   # from the book's record in the library; answers Q01
+    pdf_sha256: bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697
+    voice: Eir
+    output_file: outputs/R2-attention.txt
+    reviewers: [claude, astra]
+
+  - id: R3
+    date: 2026-10-01
+    papers: [procedural-graphs]
+    hilde_commit: null
+    model: lm-studio/gemma-4-31B-it   # from the book's record in the library
+    pdf_sha256: 90ffc33b32c009846a183edab09b521cde4d5342ccbfafa71cd00bd2186ddb9a
+    output_file: outputs/R3-procedural-graphs.txt
+    reviewers: [claude, astra]
+    notes: Appendices D to F (Tables 9 to 11) and the Fig. 4 numbers not verified.
+
+  - id: R4
+    date: 2026-10-01
+    papers: [bert]
+    hilde_commit: null
+    model: lm-studio/gemma-4-31B-it   # from the book's record in the library
+    pdf_sha256: 5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e
+    output_file: outputs/R4-bert.txt
+    reviewers: [claude, astra]
+    notes: Key items checked against the PDF; the rest from the paper as known.
+
+  - id: R5
+    date: 2026-10-01
+    papers: [rrsi]
+    hilde_commit: null
+    model: lm-studio/gemma-4-31B-it   # from the book's record in the library
+    pdf_sha256: 2dd8e5b5c62bbb5a125a75537ded2f0daae9a3e43d5d414d65ee9b9fb9e18574
+    output_file: outputs/R5-rrsi.txt
+    reviewers: [claude, astra]
+
+  - id: R6
+    date: 2026-10-01
+    papers: [clm]
+    hilde_commit: null
+    model: lm-studio/gemma-4-31B-it   # from the book's record in the library
+    pdf_sha256: ac5c926814434d8ad2f499183cd2a81e53b4c14f327587f99980ade9157db01b
+    output_file: outputs/R6-clm.txt
+    reviewers: [claude]
+    notes: Astra's review pending.

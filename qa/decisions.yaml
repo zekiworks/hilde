@@ -1,0 +1,75 @@
+# Settled choices. Do not reopen one in a finding; add a new decision with `supersedes`.
+decisions:
+  - id: D01
+    date: 2026-09-30
+    by: [umit, can]
+    decision: Tables are shown as printed images with their captions. No cell-by-cell rebuild; the merged-cell and empty-cell rules are dropped.
+    why: Rebuilding merged-cell tables from a PDF is unreliable; a printed table cannot be wrong.
+
+  - id: D02
+    date: 2026-09-30
+    by: [umit, can]
+    decision: Roadmap sentences ("In the following sections, we will…") are dropped.
+    why: Sections announce themselves as they start; Chollet's paper was full of these.
+
+  - id: D03
+    date: 2026-09-30
+    by: [umit, can]
+    decision: Number style ("512" vs "five hundred twelve") and capitalization inside descriptions are not normalized.
+    why: The narration engine reads both forms the same; listeners cannot hear the difference.
+
+  - id: D04
+    date: 2026-09-30
+    by: [umit, can]
+    decision: Pair author names with affiliations only when the counts match; otherwise keep them together.
+    why: A wrong affiliation is worse than a lumped one.
+
+  - id: D05
+    date: 2026-09-30
+    by: [umit, can]
+    decision: Figure descriptions describe only what is visible and never guess values. Image-derived claims are not flagged wholesale.
+    why: Describing the image is the point of a description; flagging every such claim flags nearly all of them.
+
+  - id: D06
+    date: 2026-09-30
+    by: [umit, can]
+    decision: The contribution note follows the author list; no separate footnote category.
+
+  - id: D07
+    date: 2026-09-30
+    by: [umit, can, claude, chatgpt]
+    decision: When the source is inconsistent, Hilde keeps both values as printed (e.g. Attention 41.0 vs 41.8 BLEU).
+
+  - id: D08
+    date: 2026-09-30
+    by: [can]
+    decision: Equation tripwire (a second model rebuilds each equation from its description, then diff) is deferred.
+    why: It doubles the model requests per equation and needs its own way of reporting mismatches.
+
+  - id: D09
+    date: 2026-09-30
+    by: [can]
+    decision: Expand only acronyms the author spells out, once. Each request lists the acronyms already defined.
+
+  - id: D10
+    date: 2026-09-30
+    by: [can]
+    decision: A table image is labeled with its caption, not its spoken description.
+    why: The description already sits next to the image as text; using it as the label reads it twice.
+
+  - id: D11
+    date: 2026-10-01
+    by: [umit]
+    decision: Eir's voice is locked. Bragi and Mimir are approved. See voices.yaml.
+
+  - id: D12
+    date: 2026-10-01
+    by: [can]
+    decision: >
+      A book's text is written once, from its PDF, and kept in the book's narration.json.
+      A new voice reads that text as it is, with no model. Only an explicit "Recreate with
+      the latest Hilde" writes it again. Pinning descriptions is not a user feature; golden
+      checks run only in qa/qa.py.
+    why: >
+      Same PDF, same audiobook, every time, without approve or pin controls that make the
+      app feel like an experiment. Drafted by the fixer from the reviewer's handoff.

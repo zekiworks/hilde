@@ -1,0 +1,45 @@
+# Source papers used in QA. `id` is the slug used in runs, findings and golden files.
+papers:
+  - id: attention
+    title: Attention Is All You Need
+    url: https://arxiv.org/pdf/1706.03762
+    version: v7
+    quirks:
+      - English-to-French BLEU is 41.8 in the abstract and Table 2 but 41.0 in Section 6.1. Keep both (D07).
+      - Footnotes 4 and 5 are scientific; the contribution and affiliation notes (∗ † ‡) are author notes.
+
+  - id: chollet
+    title: null   # which Chollet paper was used is not recorded; see Q04
+    url: null
+    quirks:
+      - Many footnotes and dense formulas; used as the second test paper for 23dd760.
+
+  - id: procedural-graphs
+    title: null   # see Q04
+    url: https://arxiv.org/pdf/2609.09153v1
+    quirks:
+      - Figure 5 round labels disagree with the text. Not Hilde's bug (keep).
+
+  - id: bert
+    title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    url: https://arxiv.org/pdf/1810.04805
+    quirks:
+      - Section on model size says "all four datasets" for Table 6, which has three tasks. Keep.
+      - Two-column layout; footnotes in columns.
+
+  - id: rrsi
+    title: "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses"
+    url: https://regularized-rsi.com/assets/RRSI.pdf
+    quirks:
+      - Google template: captions are written "Table 1 |" and "Figure 3 |".
+      - Abstract says 30% fewer policy tokens; 2.42 vs 3.80 million is about 36%. Keep.
+      - Abstract has a stray comma in "the pruner, removes". Keep.
+      - Section 4.3 says "the L1-style budget", contradicting its own L0/L1/L2 scheme. Keep.
+      - Appendix A.5 says each judge issues 204 comparisons for 185 tasks. Keep.
+
+  - id: clm
+    title: Context Language Models
+    url: https://arxiv.org/pdf/2609.37725
+    quirks:
+      - Figure 5 and Table 1 share a page.
+      - The acknowledgments name contains the ligature character U+0133 in the PDF text layer.

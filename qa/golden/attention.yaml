@@ -1,0 +1,108 @@
+# Golden assertions for "Attention Is All You Need" (arXiv 1706.03762 v7).
+# Patterns are Python regexes. Kinds:
+#   must_contain      pattern, or list of patterns that must all match
+#   must_not_contain  pattern, or list of patterns where none may match
+#   order             list of patterns whose first matches must appear in this order
+# `manual` lists checks a human or reviewer agent does by ear or by eye.
+paper: attention
+asserts:
+  - id: ATT-01
+    bug: B10
+    about: Footnote 4 is read right after "extremely small gradients", before the Multi-Head Attention heading
+    order: ['extremely small gradients', 'why the dot products get large', '(?m)^Multi-Head Attention\s*$']
+
+  - id: ATT-02
+    bug: B10
+    about: Footnote 5 (TFLOPS values) is read after "capacity of each GPU", before the Model Variations heading
+    order: ['capacity of each GPU', '9\.5 (teraflops|trillion|TFLOPS)', '(?m)^Model Variations\s*$']
+
+  - id: ATT-03
+    bug: B18
+    about: Gomez's affiliation note names him
+    must_contain: '(?i)Gomez[^.\n]{0,40}(performed|did) (this|the) work while at Google Brain'
+
+  - id: ATT-04
+    bug: B18
+    about: Polosukhin's affiliation note names him
+    must_contain: '(?i)Polosukhin[^.\n]{0,40}(performed|did) (this|the) work while at Google Research'
+
+  - id: ATT-05
+    bug: B18
+    about: Author row 1 is paired with affiliations
+    must_contain: ['Shazeer,? Google Brain', 'Uszkoreit,? Google Research']
+
+  - id: ATT-06
+    bug: B18
+    about: Author row 2 is paired with affiliations
+    must_contain: ['Llion Jones,? Google Research', 'Gomez,? University of Toronto', 'Kaiser,? Google Brain']
+
+  - id: ATT-07
+    bug: B13
+    about: Contribution note keeps its first sentences
+    must_contain: '(?i)equal contribution\. listing order is random'
+
+  - id: ATT-08
+    bug: null
+    about: Source quirk kept (D07). Both BLEU values stay as printed
+    must_contain: ['41\.0', '41\.8']
+
+  - id: ATT-09
+    bug: B24
+    about: No softened scaling; the factor is one over the square root
+    must_not_contain: '(?i)scal(ed|ing factor of) (by )?the square root'
+
+  - id: ATT-10
+    bug: B24
+    about: Key and value sizes are not described as "one dimension"
+    must_not_contain: '(?i)\bof one dimension\b'
+
+  - id: ATT-11
+    bug: B14
+    about: Approved Table 3 description keeps parameters, perplexities and the per-wordpiece caveat
+    must_contain: ['(?i)\b65 ?(million|M)\b|sixty-five million', '(?i)\b213 ?(million|M)\b|two hundred (and )?thirteen million', '4\.92', '4\.33', '(?i)per[- ]?word[- ]?piece']
+
+  - id: ATT-12
+    bug: B26
+    about: '"Attention Visualizations" is read as a heading'
+    must_contain: '(?m)^Attention Visualizations\s*$'
+
+  - id: ATT-13
+    bug: B13
+    about: The code link says where the code is
+    must_contain: '(?i)available (in|on|at) [^.\n]{0,40}(tensor2tensor|github)'
+
+  - id: ATT-14
+    bug: B26
+    about: Footer spacing
+    must_not_contain: 'byZeki'
+
+  - id: ATT-15
+    bug: B22
+    about: Background roadmap sentence is dropped (D02)
+    must_not_contain: '(?i)we will describe the Transformer'
+
+  - id: ATT-16
+    bug: B13
+    about: Convolution paragraph keeps the layer counts
+    must_contain: '(?i)\bn (divided by|over) k\b'
+
+  - id: ATT-18
+    bug: B21
+    about: The paper's own voice ("we")
+    must_not_contain: '(?i)\bthe authors\b'
+
+  - id: ATT-20
+    bug: B20
+    about: d_k and d_v are spoken as two letters
+    must_not_contain: '\b(dk|dv)\b'
+
+  - id: ATT-21
+    bug: B14
+    about: Approved Figure 4 description keeps both words "its" attends to (checked against the image)
+    must_contain: '(?i)\bits\b[^\n]{0,120}\blaw\b[^\n]{0,60}\bapplication\b'
+
+manual:
+  - bug: B15
+    check: Equation 1, Equation 2 and the positional encoding are spoken as ordered steps, innermost first.
+  - bug: B01
+    check: Word highlight stays in step with speech near the start, near the end, and after seeking.

@@ -1,0 +1,25 @@
+# Open questions for humans. Answer in place and set status: answered.
+questions:
+  - id: Q01
+    asked: 2026-10-01
+    by: claude
+    question: Which model produced R2? If it is a local model, affiliation pairing (B18) should move into code.
+    status: open
+
+  - id: Q02
+    asked: 2026-09-30
+    by: claude
+    question: Is the word "Description" read aloud before each figure and equation?
+    status: open
+
+  - id: Q03
+    asked: 2026-10-01
+    by: umit
+    question: Does "Start another audiobook" queue the new book or run it in parallel? The button label should say which.
+    status: open
+
+  - id: Q04
+    asked: 2026-10-01
+    by: claude
+    question: Record the titles of the Chollet paper and the Procedural Graphs paper in papers.yaml.
+    status: open

@@ -1,0 +1,78 @@
+# Golden assertions for BERT (arXiv 1810.04805).
+# Written from the R4 findings without the output file at hand: tune patterns on the first run.
+paper: bert
+asserts:
+  - id: BERT-01
+    bug: B03
+    about: Table 3 (SQuAD 2.0) has its own caption
+    must_contain: '(?i)SQuAD 2\.0 results'
+
+  - id: BERT-02
+    bug: B02
+    about: SQuAD 2.0 scoring uses dot products
+    must_not_contain: '(?i)sum of the start and end vectors'
+
+  - id: BERT-03
+    bug: B11
+    about: Removing NSP hurts significantly
+    must_not_contain: '(?i)only a slight decrease'
+
+  - id: BERT-04
+    bug: B11
+    about: MASK-only and RND-only are not "minor variations"
+    must_not_contain: '(?i)only minor variations'
+
+  - id: BERT-05
+    bug: B11
+    about: No Dev-vs-Test comparison for SWAG
+    must_not_contain: '(?i)both BERT models outperform OpenAI GPT'
+
+  - id: BERT-06
+    bug: B07
+    about: NSP examples are verbatim
+    must_not_contain: '(?i)penguin mask are flight less birds'
+
+  - id: BERT-07
+    bug: B06
+    about: Training-length sentence is whole
+    must_contain: '(?i)approximately 40 epochs'
+
+  - id: BERT-08
+    bug: B06
+    about: WNLI sentence is whole
+    must_not_contain: '(?m)predicted the ma-\s*$'
+
+  - id: BERT-09
+    bug: B06
+    about: Hyphenation is rejoined
+    must_not_contain: '(?i)mini-\s+mal'
+
+  - id: BERT-10
+    bug: B09
+    about: Task 1 (MLM) comes before Task 2 (NSP)
+    order: ['(?i)Task (#\s?1|One)\b', '(?i)Task (#\s?2|Two)\b']
+
+  - id: BERT-11
+    bug: B13
+    about: Abstract keeps its improvement figures
+    must_contain: ['7\.7', '4\.6', '5\.1']
+
+  - id: BERT-12
+    bug: B19
+    about: Two citations are not merged
+    must_not_contain: '(?i)Deng and Yosinski'
+
+  - id: BERT-13
+    bug: null
+    about: Source quirk kept as printed
+    must_contain: '(?i)all four datasets'
+
+  - id: BERT-14
+    bug: B20
+    about: One spoken form for model names and numbers
+    must_not_contain: ['\bBERTBASE\b', '\bBERTLARGE\b', '\b5e-5\b']
+
+  - id: BERT-15
+    bug: B09
+    about: Table 6 is read under Effect of Model Size, before the Conclusion
+    order: ['(?i)Effect of Model Size', 'Table 6', '(?m)^Conclusion']

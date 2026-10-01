@@ -45,34 +45,60 @@ The server creates and owns this fixed layout:
 User/
 ├── Voices/
 ├── Audiobooks/
-│   ├── .readers/
-│   └── .versions/
+│   └── attention-is-all-you-need--bdfaa68d8984/
+│       ├── book.json
+│       ├── source.pdf
+│       ├── narration.json
+│       ├── reader.md
+│       └── voices/
+│           └── Eir/
+│               ├── audio.mp3
+│               └── timings.json
 ├── Documents/
-│   └── .descriptions/
 └── in_progress/
 ```
 
 - **Voices** contains one directory per narrator: `reference.wav`, the exact
   UTF-8 `transcript.txt` used to create it, its `description.txt`, and, for
   voices made before fixed previews, a rendered `preview.wav`.
-- **Documents** contains uploaded files, URL downloads, and prepared narration
-  text. URL downloads use an optional filename or infer one from the response.
-  Hidden `.descriptions` holds pinned figure and table descriptions, one file
-  per document content, named by its SHA-256.
-- **Audiobooks** contains completed MP3 files. Hidden `.readers` and `.versions`
-  directories hold content-addressed Markdown/timing sidecars and their commit
-  records. A book's record in `.versions` also keeps the model that adapted it,
-  how many prose paragraphs kept at least 95% of the author's words, each
-  figure and table description and which were pinned, the golden check's
-  result when its document has a golden file, how long each stage of the run
-  that finished it took, and the length of its audio.
+- **Documents** contains uploaded files and URL downloads. URL downloads use an
+  optional filename or infer one from the response.
+- **Audiobooks** holds one folder per book, named for its title and the first
+  12 hexadecimal digits of the SHA-256 of its document's bytes, so the same
+  document under another file name is the same book. A book is made from its
+  document once:
+  - `book.json` records the document's full SHA-256 and the file names it came
+    under, the Hilde version and git commit, the prompt, extraction schema, and
+    model that wrote its text, how much of the author's prose the text kept,
+    and each voice with when it was made, its length, and whether it reads the
+    book's current text (`ready`) or an earlier one (`stale`);
+  - `source.pdf` (or `.md`, `.txt`) is a copy of the document;
+  - `narration.json` is the text read aloud, as passages typed body, heading,
+    figure, table, or equation, each with its PDF page, the author's original
+    text, and the author's paragraphs it came from, typed body, heading,
+    figure, table, equation, footnote, or caption;
+  - `reader.md` is the follow-along view with its pictures embedded;
+  - `voices/<voice>/` holds that voice's `audio.mp3` and its own word and
+    sentence `timings.json`.
+
+  Each book or voice is written into a hidden folder and renamed into place
+  when it is complete, so a crash never leaves a half-made one; the next start
+  removes what was left unfinished.
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   and narration chunks for unfinished jobs. It is removed for a job only after
-  its final audiobook is committed.
+  its book is published.
+
+On its first start, this version moves audiobooks kept in the earlier layout
+(`Audiobooks/<name>.mp3` with hidden `.readers` and `.versions` folders) into
+book folders without calling any model, keeping each MP3 as it is. A book gets
+its text back from the `Documents/<name>-narration.txt` file its job stored,
+when that matches its reader; without it, the book plays as before but needs
+**Recreate** before it can take another voice. The earlier files wait in
+`Audiobooks/.backup/` until the book has played once.
 
 Existing files are not migrated automatically when the storage root changes.
 Move them into the appropriate directory yourself. The web app's **Delete**
-buttons remove voices, documents, and audiobooks with their reader files.
+buttons remove voices, documents, and audiobooks with every voice.
 
 A new library starts with the stock voices from the repository's `voices/`
 folder. They are copied only when the library is created, so a stock voice you

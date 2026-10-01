@@ -125,6 +125,38 @@ def write_figure_pdf(path):
         pdf.save(path)
 
 
+ONE_BLOCK_TIMINGS = {
+    "schema": 3, "sample_rate": 24000, "duration_samples": 2400, "block_count": 1,
+    "paragraphs": [0], "cues": [{"block": 0, "start_sample": 0, "end_sample": 2400}],
+    "word_timing": "unavailable", "word_cues": [],
+}
+
+
+def store_book(storage, title="A Paper", source_sha256="a" * 64, voice="Narrator", *,
+               markdown="<!-- audiobook-tts:block=0 -->\n\nBody text.",
+               timings=ONE_BLOCK_TIMINGS, narration=None, audio=None, voice_fields=None):
+    """Publish a book with one voice the way a finished job does."""
+    staged = storage.in_progress / f"staged-{voice}.mp3"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    if audio is None:
+        sf.write(staged, np.zeros(2400, dtype=np.float32), 24000,
+                 format="MP3", subtype="MPEG_LAYER_III")
+    else:
+        staged.write_bytes(audio)
+    now = web.utc_timestamp()
+    record = {
+        "schema": web.BOOK_SCHEMA, "source_sha256": source_sha256, "title": title,
+        "source_filenames": [f"{title}.pdf"], "source_file": None,
+        "created_at": now, "updated_at": now, "chunk_max_chars": 500,
+    }
+    entry = {"name": voice, "created_at": now, "duration": 0.1, **(voice_fields or {})}
+    return web.commit_book(
+        storage, record, narration or {"schema": 1, "original_view": False, "passages": []},
+        markdown, None, entry, staged, dict(timings),
+    )
+
+
+
 class PaperWorkflowTests(unittest.TestCase):
     def test_audiobook_is_the_default_tab(self):
         self.assertEqual(normalize({})["tab"], "audiobook")
@@ -854,49 +886,6 @@ class PaperWorkflowTests(unittest.TestCase):
             line("Google AI Language", 210, 300, 133),
         ]), [])
 
-    def test_the_golden_check_names_each_fact_a_narration_broke(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        version = "b" * 64
-        (root / "paper.json").write_text(json.dumps({
-            "sha256": version,
-            "facts": [
-                {"fact": "65 million parameters", "pattern": "\\b65 ?(?:M\\b|million)"},
-                {"fact": "Per wordpiece", "pattern": "per[- ]?word ?piece"},
-                {
-                    "fact": "The factor is not the square root",
-                    "pattern": "scaling factor of (?:the )?square root",
-                    "absent": True,
-                },
-            ],
-        }), encoding="utf-8")
-        with mock.patch.object(web, "GOLDEN_PATH", root):
-            # Only the document the golden file names is checked.
-            self.assertIsNone(web.golden_check("Anything.", "c" * 64))
-            self.assertEqual(
-                web.golden_check(
-                    "It has 65 million parameters, except for the scaling factor "
-                    "of the square root of the key size.", version,
-                ),
-                {"file": "paper.json", "facts": 3,
-                 "broken": ["Per wordpiece", "The factor is not the square root"]},
-            )
-            # A model's typographic hyphens and line breaks keep a fact.
-            self.assertEqual(web.golden_check(
-                "It has 65M parameters;\nperplexities are per\u2011wordpiece.", version,
-            )["broken"], [])
-
-    def test_shipped_golden_files_name_a_document_and_their_patterns_compile(self):
-        files = sorted(web.GOLDEN_PATH.glob("*.json"))
-        self.assertTrue(files)
-        for path in files:
-            golden = json.loads(path.read_text(encoding="utf-8"))
-            self.assertRegex(golden["sha256"], r"^[0-9a-f]{64}$", path.name)
-            for fact in golden["facts"]:
-                self.assertIsInstance(fact["fact"], str)
-                re.compile(fact["pattern"])
-
     def test_pdf_tables_show_as_printed_while_the_model_gets_their_cells(self):
         import pymupdf
 
@@ -1333,7 +1322,7 @@ class SharedLibraryTests(unittest.TestCase):
         self.storage = web.SharedStorage(self.root / "library")
         self.storage.ensure()
 
-    def test_shared_assets_have_fixed_locations_and_derived_audiobook_name(self):
+    def test_shared_assets_have_fixed_locations(self):
         self.assertEqual(self.storage.voices.name, "Voices")
         self.assertEqual(self.storage.audiobooks.name, "Audiobooks")
         self.assertEqual(self.storage.documents.name, "Documents")
@@ -1348,61 +1337,11 @@ class SharedLibraryTests(unittest.TestCase):
             )
         ))
 
-        state = normalize({
-            "audiobook": {
-                "document": "Research Paper.pdf",
-                "voice": "Calm Voice.v2",
-                "adapt": False,
-            },
-        })
-        values = web.values_of(
-            state, web.unconfigured_tts_models(), self.storage
-        )
-
-        self.assertEqual(
-            Path(values["output"]),
-            self.storage.audiobooks / "Research Paper-Calm Voice.v2.mp3",
-        )
-
-    def test_pinned_descriptions_stay_with_their_document_until_unpinned(self):
-        version = "a" * 64
-
-        def book(name, descriptions):
-            output = self.storage.audiobooks / name
-            output.write_bytes(b"ID3")
-            web.write_json_atomic(web.audiobook_version_path(self.storage, output), {
-                "input_version": version,
-                "document": "Attention.pdf",
-                "adaptation": {"model": "openai-codex/gpt-a", "descriptions": descriptions},
-            })
-            return web.read_json_file(web.audiobook_version_path(self.storage, output))
-
-        approved = {"Table 3": "Table 3 compares variants of the base model."}
-        book("Attention-Eir.mp3", approved)
-        later = book("Attention New-Eir.mp3", {})
-        self.assertEqual(web.description_pins(self.storage, version), {})
-        # A book without descriptions has nothing to approve.
-        with self.assertRaises(ValueError):
-            web.pin_descriptions(self.storage, "Attention New-Eir.mp3", True)
-
-        self.assertEqual(
-            web.pin_descriptions(self.storage, "Attention-Eir.mp3", True),
-            {"count": 1, "pinned": True, "pinned_from": "Attention-Eir.mp3"},
-        )
-        # Pins belong to the document's content, so every audiobook of it
-        # shows them, and deleting the approved audiobook keeps them.
-        self.assertTrue(web.description_state(self.storage, later)["pinned"])
-        web.delete_audiobook(self.storage, "Attention-Eir.mp3")
-        self.assertEqual(web.description_pins(self.storage, version), approved)
-        self.assertEqual(
-            web.pin_descriptions(self.storage, "Attention New-Eir.mp3", False),
-            {"count": 0, "pinned": False, "pinned_from": None},
-        )
-        self.assertEqual(web.description_pins(self.storage, version), {})
-
-    def test_unchanged_document_and_voice_require_overwrite_confirmation(self):
-        document = self.storage.documents / "paper.txt"
+    def test_the_same_document_under_another_name_is_the_book_already_made(self):
+        document = self.storage.documents / "Attention.txt"
         document.write_text("The shared source.", encoding="utf-8")
+        renamed = self.storage.documents / "Attention New.txt"
+        renamed.write_bytes(document.read_bytes())
         voice = self.storage.voices / "Narrator"
         save_voice(
             voice,
@@ -1421,26 +1360,28 @@ class SharedLibraryTests(unittest.TestCase):
                 "allow_downloads": False,
             },
         }
+        book = store_book(
+            self.storage, "Attention", web.file_version(document), "Narrator",
+            narration={"schema": 1, "original_view": False, "passages": [
+                {"id": 1, "type": "body", "page": 1, "text": "The shared source.",
+                 "original_text": "", "unchanged": True, "paragraphs": [0, 0], "sources": []},
+            ]},
+            voice_fields={"voice_version": web.saved_voice_version(voice)},
+        )
         state = normalize({
             "audiobook": {
-                "document": document.name,
+                "document": renamed.name,
                 "voice": voice.name,
-                "adapt": False,
+                "adapt": True,
             },
         })
-        values = web.values_of(state, models, self.storage)
-        input_version, voice_version = web.audiobook_versions(values)
-        output = Path(values["output"])
-        output.write_bytes(b"existing audiobook")
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, output),
-            {
-                "schema": 1,
-                "input_version": input_version,
-                "voice_version": voice_version,
-            },
-        )
 
+        # The name differs, the content is the book: no model, no new folder.
+        facts = web.derived(state, models, self.storage)
+        self.assertEqual(facts["existing_book"], {
+            "id": book, "title": "Attention", "voices": ["Narrator"], "has_text": True,
+        })
+        self.assertIsNone(facts["problem"])
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             server.daemon_threads = True
             server.jobs = web.JobQueue()
@@ -1459,24 +1400,131 @@ class SharedLibraryTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     urllib.request.urlopen(request)
                 payload = json.loads(caught.exception.read())
+                # Confirmed, it is a voice of that book, never a new book.
+                queued = []
+                with mock.patch.object(
+                    server.jobs, "commit",
+                    lambda record, run: queued.append(run) or server.jobs._public(record),
+                ):
+                    confirmed = urllib.request.Request(
+                        request.full_url,
+                        data=json.dumps({"state": state, "confirmed": True}).encode(),
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    with urllib.request.urlopen(confirmed) as response:
+                        job = json.load(response)["job"]
             finally:
                 server.shutdown()
                 thread.join()
 
+        # The book already has this voice, so making it again is confirmed.
         self.assertEqual(caught.exception.code, 409)
         self.assertTrue(payload["confirmation_required"])
-        self.assertIsNone(server.jobs.current_run())
+        self.assertEqual((job["book"], job["mode"]), (book, "voice"))
+        self.assertEqual(queued[0].values["input"], str(self.storage.audiobooks / book / "narration.json"))
+        self.assertEqual([path.name for path in self.storage.audiobooks.iterdir()], [book])
 
-        document.write_text("A new source version.", encoding="utf-8")
-        changed_input_version, unchanged_voice_version = web.audiobook_versions(
-            values
+        renamed.write_text("A new source version.", encoding="utf-8")
+        self.assertIsNone(web.derived(state, models, self.storage)["existing_book"])
+
+    def test_no_half_made_book_is_ever_visible(self):
+        book = store_book(self.storage, voice="Martin")
+        before = (self.storage.audiobooks / book / "book.json").read_bytes()
+        real_write = web.write_json_atomic
+
+        def crash_on_record(path, value):
+            if Path(path).name == "book.json":
+                raise OSError("the machine went down")
+            return real_write(path, value)
+
+        with mock.patch.object(web, "write_json_atomic", crash_on_record), \
+                self.assertRaises(OSError):
+            store_book(self.storage, voice="Sarah")
+        with mock.patch.object(web, "write_json_atomic", crash_on_record), \
+                self.assertRaises(OSError):
+            store_book(self.storage, "Another", "b" * 64, "Sarah")
+        self.assertEqual([path.name for path in self.storage.audiobooks.iterdir()], [book])
+        self.assertEqual((self.storage.audiobooks / book / "book.json").read_bytes(), before)
+
+        # A crash between a swap's two renames leaves the old folder aside, and
+        # a build that never finished; the next start puts the old one back.
+        aside = self.storage.audiobooks / f".replaced-{book}-0a1b2c3d"
+        (self.storage.audiobooks / book).rename(aside)
+        (self.storage.audiobooks / ".build-0123456789ab").mkdir()
+        (self.storage.audiobooks / ".build-0123456789ab" / "book.json").write_text("{}")
+        web.prepare_library(self.storage)
+        self.assertEqual([path.name for path in self.storage.audiobooks.iterdir()], [book])
+        self.assertEqual(web.library_catalog(self.storage)[0]["id"], book)
+
+    def test_books_kept_in_the_earlier_layout_move_into_book_folders(self):
+        audiobooks = self.storage.audiobooks
+        (audiobooks / ".versions").mkdir()
+        (audiobooks / ".readers").mkdir()
+        mp3 = audiobooks / "Attention New-Eir.mp3"
+        sf.write(mp3, np.zeros(4800, dtype=np.float32), 24000,
+                 format="MP3", subtype="MPEG_LAYER_III")
+        audio = mp3.read_bytes()
+        source = "c" * 64
+        markdown = (
+            "<!-- audiobook-tts:block=0 -->\n\nFirst sentence.\n\n"
+            "<!-- audiobook-tts:block=1 -->\n\nSecond sentence."
         )
-        self.assertFalse(web.output_versions_match(
-            self.storage,
-            output,
-            changed_input_version,
-            unchanged_voice_version,
-        ))
+        reader = "Attention New-Eir.mp3.0123456789abcdef"
+        (audiobooks / ".readers" / f"{reader}.md").write_text(markdown)
+        web.write_json_atomic(audiobooks / ".readers" / f"{reader}.json", {
+            "schema": 3, "sample_rate": 24000, "duration_samples": 4800, "block_count": 2,
+            "paragraphs": [0, 0],
+            "cues": [{"block": 0, "start_sample": 0, "end_sample": 2400},
+                     {"block": 1, "start_sample": 2400, "end_sample": 4800}],
+            "word_timing": "unavailable", "word_cues": [],
+            "originals": [{"paragraphs": [0, 0], "page": 1, "description": False,
+                           "unchanged": False, "markdown": "First sentence, then the second."}],
+        })
+        web.write_json_atomic(audiobooks / ".versions" / f"{mp3.name}.json", {
+            "schema": 3, "input_version": source, "voice_version": "v" * 64,
+            "document": "Attention New.pdf", "voice": "Eir",
+            "reader": {"markdown": f"{reader}.md", "sync": f"{reader}.json",
+                       "audio_sha256": "d" * 64},
+            "adaptation": {"model": "openai-codex/gpt-a", "prose": None},
+        })
+        # The prepared text the job stored is the book's text.
+        (self.storage.documents / "Attention New-narration.txt").write_text(
+            "First sentence. Second sentence.", encoding="utf-8"
+        )
+        # A very old MP3 with no record still plays.
+        (audiobooks / "old-tale.mp3").write_bytes(audio)
+
+        web.prepare_library(self.storage)
+        layout = sorted(path.name for path in audiobooks.iterdir())
+        # Starting again changes nothing.
+        web.prepare_library(self.storage)
+        self.assertEqual(sorted(path.name for path in audiobooks.iterdir()), layout)
+
+        book = web.book_for_source(self.storage, source)
+        self.assertEqual(book, "attention-new--cccccccccccc")
+        books = {entry["id"]: entry for entry in web.library_catalog(self.storage)}
+        self.assertEqual(len(books), 2)
+        self.assertNotIn(".versions", layout)
+        self.assertNotIn(".readers", layout)
+        record, voice, played = web.book_audio(self.storage, book)
+        self.assertEqual((voice, played.read_bytes()), ("Eir", audio))
+        self.assertEqual(record["legacy_names"], ["Attention New-Eir.mp3"])
+        self.assertEqual(record["chunk_max_chars"], 500)
+        payload = web.audiobook_reader_payload(self.storage, book)
+        self.assertEqual(len(payload["blocks"]), 2)
+        self.assertIn("First sentence, then the second.", payload["originals"][0]["html"])
+        # It can take a new voice: its text is the one its reader shows.
+        self.assertTrue(payload["has_text"])
+        narration, _ = web.read_narration(audiobooks / book)
+        self.assertEqual(web.narration_text(narration), "First sentence. Second sentence.")
+        [old] = [entry for entry in books.values() if entry["id"] != book]
+        self.assertEqual(old["legacy_names"], ["old-tale.mp3"])
+        self.assertEqual(web.book_audio(self.storage, old["id"])[2].read_bytes(), audio)
+
+        # The earlier files stay aside until the book has played once.
+        self.assertTrue((audiobooks / ".backup" / book / mp3.name).is_file())
+        web.release_migration_backup(self.storage, book)
+        self.assertFalse((audiobooks / ".backup" / book).exists())
 
     def test_job_identity_uses_only_document_and_voice_versions(self):
         first_document = self.storage.documents / "first-name.txt"
@@ -1848,17 +1896,21 @@ class UnifiedWorkflowTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
 
-        output = storage.audiobooks / "paper-alloy.mp3"
-        prepared = storage.documents / "paper-narration.txt"
         self.assertEqual(run.code, 0)
+        book = run.result["book"]
+        output = storage.audiobooks / book / "voices" / "alloy" / "audio.mp3"
         self.assertEqual(run.artifact, str(output))
         self.assertTrue(output.is_file())
         self.assertGreater(sf.info(output).frames, 0)
-        self.assertIn("spoken audio", prepared.read_text(encoding="utf-8"))
+        # The book keeps its own text; Documents gets no narration file.
+        self.assertEqual([path.name for path in storage.documents.iterdir()], ["paper.pdf"])
+        self.assertIn("spoken audio", web.narration_text(json.loads(
+            (storage.audiobooks / book / "narration.json").read_text(encoding="utf-8")
+        )))
         self.assertGreater(requests["count"], 0)
         self.assertFalse(run.stage.exists())
-        reader = web.audiobook_reader_payload(storage, output.name)
-        self.assertEqual(reader["name"], output.name)
+        reader = web.audiobook_reader_payload(storage, book)
+        self.assertEqual((reader["book"], reader["voice"]), (book, "alloy"))
         self.assertEqual(len(reader["cues"]), requests["count"])
         self.assertEqual(
             len({cue["block"] for cue in reader["cues"]}),
@@ -1978,19 +2030,171 @@ class UnifiedWorkflowTests(unittest.TestCase):
                 thread.join()
 
         self.assertEqual([run.code for run in runs], [1, 0])
-        record = json.loads(web.audiobook_version_path(
-            storage, storage.audiobooks / "paper-alloy.mp3"
-        ).read_text(encoding="utf-8"))
-        self.assertEqual(record["adaptation"]["model"], "lm-studio/faithful")
+        book = runs[-1].result["book"]
+        self.assertRegex(book, rf"^paper--{input_version[:12]}$")
+        record = json.loads((storage.audiobooks / book / "book.json").read_text(encoding="utf-8"))
+        # What made the text, so a later Hilde knows which books it would change.
+        self.assertEqual(record["source_sha256"], input_version)
+        self.assertEqual(record["source_filenames"], ["paper.md"])
+        self.assertEqual(record["hilde_version"], web.HILDE_VERSION)
+        self.assertEqual(record["schema_version"], web.EXTRACTION_SCHEMA)
+        self.assertRegex(record["prompt_hash"], r"^[0-9a-f]{64}$")
+        self.assertIn("git_commit", record)
+        self.assertEqual(record["model"], "lm-studio/faithful")
+        self.assertEqual(record["chunk_max_chars"], 500)
+        _, narration_sha256 = web.read_narration(storage.audiobooks / book)
+        self.assertEqual(record["narration_sha256"], narration_sha256)
+        self.assertTrue((storage.audiobooks / book / "source.md").is_file())
         # Measured from the saved adaptation, though this run reused it.
         self.assertEqual(
-            (record["adaptation"]["prose"]["prose_passages"],
-             record["adaptation"]["prose"]["kept_95"]),
+            (record["prose"]["prose_passages"], record["prose"]["kept_95"]),
             (2, 2),
         )
-        # The times are this run's: it adapted nothing.
-        self.assertEqual(set(record["seconds"]), {"narrating", "aligning"})
-        self.assertGreater(record["audio_seconds"], 0)
+        # The times are this run's: it adapted nothing, then made the voice.
+        self.assertEqual(record["seconds"], {})
+        [voice] = record["voices"]
+        self.assertEqual((voice["name"], voice["status"]), ("alloy", "ready"))
+        self.assertEqual(voice["narration_sha256"], narration_sha256)
+        self.assertEqual(set(voice["seconds"]), {"narrating", "aligning"})
+        self.assertGreater(voice["duration"], 0)
+
+    def test_a_new_voice_reads_the_books_own_text_and_a_remake_leaves_old_voices_stale(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name) / "library")
+        storage.ensure()
+        document = storage.documents / "paper.md"
+        document.write_text(
+            "# A Short Paper\n\nAttention maps a query to an output. It weighs the values.\n\n"
+            "Recurrent models read tokens one at a time.",
+            encoding="utf-8",
+        )
+        speech = {}
+        for voice, frames in (("alloy", 1200), ("echo", 2000)):
+            buffer = io.BytesIO()
+            sf.write(buffer, np.linspace(-0.2, 0.2, frames, dtype=np.float32), 24000,
+                     format="WAV", subtype="PCM_16")
+            speech[voice] = buffer.getvalue()
+        heard = []
+
+        class SpeechHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                heard.append((body["voice"], body["input"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(speech[body["voice"]])))
+                self.end_headers()
+                self.wfile.write(speech[body["voice"]])
+
+            def log_message(self, format, *args):
+                pass
+
+        model_calls = []
+        wording = {"suffix": ""}
+
+        def faithful(self, request_path, system_prompt, attachments=()):
+            model_calls.append(request_path.stem)
+            source = re.findall(
+                r"<SOURCE_PARAGRAPH[^>]*>\n(.*?)\n</SOURCE_PARAGRAPH>",
+                request_path.read_text(encoding="utf-8"), flags=re.DOTALL,
+            )
+            text = "\n".join(source).replace("time.", f"time{wording['suffix']}.")
+            return f"<NARRATION>{text}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), SpeechHandler) as speech_server:
+            threading.Thread(target=speech_server.serve_forever, daemon=True).start()
+            models = {
+                "design": {"source": "missing"},
+                "clone": {
+                    "source": "server",
+                    "server": f"http://127.0.0.1:{speech_server.server_port}/v1",
+                    "server_model": "tts-1",
+                },
+            }
+            state = normalize({"tab": "audiobook", "audiobook": {
+                "document": document.name, "server_voice": "alloy", "adapt": True,
+                "model": "lm-studio/faithful", "local_server": "127.0.0.1:9",
+                "local_provider": "lm-studio",
+            }})
+            with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, \
+                    mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
+                    mock.patch.object(web.PaperRun, "model_response", faithful):
+                server.daemon_threads = True
+                server.jobs = web.JobQueue()
+                server.tts_models = models
+                server.storage = storage
+                server.verbose = False
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+
+                def run(**extra):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{server.server_port}/api/run",
+                        data=json.dumps({"state": state, **extra}).encode(),
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    with urllib.request.urlopen(request) as response:
+                        job = json.load(response)["job"]
+                    finished = server.jobs.run_for(job["id"])
+                    self.assertTrue(finished.finished.wait(120))
+                    self.assertEqual(finished.code, 0, "".join(
+                        str(data) for event, data in finished.history if event == "log"
+                    ))
+                    return finished
+
+                try:
+                    book = run().result["book"]
+                    path = storage.audiobooks / book
+                    narration = (path / "narration.json").read_bytes()
+                    alloy_audio = (path / "voices" / "alloy" / "audio.mp3").read_bytes()
+                    calls = len(model_calls)
+                    text = web.narration_text(json.loads(narration))
+
+                    voiced = run(book=book, mode="voice", voice="echo")
+                    self.assertEqual(voiced.result["book"], book)
+                    # The new voice read the book's text; no model was asked.
+                    self.assertEqual(len(model_calls), calls)
+                    self.assertEqual((path / "narration.json").read_bytes(), narration)
+                    self.assertEqual(
+                        " ".join(chunk for voice, chunk in heard if voice == "echo"),
+                        " ".join(chunk for voice, chunk in heard if voice == "alloy"),
+                    )
+                    self.assertIn("Recurrent models", text)
+                    # Each voice keeps its own audio and its own timings.
+                    self.assertEqual((path / "voices" / "alloy" / "audio.mp3").read_bytes(), alloy_audio)
+                    timings = {
+                        voice: json.loads((path / "voices" / voice / "timings.json").read_text())
+                        for voice in ("alloy", "echo")
+                    }
+                    self.assertEqual(timings["alloy"]["paragraphs"], timings["echo"]["paragraphs"])
+                    self.assertNotEqual(
+                        timings["alloy"]["duration_samples"], timings["echo"]["duration_samples"]
+                    )
+                    for voice in ("alloy", "echo"):
+                        payload = web.audiobook_reader_payload(storage, book, voice)
+                        self.assertEqual(
+                            payload["cues"][-1]["end_sample"], timings[voice]["duration_samples"]
+                        )
+
+                    # Made again with the latest Hilde, read by alloy: the text
+                    # changed, so echo read the earlier one.
+                    wording["suffix"] = ", as before"
+                    run(book=book, mode="recreate", voice="alloy")
+                    self.assertGreater(len(model_calls), calls)
+                    record = json.loads((path / "book.json").read_text())
+                    _, narration_sha256 = web.read_narration(path)
+                    self.assertNotEqual((path / "narration.json").read_bytes(), narration)
+                    self.assertEqual(record["narration_sha256"], narration_sha256)
+                    self.assertEqual(
+                        {voice["name"]: voice["status"] for voice in record["voices"]},
+                        {"alloy": "ready", "echo": "stale"},
+                    )
+                    with self.assertRaises(web.StaleVoiceError):
+                        web.book_audio(storage, book, "echo")
+                    self.assertEqual([item.name for item in storage.audiobooks.iterdir()], [book])
+                finally:
+                    server.shutdown()
+            speech_server.shutdown()
 
     def test_pdf_figures_reach_reader_and_model_with_the_library_under_the_project(self):
         import pymupdf
@@ -2143,57 +2347,6 @@ class UnifiedWorkflowTests(unittest.TestCase):
         # a heading is part of its title.
         lone = ["# 1984 Revisited", "The novel opens in April.", "# The Party"]
         self.assertEqual(web.model_paragraphs(lone, web._layout_kinds(lone)), lone)
-
-    def test_a_pinned_description_is_read_as_it_stands(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        source = root / "paper.md"
-        source.write_text(
-            "Self-attention connects every pair of positions.\n\n"
-            "Table 1: Maximum path lengths.\n\n"
-            "|Layer|Path length|\n|---|---|\n|Self-Attention|O(1)|\n\n"
-            "Recurrent layers need n sequential steps.",
-            encoding="utf-8",
-        )
-        prompt = root / "prompt.md"
-        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
-        stage = root / "extraction"
-        requested = []
-
-        class StubPaperRun(PaperRun):
-            def model_response(self, request_path, system_prompt, attachments=()):
-                requested.append(request_path.stem)
-                return (
-                    f"<NARRATION>Narrated {request_path.stem}.</NARRATION>"
-                    "<SUMMARY>Summary.</SUMMARY>"
-                )
-
-        def adapt(pins):
-            requested.clear()
-            run = StubPaperRun(
-                source, stage / "prepared.txt", "utf-8", in_flight=1,
-                prompt_path=prompt, scratch_path=stage, pins=pins,
-            )
-            run.pump()
-            self.assertEqual(run.code, 0)
-            return run, (stage / "prepared.txt").read_text(encoding="utf-8")
-
-        first, _ = adapt({})
-        self.assertEqual(requested, ["paragraphs-1-1", "paragraphs-2-3", "paragraphs-4-4"])
-        self.assertEqual(first.descriptions, {"Table 1": "Narrated paragraphs-2-3."})
-        self.assertEqual(first.pinned, [])
-
-        # Pinned, the table is read as approved and its model is not asked
-        # again, even with the earlier run's checkpoints at hand.
-        approved = "Table 1 compares path lengths: self-attention needs one step."
-        second, text = adapt({"Table 1": approved})
-        self.assertEqual(requested, ["paragraphs-1-1", "paragraphs-4-4"])
-        self.assertEqual(text, "\n\n".join([
-            "Narrated paragraphs-1-1.", approved, "Narrated paragraphs-4-4.",
-        ]))
-        self.assertEqual(second.descriptions, {"Table 1": approved})
-        self.assertEqual(second.pinned, ["Table 1"])
 
     def test_a_description_that_does_not_say_what_it_describes_is_logged(self):
         temporary = tempfile.TemporaryDirectory()
@@ -2390,7 +2543,7 @@ class ReaderArtifactTests(unittest.TestCase):
                 subtype="FLOAT",
             )
 
-        markdown, synchronization = web.build_reader_artifacts(
+        markdown, synchronization, _ = web.build_reader_artifacts(
             narration,
             source,
             500,
@@ -2430,7 +2583,7 @@ class ReaderArtifactTests(unittest.TestCase):
                 subtype="FLOAT",
             )
 
-        markdown, synchronization = web.build_reader_artifacts(
+        markdown, synchronization, _ = web.build_reader_artifacts(
             narration,
             narration,
             500,
@@ -2470,24 +2623,10 @@ class ReaderArtifactTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         storage = web.SharedStorage(Path(temporary.name))
         storage.ensure()
-        output = storage.audiobooks / "legacy.mp3"
-        sf.write(
-            output,
-            np.linspace(-0.1, 0.1, 3100, dtype=np.float32),
-            24000,
-            format="WAV",
-            subtype="FLOAT",
-        )
-        markdown_name = "legacy.md"
-        sync_name = "legacy.json"
-        (storage.readers / markdown_name).write_text(
-            "<!-- audiobook-tts:block=0 -->\n\n"
-            "First sentence. Second sentence.",
-            encoding="utf-8",
-        )
-        web.write_json_atomic(
-            storage.readers / sync_name,
-            {
+        book = store_book(
+            storage,
+            markdown="<!-- audiobook-tts:block=0 -->\n\nFirst sentence. Second sentence.",
+            timings={
                 "schema": 1,
                 "sample_rate": 24000,
                 "duration_samples": 3100,
@@ -2497,20 +2636,8 @@ class ReaderArtifactTests(unittest.TestCase):
                 ],
             },
         )
-        web.write_json_atomic(
-            web.audiobook_version_path(storage, output),
-            {
-                "schema": 3,
-                "document": "legacy.txt",
-                "voice": "Narrator",
-                "reader": {
-                    "markdown": markdown_name,
-                    "sync": sync_name,
-                },
-            },
-        )
 
-        payload = web.audiobook_reader_payload(storage, output.name)
+        payload = web.audiobook_reader_payload(storage, book)
 
         self.assertEqual(payload["timing_precision"], "estimated")
         self.assertEqual(payload["word_timing"], "unavailable")
@@ -2530,43 +2657,11 @@ class ReaderArtifactTests(unittest.TestCase):
             [0, 0],
         )
 
-        web.align_existing_reader_words(
-            storage,
-            output.name,
-            FakeWordAligner(),
-        )
-        aligned = web.audiobook_reader_payload(storage, output.name)
-        self.assertEqual(aligned["word_timing"], "aligned")
-        self.assertEqual(
-            [cue["block"] for cue in aligned["word_cues"]],
-            [0, 0, 1, 1],
-        )
-        second_checkpoint = next(
-            cue for cue in aligned["cues"] if cue["block"] == 1
-        )
-        second_sentence_word = next(
-            cue for cue in aligned["word_cues"] if cue["block"] == 1
-        )
-        self.assertEqual(
-            second_checkpoint["start_sample"],
-            second_sentence_word["start_sample"],
-        )
-
     def test_visual_blocks_exclude_unspoken_text_and_absorb_invisible_audio(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         storage = web.SharedStorage(Path(temporary.name))
         storage.ensure()
-        output = storage.audiobooks / "visual.mp3"
-        sf.write(
-            output,
-            np.linspace(-0.1, 0.1, 9000, dtype=np.float32),
-            24000,
-            format="WAV",
-            subtype="FLOAT",
-        )
-        markdown_name = "visual.md"
-        sync_name = "visual.json"
         sources = [
             "Spoken table summary.\n\n"
             "| Raw table value | Count |\n"
@@ -2578,46 +2673,37 @@ class ReaderArtifactTests(unittest.TestCase):
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lE"
             "QVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)",
         ]
-        (storage.readers / markdown_name).write_text(
-            "\n\n".join(
+
+        def words(block, start, texts):
+            return [
+                {"block": block, "index": index, "text": text,
+                 "start_sample": start + 500 * index, "end_sample": start + 500 * index + 400}
+                for index, text in enumerate(texts)
+            ]
+
+        book = store_book(
+            storage,
+            markdown="\n\n".join(
                 f"<!-- audiobook-tts:block={index} -->\n\n{source}"
                 for index, source in enumerate(sources)
             ),
-            encoding="utf-8",
-        )
-        web.write_json_atomic(
-            storage.readers / sync_name,
-            {
-                "schema": 1,
+            timings={
+                "schema": 3,
                 "sample_rate": 24000,
                 "duration_samples": 9000,
                 "block_count": 3,
+                "paragraphs": [0, 1, 2],
                 "cues": [
                     {"block": 0, "start_sample": 0, "end_sample": 3000},
                     {"block": 1, "start_sample": 3000, "end_sample": 5000},
                     {"block": 2, "start_sample": 5000, "end_sample": 9000},
                 ],
+                "word_timing": "aligned",
+                "word_cues": words(0, 0, ["Spoken", "table", "summary"])
+                + words(2, 5000, ["Spoken", "figure", "description"]),
             },
         )
-        web.write_json_atomic(
-            web.audiobook_version_path(storage, output),
-            {
-                "schema": 3,
-                "document": "visual.pdf",
-                "voice": "Narrator",
-                "reader": {
-                    "markdown": markdown_name,
-                    "sync": sync_name,
-                },
-            },
-        )
-
-        web.align_existing_reader_words(
-            storage,
-            output.name,
-            FakeWordAligner(),
-        )
-        payload = web.audiobook_reader_payload(storage, output.name)
+        payload = web.audiobook_reader_payload(storage, book)
 
         self.assertEqual(len(payload["blocks"]), 2)
         self.assertIn("<table>", payload["blocks"][0]["html"])
@@ -2689,7 +2775,7 @@ class ReaderArtifactTests(unittest.TestCase):
                 subtype="FLOAT",
             )
 
-        markdown, synchronization = web.build_reader_artifacts(
+        markdown, synchronization, narration_record = web.build_reader_artifacts(
             narration,
             "\n\n".join(source),
             500,
@@ -2700,9 +2786,25 @@ class ReaderArtifactTests(unittest.TestCase):
         )
 
         self.assertEqual(synchronization["paragraphs"], [0, 1, 2, 2, 3, 3, 4])
+        passages = narration_record["passages"]
+        # What a new voice reads is exactly what this one read.
+        self.assertEqual(web.narration_text(narration_record), narration)
+        # Each passage is typed, and so is each author's paragraph it came
+        # from, so a caption read inside a figure's passage stays one.
+        self.assertEqual(
+            [passage["type"] for passage in passages],
+            ["body", "heading", "body", "figure", "body"],
+        )
+        self.assertEqual(
+            [source_part["type"] for source_part in passages[3]["sources"]],
+            ["figure", "figure", "figure", "caption"],
+        )
+        self.assertEqual(
+            [source_part["page"] for source_part in passages[3]["sources"]], [3, 3, 3, 3]
+        )
         # The figure's title, image, and labels already show beside its
         # description, and text read word for word shows as the narration.
-        self.assertEqual(synchronization["originals"], [
+        self.assertEqual(web.narration_originals(narration_record), [
             {"paragraphs": None, "page": 1, "description": False,
              "unchanged": False, "markdown": source[0]},
             {"paragraphs": [0, 0], "page": 1, "description": False,
@@ -2715,15 +2817,10 @@ class ReaderArtifactTests(unittest.TestCase):
              "unchanged": False, "markdown": f"{source[7]}\n\n{source[8]}"},
         ])
 
-        output = storage.audiobooks / "paper.mp3"
-        output.write_bytes(b"audio")
-        (storage.readers / "paper.md").write_text(markdown, encoding="utf-8")
-        web.write_json_atomic(storage.readers / "paper.json", synchronization)
-        web.write_json_atomic(web.audiobook_version_path(storage, output), {
-            "schema": 3,
-            "reader": {"markdown": "paper.md", "sync": "paper.json"},
-        })
-        payload = web.audiobook_reader_payload(storage, output.name)
+        book = store_book(
+            storage, markdown=markdown, timings=synchronization, narration=narration_record
+        )
+        payload = web.audiobook_reader_payload(storage, book)
 
         self.assertEqual(
             [(item["paragraphs"], item["page"], item["description"], item["unchanged"])
@@ -2737,10 +2834,14 @@ class ReaderArtifactTests(unittest.TestCase):
         self.assertIn("&lt;b&gt;attention&lt;/b&gt;", payload["originals"][2]["html"])
 
         # A batch placed out of order is not trusted.
-        synchronization["originals"][4]["paragraphs"] = [2, 4]
-        web.write_json_atomic(storage.readers / "paper.json", synchronization)
+        passages[4]["paragraphs"] = [2, 4]
+        tangled = store_book(
+            storage, source_sha256="b" * 64, markdown=markdown, timings=synchronization,
+            narration=narration_record,
+        )
         with self.assertRaises(ValueError):
-            web.audiobook_reader_payload(storage, output.name)
+            web.audiobook_reader_payload(storage, tangled)
+
 
 class BatchingTests(unittest.TestCase):
     class Model:
@@ -3797,7 +3898,7 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
         storage = web.SharedStorage(Path(temporary.name))
         storage.ensure()
         payload = b"retained audiobook bytes"
-        (storage.audiobooks / "kept-book.mp3").write_bytes(payload)
+        book = store_book(storage, title="Kept Book", voice="Eir", audio=payload)
 
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             server.daemon_threads = True
@@ -3808,20 +3909,20 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
             origin = f"http://127.0.0.1:{server.server_port}"
             try:
                 with urllib.request.urlopen(
-                    f"{origin}/api/download?asset=kept-book.mp3"
+                    f"{origin}/api/download?book={book}&voice=Eir"
                 ) as response:
                     downloaded = response.read()
                     disposition = response.headers["Content-Disposition"]
                 with self.assertRaises(urllib.error.HTTPError) as refused:
                     urllib.request.urlopen(
-                        f"{origin}/api/download?asset=..%2Fkept-book.mp3"
+                        f"{origin}/api/download?book=..%2F{book}&voice=Eir"
                     )
             finally:
                 server.shutdown()
                 thread.join()
 
         self.assertEqual(downloaded, payload)
-        self.assertIn('filename="kept-book.mp3"', disposition)
+        self.assertIn('filename="Kept Book-Eir.mp3"', disposition)
         self.assertEqual(refused.exception.code, 400)
 
 
@@ -3967,83 +4068,89 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertFalse((broken / "preview.wav").exists())
         self.assertEqual(list(self.storage.voices.glob("*/.preview-*")), [])
 
-    def test_library_lists_titles_durations_and_sources_newest_first(self):
-        paper = self.storage.audiobooks / "paper-Martin.mp3"
-        novel = self.storage.audiobooks / "great_expectations-Sarah.mp3"
-        # A paper whose title was never a heading opens with its abstract.
-        teams = self.storage.audiobooks / "teams-Eir.mp3"
-        for output in (paper, novel, teams):
-            sf.write(
-                output, np.zeros(24000, dtype=np.float32), 24000,
-                format="MP3", subtype="MPEG_LAYER_III",
-            )
+    def test_library_lists_books_with_their_voices_newest_first(self):
+        paper = store_book(self.storage, "Attention Is All You Need", "a" * 64, "Martin")
+        novel = store_book(self.storage, "Great Expectations", "b" * 64, "Sarah")
         (self.storage.audiobooks / "notes.txt").write_text("not a book", encoding="utf-8")
-        (self.storage.readers / "paper.md").write_text(
-            # A figure before the title shows after its heading, in its block.
-            "<!-- audiobook-tts:block=0 -->\n\n# Attention Is *All* You Need\n\n"
-            "![](data:image/png;base64,iVBORw0KGgo=)\n\n"
-            "<!-- audiobook-tts:block=1 -->\n\nBody text.",
-            encoding="utf-8",
-        )
-        (self.storage.readers / "teams.md").write_text(
-            "<!-- audiobook-tts:block=0 -->\n\nAneesh Pappu and James Zou.\n\n"
-            "<!-- audiobook-tts:block=1 -->\n\n# 1 ABSTRACT\n\n"
-            "<!-- audiobook-tts:block=2 -->\n\nBody text.",
-            encoding="utf-8",
-        )
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, teams),
-            {"document": "agent_teams.pdf", "voice": "Eir", "reader": {"markdown": "teams.md"}},
-        )
-        os.utime(teams, ns=(1_750_000_000_000_000_000,) * 2)
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, paper),
-            {"document": "paper.pdf", "voice": "Martin", "reader": {"markdown": "paper.md"}},
-        )
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, novel),
-            {"document": "great_expectations.txt", "voice": "Sarah"},
-        )
-        os.utime(paper, ns=(1_700_000_000_000_000_000,) * 2)
-        os.utime(novel, ns=(1_800_000_000_000_000_000,) * 2)
+        (self.storage.audiobooks / ".build-unfinished").mkdir()
+
+        def made(book, voice, seconds):
+            audio = self.storage.audiobooks / book / "voices" / voice / "audio.mp3"
+            os.utime(audio, (seconds, seconds))
+
+        made(paper, "Martin", 1_700_000_000)
+        made(novel, "Sarah", 1_800_000_000)
         origin = self.serve()
 
         with urllib.request.urlopen(f"{origin}/api/library") as response:
             books = json.load(response)["books"]
 
         self.assertEqual(
-            [(book["name"], book["title"], book["source"], book["voice"]) for book in books],
+            [(book["id"], book["title"], book["source"], book["voice"]) for book in books],
             [
-                ("great_expectations-Sarah.mp3", "great expectations",
-                 "great_expectations.txt", "Sarah"),
-                ("teams-Eir.mp3", "agent teams", "agent_teams.pdf", "Eir"),
-                ("paper-Martin.mp3", "Attention Is All You Need", "paper.pdf", "Martin"),
+                (novel, "Great Expectations", "Great Expectations.pdf", "Sarah"),
+                (paper, "Attention Is All You Need", "Attention Is All You Need.pdf", "Martin"),
             ],
         )
-        for book in books:
-            self.assertAlmostEqual(book["duration"], 1.0, delta=0.1)
+        self.assertEqual(paper, "attention-is-all-you-need--aaaaaaaaaaaa")
+        # A book changes when one of its voices is made.
+        self.assertEqual(books[0]["modified"], 1_800_000_000)
 
-    def test_library_describes_a_book_narrated_again_afresh(self):
-        book = self.storage.audiobooks / "tale-Martin.mp3"
-        sf.write(
-            book, np.zeros(24000, dtype=np.float32), 24000,
-            format="MP3", subtype="MPEG_LAYER_III",
+    def test_a_title_is_a_books_first_heading_unless_that_opens_a_section(self):
+        # A figure before the title shows after its heading, in its block.
+        self.assertEqual(web.audiobook_title(
+            "<!-- audiobook-tts:block=0 -->\n\n# Attention Is *All* You Need\n\n"
+            "![](data:image/png;base64,iVBORw0KGgo=)\n\n"
+            "<!-- audiobook-tts:block=1 -->\n\nBody text.",
+            "paper",
+        ), "Attention Is All You Need")
+        # A paper whose title was never a heading opens with its abstract.
+        self.assertEqual(web.audiobook_title(
+            "<!-- audiobook-tts:block=0 -->\n\nAneesh Pappu and James Zou.\n\n"
+            "<!-- audiobook-tts:block=1 -->\n\n# 1 ABSTRACT\n\n"
+            "<!-- audiobook-tts:block=2 -->\n\nBody text.",
+            "agent teams",
+        ), "agent teams")
+        self.assertEqual(
+            web.book_id("Ünïcode — Attention, Is All You Need?! " * 3, "f" * 64),
+            "unicode-attention-is-all-you-need-unicode-attention-is-all--ffffffffffff",
         )
-        record = web.audiobook_version_path(self.storage, book)
-        web.write_json_atomic(record, {"document": "old_tale.txt", "voice": "Martin"})
-        os.utime(record, ns=(1_700_000_000_000_000_000,) * 2)
-        self.assertEqual(web.library_catalog(self.storage)[0]["title"], "old tale")
 
-        web.write_json_atomic(record, {"document": "new_tale.txt", "voice": "Sarah"})
-        os.utime(record, ns=(1_800_000_000_000_000_000,) * 2)
-        again = web.library_catalog(self.storage)[0]
+    def test_a_book_made_again_keeps_voices_of_the_same_text_and_marks_the_rest_stale(self):
+        def narration(text):
+            return {"schema": 1, "original_view": False, "passages": [
+                {"id": 1, "type": "body", "page": 1, "text": text, "original_text": "",
+                 "unchanged": True, "paragraphs": [0, 0], "sources": []},
+            ]}
 
-        self.assertEqual((again["title"], again["voice"]), ("new tale", "Sarah"))
-        # A book changed when its MP3 was last made.
-        os.utime(book, (1_750_000_000, 1_750_000_000))
-        self.assertEqual(web.library_catalog(self.storage)[0]["modified"], 1_750_000_000)
-        os.utime(book, (1_760_000_000, 1_760_000_000))
-        self.assertEqual(web.library_catalog(self.storage)[0]["modified"], 1_760_000_000)
+        book = store_book(self.storage, voice="Martin", narration=narration("Old text."))
+        self.assertEqual(
+            store_book(self.storage, voice="Sarah", narration=narration("Old text.")), book
+        )
+        sarah = self.storage.audiobooks / book / "voices" / "Sarah" / "audio.mp3"
+        sarah_audio = sarah.read_bytes()
+        record = json.loads((self.storage.audiobooks / book / "book.json").read_text())
+        self.assertEqual(
+            [(voice["name"], voice["status"]) for voice in record["voices"]],
+            [("Sarah", "ready"), ("Martin", "ready")],
+        )
+
+        # Made again with new text, read by Martin: Sarah read the old text.
+        store_book(self.storage, voice="Martin", narration=narration("New text."))
+        record = json.loads((self.storage.audiobooks / book / "book.json").read_text())
+        _, narration_sha256 = web.read_narration(self.storage.audiobooks / book)
+        self.assertEqual(record["narration_sha256"], narration_sha256)
+        self.assertEqual(
+            {voice["name"]: voice["status"] for voice in record["voices"]},
+            {"Martin": "ready", "Sarah": "stale"},
+        )
+        self.assertEqual(sarah.read_bytes(), sarah_audio)
+        self.assertEqual(web.default_voice(record), "Martin")
+        with self.assertRaises(web.StaleVoiceError):
+            web.audiobook_reader_payload(self.storage, book, "Sarah")
+        with self.assertRaises(web.StaleVoiceError):
+            web.book_audio(self.storage, book, "Sarah")
+        self.assertEqual(len([path for path in self.storage.audiobooks.iterdir()]), 1)
 
     def test_preview_refuses_a_voice_linked_from_outside_the_library(self):
         elsewhere = tempfile.TemporaryDirectory()
@@ -4094,49 +4201,19 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(link))
         self.assertTrue(web.is_saved_voice(outside))
 
-    def test_deleting_an_audiobook_removes_its_record_and_reader_files(self):
-        def book(name):
-            output = self.storage.audiobooks / name
-            sf.write(
-                output, np.zeros(2400, dtype=np.float32), 24000,
-                format="MP3", subtype="MPEG_LAYER_III",
-            )
-            return output
-
-        tale, other = book("tale-Martin.mp3"), book("other-Sarah.mp3")
-        reader = {
-            "markdown": "tale-Martin.mp3.0123456789abcdef.md",
-            "sync": "tale-Martin.mp3.0123456789abcdef.json",
-        }
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, tale),
-            {"document": "tale.txt", "reader": reader},
-        )
-        web.write_json_atomic(
-            web.audiobook_version_path(self.storage, other), {"document": "other.txt"}
-        )
-        # An earlier narration of the tale, and another book's reader.
-        for name in (
-            *reader.values(),
-            "tale-Martin.mp3.fedcba9876543210.md",
-            "other-Sarah.mp3.0123456789abcdef.md",
-        ):
-            (self.storage.readers / name).write_text("reader", encoding="utf-8")
+    def test_deleting_an_audiobook_removes_the_book_with_every_voice(self):
+        tale = store_book(self.storage, "Tale", "a" * 64, "Martin")
+        store_book(self.storage, "Tale", "a" * 64, "Sarah")
+        other = store_book(self.storage, "Other", "b" * 64, "Sarah")
         origin = self.serve()
 
-        status, _ = self.delete(origin, "audiobooks", "tale-Martin.mp3")
+        status, _ = self.delete(origin, "audiobooks", tale)
         with urllib.request.urlopen(f"{origin}/api/library") as response:
-            listed = [entry["name"] for entry in json.load(response)["books"]]
+            listed = [entry["id"] for entry in json.load(response)["books"]]
 
         self.assertEqual(status, 200)
-        self.assertEqual(listed, ["other-Sarah.mp3"])
-        self.assertEqual(
-            [path.name for path in self.storage.readers.iterdir()],
-            ["other-Sarah.mp3.0123456789abcdef.md"],
-        )
-        self.assertEqual(
-            [path.name for path in self.storage.versions.iterdir()], ["other-Sarah.mp3.json"]
-        )
+        self.assertEqual(listed, [other])
+        self.assertEqual([path.name for path in self.storage.audiobooks.iterdir()], [other])
 
     def test_deleting_a_document_keeps_audiobooks_made_from_it(self):
         (self.storage.documents / "paper.pdf").write_bytes(b"%PDF-1.7\n")
@@ -4157,7 +4234,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         origin = self.serve()
 
         traversal = self.delete(origin, "voices", "../Voices/Keep")
-        missing = self.delete(origin, "audiobooks", "missing.mp3")
+        missing = self.delete(origin, "audiobooks", "missing--000000000000")
         directory = self.delete(origin, "documents", "folder")
         foreign = self.delete(origin, "voices", "Keep", {"Origin": "http://attacker.example"})
 
@@ -4315,10 +4392,12 @@ class ReaderAudioIndexTests(unittest.TestCase):
         # Alternating noise and silence gives the default VBR encoding varied
         # frame sizes, the layout browsers cannot seek exactly as plain MP3.
         waveform[np.arange(waveform.size) // (rate // 2) % 2 == 1] = 0
-        book = storage.audiobooks / "indexed-book.mp3"
-        sf.write(book, waveform, rate, format="MP3", subtype="MPEG_LAYER_III")
-        mp3 = book.read_bytes()
-        mp3_path = "/api/audio?name=indexed-book.mp3"
+        staged = storage.root / "indexed-book.mp3"
+        sf.write(staged, waveform, rate, format="MP3", subtype="MPEG_LAYER_III")
+        mp3 = staged.read_bytes()
+        book_id = store_book(storage, voice="Eir", audio=mp3)
+        book = storage.audiobooks / book_id / "voices" / "Eir" / "audio.mp3"
+        mp3_path = f"/api/audio?book={book_id}&voice=Eir"
         mp4_path = f"{mp3_path}&container=mp4"
 
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:

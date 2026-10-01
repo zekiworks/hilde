@@ -1,0 +1,61 @@
+# Golden assertions for "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses".
+# Checked against https://regularized-rsi.com/assets/RRSI.pdf on 2026-10-01.
+paper: rrsi
+asserts:
+  - id: RRSI-01
+    bug: B02
+    about: Figure 2 labels. Pruning is L1 (Lasso), complexity-aware acceptance is L2 (Ridge)
+    must_not_contain: ['(?i)acceptance, using an L1', '(?i)pruning, using an L0']
+
+  - id: RRSI-02
+    bug: B02
+    about: Equation 16 is the novelty score, not the pruning target
+    must_not_contain: '(?i)Equation 16 defines the structural pruning'
+    must_contain: '(?i)Equation 16[^\n]{0,120}novelty'
+
+  - id: RRSI-03
+    bug: B02
+    about: Stall check compares current skill with skill w rounds ago
+    must_not_contain: '(?i)stability indicator is set to one if the difference between the estimated skill of the candidate'
+
+  - id: RRSI-04
+    bug: B02
+    about: Within-band rule is a condition with a novelty term; no noise offset, no max with zero
+    must_not_contain: ['(?i)noise offset', '(?i)maximum of this value or zero']
+
+  - id: RRSI-05
+    bug: B02
+    about: Coding sets the score-gain weight to zero, not the novelty weight
+    must_not_contain: '(?i)coding instance sets the structural novelty weight to zero'
+
+  - id: RRSI-06
+    bug: B08
+    about: Table 6 gain is 1.69 points
+    must_not_contain: '(?i)one point and seventy percent'
+    must_contain: '(?i)1\.69|one point six nine|1\.7 points|about one point seven'
+
+  - id: RRSI-07
+    bug: B06
+    about: Sentence split by an algorithm float is rejoined, with no invented bridge
+    must_not_contain: ['(?m)most direct of our classical\s*$', '(?i)to be clear, these are analogies']
+
+  - id: RRSI-08
+    bug: B10
+    about: Peng's student-researcher note follows the author list, before the Introduction
+    order: ['(?i)student researcher', '(?m)^Introduction\s*$']
+
+  - id: RRSI-09
+    bug: B13
+    about: Code and project links survive as spoken pointers
+    must_contain: ['(?i)rrsi[^.\n]{0,30}(github|repository)|(github|repository)[^.\n]{0,40}rrsi', '(?i)regularized[- ]?rsi(\.com| dot com)']
+
+  - id: RRSI-10
+    bug: null
+    about: Source quirks kept as printed
+    must_contain: ['30% fewer', '(?i)the pruner, removes', '(?i)L1-style budget', '204 comparisons']
+
+manual:
+  - bug: B15
+    check: Equation 4 (annealed budget) is spoken as ordered steps, with the floor applied to the whole expression.
+  - bug: B16
+    check: Algorithms 1 and 2 are shown as images with a spoken summary, not read line by line.

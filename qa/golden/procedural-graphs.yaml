@@ -1,0 +1,49 @@
+# Golden assertions for the Procedural Graphs paper (arXiv 2609.09153v1).
+# Written from the R3 findings without the output file at hand: tune patterns on the first run.
+paper: procedural-graphs
+asserts:
+  - id: PG-01
+    bug: B02
+    about: Equation 7 uses the paper's variables
+    must_contain: ['(?i)gross loan portfolio', '(?i)allowance for loan losses']
+    must_not_contain: '(?i)Equation 7[^\n]{0,300}loan limit'
+
+  - id: PG-02
+    bug: B02
+    about: Equation 8's penalty counts information-tool calls
+    must_not_contain: '(?i)Equation 8[^\n]{0,300}active users'
+
+  - id: PG-03
+    bug: B07
+    about: Trace value is read verbatim
+    must_not_contain: '(?i)18 million in equity'
+
+  - id: PG-04
+    bug: B06
+    about: AutoGuide quote is whole
+    must_not_contain: '(?i)The text is appropriate'
+
+  - id: PG-05
+    bug: B11
+    about: No "significantly" for 100 vs 99.25
+    must_not_contain: '(?i)significantly outperforming'
+
+  - id: PG-06
+    bug: B11
+    about: Survival claim matches Figure 3 (Flash is 0% for every method)
+    must_not_contain: '(?i)higher survival in all four models'
+
+  - id: PG-07
+    bug: B06
+    about: Running headers are stripped
+    must_not_contain: '(?i)Guidance Generation Prompt, continued'
+
+  - id: PG-08
+    bug: B06
+    about: No dropped words at the join
+    must_contain: '(?i)static attributes of the surrounding edges'
+
+  - id: PG-09
+    bug: B19
+    about: Citation not turned into a claim
+    must_not_contain: '(?i)as Zhao and others detailed'

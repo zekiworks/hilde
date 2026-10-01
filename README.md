@@ -28,6 +28,9 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
 - **One narrator, start to finish.** A voice is designed once from a written
   description, then cloned for every chunk of every book, across sessions.
   Eight stock voices are included.
+- **One text, any voice.** A book is written once from its document. Another
+  voice reads the same text with no model, and the same document added again
+  under another name opens the book you already have.
 - **A reader that follows along.** The current word lights up as it is spoken;
   click any word to jump there. **Original** shows the author's text and its
   PDF page beneath each adapted passage, and model-written figure
@@ -132,10 +135,9 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   instead. That count measures dropped wording, not meaning: a sentence
   reworded with the same words, or an added claim, goes unnoticed.
 - **Figure descriptions are model-generated and can be wrong.** Check the
-  original figure before relying on a number or a trend. Once a book's
-  descriptions are right, **Pin descriptions** keeps them for every later
-  audiobook of that document, whichever model adapts it; see
-  [Pinned descriptions](docs/text-adaptation.md#pinned-descriptions).
+  original figure before relying on a number or a trend. A book's text is
+  written once: a new voice reads it as it is, and only **Recreate with the
+  latest Hilde** writes it again.
 - **Text-only local models never see the figure.** They describe it from the
   text extracted from it (labels, numbers, caption), so a figure with few
   labels gets a thin description, and an equation printed as an image is left

@@ -1,0 +1,281 @@
+# Hilde QA: bug classes. Read AGENTS.md first.
+# One entry per kind of failure. Instances live in findings.jsonl ("bug" field);
+# `python qa/qa.py report` derives where each class was seen.
+#
+# priority: P0 blocker · P1 meaning wrong · P2 structure · P3 wording
+# layer: where the fix most likely goes
+#   extract   PDF parsing (text, captions, footnotes, columns)
+#   structure assembling the book (order, headings, placement)
+#   adapt     LLM rewrite of body text
+#   describe  LLM text for figures, tables, equations, algorithms
+#   normalize text cleanup before speech
+#   pipeline  caching, regeneration, pinning
+#   sync      word-highlight timing
+# status: proposed · open · regressed · fixed · wontfix
+
+bugs:
+  - id: B01
+    slug: highlight-sync
+    title: Speech runs ahead of the word highlight
+    priority: P0
+    layer: sync
+    status: open
+    fix: >
+      Triage by symptom. Same lag everywhere: highlight is driven by the browser's timeupdate
+      event (about every 250 ms); read audio.currentTime every animation frame. Lag grows over
+      the book: timestamps too long (wrong sample rate, e.g. 24,000 Hz samples divided by 22,050,
+      or trimmed silence still counted); compute timings from the final audio file. Lag jumps at
+      chunks: pauses between chunks missing from offsets, or spoken text differs from shown text.
+      Lag resets after seeking, then drifts: highlight runs on its own timer.
+    test: Measure the lag near the start and the end of one book, and after seeking to the middle.
+
+  - id: B02
+    slug: meaning-changed
+    title: Model-written text contradicts the source
+    priority: P1
+    layer: describe
+    status: open
+    fix: >
+      Give the describer the caption, the surrounding body text and the paper's own definitions.
+      Post-check each description against them: every symbol and number must appear in the source,
+      and no claim may contradict the nearby body text.
+    test: Golden must_not_contain assertions (ATT-09, RRSI-01..05, CLM-03..10, BERT-02, PG-01..02).
+
+  - id: B03
+    slug: wrong-figure-table-identity
+    title: Description labeled with the wrong figure or table number
+    priority: P1
+    layer: structure
+    status: open
+    fix: Code writes "Figure N" / "Table N" from the caption; the model writes only the rest. Pair description and caption by number.
+    test: Generic check G07 (description label equals its caption's label); no caption read twice.
+
+  - id: B04
+    slug: caption-truncated
+    title: Captions cut at 200 characters, or reduced to a bare "Table"
+    priority: P1
+    layer: extract
+    status: open
+    fix: Remove the 200-character cap. Never emit a bare "Table" or "Figure" label.
+    test: Generic checks G01 and G06; a caption longer than 200 characters survives whole.
+
+  - id: B05
+    slug: caption-format-not-detected
+    title: Captions written "Table 1 |" (Google template) are not detected
+    priority: P1
+    layer: extract
+    status: open
+    fix: Detect "Table N |" and "Figure N |" as well as "Table N:" and "Figure N:".
+    test: Generic check G02; RRSI output has six labeled tables.
+
+  - id: B06
+    slug: sentence-split
+    title: Sentences broken at page breaks, running headers or floats
+    priority: P1
+    layer: extract
+    status: open
+    fix: >
+      Strip running headers and footers, rejoin hyphenated words, and rejoin a paragraph that ends
+      without final punctuation with its continuation after a figure, table or algorithm. Never
+      bridge a gap with invented words.
+    test: Generic check G06 (no body paragraph ends without final punctuation).
+
+  - id: B07
+    slug: verbatim-altered
+    title: Code, tool calls, traces or quoted examples changed
+    priority: P1
+    layer: adapt
+    status: open
+    fix: Read code, tool calls, model output and worked examples verbatim; no unit normalization inside them.
+    test: PG-03, BERT-06.
+
+  - id: B08
+    slug: numbers-units-misread
+    title: Numbers, signs or units changed
+    priority: P1
+    layer: normalize
+    status: open
+    fix: Copy numbers, signs and units verbatim before speech normalization; normalize only the spoken form.
+    test: Every number in a description appears in the source with its unit (RRSI-06, CLM-07, CLM-11).
+
+  - id: B09
+    slug: reading-order
+    title: Reading order scrambled in two-column layouts
+    priority: P2
+    layer: extract
+    status: open
+    fix: Order text by column; place each figure and table at its first mention.
+    test: BERT-10, BERT-15.
+
+  - id: B10
+    slug: footnote-misplaced
+    title: Footnotes placed by page position instead of their anchor
+    priority: P2
+    layer: extract
+    status: regressed
+    fixed_in: 23dd760
+    fix: >
+      Re-check the 23dd760 anchoring on multi-column PDFs. Author footnotes belong right after the
+      author list; scientific footnotes right after the sentence that carries their marker.
+    test: ATT-01, ATT-02, RRSI-08.
+
+  - id: B11
+    slug: overclaim
+    title: Descriptions overstate what the paper shows
+    priority: P2
+    layer: describe
+    status: open
+    fix: No "significantly", "all" or "only" unless the paper says it; compare numbers from the same split.
+    test: PG-05, PG-06, BERT-03..05, CLM-05.
+
+  - id: B12
+    slug: definition-dropped
+    title: A symbol or term is used without its definition
+    priority: P2
+    layer: adapt
+    status: open
+    fix: Keep a symbol's definition whenever the symbol is used again later.
+    test: Manual.
+
+  - id: B13
+    slug: key-content-dropped
+    title: Content that must be kept is dropped
+    priority: P2
+    layer: adapt
+    status: open
+    fix: >
+      List exactly what the drop rules may remove (citation markers, emails, raw URLs, roadmap
+      sentences per D02). Everything else stays. Title and authors always stay; links become a
+      spoken pointer ("on GitHub under google-research/rrsi").
+    test: ATT-07, ATT-16, RRSI-09, CLM-01, BERT-11.
+
+  - id: B14
+    slug: approved-text-regenerated
+    title: Approved descriptions are regenerated on every run and lose detail
+    priority: P2
+    layer: pipeline
+    status: open
+    fix: Pin approved descriptions by PDF sha256 plus figure or table number; regenerate only on request. Keep a golden file per paper.
+    test: ATT-11, ATT-21.
+
+  - id: B15
+    slug: equation-order-hidden
+    title: Spoken equations hide the order of operations
+    priority: P2
+    layer: describe
+    status: open
+    fix: Describe nested operations as ordered steps, innermost first ("divide…, then take the softmax, then multiply by the values").
+    test: Manual (listed under `manual` in golden files).
+
+  - id: B16
+    slug: raw-algorithm-or-figure
+    title: Algorithms and dense figure contents read out line by line
+    priority: P2
+    layer: describe
+    status: open
+    fix: Treat algorithms and data-heavy figures like tables (D01), showing the image and speaking a summary.
+    test: RRSI-07, CLM-14.
+
+  - id: B17
+    slug: heading-numbering
+    title: Inconsistent section numbering ("Part Four", "Part B, section six")
+    priority: P3
+    layer: structure
+    status: open
+    fix: One rule for every heading. Keep the paper's own numbers and appendix letters; no "Part".
+    test: Generic check G03.
+
+  - id: B18
+    slug: affiliations-unpaired
+    title: Author affiliations lumped or mispaired
+    priority: P3
+    layer: extract
+    status: regressed
+    fixed_in: 23dd760
+    fix: Pair names and affiliations only when the counts match (D04); move the pairing into code.
+    test: ATT-05, ATT-06.
+
+  - id: B19
+    slug: citation-altered
+    title: Citations reworded into claims or merged
+    priority: P3
+    layer: adapt
+    status: open
+    fix: Read a citation as its authors or drop it. Never add a verb; never merge two citations.
+    test: PG-09, BERT-12.
+
+  - id: B20
+    slug: raw-symbols-to-voice
+    title: Raw symbols, ligatures or inconsistent names reach the voice
+    priority: P3
+    layer: normalize
+    status: open
+    fix: Normalize before speech (Unicode NFKC for ligatures), one spoken form per notation and per model name.
+    test: Generic check G05; ATT-20, BERT-14, CLM-13.
+
+  - id: B21
+    slug: voice-switch
+    title: Third person ("the authors") instead of the paper's "we"
+    priority: P3
+    layer: adapt
+    status: open
+    fix: Keep the paper's own voice.
+    test: ATT-18.
+
+  - id: B22
+    slug: roadmap-rule-misfires
+    title: The roadmap-sentence drop rule (D02) does not fire every time
+    priority: P3
+    layer: adapt
+    status: open
+    fix: Make the drop rule deterministic.
+    test: ATT-15.
+
+  - id: B23
+    slug: table-markup-leak
+    title: Table cells leak markup (<sup>, <br>, **) and split values
+    priority: P1
+    layer: extract
+    status: fixed
+    fixed_in: 23dd760
+    fix: Tables shown as printed images with their captions (D01); cleaned cell text only feeds the model.
+    test: Generic check G04.
+
+  - id: B24
+    slug: math-operation-softened
+    title: Math operations softened ("scaled by" for divided by)
+    priority: P1
+    layer: adapt
+    status: regressed
+    fixed_in: 23dd760
+    fix: State the operation and the sizes explicitly, in body text as well as in equation descriptions.
+    test: ATT-09, ATT-10.
+
+  - id: B25
+    slug: acronyms-reexpanded
+    title: Acronyms expanded again in every paragraph
+    priority: P3
+    layer: adapt
+    status: fixed
+    fixed_in: 23dd760
+    fix: Expand only acronyms the author spells out, once; each request lists those already defined (D09).
+    test: Manual.
+
+  - id: B26
+    slug: small-structure
+    title: Small structure bugs (missing headings, footer spacing)
+    priority: P3
+    layer: structure
+    status: fixed
+    fixed_in: 23dd760
+    fix: '"Attention Visualizations" read as a heading; "Decoder:" inline; footer "by Zeki Works".'
+    test: ATT-12, ATT-14.
+
+  - id: B27
+    slug: generated-typo
+    title: Typos in generated text
+    priority: P3
+    layer: describe
+    status: open
+    fix: Spell-check generated descriptions.
+    test: CLM-17.

@@ -1,0 +1,77 @@
+# Golden assertions for "Context Language Models" (arXiv 2609.37725).
+paper: clm
+asserts:
+  - id: CLM-01
+    bug: B13
+    about: Title and authors are read first
+    must_contain: ['\A\s*Context Language Models', 'Rulin Shao', 'Pang Wei Koh']
+
+  - id: CLM-03
+    bug: B02
+    about: Figure 2 does not claim perfect accuracy everywhere
+    must_not_contain: '(?i)consistent accuracy of one point zero'
+
+  - id: CLM-04
+    bug: B02
+    about: Figure 6 does not give CLM the summary baseline's score
+    must_not_contain: '(?i)between 42\.3 and 44\.6'
+
+  - id: CLM-05
+    bug: B11
+    about: Figure 5 matches the body (CLM matches Summary on TB2.1)
+    must_not_contain: '(?i)outperforms the Summary[^.\n]{0,80}TerminalBench 2\.1'
+
+  - id: CLM-06
+    bug: B02
+    about: GPT-5.6-Sol is the model, not a baseline
+    must_not_contain: '(?i)exceeding the GPT-5\.6-Sol and summary'
+
+  - id: CLM-07
+    bug: B08
+    about: Compute unit is PFLOPs
+    must_not_contain: '1\.34 prefix-reuse FLOPs'
+
+  - id: CLM-08
+    bug: B02
+    about: Equation 1 is concatenation (append), not a context-management operation
+    must_not_contain: '(?i)Equation 1[^\n]{0,120}context-management operation'
+    must_contain: '(?i)Equation 1[^\n]{0,200}(append|concatenat)'
+
+  - id: CLM-09
+    bug: B02
+    about: Equation 4 includes the instruction or skill document s
+    must_contain: '(?i)Equation 4[^\n]{0,200}(instruction|skill)'
+
+  - id: CLM-10
+    bug: B02
+    about: Equation 9 uses the prompt length, not "prefilled" length
+    must_not_contain: ['(?i)sum of updated and generated tokens', '(?i)squares of the prefilled and reused lengths']
+
+  - id: CLM-11
+    bug: B08
+    about: Tokenizer name o200k is kept
+    must_not_contain: '(?i)\b200k tokens'
+
+  - id: CLM-13
+    bug: B20
+    about: One spoken form for model names
+    must_not_contain: '(?i)three point six twenty-seven B'
+
+  - id: CLM-14
+    bug: B16
+    about: Figure 16's board is summarized, not read cell by cell
+    must_not_contain: '(?i)one comma one is'
+
+  - id: CLM-17
+    bug: B27
+    about: Typo
+    must_not_contain: '(?i)\bthe a variety'
+
+  - id: CLM-20
+    bug: null
+    about: Held numbers stay (accuracy before and after RL, BrowseComp-Plus score)
+    must_contain: ['28\.8', '42\.5', '59\.4']
+
+manual:
+  - bug: B03
+    check: Figure 5 and Table 1 (same page) each get one description and one caption, in order.
