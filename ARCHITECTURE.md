@@ -728,11 +728,20 @@ its timings belong to the earlier text.
 The reader player requests `/api/audio?book=...&voice=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
 requested time while decoding audio from elsewhere (measured in Chrome: up to
-±12 s on a 47-minute book, ±60 s on a 4-hour book, persisting until the next
-seek). The MP4 wraps the unchanged MP3 frames in an exact sample table plus a
-LAME-gapless edit list, so the media clock and the audio agree after every seek
-and media time zero is the first cue sample. Browsers that cannot play MP3 in
-MP4, or a file the indexer refuses, fall back to the plain MP3 source.
+±12 s on a 47-minute book, ±60 s on a 4-hour book; in Safari 27: from −5.8
+to +4.7 s on a 35-minute book; persisting until the next seek). The MP4 wraps the
+unchanged MP3 frames in an exact sample table plus a LAME-gapless edit list, so
+the media clock and the audio agree after every seek and media time zero is
+the first cue sample. Its sample entry is QuickTime's `.mp3`, not `mp4a` with
+an MPEG-1/2 audio object type (0x6B or 0x69) in `esds`: Safari refuses those
+and falls back to the plain MP3, but plays `.mp3`, as Chromium does. The
+`<source>` type is a bare `audio/mp4`, because Safari answers "" to every
+MP3-in-MP4 codecs string (`mp3`, `mp4a.69`, `mp4a.6B`) while playing the file;
+a codecs parameter would send it back to the MP3. Measured against the decoded
+audio, Chrome plays this MP4 exactly after every seek, and Safari plays it a
+constant 0.02 s ahead of its clock from the first sample on, so a seek adds no
+error (within 0.01 s). Browsers that cannot play it, or a file the indexer
+refuses, fall back to the plain MP3 source.
 
 Streaming keeps only a little audio ahead, so a slow or busy connection can
 starve the player mid-word. From the first `play` event, `downloadWholeBook()`
@@ -780,7 +789,7 @@ playable but have no synchronized text.
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), and `has_text`. |
-| `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
+| `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, and its Original view's batches. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, with the default a job uses when none is chosen, Claude Code's status line, and per-source errors. |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
@@ -819,7 +828,8 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
   staged document roots; server paths never reach browser markup.
 - Exact reader seeking never re-encodes audio: the MP4 payload is the retained
   MP3's audio frames byte for byte, and its presentation duration equals the
-  decoded sample count the reader cues index.
+  decoded sample count the reader cues index. Its sample entry stays `.mp3` and
+  its `<source>` type names no codec, the only form Safari plays.
 - Exact-version overwrite confirmation uses both input and voice versions.
 - Automatic local audiobook work receives its complete worker set before the child coordinator starts.
 - OpenAI-compatible narration never uploads local reference clips because that schema names a server-owned voice. SSH model workers do receive the staged reference and text.
@@ -880,7 +890,8 @@ start, books in the earlier layout moved into book folders with their audio,
 reader, Original view, and text, idempotently, keeping a backup until they
 play, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
-audio with keep-alive byte ranges, safe book downloads,
+audio in the `.mp3` sample entry Safari plays, with keep-alive byte ranges, safe
+book downloads,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried
 one chunk at a time after running out of memory, the batch-size default for

@@ -120,7 +120,8 @@ start of the sentence.
 The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
-away. Browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
+away. Safari and Chrome both play this MP4, so a clicked word is the word you
+hear; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
 approximate seeking. From the first press of play the whole book downloads in
 the background, with its progress under the title; once it is in, playback moves
 to that copy at the next sentence start, and from then on nothing waits on the

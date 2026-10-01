@@ -4446,6 +4446,9 @@ class ReaderAudioIndexTests(unittest.TestCase):
                 thread.join()
 
         self.assertEqual(kind, "audio/mp4")
+        # Safari plays MP3 in MP4 only from QuickTime's `.mp3` sample entry;
+        # given `mp4a`, it falls back to the plain MP3 and seeks it seconds off.
+        self.assertEqual(mp4_box_payload(table, b"stsd")[12:16], b".mp3")
         sample_sizes = mp4_box_payload(table, b"stsz")
         count = struct.unpack_from(">I", sample_sizes, 8)[0]
         sizes = struct.unpack_from(f">{count}I", sample_sizes, 12)

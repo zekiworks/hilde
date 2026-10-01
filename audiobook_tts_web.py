@@ -2830,7 +2830,6 @@ def mp3_frame_table(data):
         "payload_start": payload_start,
         "payload_end": position,
         "sizes": sizes,
-        "version": version,
         "sample_rate": sample_rate,
         "frame_samples": frame_samples,
         "channels": channels,
@@ -2848,17 +2847,6 @@ def _mp4_full_box(kind, version, flags, *parts):
     return _mp4_box(kind, struct.pack(">I", version << 24 | flags), *parts)
 
 
-def _mp4_descriptor(tag, payload):
-    size = len(payload)
-    return bytes((
-        tag,
-        0x80 | size >> 21 & 0x7F,
-        0x80 | size >> 14 & 0x7F,
-        0x80 | size >> 7 & 0x7F,
-        size & 0x7F,
-    )) + payload
-
-
 def mp3_mp4_header(table):
     """Describe indexed MP3 frames as one MP4 track preceding its raw payload.
 
@@ -2866,6 +2854,11 @@ def mp3_mp4_header(table):
     requested time while decoding audio from elsewhere. An MP4 sample table
     maps every frame exactly. The edit list applies the LAME gapless trim, so
     media time zero is the first narrated sample, the origin of reader cues.
+
+    The sample entry is QuickTime's `.mp3`, not `mp4a` with an `esds`
+    object type: Safari refuses MPEG-1/2 audio in `mp4a` (0x6B and 0x69)
+    and falls back to the coarsely seeking plain MP3, while it and Chromium
+    both play `.mp3`.
     """
     sizes = table["sizes"]
     rate = table["sample_rate"]
@@ -2888,23 +2881,6 @@ def mp3_mp4_header(table):
     length = struct.Struct(">Q" if wide else ">I").pack
     matrix = struct.pack(">9I", 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000)
     payload_size = table["payload_end"] - table["payload_start"]
-    largest = max(sizes)
-    esds = _mp4_full_box(b"esds", 0, 0, _mp4_descriptor(
-        3,
-        struct.pack(">HB", 1, 0)
-        + _mp4_descriptor(
-            4,
-            # MPEG-1 or MPEG-2 audio object type; stream type 5 is audio.
-            bytes((0x6B if table["version"] == 3 else 0x69, 0x15))
-            + largest.to_bytes(3, "big")
-            + struct.pack(
-                ">II",
-                largest * 8 * rate // frame_samples,
-                payload_size * 8 * rate // media_duration,
-            ),
-        )
-        + _mp4_descriptor(6, b"\x02"),
-    ))
     sample_table = (
         _mp4_full_box(
             b"stsd",
@@ -2912,12 +2888,11 @@ def mp3_mp4_header(table):
             0,
             struct.pack(">I", 1),
             _mp4_box(
-                b"mp4a",
+                b".mp3",
                 bytes(6),
                 struct.pack(
                     ">H8xHHHHI", 1, table["channels"], 16, 0, 0, rate << 16
                 ),
-                esds,
             ),
         ),
         _mp4_full_box(b"stts", 0, 0, struct.pack(">III", 1, count, frame_samples)),
@@ -9573,7 +9548,9 @@ function updateEta(done, total, elapsed, streamElapsed) {
 function readerPlayer(book, voice) {
   // Browsers seek VBR MP3 through a coarse table and then report the requested
   // time for audio from elsewhere. The MP4 index maps every frame exactly; the
-  // MP3 remains a fallback for browsers without MP3-in-MP4 playback.
+  // MP3 remains a fallback for browsers without MP3-in-MP4 playback. The MP4's
+  // type names no codec: Safari plays its `.mp3` sample entry but answers ""
+  // to every MP3-in-MP4 codecs string, so one would send it to the MP3.
   const audio = document.createElement("audio");
   audio.controls = true;
   audio.preload = "metadata";
