@@ -477,7 +477,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   background run's outcome appears as a notice. An **In progress** list with
   View/Stop/Cancel appears whenever it holds a job other than the followed
   one. Focus moves to the heading of each card that replaces the steps.
-- **Voices** is a compact table: Preview, Voice name, Prompt, and **Select**,
+- **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
   **Use**, and **Delete** buttons, 50 rows at a time with **Show more**. The
   prompt is the VoiceDesign description
   saved as `description.txt`. Search reads prompts only: every typed word must
@@ -491,7 +491,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   stores exactly that draft under the name and is enabled only while the prompt
   matches the one heard; saving under another name keeps both voices. **Stop**
   cancels a draft.
-- **Listen** is a compact table: Title, Duration, Source name, and **Listen**
+- **Listen** is a compact table: Title, Duration, Source name, Modified, and **Listen**
   and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
   only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
@@ -629,11 +629,11 @@ playable but have no synchronized text.
 | `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
-| `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, and a preview version that changes when the clip is replaced. |
+| `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later is not a change. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, read from the first line of a block since a figure printed above the title rides in the heading's block, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, and narrator; entries are cached until the MP3 or its version record changes. |
+| `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, read from the first line of a block since a figure printed above the title rides in the heading's block, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, narrator, and `modified`, the MP3's modification time in Unix seconds, which changes only when the book is made again; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
 | `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, with the default a job uses when none is chosen, Claude Code's status line, and per-source errors. |

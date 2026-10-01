@@ -91,7 +91,7 @@ restart, submit unfinished document/voice pairs again to resume their durable
 ## Listen
 
 Open **Listen** to find a completed audiobook in a table of titles, durations,
-and source names. A title is the book's first heading, or its document's name
+source names, and when each was last made. A title is the book's first heading, or its document's name
 when that heading is a section such as Abstract. Search looks only at titles;
 every word you type must
 appear, in any order and case. **Delete** removes an audiobook and its
@@ -145,7 +145,8 @@ that does not establish that the generated file is silent.
 ## Voices
 
 **Voices** lists every saved voice in a compact table: Preview, Voice name,
-Prompt, and **Select**, **Use**, and **Delete** buttons, 50 rows at a time. The
+Prompt, Modified (when its sample, transcript, or prompt last changed), and
+**Select**, **Use**, and **Delete** buttons, 50 rows at a time. The
 prompt is the voice description given to VoiceDesign, and search looks only at
 prompts: every word you type must appear, in any order and case, so
 `warm british female` finds voices whose prompt contains all three. The
