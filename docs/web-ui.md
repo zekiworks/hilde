@@ -111,7 +111,10 @@ The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
 away. Browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
-approximate seeking. Each sentence cue takes precedence over a stray word cue,
+approximate seeking. From the first press of play the whole book downloads in
+the background, with its progress under the title; once it is in, playback moves
+to that copy at the next sentence start, and from then on nothing waits on the
+network, seeking included. Each sentence cue takes precedence over a stray word cue,
 so a word alignment error never outlives its sentence. **Follow along** turns
 the text like pages: it scrolls only once the playing sentence leaves the
 screen, bringing it a quarter of the way down, so a figure stays in view while

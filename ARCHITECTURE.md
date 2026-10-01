@@ -598,6 +598,16 @@ LAME-gapless edit list, so the media clock and the audio agree after every seek
 and media time zero is the first cue sample. Browsers that cannot play MP3 in
 MP4, or a file the indexer refuses, fall back to the plain MP3 source.
 
+Streaming keeps only a little audio ahead, so a slow or busy connection can
+starve the player mid-word. From the first `play` event, `downloadWholeBook()`
+fetches the chosen source (`currentSrc`) in full, showing progress under the
+title, and keeps it as a Blob. `playDownloadedBook()` then moves playback to
+its object URL at the next sentence cue or pause, restoring the position and
+play state on `loadedmetadata`; the bytes are the same, so cues and exact
+seeking are unchanged, and nothing later waits on the network. A failed
+download leaves playback streaming. Leaving the book aborts the download and
+revokes the URL.
+
 Clicking a word seeks to it, starting up to 0.1 s before its aligned onset but
 never inside the previous word or sentence; clicking elsewhere in a sentence or
 its attached visual seeks to its sentence cue. The upcoming word is highlighted

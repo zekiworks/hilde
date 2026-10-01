@@ -8316,6 +8316,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div class="player-title">
             <h2 id="reader-title" tabindex="-1">Audiobook</h2>
             <span id="reader-meta" class="note"></span>
+            <span id="reader-download" class="note" aria-live="polite"></span>
           </div>
           <div class="player-actions">
             <label class="check note"><input id="reader-follow" type="checkbox" checked>
@@ -8458,6 +8459,8 @@ let etaPhase = null, etaPhaseStarted = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
 let readerBlocks = [], readerWordElements = [], readerFrame = 0;
 let activeReaderBlock = -1, activeReaderWord = -1;
+// The whole book, downloaded from the first press of play.
+let readerDownload = null;
 // One shared player keeps hundreds of preview buttons cheap.
 const previewAudio = new Audio();
 let previewing = "";
@@ -8723,11 +8726,65 @@ function readerPlayer(name) {
   return audio;
 }
 
+// Streaming fetches the book a little ahead of playback, so a slow or busy
+// connection can starve the player mid-word. From the first press of play
+// the whole file downloads in the background; once it is in, playback moves
+// to that copy at the next sentence start or pause, and never waits again.
+function downloadWholeBook(audio) {
+  if (readerDownload || !audio.currentSrc || audio !== readerAudio) return;
+  const download = readerDownload = { controller: new AbortController(), audio, url: "", swapped: false };
+  const status = $("reader-download");
+  (async () => {
+    try {
+      const response = await fetch(audio.currentSrc, { signal: download.controller.signal });
+      if (!response.ok || !response.body) throw new Error(response.statusText);
+      const total = Number(response.headers.get("Content-Length")) || 0;
+      const reader = response.body.getReader();
+      const parts = [];
+      let received = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value); received += value.length;
+        if (total) setText(status, `Downloading the book: ${Math.floor(received * 100 / total)}%`);
+      }
+      if (readerDownload !== download) return;
+      download.url = URL.createObjectURL(
+        new Blob(parts, { type: response.headers.get("Content-Type") || "" })
+      );
+      setText(status, "Book downloaded");
+      if (audio.paused) playDownloadedBook();
+    } catch (error) {
+      // Playback keeps streaming as before.
+      if (readerDownload === download && error.name !== "AbortError") setText(status, "");
+    }
+  })();
+}
+function playDownloadedBook() {
+  const download = readerDownload;
+  if (!download || !download.url || download.swapped || download.audio !== readerAudio) return;
+  download.swapped = true;
+  const audio = download.audio, time = audio.currentTime, playing = !audio.paused;
+  // The same bytes, so cue times and exact seeking stay as they were.
+  audio.replaceChildren();
+  audio.addEventListener("loadedmetadata", () => {
+    audio.currentTime = time;
+    if (playing) audio.play().catch(() => {});
+  }, { once: true });
+  audio.src = download.url;
+}
+
 function clearReader() {
   cancelAnimationFrame(readerFrame); readerFrame = 0;
   readerAudio = null; readerCues = []; readerWordCues = [];
   readerSampleRate = 0; readerBlocks = []; readerWordElements = [];
   activeReaderBlock = -1; activeReaderWord = -1;
+  if (readerDownload) {
+    readerDownload.controller.abort();
+    if (readerDownload.url) URL.revokeObjectURL(readerDownload.url);
+    readerDownload = null;
+  }
+  $("reader-download").textContent = "";
   // Removing the audio element also stops its playback.
   $("artifact-player").replaceChildren();
   $("reader-content").replaceChildren();
@@ -8991,6 +9048,8 @@ function updateReaderHighlight() {
     parts[0]?.closest(".reader-paragraph").classList.add("active");
     if (parts.length && $("reader-follow").checked && !readerAudio.paused)
       followReaderSentence(parts[0]);
+    // A sentence start is a natural pause, so switching sources there is not heard.
+    if (readerDownload?.url && !readerDownload.swapped) playDownloadedBook();
   }
   const nextWord = wordCue ? wordCue.position : -1;
   if (nextWord === activeReaderWord) return;
@@ -9050,7 +9109,9 @@ async function openAudiobook(name, focus) {
   audio.addEventListener("seeking", updateReaderHighlight);
   audio.addEventListener("play", () => {
     if (!readerFrame) readerFrame = requestAnimationFrame(followReaderAudio);
+    downloadWholeBook(audio);
   });
+  audio.addEventListener("pause", () => playDownloadedBook());
   try {
     const payload = await jsonRequest(
       "/api/reader?name=" + encodeURIComponent(name)
