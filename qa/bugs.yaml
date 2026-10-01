@@ -154,9 +154,11 @@ bugs:
     title: Approved descriptions are regenerated on every run and lose detail
     priority: P2
     layer: pipeline
-    status: open
+    status: fixed
+    fixed_in: b98bf9d
     fix: Pin approved descriptions by PDF sha256 plus figure or table number; regenerate only on request. Keep a golden file per paper.
     test: ATT-11, ATT-21.
+    notes: Fixed by D12 instead of pinning. A book's text is written once; a new voice reads it with no model call, and only Recreate writes it again. ATT-11 and ATT-21 moved to B13 as quality checks on fresh builds.
 
   - id: B15
     slug: equation-order-hidden

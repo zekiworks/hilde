@@ -75,4 +75,4 @@ asserts:
   - id: BERT-15
     bug: B09
     about: Table 6 is read under Effect of Model Size, before the Conclusion
-    order: ['(?i)Effect of Model Size', 'Table 6', '(?m)^Conclusion']
+    order: ['(?i)Effect of Model Size', 'Table 6', '(?m)^(\d+(\.\d+)*\.?\s+)?Conclusion']

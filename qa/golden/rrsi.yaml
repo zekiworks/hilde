@@ -42,7 +42,7 @@ asserts:
   - id: RRSI-08
     bug: B10
     about: Peng's student-researcher note follows the author list, before the Introduction
-    order: ['(?i)student researcher', '(?m)^Introduction\s*$']
+    order: ['(?i)student researcher', '(?m)^(\d+(\.\d+)*\.?\s+)?Introduction\s*$']
 
   - id: RRSI-09
     bug: B13

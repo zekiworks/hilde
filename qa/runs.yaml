@@ -72,3 +72,17 @@ runs:
     output_file: outputs/R6-clm.txt
     reviewers: [claude]
     notes: Astra's review pending.
+
+  - id: R7
+    date: 2026-10-01
+    papers: [attention]
+    hilde_commit: e0c8cf1
+    model: lm-studio/gemma-4-31B-it
+    voice: Eir, then Bragi through Change voice
+    pdf_sha256: bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697
+    output_file: null   # a book folder in a throwaway library, attention-is-all-you-need--bdfaa68d8984
+    reviewers: [claude]
+    notes: >
+      Fresh build for the storage and re-voice verification. narration.json sha256
+      8f50a16eb86968ffd2420a0b4c207e51d092de99184ff17825a374582b67edd3, unchanged by the Bragi
+      voice. qa.py check with book folders: 25 of 28; fails G09 and ATT-03 (R7-01) and ATT-21 (R7-02).

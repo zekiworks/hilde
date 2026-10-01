@@ -17,7 +17,7 @@ Write in English. Keep every record self-contained: another agent must be able t
 | `questions.yaml` | Open questions for humans (Q01…) | Anyone asks; humans answer |
 | `voices.yaml` | Narrator recipes and their status | Can |
 | `qa.py` | `validate`, `check`, `report`, `next` | Fixer |
-| `outputs/` | Hilde output text per run (`<run>-<paper>.txt`) | Whoever produced the run |
+| `outputs/` | Legacy: copied follow-along text from runs before book folders | Whoever produced the run |
 
 ## IDs
 
@@ -31,8 +31,8 @@ Cite IDs everywhere: commit messages ("Fix B05: detect 'Table N |' captions"), P
 
 ## Workflow
 
-1. **Run.** Generate the audiobook. Save the follow-along text to `outputs/<run>-<paper>.txt`. Add the run to `runs.yaml` with the Hilde commit, model and PDF sha256.
-2. **Check.** `python qa/qa.py check outputs/R7-foo.txt --paper foo --json`. Generic structural checks run on every paper; golden assertions run when `golden/<paper>.yaml` exists.
+1. **Run.** Generate the audiobook. Its book folder (`Audiobooks/<slug>--<hash12>/`) is the output: `narration.json` is exactly what every voice reads, and `book.json` records the source hash, Hilde version, commit and model. Add the run to `runs.yaml` with those values; add the PDF's hash to `papers.yaml` if it is new.
+2. **Check.** `python qa/qa.py check Audiobooks/<slug>--<hash12>/ --json`. The paper is inferred from the source hash. Generic checks run on every paper (typed ones use passage types and sources; G10 checks the folder's hashes and voices); golden assertions run when `golden/<paper>.yaml` exists. Plain text files still work for older runs.
 3. **Review.** Compare the output with the source PDF. Append findings to `findings.jsonl` with status `reported`. Link each to an existing bug class; if none fits, add a class with status `proposed`.
 4. **Cross-check.** A second reviewer, ideally a different model, re-checks against the PDF and sets `verified` plus its name in `by`. If it disagrees, set `disputed` and explain in `notes`; do not delete the record.
 5. **Fix.** The fixer runs `python qa/qa.py next`, takes the top open class, fixes it, adds or updates golden assertions, and sets `fixed` with `fixed_in` (commit) on each finding it addressed. A class becomes `fixed` only when all its findings are fixed and the golden suite passes.

@@ -1,9 +1,13 @@
 # Source papers used in QA. `id` is the slug used in runs, findings and golden files.
+# sha256: hashes (full, or at least the 12-character folder prefix) of the exact PDFs known to be this paper.
+# `qa.py check <book folder>` uses them to pick the golden file.
 papers:
   - id: attention
     title: Attention Is All You Need
     url: https://arxiv.org/pdf/1706.03762
     version: v7
+    sha256:
+      - bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697   # Attention.pdf (same bytes as "…New.pdf")
     quirks:
       - English-to-French BLEU is 41.8 in the abstract and Table 2 but 41.0 in Section 6.1. Keep both (D07).
       - Footnotes 4 and 5 are scientific; the contribution and affiliation notes (∗ † ‡) are author notes.
@@ -17,12 +21,16 @@ papers:
   - id: procedural-graphs
     title: null   # see Q04
     url: https://arxiv.org/pdf/2609.09153v1
+    sha256:
+      - 90ffc33b32c009846a183edab09b521cde4d5342ccbfafa71cd00bd2186ddb9a   # R3
     quirks:
       - Figure 5 round labels disagree with the text. Not Hilde's bug (keep).
 
   - id: bert
     title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
     url: https://arxiv.org/pdf/1810.04805
+    sha256:
+      - 5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e   # R4; the migrated book's book.json
     quirks:
       - Section on model size says "all four datasets" for Table 6, which has three tasks. Keep.
       - Two-column layout; footnotes in columns.
@@ -30,6 +38,8 @@ papers:
   - id: rrsi
     title: "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses"
     url: https://regularized-rsi.com/assets/RRSI.pdf
+    sha256:
+      - 2dd8e5b5c62bbb5a125a75537ded2f0daae9a3e43d5d414d65ee9b9fb9e18574   # R5
     quirks:
       - Google template: captions are written "Table 1 |" and "Figure 3 |".
       - Abstract says 30% fewer policy tokens; 2.42 vs 3.80 million is about 36%. Keep.
@@ -40,6 +50,8 @@ papers:
   - id: clm
     title: Context Language Models
     url: https://arxiv.org/pdf/2609.37725
+    sha256:
+      - ac5c926814434d8ad2f499183cd2a81e53b4c14f327587f99980ade9157db01b   # R6
     quirks:
       - Figure 5 and Table 1 share a page.
       - The acknowledgments name contains the ligature character U+0133 in the PDF text layer.

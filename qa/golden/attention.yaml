@@ -9,12 +9,12 @@ asserts:
   - id: ATT-01
     bug: B10
     about: Footnote 4 is read right after "extremely small gradients", before the Multi-Head Attention heading
-    order: ['extremely small gradients', 'why the dot products get large', '(?m)^Multi-Head Attention\s*$']
+    order: ['extremely small gradients', 'why the dot products get large', '(?m)^(\d+(\.\d+)*\.?\s+)?Multi-Head Attention\s*$']
 
   - id: ATT-02
     bug: B10
     about: Footnote 5 (TFLOPS values) is read after "capacity of each GPU", before the Model Variations heading
-    order: ['capacity of each GPU', '9\.5 (teraflops|trillion|TFLOPS)', '(?m)^Model Variations\s*$']
+    order: ['capacity of each GPU', '9\.5 (teraflops|trillion|TFLOPS)', '(?m)^(\d+(\.\d+)*\.?\s+)?Model Variations\s*$']
 
   - id: ATT-03
     bug: B18
@@ -57,14 +57,14 @@ asserts:
     must_not_contain: '(?i)\bof one dimension\b'
 
   - id: ATT-11
-    bug: B14
+    bug: B13
     about: Approved Table 3 description keeps parameters, perplexities and the per-wordpiece caveat
     must_contain: ['(?i)\b65 ?(million|M)\b|sixty-five million', '(?i)\b213 ?(million|M)\b|two hundred (and )?thirteen million', '4\.92', '4\.33', '(?i)per[- ]?word[- ]?piece']
 
   - id: ATT-12
     bug: B26
     about: '"Attention Visualizations" is read as a heading'
-    must_contain: '(?m)^Attention Visualizations\s*$'
+    must_contain: '(?m)^(\d+(\.\d+)*\.?\s+)?Attention Visualizations\s*$'
 
   - id: ATT-13
     bug: B13
@@ -97,7 +97,7 @@ asserts:
     must_not_contain: '\b(dk|dv)\b'
 
   - id: ATT-21
-    bug: B14
+    bug: B13
     about: Approved Figure 4 description keeps both words "its" attends to (checked against the image)
     must_contain: '(?i)\bits\b[^\n]{0,120}\blaw\b[^\n]{0,60}\bapplication\b'
 

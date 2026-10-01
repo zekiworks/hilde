@@ -2,9 +2,14 @@
 """Hilde QA tool. Read AGENTS.md first.
 
   python qa/qa.py validate                       check every QA file for schema and broken references
-  python qa/qa.py check OUTPUT [--paper ID]      generic checks + golden assertions on one output text
+  python qa/qa.py check TARGET [--paper ID]      generic checks + golden assertions on one book
   python qa/qa.py report [--bug B02]             markdown summary (paste into the human checklist)
   python qa/qa.py next                           highest-priority unfixed bug class with its open findings
+
+TARGET is a book folder (Audiobooks/<slug>--<hash12>/), its narration.json, or a plain text file.
+For a book, the checked text is exactly what every voice reads: the non-empty passage texts joined by
+blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10), and the
+paper is inferred from book.json's source_sha256 (papers.yaml `sha256`).
 
 Add --json to check, report or next for machine-readable output. `check` exits 1 when anything fails.
 Requires PyYAML (pip install pyyaml).
@@ -12,6 +17,8 @@ Requires PyYAML (pip install pyyaml).
 from __future__ import annotations
 
 import argparse
+import bisect
+import hashlib
 import json
 import re
 import sys
@@ -65,6 +72,71 @@ def as_list(x):
     return x if isinstance(x, list) else [x]
 
 
+class Target:
+    """What `check` looks at: a book folder, a narration.json, or a plain text file."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.folder = None
+        self.book = None
+        self.passages = None
+        self.narration_bytes = None
+        narration = None
+        if self.path.is_dir():
+            self.folder = self.path
+            narration = self.path / "narration.json"
+            if not narration.exists():
+                raise SystemExit(f"{self.path}: no narration.json in this folder")
+        elif self.path.suffix == ".json":
+            narration = self.path
+            if self.path.name == "narration.json":
+                self.folder = self.path.parent
+        if narration is None:
+            self.text = self.path.read_text(encoding="utf-8")
+            self.starts = None
+            return
+        self.narration_bytes = narration.read_bytes()
+        data = json.loads(self.narration_bytes)
+        self.passages = data["passages"] if isinstance(data, dict) else data
+        if self.folder and (self.folder / "book.json").exists():
+            self.book = json.loads((self.folder / "book.json").read_text(encoding="utf-8"))
+        # Exactly what every voice reads (Hilde's narration_text).
+        spoken = [p for p in self.passages if p.get("text")]
+        self.text, self.starts, self.spoken, pos = "", [], spoken, 0
+        parts = []
+        for p in spoken:
+            self.starts.append(pos)
+            parts.append(p["text"])
+            pos += len(p["text"]) + 2
+        self.text = "\n\n".join(parts)
+
+    def where(self, pos):
+        """Human location of a character offset: a line, or a passage with its page."""
+        if self.starts is None:
+            return f"line {self.text.count(chr(10), 0, pos) + 1}"
+        p = self.spoken[bisect.bisect_right(self.starts, pos) - 1]
+        return f"passage {p.get('id')} (p. {p.get('page')})"
+
+    def paper(self):
+        hashes = []
+        if self.book and self.book.get("source_sha256"):
+            hashes.append(self.book["source_sha256"])
+        if self.folder:
+            m = re.search(r"--([0-9a-f]{12})$", self.folder.name)
+            if m:
+                hashes.append(m.group(1))
+        for h in hashes:
+            for paper in load_yaml("papers.yaml")["papers"]:
+                for s in as_list(paper.get("sha256")):
+                    if h.startswith(str(s)) or str(s).startswith(h):
+                        return paper["id"]
+        for r in load_yaml("runs.yaml")["runs"]:  # legacy: text files listed in runs.yaml
+            of = r.get("output_file")
+            if of and (ROOT / of).resolve() == self.path.resolve():
+                return as_list(r["papers"])[0]
+        return None
+
+
 # ---------------------------------------------------------------- validate
 def cmd_validate(_args):
     errors = []
@@ -96,6 +168,10 @@ def cmd_validate(_args):
             errors.append(f"bugs.yaml {b['id']}: priority must be P0..P3")
         if b.get("status") not in BUG_STATUS:
             errors.append(f"bugs.yaml {b['id']}: status '{b.get('status')}' not in {sorted(BUG_STATUS)}")
+    for p in papers:
+        for s in as_list(p.get("sha256")):
+            if not re.fullmatch(r"[0-9a-f]{12,64}", str(s)):
+                errors.append(f"papers.yaml {p['id']}: sha256 '{s}' must be 12 to 64 lowercase hex characters")
     for r in runs:
         for p in as_list(r.get("papers")):
             if p not in paper_ids:
@@ -163,21 +239,31 @@ def cmd_validate(_args):
 
 # ---------------------------------------------------------------- generic checks
 LABEL = re.compile(r"^(Figure|Table)\s+(\d+)\b")
+CAPTION_LABEL = re.compile(r"^\W*(Figure|Table)\s+(\d+)\b")
 DESC = re.compile(r"^\s*description\s*$", re.I)
 TERMINAL = tuple('.!?:;)"”’\'»]')
+STOP = set("""about above after again against also among because been before being below between both
+could does doing down during each from further have having here into itself just more most must once only
+other ours over same should some such than that their them then there these they this those through under
+until very were what when where which while with within would your""".split())
 
 
-def line_of(text, pos):
-    return text.count("\n", 0, pos) + 1
+def content_words(s):
+    s = re.sub(r"!\[[^\]]*\]\([^)]*\)|<[^>]+>|[_*>#`]", " ", s)
+    return {w for w in re.findall(r"[a-z][a-z\-]{3,}", s.lower()) if w not in STOP}
 
 
-def generic_checks(text):
-    """Paper-independent structural checks. Each returns (id, bug, about, hits[(line, snippet)])."""
-    lines = text.splitlines()
+def sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def generic_checks(t: Target):
+    """Paper-independent checks. Each returns (id, bug, about, hits[(where, snippet)])."""
+    text = t.text
     results = []
 
     def regex_check(cid, bug, about, pattern, flags=re.M):
-        hits = [(line_of(text, m.start()), m.group(0).strip()[:80]) for m in re.finditer(pattern, text, flags)]
+        hits = [(t.where(m.start()), m.group(0).strip()[:80]) for m in re.finditer(pattern, text, flags)]
         results.append((cid, bug, about, hits))
 
     regex_check("G01", "B04", 'Bare "Table" or "Figure" label with no number or caption', r"^(Table|Figure)\s*$")
@@ -187,48 +273,129 @@ def generic_checks(text):
     regex_check("G04", "B23", "Markup leaked into text", r"<sup>|</sup>|<br>|\*\*", 0)
     regex_check("G05", "B20", "Ligature character (needs NFKC)", "[ﬀ-ﬆĲĳ]", 0)
 
-    # G06: body paragraph (12+ words) that ends without final punctuation
+    # G06: passage or paragraph (12+ words) that ends without final punctuation
     hits = []
-    nonempty = [(n, l.strip()) for n, l in enumerate(lines, 1) if l.strip()]
-    for i, (n, s) in enumerate(nonempty):
-        if "\t" in s or " · " in s:  # raw table rows (G04 covers them) and the app's header line
-            continue
-        if re.match(r"(Part|Appendix)\b", s):  # headings; G03 covers the "Part" prefix
-            continue
-        following = [t for _, t in nonempty[i + 1:i + 3]]
-        if following and DESC.match(following[0]):
-            following = following[1:]
-        if following and following[0].startswith("Equation"):  # sentence that leads into an equation
-            continue
-        if len(s.split()) >= 12 and not s.endswith(TERMINAL):
-            hits.append((n, "…" + s[-60:]))
+    if t.passages is not None:
+        spoken = [p for p in t.passages if p.get("text")]
+        for i, p in enumerate(spoken):
+            s = p["text"].strip()
+            if p.get("type") == "heading":
+                continue
+            nxt = spoken[i + 1].get("type") if i + 1 < len(spoken) else None
+            if nxt == "equation":  # sentence that leads into an equation
+                continue
+            if len(s.split()) >= 12 and not s.endswith(TERMINAL):
+                hits.append((f"passage {p.get('id')} (p. {p.get('page')})", "…" + s[-60:]))
+    else:
+        nonempty = [(n, l.strip()) for n, l in enumerate(text.splitlines(), 1) if l.strip()]
+        for i, (n, s) in enumerate(nonempty):
+            if "\t" in s or " · " in s:  # raw table rows (G04 covers them) and the app's header line
+                continue
+            if re.match(r"(Part|Appendix)\b", s):  # headings; G03 covers the "Part" prefix
+                continue
+            following = [x for _, x in nonempty[i + 1:i + 3]]
+            if following and DESC.match(following[0]):
+                following = following[1:]
+            if following and following[0].startswith("Equation"):
+                continue
+            if len(s.split()) >= 12 and not s.endswith(TERMINAL):
+                hits.append((f"line {n}", "…" + s[-60:]))
     results.append(("G06", "B06", "Paragraph ends mid-sentence (split, cut caption or lost text)", hits))
 
-    # G07: description label vs the next caption label inside the same description block
+    # G07: a description's figure or table number differs from its caption's
     hits = []
-    blocks, current = [], None
-    for n, line in enumerate(lines, 1):
-        if DESC.match(line):
-            current = []
-            blocks.append(current)
-        elif current is not None and line.strip():
-            current.append((n, line.strip()))
-    for block in blocks:
-        labeled = [(n, LABEL.match(s)) for n, s in block]
-        labeled = [(n, m) for n, m in labeled if m]
-        if not block or not labeled or labeled[0][0] != block[0][0]:
-            continue  # description has no number of its own
-        first = labeled[0][1]
-        for n, m in labeled[1:]:
-            if (m.group(1), m.group(2)) != (first.group(1), first.group(2)):
-                hits.append((block[0][0], f"description says {first.group(0)}, caption at line {n} says {m.group(0)}"))
-            break
+    if t.passages is not None:
+        for p in t.passages:
+            if p.get("type") not in ("figure", "table"):
+                continue
+            caps = [CAPTION_LABEL.match(s.get("text", "")) for s in p.get("sources", []) if s.get("type") == "caption"]
+            caps = [m for m in caps if m]
+            if not caps:
+                continue
+            said = LABEL.match(p.get("text", "").strip())
+            want = (caps[0].group(1), caps[0].group(2))
+            if not said:
+                hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
+                             f"description does not name {want[0]} {want[1]}"))
+            elif (said.group(1), said.group(2)) != want:
+                hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
+                             f"description says {said.group(0)}, caption says {want[0]} {want[1]}"))
+    else:
+        lines = text.splitlines()
+        blocks, current = [], None
+        for n, line in enumerate(lines, 1):
+            if DESC.match(line):
+                current = []
+                blocks.append(current)
+            elif current is not None and line.strip():
+                current.append((n, line.strip()))
+        for block in blocks:
+            labeled = [(n, LABEL.match(s)) for n, s in block]
+            labeled = [(n, m) for n, m in labeled if m]
+            if not block or not labeled or labeled[0][0] != block[0][0]:
+                continue  # description has no number of its own
+            first = labeled[0][1]
+            for n, m in labeled[1:]:
+                if (m.group(1), m.group(2)) != (first.group(1), first.group(2)):
+                    hits.append((f"line {block[0][0]}",
+                                 f"description says {first.group(0)}, caption at line {n} says {m.group(0)}"))
+                break
     results.append(("G07", "B03", "Description labeled with a different number than its caption", hits))
+
+    if t.passages is None:
+        return results
+
+    # G09: a footnote attached to a passage leaves little or no trace in the passage's text (heuristic)
+    hits = []
+    for p in t.passages:
+        spoken = content_words(p.get("text", ""))
+        for s in p.get("sources", []):
+            if s.get("type") != "footnote":
+                continue
+            words = content_words(s.get("text", ""))
+            if len(words) < 3:
+                continue
+            kept = len(words & spoken) / len(words)
+            if kept < 0.6:
+                note = re.sub(r"\s+", " ", re.sub(r"[_*>]", "", s["text"])).strip()
+                hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
+                             f"{kept:.0%} of the footnote's words kept: {note[:60]}"))
+    results.append(("G09", "B13", "Footnote dropped from the passage that carries it (word-overlap heuristic)", hits))
+
+    # G10: book folder integrity (only for book folders)
+    if t.book is not None:
+        hits = []
+        b = t.book
+        actual = sha256_hex(t.narration_bytes)
+        if b.get("narration_sha256") != actual:
+            hits.append(("book.json", f"narration_sha256 {str(b.get('narration_sha256'))[:12]}… != narration.json {actual[:12]}…"))
+        # Books moved from the layout before book folders never recorded a version stamp;
+        # Hilde writes null there rather than guess (migrated_from names the source).
+        stamp = () if b.get("migrated_from") else ("hilde_version", "prompt_hash")
+        for key in ("source_sha256", "created_at", "model", *stamp):
+            if not b.get(key):
+                hits.append(("book.json", f"missing {key}"))
+        m = re.search(r"--([0-9a-f]{12})$", t.folder.name) if t.folder else None
+        if m and b.get("source_sha256") and not b["source_sha256"].startswith(m.group(1)):
+            hits.append(("folder", f"name hash {m.group(1)} does not match source_sha256"))
+        for v in b.get("voices", []):
+            if v.get("status") == "ready" and v.get("narration_sha256") != b.get("narration_sha256"):
+                hits.append((f"voice {v.get('name')}", "status ready but made from different narration (should be stale)"))
+            vdir = t.folder / "voices" / str(v.get("name")) if t.folder else None
+            if vdir and (t.folder / "voices").exists() and v.get("status") == "ready":
+                for f in ("audio.mp3", "timings.json"):
+                    if not (vdir / f).exists():
+                        hits.append((f"voice {v.get('name')}", f"missing {f}"))
+                audio = vdir / "audio.mp3"
+                if audio.exists() and v.get("audio_sha256") and sha256_hex(audio.read_bytes()) != v["audio_sha256"]:
+                    hits.append((f"voice {v.get('name')}", "audio.mp3 does not match audio_sha256"))
+        results.append(("G10", None, "Book folder integrity (hashes, version stamp, voices)", hits))
     return results
 
 
 # ---------------------------------------------------------------- golden
-def golden_checks(text, golden):
+def golden_checks(t: Target, golden):
+    text = t.text
     results = []
     for a in golden.get("asserts", []):
         problems = []
@@ -238,7 +405,7 @@ def golden_checks(text, golden):
         for pat in as_list(a.get("must_not_contain")):
             m = re.search(pat, text)
             if m:
-                problems.append(f"found at line {line_of(text, m.start())}: {m.group(0).strip()[:80]!r}")
+                problems.append(f"found at {t.where(m.start())}: {m.group(0).strip()[:80]!r}")
         if "order" in a:
             positions = []
             for pat in a["order"]:
@@ -248,43 +415,42 @@ def golden_checks(text, golden):
                 missing = [p for p, pos in zip(a["order"], positions) if pos is None]
                 problems.append(f"order: not found: {missing}")
             elif positions != sorted(positions):
-                problems.append("order: found out of order at lines "
-                                + ", ".join(str(line_of(text, p)) for p in positions))
+                problems.append("order: found out of order at " + ", ".join(t.where(p) for p in positions))
         results.append((a["id"], a.get("bug"), a.get("about", ""), problems))
     return results
 
 
 def cmd_check(args):
-    path = Path(args.output)
-    text = path.read_text(encoding="utf-8")
-    paper = args.paper
-    if paper is None:  # infer from runs.yaml output_file
-        for r in load_yaml("runs.yaml")["runs"]:
-            of = r.get("output_file")
-            if of and (ROOT / of).resolve() == path.resolve():
-                paper = as_list(r["papers"])[0]
+    t = Target(args.output)
+    paper = args.paper or t.paper()
     golden = load_golden(paper) if paper else None
 
-    generic = generic_checks(text)
-    gold = golden_checks(text, golden) if golden else []
+    generic = generic_checks(t)
+    gold = golden_checks(t, golden) if golden else []
     fails = sum(1 for g in generic if g[3]) + sum(1 for g in gold if g[3])
+    kind = "book" if t.book is not None else ("narration" if t.passages is not None else "text")
 
     if args.json:
         print(json.dumps({
-            "output": str(path), "paper": paper,
+            "target": str(t.path), "kind": kind, "paper": paper,
+            "book": {k: t.book.get(k) for k in ("source_sha256", "hilde_version", "git_commit", "model",
+                                                 "prompt_hash", "narration_sha256")} if t.book else None,
             "generic": [{"id": i, "bug": b, "about": a, "pass": not h,
-                         "hits": [{"line": n, "text": s} for n, s in h[:10]], "count": len(h)}
+                         "hits": [{"at": w, "text": s} for w, s in h[:10]], "count": len(h)}
                         for i, b, a, h in generic],
             "golden": [{"id": i, "bug": b, "about": a, "pass": not p, "problems": p} for i, b, a, p in gold],
+            "manual": golden.get("manual", []) if golden else [],
             "failed": fails,
         }, ensure_ascii=False, indent=2))
     else:
-        print(f"{path.name}  paper={paper or '?'}" + ("" if golden else "  (no golden file)"))
+        print(f"{t.path.name}  ({kind})  paper={paper or '?'}" + ("" if golden else "  (no golden file)"))
+        if t.book:
+            print(f"Hilde {t.book.get('hilde_version')} @ {str(t.book.get('git_commit'))[:7]}, model {t.book.get('model')}")
         print("\nGeneric checks")
         for i, b, a, h in generic:
-            print(f"  {'PASS' if not h else 'FAIL'} {i} [{b}] {a}" + (f"  ({len(h)})" if h else ""))
-            for n, s in h[:5]:
-                print(f"       line {n}: {s}")
+            print(f"  {'PASS' if not h else 'FAIL'} {i} [{b or '-'}] {a}" + (f"  ({len(h)})" if h else ""))
+            for w, s in h[:5]:
+                print(f"       {w}: {s}")
         if gold:
             print("\nGolden assertions")
             for i, b, a, p in gold:
@@ -361,7 +527,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate")
     c = sub.add_parser("check")
-    c.add_argument("output")
+    c.add_argument("output", help="book folder, narration.json, or plain text file")
     c.add_argument("--paper")
     c.add_argument("--json", action="store_true")
     r = sub.add_parser("report")
