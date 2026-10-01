@@ -87,7 +87,7 @@ BOOK_SCHEMA = 1
 # Bump whenever the paragraphs or batches a job adapts change, through
 # with_title_heading(), join_pdf_pages(), narrated_source_paragraphs(), or
 # paper_batches(): checkpoints and the reader number paragraphs.
-EXTRACTION_SCHEMA = 11
+EXTRACTION_SCHEMA = 12
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -242,14 +242,6 @@ SECTION_NUMBER_PATTERN = re.compile(
     r"^(?:(?:chapter|section)[ \t]+)?"
     r"(?:\d+(?:\.\d+)*|[ivxlcdm]+)[.)]?[ \t]+",
     flags=re.IGNORECASE,
-)
-# An outline number opening a Markdown heading, as in "## 3.2 Attention",
-# "# **4 Why Self-Attention**", or "# **5** **Training**", with the emphasis
-# around it. A part or chapter numbered in words or Roman numerals keeps it.
-HEADING_NUMBER_PATTERN = re.compile(
-    r"^(?P<hashes>#{1,6}[ \t]+)"
-    r"(?:(?P<own>\*\*|__)\d+(?:\.\d+)*\.?(?P=own)|(?P<open>\*\*|__)?\d+(?:\.\d+)*\.?)"
-    r"[ \t]+(?=\S)"
 )
 # A contents entry ends in its page number: after dot leaders, in a table's
 # last cell, or after its title. Front matter may number pages in roman.
@@ -4078,29 +4070,33 @@ def _describes_visual(kinds):
     return bool(kinds & FIGURE_PART_KINDS) and kinds <= FIGURE_PART_KINDS | {"caption"}
 
 
+# A heading that opens with the paper's own number or appendix letter, as
+# "4 Why Self-Attention", "3.1. A Regularization View", "B. Baseline
+# Methods", or "II. Results". A lone capital needs its period, so "A Short
+# Paper" is a title, not appendix A.
+NUMBERED_HEADING_PATTERN = re.compile(
+    r"(?:\d+(?:\.\d+)*\.?|[A-Z](?:\.\d+)*\.|[IVXLC]+(?:\.\d+)*\.)[ \t]+\S"
+)
+
+
+def numbered_heading(paragraph, kind):
+    """The words of a heading the paper numbers, as printed, or None."""
+    if kind != "heading":
+        return None
+    text = " ".join(_layout_text(paragraph).split())
+    return text if NUMBERED_HEADING_PATTERN.match(text) else None
+
+
 def model_paragraphs(paragraphs, kinds):
     """Return the paragraphs as the model gets them.
 
     Extraction writes a figure's panel titles as headings; the model is told
-    what they are, so it does not read them out as sections. In a document
-    whose sections are numbered, headings come without their numbers: a
-    heading is spoken as its title, and a model that sees "4 Why
-    Self-Attention" may call it "Part Four" in one request but not the next.
+    what they are, so it does not read them out as sections.
     """
-    numbered = sum(
-        1 for paragraph, kind in zip(paragraphs, kinds)
-        if kind == "heading" and HEADING_NUMBER_PATTERN.match(paragraph.strip())
-    )
-    requested = []
-    for paragraph, kind in zip(paragraphs, kinds):
-        if kind == "panel":
-            paragraph = f"Panel title: {_layout_text(paragraph)}"
-        elif kind == "heading" and numbered >= 3:
-            paragraph = HEADING_NUMBER_PATTERN.sub(
-                lambda match: match["hashes"] + (match["open"] or ""), paragraph.strip()
-            )
-        requested.append(paragraph)
-    return requested
+    return [
+        f"Panel title: {_layout_text(paragraph)}" if kind == "panel" else paragraph
+        for paragraph, kind in zip(paragraphs, kinds)
+    ]
 
 
 def _ends_sentence(paragraph):
@@ -4621,12 +4617,16 @@ def paper_batches(paragraphs, per_worker):
             units.append(unit)
     batches, alone = [], False
     for start, end in units:
-        visual = visual_label(paragraphs[start:end + 1], kinds[start:end + 1]) is not None
-        if batches and not visual and not alone and end + 2 - batches[-1][0] <= per_worker:
+        # A figure, a table, or a numbered heading is a batch of its own.
+        own = (
+            visual_label(paragraphs[start:end + 1], kinds[start:end + 1]) is not None
+            or start == end and numbered_heading(paragraphs[start], kinds[start]) is not None
+        )
+        if batches and not own and not alone and end + 2 - batches[-1][0] <= per_worker:
             batches[-1] = (batches[-1][0], end + 1)
         else:
             batches.append((start + 1, end + 1))
-        alone = visual
+        alone = own
     return batches
 
 
@@ -6649,6 +6649,18 @@ class PaperRun(Run):
                 continue
             results[start] = (end, narration.strip(), summary.strip())
             completed_count += end - start + 1
+        # A heading the paper numbers is read as printed, so every heading of
+        # the book follows the same rule; the model is not asked.
+        for start, end in batches:
+            text = numbered_heading(paragraphs[start - 1], kinds[start - 1]) if start == end else None
+            if text is None or start in results:
+                continue
+            write_json_atomic(
+                checkpoint_dir / f"{start:06d}-{end:06d}.json",
+                {"end": end, "narration": text, "summary": text},
+            )
+            results[start] = (end, text, text)
+            completed_count += 1
 
         futures = {}
         pending_starts = iter([

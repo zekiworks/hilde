@@ -22,9 +22,9 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   where the text introduces it.
 - **Written for the ear.** Page headers, footers, the table of contents, and
   the bibliography are removed before any model sees the text. Adaptation also
-  leaves out section numbers, cross-references, citation marks, and email
-  addresses, and turns formulas, notation, and tables into plain words. See
-  [How Hilde reads a paper](#how-hilde-reads-a-paper).
+  leaves out cross-references, citation marks, and email addresses, and turns
+  formulas, notation, and tables into plain words; headings keep the paper's
+  own numbers. See [How Hilde reads a paper](#how-hilde-reads-a-paper).
 - **One narrator, start to finish.** A voice is designed once from a written
   description, then cloned for every chunk of every book, across sessions.
   Eight stock voices are included.
@@ -52,7 +52,6 @@ for someone listening, who cannot skim, glance back, or see the page.
 | On the page | Read as printed | Read by Hilde |
 | --- | --- | --- |
 | **Table of contents** | "Contents. Part one. Context and history. Page 3. Section I.1. Need for an actionable definition… Page 3. Section I.2…" | *Skipped. The narration goes straight to the first chapter.* |
-| **Numbered headings**<br>`I.1 Need for an actionable definition…` | "I point one. Need for an actionable definition…" | "Need for an actionable definition and measure of intelligence." |
 | **Cross-references**<br>`We noted in II.1.1 that…` | "We noted in Section Two point One point One that…" | "We noted earlier that…" |
 | **Formulas** | "I superscript theta sub T, sub I S comma scope, equals the average over tasks T in the scope of omega sub T times theta sub T…" | "Intelligence across a given scope is the average, over the tasks in that scope, of the system's skill-acquisition efficiency…" |
 | **Notation**<br>`we will denote θ^max_T,IS as Θ` | "…we will denote theta superscript max, sub T comma I S, as capital theta." | *Skipped. Every quantity is named in words.* |

@@ -73,3 +73,13 @@ decisions:
     why: >
       Same PDF, same audiobook, every time, without approve or pin controls that make the
       app feel like an experiment. Drafted by the fixer from the reviewer's handoff.
+
+  - id: D13
+    date: 2026-10-01
+    by: [can]
+    decision: >
+      Headings keep the paper's own numbers and appendix letters, as printed ("4 Why
+      Self-Attention", "B. Baseline Methods"). A numbered heading is read as printed, in
+      code, without the model; nothing adds "Part" or "Section". Speaking headings without
+      their numbers was a misunderstanding.
+    why: The paper's numbers tell a listener where they are; one rule in code cannot vary between requests (B17).

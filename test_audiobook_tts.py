@@ -2318,35 +2318,47 @@ class UnifiedWorkflowTests(unittest.TestCase):
         figure = requests["paragraphs-2-4"]
         self.assertIn("Panel title: Scaled Dot-Product Attention", figure)
         self.assertNotIn("# Scaled Dot-Product Attention", figure)
-        self.assertIn("# 3.2.2 Multi-Head Attention", requests["paragraphs-5-5"])
+        # The numbered heading after it is read as printed, without the model.
+        self.assertNotIn("paragraphs-5-5", requests)
 
-    def test_numbered_section_headings_reach_the_model_as_titles(self):
-        paragraphs = [
-            "# **1 Introduction**",
-            "Recurrent models compute along positions.",
-            "## 3.2 Attention",
-            "# **4** **Why Self-Attention**",
-            "# **5.1. Training Data**",
-            "# 2D Convolutions",
-            "# Part II: Results",
-            "# IV. Discussion",
-        ]
-        # A model that sees "4 Why Self-Attention" may call it "Part Four" in
-        # one request and not the next; the title alone leaves nothing to vary.
-        self.assertEqual(web.model_paragraphs(paragraphs, web._layout_kinds(paragraphs)), [
-            "# **Introduction**",
-            "Recurrent models compute along positions.",
-            "## Attention",
-            "# **Why Self-Attention**",
-            "# **Training Data**",
-            "# 2D Convolutions",
-            "# Part II: Results",
-            "# IV. Discussion",
-        ])
-        # In a document that does not number its sections, a number opening
-        # a heading is part of its title.
-        lone = ["# 1984 Revisited", "The novel opens in April.", "# The Party"]
-        self.assertEqual(web.model_paragraphs(lone, web._layout_kinds(lone)), lone)
+    def test_a_numbered_heading_is_read_as_printed_without_the_model(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        # RRSI's own headings, which a model rendered three ways in one book.
+        source.write_text(
+            "# **3.1. A Regularization View**\n\n"
+            "Harness evolution is a search.\n\n"
+            "# **B. Baseline Methods**\n\n"
+            "We compare against three baselines.\n\n"
+            "# **Limitations**\n\n"
+            "# A Short Paper",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        requests = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requests.append(request_path.stem)
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(
+            source, root / "prepared.txt", "utf-8", in_flight=1,
+            paragraphs_per_worker=4, prompt_path=prompt,
+        )
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        # Each numbered heading is a batch of its own, read as printed; an
+        # unnumbered one, or a title opening with "A", goes to the model.
+        self.assertEqual(requests, ["paragraphs-2-2", "paragraphs-4-6"])
+        self.assertEqual(
+            web.split_paper_paragraphs((root / "prepared.txt").read_text(encoding="utf-8")),
+            ["3.1. A Regularization View", "Narrated.", "B. Baseline Methods", "Narrated."],
+        )
 
     def test_a_description_that_does_not_say_what_it_describes_is_logged(self):
         temporary = tempfile.TemporaryDirectory()

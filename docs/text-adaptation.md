@@ -3,7 +3,7 @@
 **Adapt the text for listening**, in the **Create audiobook** step, rewrites a
 document for someone listening, who cannot skim or glance back. The author's
 prose stays word for word. Whatever would be a chore to hear is left out:
-tables of contents, lists of sections, section numbers, page numbers, citation
+tables of contents, lists of sections, page numbers, citation
 marks, and the bibliography. Whatever the ear cannot hold is tuned down to its
 point: tables, formulas, long lists, and runs of numbers. A table of contents
 or bibliography under its own heading is removed before the model sees the
@@ -98,11 +98,10 @@ pairs them before the model sees the line: "Llion Jones, Google Research;
 Aidan N. Gomez, University of Toronto; Łukasz Kaiser, Google Brain". The job
 log counts the authors paired. Otherwise the model pairs an author with an
 affiliation only when the title block lists exactly one per name, and never
-guesses. Section numbers are never read: in a document that numbers its
-sections in digits, headings reach the model as their titles alone, so one
-part of the narration cannot say "Part Four. Why Self-Attention" while the
-rest says "Introduction". A part or chapter numbered in words or Roman
-numerals keeps its number ("Part Two"). A paper's title, which PDF extraction
+guesses. A heading the paper numbers is read exactly as printed, number or
+appendix letter included ("4 Why Self-Attention", "B. Baseline Methods"),
+without asking the model, so every heading of a book follows one rule and
+none gets "Part" or "Section" added. A paper's title, which PDF extraction
 can mistake for a page header and leave out, is put back at the top as a
 heading, so the narration opens with it; the job log says when it did.
 
