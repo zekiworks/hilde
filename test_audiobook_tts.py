@@ -484,9 +484,10 @@ class PaperWorkflowTests(unittest.TestCase):
 
         # A metadata title with the same words spells the title properly;
         # one that names something else is not trusted.
+        paper = overview("paper.pdf", "Self-Organizing Agent Teams Learn to Reason Together")
         self.assertEqual(
-            overview("paper.pdf", "Self-Organizing Agent Teams Learn to Reason Together"),
-            {"pages": 1, "title": "Self-Organizing Agent Teams Learn to Reason Together"},
+            (paper["pages"], paper["title"]),
+            (1, "Self-Organizing Agent Teams Learn to Reason Together"),
         )
         self.assertEqual(
             overview("draft.pdf", "Microsoft Word - draft.docx")["title"],
@@ -759,8 +760,11 @@ class PaperWorkflowTests(unittest.TestCase):
         ])
         paragraphs = web.split_paper_paragraphs(markdown)
 
+        # A note about one paragraph alone comes right after it, before a note
+        # it shares with the paragraphs above, as the last author's
+        # affiliation comes before the equal-contribution note.
         self.assertEqual(paragraphs, [
-            authors, brain, last_author, equal, research, abstract,
+            authors, brain, last_author, research, equal, abstract,
             squared, "Recurrent layers are slow.", "Attention layers are fast.",
             cited, note, heads, stray,
         ])
@@ -770,6 +774,128 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertEqual(web.paper_batches(paragraphs, 1), [
             (1, 2), (3, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 11), (12, 12), (13, 13),
         ])
+
+    def test_authors_are_paired_with_the_affiliation_printed_under_each_name(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        source = Path(temporary.name) / "paper.pdf"
+        # Attention Is All You Need, page 1: each name in bold over its
+        # affiliation and email, in columns, the last author alone below.
+        columns = (
+            (110, "Llion Jones*", "Google Research", "llion@google.com"),
+            (250, "Aidan N. Gomez*", "University of Toronto", "aidan@cs.toronto.edu"),
+            (400, "Lukasz Kaiser*", "Google Brain", "lukasz@google.com"),
+        )
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((180, 150), "Attention Is All You Need", fontsize=17, fontname="hebo")
+            for x, name, place, email in columns:
+                page.insert_text((x, 234), name, fontsize=10, fontname="hebo")
+                page.insert_text((x, 246), place, fontsize=9)
+                page.insert_text((x, 257), email, fontsize=9, fontname="cour")
+            page.insert_text((250, 284), "Illia Polosukhin*", fontsize=10, fontname="hebo")
+            page.insert_text((240, 295), "illia@gmail.com", fontsize=9, fontname="cour")
+            for line in range(20):
+                page.insert_text((72, 430 + 14 * line), "The dominant models are recurrent.", fontsize=10)
+            pdf.save(source)
+        overview = json.loads(subprocess.run(
+            [sys.executable, "-c", web._PDF_OVERVIEW, str(source)],
+            capture_output=True, text=True, check=True,
+        ).stdout)
+        authors = web.pair_authors(overview["lines"])
+        self.assertEqual(dict(authors), {
+            "Llion Jones": "Google Research",
+            "Aidan N. Gomez": "University of Toronto",
+            "Lukasz Kaiser": "Google Brain",
+            "Illia Polosukhin": "",
+        })
+
+        # Extraction runs a row together, names first, so a model must guess
+        # who works where; the row arrives paired, marks kept on each name.
+        row = (
+            "**Llion Jones**<sup>_∗_</sup> **Aidan N. Gomez**<sup>_∗†_</sup> "
+            "**Lukasz Kaiser**<sup>_∗_</sup> Google Research University of Toronto "
+            "Google Brain `llion@google.com aidan@cs.toronto.edu lukasz@google.com`"
+        )
+        last = "**Illia Polosukhin**<sup>_∗‡_</sup> `illia@gmail.com`"
+        page, paired = web.with_author_affiliations(
+            f"# Attention Is All You Need\n\n{row}\n\n{last}", authors
+        )
+        self.assertEqual(paired, 3)
+        self.assertEqual(web.split_paper_paragraphs(page), [
+            "# Attention Is All You Need",
+            "**Llion Jones**<sup>_∗_</sup>, Google Research; **Aidan N. Gomez**<sup>_∗†_</sup>, "
+            "University of Toronto; **Lukasz Kaiser**<sup>_∗_</sup>, Google Brain.",
+            last,
+        ])
+        # Names on lines of their own, their affiliations printed apart, are
+        # left as printed rather than given their affiliation a second time.
+        apart = "**Llion Jones**\n\n**Aidan N. Gomez**\n\nGoogle Research and University of Toronto"
+        self.assertEqual(web.with_author_affiliations(apart, authors), (apart, 0))
+
+        def line(text, left, right, top, bold=False):
+            return {"text": text, "bbox": [left, top, right, top + 10], "bold": bold}
+
+        # Numbered affiliations are matched to names by their numbers, not
+        # by place, and one line centered under a row belongs to no one name.
+        self.assertEqual(web.pair_authors([
+            line("Aneesh Pappu1,∗", 114, 180, 120, True),
+            line("Mirac Suzgun1", 200, 260, 120, True),
+            line("1 Stanford University", 114, 200, 133),
+            line("2 Together AI", 205, 260, 133),
+        ]), [])
+        self.assertEqual(web.pair_authors([
+            line("Jacob Devlin", 100, 160, 120, True),
+            line("Ming-Wei Chang", 180, 250, 120, True),
+            line("Kenton Lee", 270, 320, 120, True),
+            line("Kristina Toutanova", 340, 420, 120, True),
+            line("Google AI Language", 210, 300, 133),
+        ]), [])
+
+    def test_the_golden_check_names_each_fact_a_narration_broke(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        version = "b" * 64
+        (root / "paper.json").write_text(json.dumps({
+            "sha256": version,
+            "facts": [
+                {"fact": "65 million parameters", "pattern": "\\b65 ?(?:M\\b|million)"},
+                {"fact": "Per wordpiece", "pattern": "per[- ]?word ?piece"},
+                {
+                    "fact": "The factor is not the square root",
+                    "pattern": "scaling factor of (?:the )?square root",
+                    "absent": True,
+                },
+            ],
+        }), encoding="utf-8")
+        with mock.patch.object(web, "GOLDEN_PATH", root):
+            # Only the document the golden file names is checked.
+            self.assertIsNone(web.golden_check("Anything.", "c" * 64))
+            self.assertEqual(
+                web.golden_check(
+                    "It has 65 million parameters, except for the scaling factor "
+                    "of the square root of the key size.", version,
+                ),
+                {"file": "paper.json", "facts": 3,
+                 "broken": ["Per wordpiece", "The factor is not the square root"]},
+            )
+            # A model's typographic hyphens and line breaks keep a fact.
+            self.assertEqual(web.golden_check(
+                "It has 65M parameters;\nperplexities are per\u2011wordpiece.", version,
+            )["broken"], [])
+
+    def test_shipped_golden_files_name_a_document_and_their_patterns_compile(self):
+        files = sorted(web.GOLDEN_PATH.glob("*.json"))
+        self.assertTrue(files)
+        for path in files:
+            golden = json.loads(path.read_text(encoding="utf-8"))
+            self.assertRegex(golden["sha256"], r"^[0-9a-f]{64}$", path.name)
+            for fact in golden["facts"]:
+                self.assertIsInstance(fact["fact"], str)
+                re.compile(fact["pattern"])
 
     def test_pdf_tables_show_as_printed_while_the_model_gets_their_cells(self):
         import pymupdf
@@ -782,7 +908,15 @@ class PaperWorkflowTests(unittest.TestCase):
                 ("GNMT + RL", "24.6", "2.3 · 10^19"), ("Transformer (big)", "28.4", "2.3 · 10^19")]
         with pymupdf.open() as pdf:
             page = pdf.new_page()
-            page.insert_text((72, 80), "Table 2: The Transformer achieves better BLEU scores.", fontsize=10)
+            # Attention Is All You Need prints Table 3's caption on three lines,
+            # ending in a caveat on how its perplexities were measured.
+            caption = (
+                "Table 2: The Transformer achieves better BLEU scores than previous models on the",
+                "English-to-German and English-to-French newstest2014 tests at a fraction of the cost.",
+                "Listed perplexities are per-wordpiece and should not be compared to per-word ones.",
+            )
+            for line, text in enumerate(caption):
+                page.insert_text((72, 62 + 9 * line), text, fontsize=8)
             edges = [100, 250, 360, 510]
             for row, cells in enumerate(rows):
                 for column, cell in enumerate(cells):
@@ -810,13 +944,11 @@ class PaperWorkflowTests(unittest.TestCase):
         # a Markdown table rebuilt from the layout, which the reader would show.
         self.assertEqual(kinds[:3], ["caption", "image", "labels"])
         self.assertNotIn("table", kinds)
-        # Screen readers announce the table by its caption.
-        image = re.fullmatch(
-            r"!\[Table 2: The Transformer achieves better BLEU scores\.\]\((images/[^)]+\.png)\)",
-            paragraphs[1],
-        )
+        # Screen readers announce the table by its whole caption.
+        image = re.fullmatch(r"!\[(.+)\]\((images/[^)]+\.png)\)", paragraphs[1])
         self.assertIsNotNone(image, paragraphs[1])
-        with pymupdf.open(stage / image.group(1)) as picture:
+        self.assertEqual(image.group(1), " ".join(caption))
+        with pymupdf.open(stage / image.group(2)) as picture:
             self.assertGreater(picture[0].rect.width, 300)
         self.assertIn("|ByteNet|23.75|", paragraphs[2].replace(" ", ""))
         # The caption, picture, and cells reach the model in one request.
@@ -842,9 +974,20 @@ class PaperWorkflowTests(unittest.TestCase):
             web.paper_batches(paragraphs, 1),
             [(1, 1), (2, 7), (8, 8), (9, 10), (11, 11)],
         )
-        # Larger batches still never split one, and a figure larger than a
-        # batch gets its own.
-        self.assertEqual(web.paper_batches(paragraphs, 4), [(1, 1), (2, 7), (8, 11)])
+        # Larger batches still never split one, and each figure or table is a
+        # batch of its own, so its narration is its description alone, which
+        # can be pinned; the prose around it still shares batches.
+        self.assertEqual(
+            web.paper_batches(paragraphs, 4), [(1, 1), (2, 7), (8, 8), (9, 10), (11, 11)]
+        )
+        self.assertEqual(web.paper_batches([
+            "Self-attention relates positions.",
+            "It connects them in a constant number of steps.",
+            "Table 1: Maximum path lengths.",
+            "|Layer|Complexity|\n|---|---|\n|Self-Attention|O(n2 d)|",
+            "Recurrent layers take n steps.",
+            "Convolutions sit between.",
+        ], 4), [(1, 2), (3, 4), (5, 6)])
         # A numbered section heading above a figure is not one of its titles,
         # and labelled equations without a caption stay apart.
         self.assertEqual(web.paper_batches([
@@ -1220,6 +1363,42 @@ class SharedLibraryTests(unittest.TestCase):
             Path(values["output"]),
             self.storage.audiobooks / "Research Paper-Calm Voice.v2.mp3",
         )
+
+    def test_pinned_descriptions_stay_with_their_document_until_unpinned(self):
+        version = "a" * 64
+
+        def book(name, descriptions):
+            output = self.storage.audiobooks / name
+            output.write_bytes(b"ID3")
+            web.write_json_atomic(web.audiobook_version_path(self.storage, output), {
+                "input_version": version,
+                "document": "Attention.pdf",
+                "adaptation": {"model": "openai-codex/gpt-a", "descriptions": descriptions},
+            })
+            return web.read_json_file(web.audiobook_version_path(self.storage, output))
+
+        approved = {"Table 3": "Table 3 compares variants of the base model."}
+        book("Attention-Eir.mp3", approved)
+        later = book("Attention New-Eir.mp3", {})
+        self.assertEqual(web.description_pins(self.storage, version), {})
+        # A book without descriptions has nothing to approve.
+        with self.assertRaises(ValueError):
+            web.pin_descriptions(self.storage, "Attention New-Eir.mp3", True)
+
+        self.assertEqual(
+            web.pin_descriptions(self.storage, "Attention-Eir.mp3", True),
+            {"count": 1, "pinned": True, "pinned_from": "Attention-Eir.mp3"},
+        )
+        # Pins belong to the document's content, so every audiobook of it
+        # shows them, and deleting the approved audiobook keeps them.
+        self.assertTrue(web.description_state(self.storage, later)["pinned"])
+        web.delete_audiobook(self.storage, "Attention-Eir.mp3")
+        self.assertEqual(web.description_pins(self.storage, version), approved)
+        self.assertEqual(
+            web.pin_descriptions(self.storage, "Attention New-Eir.mp3", False),
+            {"count": 0, "pinned": False, "pinned_from": None},
+        )
+        self.assertEqual(web.description_pins(self.storage, version), {})
 
     def test_unchanged_document_and_voice_require_overwrite_confirmation(self):
         document = self.storage.documents / "paper.txt"
@@ -1936,6 +2115,85 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertIn("Panel title: Scaled Dot-Product Attention", figure)
         self.assertNotIn("# Scaled Dot-Product Attention", figure)
         self.assertIn("# 3.2.2 Multi-Head Attention", requests["paragraphs-5-5"])
+
+    def test_numbered_section_headings_reach_the_model_as_titles(self):
+        paragraphs = [
+            "# **1 Introduction**",
+            "Recurrent models compute along positions.",
+            "## 3.2 Attention",
+            "# **4** **Why Self-Attention**",
+            "# **5.1. Training Data**",
+            "# 2D Convolutions",
+            "# Part II: Results",
+            "# IV. Discussion",
+        ]
+        # A model that sees "4 Why Self-Attention" may call it "Part Four" in
+        # one request and not the next; the title alone leaves nothing to vary.
+        self.assertEqual(web.model_paragraphs(paragraphs, web._layout_kinds(paragraphs)), [
+            "# **Introduction**",
+            "Recurrent models compute along positions.",
+            "## Attention",
+            "# **Why Self-Attention**",
+            "# **Training Data**",
+            "# 2D Convolutions",
+            "# Part II: Results",
+            "# IV. Discussion",
+        ])
+        # In a document that does not number its sections, a number opening
+        # a heading is part of its title.
+        lone = ["# 1984 Revisited", "The novel opens in April.", "# The Party"]
+        self.assertEqual(web.model_paragraphs(lone, web._layout_kinds(lone)), lone)
+
+    def test_a_pinned_description_is_read_as_it_stands(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "Self-attention connects every pair of positions.\n\n"
+            "Table 1: Maximum path lengths.\n\n"
+            "|Layer|Path length|\n|---|---|\n|Self-Attention|O(1)|\n\n"
+            "Recurrent layers need n sequential steps.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        requested = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requested.append(request_path.stem)
+                return (
+                    f"<NARRATION>Narrated {request_path.stem}.</NARRATION>"
+                    "<SUMMARY>Summary.</SUMMARY>"
+                )
+
+        def adapt(pins):
+            requested.clear()
+            run = StubPaperRun(
+                source, stage / "prepared.txt", "utf-8", in_flight=1,
+                prompt_path=prompt, scratch_path=stage, pins=pins,
+            )
+            run.pump()
+            self.assertEqual(run.code, 0)
+            return run, (stage / "prepared.txt").read_text(encoding="utf-8")
+
+        first, _ = adapt({})
+        self.assertEqual(requested, ["paragraphs-1-1", "paragraphs-2-3", "paragraphs-4-4"])
+        self.assertEqual(first.descriptions, {"Table 1": "Narrated paragraphs-2-3."})
+        self.assertEqual(first.pinned, [])
+
+        # Pinned, the table is read as approved and its model is not asked
+        # again, even with the earlier run's checkpoints at hand.
+        approved = "Table 1 compares path lengths: self-attention needs one step."
+        second, text = adapt({"Table 1": approved})
+        self.assertEqual(requested, ["paragraphs-1-1", "paragraphs-4-4"])
+        self.assertEqual(text, "\n\n".join([
+            "Narrated paragraphs-1-1.", approved, "Narrated paragraphs-4-4.",
+        ]))
+        self.assertEqual(second.descriptions, {"Table 1": approved})
+        self.assertEqual(second.pinned, ["Table 1"])
 
     def test_a_description_that_does_not_say_what_it_describes_is_logged(self):
         temporary = tempfile.TemporaryDirectory()

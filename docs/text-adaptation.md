@@ -48,7 +48,8 @@ While adaptation is selected, its settings appear under **Advanced** in
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
   the labels read from inside it, and its caption always go to the model
-  together, so it is described once.
+  together, so it is described once. A figure or table with a caption is
+  always a batch of its own, so its description can be pinned (below).
 
 Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
@@ -69,21 +70,41 @@ description never comes before the author introduces it or in the middle of
 the argument. A footnote moves to the paragraph that cites it and goes to the
 model with that paragraph, which reads it right after the sentence carrying its
 marker, saying whom or what it is about ("Aidan Gomez did this work while at
-Google Brain"). A PDF table goes to the model as its picture and the cells
-read from it; the model says what the table shows, and the cells are never read
-aloud. The job log counts the sentences it rejoined and the figures, tables,
-and footnotes it moved.
+Google Brain"). A note about one author comes before a note every author line
+shares, so "Illia Polosukhin did this work while at Google Research" follows
+his name rather than the whole contribution note. A PDF table goes to the model
+as its picture and the cells read from it; the model says what the table shows,
+and the cells are never read aloud. The job log counts the sentences it
+rejoined and the figures, tables, and footnotes it moved.
 
-A few more rules keep the narration exact. A formula's operation is said as it
-is: "divided by the square root of", never "scaled by". Each author is paired
-with an affiliation only when the title block lists exactly one per name. A
-figure description says only what the caption states or the image plainly
-shows. A link the text depends on becomes where in words ("in the tensor2tensor
+A few more rules keep the narration exact. Math is said as it is wherever it
+is spoken, in the author's sentences as in a description: "divided by the
+square root of", never "scaled by", and "one over the square root of d k",
+never "the square root of d k". Nested operations are said as steps, innermost
+first: "multiply the queries by the transposed keys, divide the result by the
+square root of d k, apply a softmax, then multiply by the values". A
+description of a table keeps the values that bound the comparison, such as the
+sizes and scores of the smallest and largest model, and every caveat its
+caption gives about how values were measured. Every statement of a footnote
+stays ("Equal contribution. Listing order is random."), and so does every
+quantity in the author's prose, in the author's own voice ("we"). A figure
+description says only what the caption states or the image plainly shows. A
+link the text depends on becomes where in words ("in the tensor2tensor
 repository on GitHub"). An acronym is expanded only where the author spells it
 out, once; the rest, such as GPU, stay acronyms.
-A paper's title, which PDF extraction can mistake for a page header and leave
-out, is put back at the top as a heading, so the narration opens with it; the
-job log says when it did.
+
+When a PDF prints each author's affiliation under the name, in columns, Hilde
+pairs them before the model sees the line: "Llion Jones, Google Research;
+Aidan N. Gomez, University of Toronto; Łukasz Kaiser, Google Brain". The job
+log counts the authors paired. Otherwise the model pairs an author with an
+affiliation only when the title block lists exactly one per name, and never
+guesses. Section numbers are never read: in a document that numbers its
+sections in digits, headings reach the model as their titles alone, so one
+part of the narration cannot say "Part Four. Why Self-Attention" while the
+rest says "Introduction". A part or chapter numbered in words or Roman
+numerals keeps its number ("Part Two"). A paper's title, which PDF extraction
+can mistake for a page header and leave out, is put back at the top as a
+heading, so the narration opens with it; the job log says when it did.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted
@@ -94,3 +115,29 @@ section, the model leaves them out one by one. The log shows each as `Paragraph
 149/174 has nothing to read aloud: …` with the model's reason, and nothing is
 narrated for it. A figure the model leaves out still shows in the reader, after
 the text before it.
+
+## Pinned descriptions
+
+A model describes figures and tables anew on every run, and a different model,
+or the same one on another day, may describe them worse. Once a book's
+descriptions are right, open it on **Listen** and press **Pin descriptions**.
+Every later audiobook of the same document reads those descriptions as they
+stand, whichever model adapts the rest, and the model is not asked about those
+figures and tables again; the job log names the ones it read. Pins belong to
+the document's content, not its file name, so a copy saved as "Attention Is
+All You Need New.pdf" uses them too. Deleting the audiobook keeps them. To have
+the next audiobook describe them anew, open any audiobook of that document and
+press **Unpin descriptions**. Books made before Hilde recorded descriptions
+have nothing to pin.
+
+## Golden files
+
+A golden file in `golden/` lists facts a good narration of one document keeps,
+each as a pattern, and names the document by the SHA-256 of its content. After
+every adaptation of that document, the job log reports the facts it kept or
+broke, such as `Golden check (attention-is-all-you-need.json): 1 of 22 facts
+broken: Table 3: the base model's perplexity is 4.92.`, and the audiobook's
+record keeps the result. A fact marked `"absent": true` is broken when its
+pattern appears, as "the scaling factor of the square root" or "divide each by
+one over the square root" does. Hilde ships one for *Attention Is All You
+Need* (arXiv 1706.03762v7).

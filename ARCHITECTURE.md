@@ -25,6 +25,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
+| `golden/` | Golden files: the facts a good narration of one document keeps, as patterns, named by the document's SHA-256 and checked after every adaptation of it. `attention-is-all-you-need.json` covers that paper's Table 3 values and caveat, both English-to-French BLEU scores, the scaling factor (never inverted into "divide by one over"), equations said in steps, the equal-contribution note, and both rows of affiliations. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
@@ -163,6 +164,7 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │   ├── .readers/
 │   └── .versions/
 ├── Documents/
+│   └── .descriptions/
 └── in_progress/
     └── voice-drafts/
 ```
@@ -186,6 +188,12 @@ existing library is never reseeded, so a deleted stock voice stays deleted.
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
 - Synchronized reader: content-addressed Markdown and timing JSON under
   `Audiobooks/.readers/`, referenced by the audiobook version record.
+- Pinned descriptions: `Documents/.descriptions/<sha256>.json`, one per
+  document content, holding `schema`, the `document` and `audiobook` they were
+  pinned from, its `model`, and `descriptions`, each figure or table's
+  narration by name ("Table 3"). The document list shows files only, and
+  `resolve_asset()` refuses dot-names, so no browser request can reach the
+  folder by name. Deleting an audiobook keeps its document's pins.
 
 For remote narration, the remote server voice ID supplies `<voice-name>`.
 
@@ -193,7 +201,7 @@ For remote narration, the remote server voice ID supplies `<voice-name>`.
 
 `file_version()` hashes document bytes. A local voice version hashes both owned files and their names; descriptions and previews are not part of it. A remote voice version hashes endpoint, model, and voice ID.
 
-After a successful audiobook run, `.versions/<output-name>.json` records the input and voice versions plus the committed synchronized-reader sidecars, then what the run measured: `adaptation` (the concrete model and `adaptation_fidelity()`'s prose summary, or `null` without adaptation), `seconds` for each stage this run performed (`reading`, `adapting`, `narrating`, `aligning`; a resumed run that reused its adaptation has no `reading` or `adapting`), and `audio_seconds`. `/api/run` returns HTTP 409 with `confirmation_required` only when:
+After a successful audiobook run, `.versions/<output-name>.json` records the input and voice versions plus the committed synchronized-reader sidecars, then what the run measured: `adaptation` (the concrete model; `adaptation_fidelity()`'s prose summary; `descriptions`, each figure and table's narration by name from `adaptation_descriptions()`; `pinned`, the names read from pins; and `golden`, `golden_check()`'s result or `null`; or `null` without adaptation), `seconds` for each stage this run performed (`reading`, `adapting`, `narrating`, `aligning`; a resumed run that reused its adaptation has no `reading` or `adapting`), and `audio_seconds`. `/api/run` returns HTTP 409 with `confirmation_required` only when:
 
 - the target MP3 exists;
 - its version record has the same input hash; and
@@ -230,7 +238,19 @@ PDF work is page-addressable:
    `with_title_heading()` heads page one with the title, turns a paragraph
    that is only the title into the heading, and leaves a title found anywhere
    else on the page alone rather than read it twice; the log says when it
-   restored one;
+   restored one. The child also returns every horizontal line of the first
+   page's top half with its box and whether it is bold. Extraction runs a row
+   of author columns together, names first and then their affiliations, so a
+   model must guess who works where; `pair_authors()` pairs each bold name
+   with the lines right under it in its column, up to an email, and
+   `with_author_affiliations()` rewrites such a row as "**name**, affiliation;
+   …", footnote marks kept on each name. It pairs nothing when affiliations
+   start with a number or mark (a numbered list, matched by those marks), when
+   a row has a name with nothing under it (one line spans several names), or
+   when fewer than two affiliations were found, and it rewrites a paragraph
+   only when, beyond the names, it holds exactly those affiliations' words and
+   emails, so names printed apart from their affiliations are not given them
+   twice. The log counts the authors paired;
 2. one converter child writes each missing `pdf-pages/<page>.md` checkpoint;
 3. extracted figures remain under `images/`, linked as `images/<file>`: the
    converter runs from the extraction folder because `pymupdf4llm` links
@@ -239,9 +259,10 @@ PDF work is page-addressable:
    `page_chunks`, whose `page_boxes` give each table's box and its span in
    the page Markdown. Cells rebuilt from the layout split words across
    columns ("BL|EU") and carry stray emphasis and tags, so each table becomes
-   `![Table](images/page-NNNN-table-K.png)`, cut from its box at 200 dpi,
-   followed by its cells between picture-text markers: kinds `image` and
-   `labels`, the same parts as a figure, so the reader shows the table as
+   `![<caption>](images/page-NNNN-table-K.png)`, its whole caption as the
+   label screen readers announce (`Table` without one), cut from its box at
+   200 dpi, followed by its cells between picture-text markers: kinds `image`
+   and `labels`, the same parts as a figure, so the reader shows the table as
    printed and the model gets the picture and the cells;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a
@@ -277,11 +298,16 @@ PDF work is page-addressable:
    illustrate", or a symbol, "_†_ Work performed") to follow the nearest
    earlier paragraph on its page or the one before whose superscripts carry
    that marker (`_cited_markers()`: "<sup>4</sup>", "<sup>_∗†_</sup>" as ∗
-   and †), so it is no longer read where the page printed it; and
+   and †), so it is no longer read where the page printed it. A note cited by
+   that paragraph alone comes first and one it shares with earlier paragraphs
+   after, so the last author's affiliation note follows the name before the
+   equal-contribution note every author line cites; and
    `paper_batches()` sends it in one request with that paragraph, where the
    prompt has it read right after the citing sentence, naming whom or what it
    is about. The job log counts the rejoined sentences and the moved figures,
-   tables, and footnotes. `join_pdf_pages()` also returns the page each block of
+   tables, and footnotes; once one note of a paragraph is out of place, the
+   notes after it count as moved too. `join_pdf_pages()` also returns the
+   page each block of
    `document.md` starts on, which
    `convert_pdf()` stores as `document-pages.json` (`{"pages": [...]}`); a
    rejoined sentence keeps the earlier page, and a moved figure or footnote its own.
@@ -319,8 +345,9 @@ or to `paper_batches()` bumps the extraction identity's `schema`.
 
 When adaptation is enabled:
 
-- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, section numbers, numbered cross-references, page furniture, citation machinery) is left out; tables, formulas and notation, long lists, runs of numbers, figures, and code are tuned down to their point; a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word;
-- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A unit larger than the setting gets a batch of its own. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own;
+- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, roadmap sentences that announce later sections even without numbers, section numbers, numbered cross-references except a figure's or table's own number, page furniture, citation machinery) is left out; tables (keeping the values that bound the comparison and the caption's caveats), formulas and notation (nested operations as steps, innermost first), long lists, runs of numbers, figures, and code are tuned down to their point; operations and sizes stay exact wherever math is spoken, the author's sentences included ("one over the square root of d k"); a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word, every quantity and every footnote statement included, in the author's voice;
+- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A captioned figure or table is a batch of its own, never merged with the prose around it, so its narration is its description alone; `visual_label()` names such a batch by its caption ("Table 3"), and `visual_batches()` drops a name two batches share. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link;
+- `model_paragraphs()` gives the model each paragraph as it should see it. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own. In a document with at least three headings numbered in digits, headings lose their outline number (`HEADING_NUMBER_PATTERN`: "## 3.2 Attention", "# **4 Why Self-Attention**", "# **5** **Training**", keeping the emphasis), since a model that sees "4 Why Self-Attention" may call it "Part Four" in one request but not the next. Parts and chapters numbered in words or Roman numerals keep theirs, and the reader's Original view shows the heading as printed;
 - compacted prior summaries provide bounded continuity context, and `defined_acronyms()` lists the acronyms the author spelled out ("Wall Street Journal (WSJ)", checked letter by letter against the words before it) in the paragraphs before each batch, computed from the source so it does not depend on which batches finish first; the prompt expands an acronym only where the author does, once;
 - referenced extracted figures become image inputs for OpenAI and Claude models, and for a local model when the browser's `local_vision` is set (**This model sees images** in Add local); otherwise a local server receives only their extracted text, since it may run a text-only model;
 - malformed response payloads are retried up to the configured attempt limit;
@@ -334,7 +361,9 @@ When adaptation is enabled:
 - a batch made only of a figure, table, or equation (with its labels or caption) whose narration names none of them (`VISUAL_CUE_PATTERN`) in its first twelve words is named in the log; the job goes on, since a listener would otherwise hear no border between the author's text and the description;
 - a batch of the author's prose (`TEXT_KINDS`) is scored by `prose_kept()`: the share of its words of four letters or more (`CONTENT_WORD_PATTERN`, any script) its narration still contains, after citation marks, superscripts, and links are set aside. Passages under `PROSE_KEPT_MIN_WORDS` are not judged; one under `PROSE_KEPT_LOW` (80%) is named in the log with its missing words, and the job goes on. A passage the model left out whole is not scored: the log already names it with the model's reason, and it is usually apparatus, such as a reference entry extraction glued to the text. The score catches dropped wording, not changed meaning or added claims. Once adaptation ends, or when a finished adaptation is reused, `adaptation_fidelity()` summarizes the saved checkpoints (narrated passages judged, how many kept at least 95%, how many fell under 80%, the lowest, and how many were left out whole) into the log and the audiobook's record;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
-- completed batches may finish out of order, but narration and summaries commit in source order.
+- completed batches may finish out of order, but narration and summaries commit in source order;
+- a figure or table with a pinned description (`description_pins()`, keyed by the document's SHA-256 and the batch's name) is read as it stands: its checkpoint is written from the pin and the model is not asked, and the log names the pinned descriptions. `measure_adaptation()` then collects the narration of every named batch (`adaptation_descriptions()`) and which came from pins, for the audiobook's record;
+- `golden_check()` compares the finished narration with the golden file in `golden/` whose `sha256` names this document, if any: each fact is a case-insensitive pattern that must match, or with `"absent": true` must not, on text with typographic apostrophes, dashes, and non-breaking hyphens made plain. The log reports the facts kept or broken, by name, after every adaptation and when a finished one is reused, and the result goes into the record.
 
 On restart, committed checkpoints populate the result buffer before only missing batches are submitted. With adaptation disabled, normalized body paragraphs are written directly.
 
@@ -351,7 +380,7 @@ ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex
 
 Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps and forbid other applications to collect, store, or intermediate them, so Hilde offers a subscription only through the user's own Claude Code, and otherwise a Console API key. `connect_anthropic()` trims the pasted key, lists the key's models to prove Anthropic accepts it, and only then writes `~/.hilde/anthropic.json` through the same private temporary file. **Remove** deletes that file.
 
-`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, whether a local model sees images, worker configuration, the complete system prompt (the prompt file plus the transport contract), and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
+`extraction.json` binds checkpoints to the paragraph-selection `schema`, input bytes, adaptation toggle, model selector and local endpoint, whether a local model sees images, worker configuration, the complete system prompt (the prompt file plus the transport contract), the pinned descriptions in use, and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones, pinning or unpinning redoes the adaptation with or without the pins, and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
@@ -496,7 +525,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
   audiobook**. **Listen** opens the book view: title, narrator, duration,
-  source, **Follow along**, **Original** (adapted books), **Download MP3**, the player, and the synchronized
+  source, **Follow along**, **Original** (adapted books), **Pin descriptions** or **Unpin descriptions** (books with figure or table descriptions, or whose document has pins), **Download MP3**, the player, and the synchronized
   reader; **All audiobooks** returns to the table.
 
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
@@ -589,6 +618,17 @@ there is any original text, offers **Original**: it shows each batch's text,
 headed "Original · PDF p. N", muted beneath the narration made from it, and a
 left-out batch as "Not narrated" in its place.
 
+`/api/reader` also returns `descriptions` (`description_state()`): how many
+figure and table descriptions the book's record holds, whether its document's
+descriptions are pinned, and from which audiobook. **Pin descriptions**
+(`POST /api/audiobooks/pin`) copies the record's descriptions into
+`Documents/.descriptions/<sha256>.json`; later audiobooks of the same content
+read them as they stand, whatever the model, prompt, or file name, and only
+those figures and tables the pins name. **Unpin descriptions**
+(`POST /api/audiobooks/unpin`) deletes that file, so the next audiobook of the
+document describes them anew. The button reflects the document, so every
+audiobook of the same content shows its pins.
+
 The reader player requests `/api/audio?name=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
 requested time while decoding audio from elsewhere (measured in Chrome: up to
@@ -636,6 +676,7 @@ playable but have no synchronized text.
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
 | `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook takes its version record, the reader files that record names, and older `<name>.<audio-hash>` reader files. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/audiobooks/pin`, `POST /api/audiobooks/unpin` | Pin the figure and table descriptions of the audiobook named by JSON `name` to the content of its document, or delete that document's pins, and return the new `descriptions` state. A book without descriptions or without a recorded document version returns HTTP 400, a missing one HTTP 404. |
 | `POST /api/run` | Start or enqueue an audiobook, deduplicating active version pairs. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
@@ -645,7 +686,7 @@ playable but have no synchronized text.
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Retained audiobooks newest first with title (first top-level reader heading, read from the first line of a block since a figure printed above the title rides in the heading's block, else the document name; a heading that opens a section such as Abstract or Introduction means the title was never a heading, so the document name is used), duration, source document, narrator, and `modified`, the MP3's modification time in Unix seconds, which changes only when the book is made again; entries are cached until the MP3 or its version record changes. |
 | `GET /api/audio?name=...`, `GET /api/download?asset=...` | Serve a retained audiobook by exact asset name with exact byte ranges; download is an attachment. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header, or HTTP 415 when its frames cannot be indexed. |
-| `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook. |
+| `GET /api/reader?name=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one completed audiobook, its Original view's batches, and its `descriptions` state. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, with the default a job uses when none is chosen, Claude Code's status line, and per-source errors. |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove` | Save an Anthropic API key once Anthropic accepts it, or delete it; both return the refreshed catalog. |
@@ -719,7 +760,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 101 tests. It covers voice persistence
+The regression suite currently has 109 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 shared naming and versions, document/voice-only job identity, gang scheduling
 across local and SSH workers, internal device pinning, FIFO scheduling and
@@ -773,12 +814,22 @@ after it (lists and ranges of numbers included) while ones already after it or
 mentioned only pages away stay, a line stopping on "for" continued across a
 table into a capitalized word while a line that could end a sentence is not,
 an equation inside a sentence batched with both halves, footnotes (affiliation
-notes cited from author lines by combined symbols, and a numbered note cited
+notes cited from author lines by combined symbols, a note about one author
+before the note every author line shares, and a numbered note cited
 mid-paragraph) moved after and batched with the nearest paragraph citing them
-while one cited only pages away stays, a PDF table from the real converter
-shown as a picture cut from its page with its cells kept as its text, each figure or table reaching the model in
+while one cited only pages away stays, authors paired with the affiliation
+printed under each name in a real PDF's columns while numbered affiliations, a
+line under several names, and names printed apart are not, a PDF table from the
+real converter shown as a picture cut from its page and labelled with its whole
+caption, its cells kept as its text, each figure or table reaching the model in
 one request with its caption, from real PDF extraction through adaptation,
-with panel titles marked as titles rather than sent as section headings, a
+with panel titles marked as titles rather than sent as section headings, and
+numbered section headings sent as their titles only in a document that numbers
+them, each figure or table a batch of its own whose pinned description is read
+as it stands without asking the model, pins that stay with their document's
+content until unpinned, a golden check that names each broken fact on text with
+typographic hyphens and checks only the document it names, shipped golden files
+whose patterns compile, a
 figure or equation description that does not say what it describes named in
 the log while prose and left-out figures are not, prose that lost its wording
 named in the log and summarized while citation marks and short passages do not

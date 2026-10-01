@@ -27,6 +27,7 @@ owned by the server process and is never accepted from a browser.
 import argparse
 import array
 import base64
+import collections
 import concurrent.futures
 import contextlib
 import json
@@ -79,6 +80,8 @@ SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
+# Facts a good narration of one document keeps, checked after every run of it.
+GOLDEN_PATH = ROOT / "golden"
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -233,6 +236,14 @@ SECTION_NUMBER_PATTERN = re.compile(
     r"^(?:(?:chapter|section)[ \t]+)?"
     r"(?:\d+(?:\.\d+)*|[ivxlcdm]+)[.)]?[ \t]+",
     flags=re.IGNORECASE,
+)
+# An outline number opening a Markdown heading, as in "## 3.2 Attention",
+# "# **4 Why Self-Attention**", or "# **5** **Training**", with the emphasis
+# around it. A part or chapter numbered in words or Roman numerals keeps it.
+HEADING_NUMBER_PATTERN = re.compile(
+    r"^(?P<hashes>#{1,6}[ \t]+)"
+    r"(?:(?P<own>\*\*|__)\d+(?:\.\d+)*\.?(?P=own)|(?P<open>\*\*|__)?\d+(?:\.\d+)*\.?)"
+    r"[ \t]+(?=\S)"
 )
 # A contents entry ends in its page number: after dot leaders, in a table's
 # last cell, or after its title. Front matter may number pages in roman.
@@ -405,10 +416,32 @@ def first_page_title(document):
     return metadata if title and words(metadata) == words(title) else title
 
 
+def first_page_lines(document):
+    # Every horizontal line of the top half of the first page, with its box
+    # and whether it is bold, for pairing authors with affiliations.
+    page = document[0]
+    return [
+        {
+            "text": unicodedata.normalize("NFKC", "".join(span["text"] for span in line["spans"]).strip()),
+            "bbox": [round(value, 1) for value in line["bbox"]],
+            "bold": any(
+                span["flags"] & 16 or re.search("bold|medi|semibold|heavy|black", span["font"], re.I)
+                for span in line["spans"] if span["text"].strip()
+            ),
+        }
+        for block in page.get_text("dict")["blocks"]
+        for line in block.get("lines", ())
+        if abs(line["dir"][0] - 1) < 0.01
+        and line["bbox"][1] < page.rect.height / 2
+        and any(span["text"].strip() for span in line["spans"])
+    ]
+
+
 with pymupdf.open(sys.argv[1]) as document:
     print(json.dumps({
         "pages": document.page_count,
         "title": first_page_title(document) if document.page_count else "",
+        "lines": first_page_lines(document) if document.page_count else [],
     }))
 """
 
@@ -492,7 +525,7 @@ def caption_near(position):
             parts.reverse()
         text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
         if text:
-            return text[:200]
+            return text
     return "Table"
 
 
@@ -713,6 +746,8 @@ class SharedStorage:
         self.versions = self.audiobooks / ".versions"
         self.readers = self.audiobooks / ".readers"
         self.drafts = self.in_progress / "voice-drafts"
+        # Approved figure and table descriptions, by document content.
+        self.pins = self.documents / ".descriptions"
 
     def ensure(self):
         for directory in (
@@ -723,6 +758,7 @@ class SharedStorage:
             self.versions,
             self.readers,
             self.drafts,
+            self.pins,
         ):
             directory.mkdir(mode=0o750, parents=True, exist_ok=True)
 
@@ -1078,6 +1114,57 @@ def delete_audiobook(storage, name):
             sidecar.unlink(missing_ok=True)
     with _LIBRARY_LOCK:
         _LIBRARY_ENTRIES.pop(str(output), None)
+
+
+def description_state(storage, record):
+    """How many figure and table descriptions a book's record holds, and
+    whether its document's descriptions are pinned, from which audiobook."""
+    adaptation = record.get("adaptation") if record else None
+    descriptions = adaptation.get("descriptions") if isinstance(adaptation, dict) else None
+    version = str(record.get("input_version", "")) if record else ""
+    pins = (
+        read_json_file(storage.pins / f"{version}.json")
+        if re.fullmatch(r"[0-9a-f]{64}", version) else None
+    )
+    return {
+        "count": len(descriptions) if isinstance(descriptions, dict) else 0,
+        "pinned": pins is not None,
+        "pinned_from": pins.get("audiobook") if pins else None,
+    }
+
+
+def pin_descriptions(storage, name, pin):
+    """Pin one audiobook's figure and table descriptions to the content of
+    the document it was made from, or unpin that document's descriptions.
+
+    Later audiobooks of the same content read a pinned description as it
+    stands instead of asking the model again. Return the new state.
+    """
+    output = resolve_asset(storage.audiobooks, name)
+    if output.suffix.lower() != ".mp3" or not output.is_file():
+        raise FileNotFoundError("no such audiobook")
+    record = read_json_file(audiobook_version_path(storage, output)) or {}
+    version = str(record.get("input_version", ""))
+    if not re.fullmatch(r"[0-9a-f]{64}", version):
+        raise ValueError("This audiobook does not record which document it was made from.")
+    path = storage.pins / f"{version}.json"
+    if not pin:
+        path.unlink(missing_ok=True)
+        return description_state(storage, record)
+    adaptation = record.get("adaptation")
+    descriptions = adaptation.get("descriptions") if isinstance(adaptation, dict) else None
+    if not isinstance(descriptions, dict) or not descriptions or not all(
+        isinstance(label, str) and isinstance(text, str) for label, text in descriptions.items()
+    ):
+        raise ValueError("This audiobook has no figure or table descriptions to pin.")
+    write_json_atomic(path, {
+        "schema": 1,
+        "document": record.get("document"),
+        "audiobook": output.name,
+        "model": adaptation.get("model"),
+        "descriptions": descriptions,
+    })
+    return description_state(storage, record)
 
 
 def prepare_library(storage):
@@ -2153,6 +2240,7 @@ def audiobook_reader_payload(storage, name):
             )
         ],
         "originals": originals,
+        "descriptions": description_state(storage, metadata),
     }
 
 
@@ -3541,6 +3629,31 @@ def _describes_visual(kinds):
     return bool(kinds & FIGURE_PART_KINDS) and kinds <= FIGURE_PART_KINDS | {"caption"}
 
 
+def model_paragraphs(paragraphs, kinds):
+    """Return the paragraphs as the model gets them.
+
+    Extraction writes a figure's panel titles as headings; the model is told
+    what they are, so it does not read them out as sections. In a document
+    whose sections are numbered, headings come without their numbers: a
+    heading is spoken as its title, and a model that sees "4 Why
+    Self-Attention" may call it "Part Four" in one request but not the next.
+    """
+    numbered = sum(
+        1 for paragraph, kind in zip(paragraphs, kinds)
+        if kind == "heading" and HEADING_NUMBER_PATTERN.match(paragraph.strip())
+    )
+    requested = []
+    for paragraph, kind in zip(paragraphs, kinds):
+        if kind == "panel":
+            paragraph = f"Panel title: {_layout_text(paragraph)}"
+        elif kind == "heading" and numbered >= 3:
+            paragraph = HEADING_NUMBER_PATTERN.sub(
+                lambda match: match["hashes"] + (match["open"] or ""), paragraph.strip()
+            )
+        requested.append(paragraph)
+    return requested
+
+
 def _ends_sentence(paragraph):
     return SENTENCE_END_PATTERN.search(_layout_text(paragraph)) is not None
 
@@ -3633,6 +3746,98 @@ def _title_words(text):
     text = PICTURE_TEXT_PATTERN.sub(" ", MARKDOWN_IMAGE_PATTERN.sub(" ", text))
     text = re.sub(r"<sup>.*?</sup>", " ", text)
     return re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text).casefold())
+
+
+# Marks that follow an author's name: footnote symbols, digits, commas.
+AUTHOR_MARKS = "∗*†‡§¶‖0123456789, "
+
+
+def pair_authors(lines):
+    """Pair each author with the affiliation printed under their name.
+
+    `lines` are the first page's lines as {"text", "bbox", "bold"}. In a
+    column layout each author is a bold name with their affiliation on the
+    lines right below it, in the same column, then often an email. Return
+    [(name, affiliation)], the affiliation "" when only an email follows,
+    or [] when the page is not laid out that way, as when affiliations are
+    numbered and listed apart.
+    """
+    def center(line):
+        return (line["bbox"][0] + line["bbox"][2]) / 2
+
+    authors, rows = [], {}
+    for name in lines:
+        text = name["text"].rstrip(AUTHOR_MARKS)
+        words = text.split()
+        if not name["bold"] or not 2 <= len(words) <= 5 or not all(word[0].isupper() for word in words):
+            continue
+        height = name["bbox"][3] - name["bbox"][1]
+        below, bottom = [], name["bbox"][3]
+        for line in sorted(lines, key=lambda item: item["bbox"][1]):
+            if line is name or line["bbox"][1] < bottom - 1:
+                continue
+            if line["bbox"][1] - bottom > height * 0.8 or line["bold"]:
+                break
+            if not name["bbox"][0] - 30 <= center(line) <= name["bbox"][2] + 30:
+                continue
+            below.append(line)
+            bottom = line["bbox"][3]
+        # A row of names is a row of author columns only if every name in it
+        # has lines under it; otherwise one line spans several names.
+        rows.setdefault(round(name["bbox"][1] / 4), []).append(bool(below))
+        if not below:
+            continue
+        affiliation = []
+        for line in below:
+            if "@" in line["text"]:
+                break
+            affiliation.append(line["text"])
+        authors.append((text, ", ".join(affiliation)))
+    # Affiliations that start with a number or mark are a numbered list,
+    # matched to names by those marks, not by place.
+    numbered = any(
+        affiliation[:1] in AUTHOR_MARKS.replace(" ", "").replace(",", "")
+        for _, affiliation in authors if affiliation
+    )
+    partial = any(any(row) and not all(row) for row in rows.values())
+    if numbered or partial or sum(1 for _, affiliation in authors if affiliation) < 2:
+        return []
+    return authors
+
+
+# A bold name and the footnote marks right after it.
+AUTHOR_NAME_PATTERN = re.compile(r"\*\*(.+?)\*\*((?:\s*<sup>.*?</sup>)*)")
+
+
+def with_author_affiliations(markdown, authors):
+    """Rewrite each row of authors on a first page as "name, affiliation; …".
+
+    Extraction runs a row of author columns together, the names first and
+    then their affiliations, so a model must guess who works where. A
+    paragraph is rewritten only when it is such a row: bold names, all of
+    them paired authors, then nothing but their affiliations and email
+    addresses. Footnote marks stay on each name, so the notes they cite
+    still find it. Return the page, unchanged when no row was found, and how
+    many authors were given an affiliation.
+    """
+    known = {tuple(_title_words(name)): affiliation for name, affiliation in authors}
+    paragraphs, paired = split_paper_paragraphs(markdown), 0
+    for index, paragraph in enumerate(paragraphs):
+        runs = list(AUTHOR_NAME_PATTERN.finditer(paragraph))
+        places = [known.get(tuple(_title_words(run.group(1)))) for run in runs]
+        if not runs or None in places or not any(places):
+            continue
+        rest = re.sub(r"\S*@\S*", " ", AUTHOR_NAME_PATTERN.sub(" ", paragraph))
+        if collections.Counter(_title_words(rest)) != collections.Counter(
+            word for place in places for word in _title_words(place)
+        ):
+            continue
+        paragraphs[index] = "; ".join(
+            f"**{run.group(1)}**{run.group(2).strip()}" + (f", {place}" if place else "")
+            for run, place in zip(runs, places)
+        ) + "."
+        paired += sum(1 for place in places if place)
+    return ("\n\n".join(paragraphs) if paired else markdown), paired
 
 
 def with_title_heading(markdown, title):
@@ -3810,7 +4015,7 @@ def _place_footnotes(document, kinds, starts):
     random aside in the middle of another passage. Return the reordered
     lists and how many footnotes moved.
     """
-    following = {}
+    following, citers = {}, {}
     for index, kind in enumerate(kinds):
         marker = _footnote_marker(document[index]) if kind == "footnote" else None
         if marker is None:
@@ -3819,13 +4024,26 @@ def _place_footnotes(document, kinds, starts):
         while citing >= 0 and starts[citing] >= starts[index] - 1:
             if kinds[citing] == "prose" and marker in _cited_markers(document[citing]):
                 following.setdefault(citing, []).append(index)
+                # How many paragraphs cite it: "∗ Equal contribution" marks
+                # every author, "‡" one of them.
+                citers[index] = sum(
+                    1 for other in range(citing + 1)
+                    if starts[other] >= starts[index] - 1 and kinds[other] == "prose"
+                    and marker in _cited_markers(document[other])
+                )
                 break
             citing -= 1
-    moved = sum(
-        1 for citing, notes in following.items()
-        for position, note in enumerate(notes)
-        if note != citing + 1 + position
-    )
+    # A note about this paragraph alone comes right after it; one it shares
+    # with paragraphs before it, such as an equal-contribution note, after.
+    for notes in following.values():
+        notes.sort(key=lambda note: citers[note])
+    # Once one note of a paragraph is out of place, the notes after it are too.
+    moved = 0
+    for citing, notes in following.items():
+        in_place = 0
+        while in_place < len(notes) and notes[in_place] == citing + 1 + in_place:
+            in_place += 1
+        moved += len(notes) - in_place
     return _reorder(document, kinds, starts, following) + (moved,)
 
 
@@ -3892,13 +4110,48 @@ def _paper_units(kinds):
     return units
 
 
+def visual_label(paragraphs, kinds):
+    """Name a batch that is one captioned figure or table, as "Table 3".
+
+    Such a batch's narration is that visual's description alone. Any other
+    batch, including a visual with prose or with two captions, has no name.
+    """
+    if not _describes_visual(set(kinds)):
+        return None
+    captions = [
+        CAPTION_NUMBER_PATTERN.match(_layout_text(paragraph))
+        for paragraph, kind in zip(paragraphs, kinds) if kind == "caption"
+    ]
+    if len(captions) != 1 or captions[0] is None:
+        return None
+    word, number = captions[0].groups()
+    return f"{'Table' if word.casefold() == 'table' else 'Figure'} {int(number)}"
+
+
+def visual_batches(paragraphs, batches):
+    """Map each batch start to the figure or table it describes alone.
+
+    A name two batches share, as when an appendix numbers its tables anew,
+    names neither, since a pinned description could not tell them apart.
+    """
+    kinds = _layout_kinds(paragraphs)
+    labels = {
+        start: visual_label(paragraphs[start - 1:end], kinds[start - 1:end])
+        for start, end in batches
+    }
+    counts = collections.Counter(labels.values())
+    return {start: label for start, label in labels.items() if label and counts[label] == 1}
+
+
 def paper_batches(paragraphs, per_worker):
     """Plan adaptation batches as 1-based inclusive paragraph ranges.
 
     A batch holds up to per_worker consecutive paragraphs, but a figure or
     table is never split: its panel titles, images, the labels read from
     inside it, and its caption reach the model in one request, so it is
-    described once, knowing its caption. A larger figure gets its own batch.
+    described once, knowing its caption. A captioned figure or table is a
+    batch of its own, so its narration is its description alone, which can
+    be pinned and reused.
     An image without a caption inside a sentence, usually an equation
     printed as a picture ("a graph [equation] where V is …"), goes with the
     sentence around it, so the model reads the sentence through instead of
@@ -3932,12 +4185,14 @@ def paper_batches(paragraphs, per_worker):
             continue  # the sentence's second half, already taken in
         else:
             units.append(unit)
-    batches = []
+    batches, alone = [], False
     for start, end in units:
-        if batches and end + 2 - batches[-1][0] <= per_worker:
+        visual = visual_label(paragraphs[start:end + 1], kinds[start:end + 1]) is not None
+        if batches and not visual and not alone and end + 2 - batches[-1][0] <= per_worker:
             batches[-1] = (batches[-1][0], end + 1)
         else:
             batches.append((start + 1, end + 1))
+        alone = visual
     return batches
 
 
@@ -3999,6 +4254,62 @@ def adaptation_fidelity(paragraphs, checkpoint_dir):
     }
 
 
+def adaptation_descriptions(paragraphs, checkpoint_dir, batches):
+    """Return the saved description of each figure and table, by its name."""
+    descriptions, ends = {}, dict(batches)
+    for start, label in visual_batches(paragraphs, batches).items():
+        end = ends[start]
+        data = read_json_file(Path(checkpoint_dir) / f"{start:06d}-{end:06d}.json")
+        narration = data.get("narration") if data else None
+        if isinstance(narration, str) and narration.strip():
+            descriptions[label] = narration.strip()
+    return descriptions
+
+
+def description_pins(storage, input_version):
+    """Return the pinned descriptions of a document's figures and tables, by
+    name, or {} when none were pinned for this content."""
+    if not re.fullmatch(r"[0-9a-f]{64}", str(input_version)):
+        return {}
+    pins = read_json_file(storage.pins / f"{input_version}.json")
+    descriptions = pins.get("descriptions") if pins else None
+    if not isinstance(descriptions, dict):
+        return {}
+    return {
+        label: text for label, text in descriptions.items()
+        if isinstance(label, str) and isinstance(text, str) and text.strip()
+    }
+
+
+def golden_check(text, input_version):
+    """Check a narration against the golden file of its document, if any.
+
+    A golden file names a document by its SHA-256 and lists facts a good
+    narration of it keeps, each a pattern that must match the narration, or
+    with "absent", must not. Return None when no golden file names this
+    document, else the file's name, its number of facts, and the facts the
+    narration broke.
+    """
+    for path in sorted(GOLDEN_PATH.glob("*.json")):
+        golden = read_json_file(path)
+        if not golden or golden.get("sha256") != input_version:
+            continue
+        # Models write the same words with typographic apostrophes, dashes,
+        # and non-breaking hyphens.
+        spoken = " ".join(re.sub(
+            r"[\u2010-\u2015\u2212]", "-",
+            unicodedata.normalize("NFKC", text).replace("\u2019", "'"),
+        ).split())
+        facts = golden.get("facts") or []
+        broken = [
+            fact["fact"] for fact in facts
+            if bool(re.search(fact["pattern"], spoken, flags=re.IGNORECASE))
+            == bool(fact.get("absent"))
+        ]
+        return {"file": path.name, "facts": len(facts), "broken": broken}
+    return None
+
+
 def paper_system_prompt(task):
     return f"""{task.rstrip()}
 
@@ -4024,8 +4335,8 @@ per source paragraph
 NARRATION is appended to the final file and must remain complete for all included
 source material. When every current source paragraph is material the task leaves
 out, such as reference-list entries or a table of contents, leave NARRATION empty:
-never write a placeholder, a lone punctuation mark, or a note that something was
-omitted. SUMMARY is internal compacted context and is never empty; it must not
+never write a placeholder, a heading, a lone punctuation mark, or a note that
+something was omitted. SUMMARY is internal compacted context and is never empty; it must not
 shorten or replace any narration or recreate an omitted bibliography.
 Earlier source batches and narration are intentionally absent from later calls:
 use their summaries only for continuity."""
@@ -5505,6 +5816,7 @@ class PaperRun(Run):
         scratch_path=None,
         adapt=True,
         local_vision=False,
+        pins=None,
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -5536,6 +5848,13 @@ class PaperRun(Run):
         # run took to read and adapt the document.
         self.fidelity = None
         self.seconds = {}
+        # Approved descriptions to read as they stand, by figure or table;
+        # the description of each one this run read, and which were pinned;
+        # and what the golden check found, when the document has a golden file.
+        self.pins = dict(pins or {})
+        self.descriptions = {}
+        self.pinned = []
+        self.golden = None
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -5709,6 +6028,7 @@ class PaperRun(Run):
                 "PDF reader",
             ))
             page_count, title = int(overview["pages"]), str(overview["title"])
+            authors = pair_authors(overview["lines"])
         except (ValueError, TypeError, KeyError) as exc:
             raise RuntimeError("PDF reader returned an invalid overview") from exc
         if page_count <= 0:
@@ -5747,6 +6067,12 @@ class PaperRun(Run):
         if titled != pages[0]:
             pages[0] = titled
             self.publish("log", f"Restored the title as a heading: {title}\n")
+        pages[0], paired = with_author_affiliations(pages[0], authors)
+        if paired:
+            self.publish(
+                "log",
+                f"Paired {paired} authors with the affiliations printed under their names.\n",
+            )
         markdown, starts, rejoined, moved, notes = join_pdf_pages(pages)
         # The reader's Original view names the page each paragraph starts on.
         write_json_atomic(scratch / "document-pages.json", {"pages": starts})
@@ -5897,13 +6223,8 @@ class PaperRun(Run):
         checkpoint_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         batches = paper_batches(paragraphs, self.paragraphs_per_worker)
         batch_ends = dict(batches)
-        # Extraction writes a figure's panel titles as headings; the model is
-        # told what they are, so it does not read them out as sections.
         kinds = _layout_kinds(paragraphs)
-        requested = [
-            f"Panel title: {_layout_text(paragraph)}" if kind == "panel" else paragraph
-            for paragraph, kind in zip(paragraphs, kinds)
-        ]
+        requested = model_paragraphs(paragraphs, kinds)
         summaries = []
         results = {}
         completed_count = 0
@@ -5921,6 +6242,25 @@ class PaperRun(Run):
                 continue
             results[start] = (end, narration.strip(), summary.strip())
             completed_count += end - start + 1
+        # An approved description is read as it stands; the model is not
+        # asked to describe that figure or table again.
+        labels = visual_batches(paragraphs, batches)
+        for start, end in batches:
+            text = self.pins.get(labels.get(start))
+            if text is None or start in results:
+                continue
+            write_json_atomic(
+                checkpoint_dir / f"{start:06d}-{end:06d}.json",
+                {"end": end, "narration": text, "summary": text},
+            )
+            results[start] = (end, text, text)
+            completed_count += end - start + 1
+        pinned = [label for label in labels.values() if label in self.pins]
+        if pinned:
+            self.publish(
+                "log",
+                f"Reading the pinned descriptions of {', '.join(pinned)}.\n",
+            )
 
         futures = {}
         pending_starts = iter([
@@ -6069,8 +6409,34 @@ class PaperRun(Run):
             raise
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
+        self.measure_adaptation(paragraphs, checkpoint_dir)
+
+    def measure_adaptation(self, paragraphs, checkpoint_dir):
+        """Measure the saved adaptation: the author's prose it kept, and the
+        description of each figure and table, pinned or new."""
         self.fidelity = adaptation_fidelity(paragraphs, checkpoint_dir)
+        self.descriptions = adaptation_descriptions(
+            paragraphs, checkpoint_dir, paper_batches(paragraphs, self.paragraphs_per_worker)
+        )
+        self.pinned = sorted(label for label in self.descriptions if label in self.pins)
         self.publish_fidelity()
+
+    def check_golden(self, input_version):
+        """Compare the narration with its document's golden file, if any."""
+        self.golden = golden_check(
+            self.output_path.read_text(encoding="utf-8"), input_version
+        )
+        if self.golden is None:
+            return
+        broken = self.golden["broken"]
+        self.publish(
+            "log",
+            f"Golden check ({self.golden['file']}): "
+            + (
+                f"{len(broken)} of {self.golden['facts']} facts broken: {'; '.join(broken)}.\n"
+                if broken else f"all {self.golden['facts']} facts kept.\n"
+            ),
+        )
 
     def publish_fidelity(self):
         fidelity = self.fidelity
@@ -6109,7 +6475,7 @@ class PaperRun(Run):
             # through with_title_heading(), join_pdf_pages(),
             # narrated_source_paragraphs(), or paper_batches(): checkpoints
             # and the reader number paragraphs.
-            "schema": 10,
+            "schema": 11,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
             "model": self.model,
@@ -6134,6 +6500,12 @@ class PaperRun(Run):
             "converter_version": (
                 hashlib.sha256(_PDF_CONVERTER.encode("utf-8")).hexdigest()
                 if input_path.suffix.lower() == ".pdf"
+                else None
+            ),
+            # Pinning or unpinning a description changes what is read.
+            "pins": (
+                hashlib.sha256(json.dumps(self.pins, sort_keys=True).encode("utf-8")).hexdigest()
+                if self.adapt and self.pins
                 else None
             ),
         }
@@ -6161,10 +6533,8 @@ class PaperRun(Run):
                 paragraphs, _ = narrated_source_paragraphs(stored.read_text(
                     encoding="utf-8" if stored.name == "document.md" else self.encoding
                 ))
-                self.fidelity = adaptation_fidelity(
-                    paragraphs, scratch / "paragraph-checkpoints"
-                )
-                self.publish_fidelity()
+                self.measure_adaptation(paragraphs, scratch / "paragraph-checkpoints")
+                self.check_golden(identity["input_version"])
             return self.output_path
         if manifest is None or any(
             manifest.get(key) != value for key, value in identity.items()
@@ -6214,6 +6584,7 @@ class PaperRun(Run):
                 scratch, paragraphs, image_paths, system_prompt
             )
             self.seconds["adapting"] = round(time.monotonic() - adapting_started, 1)
+            self.check_golden(identity["input_version"])
         else:
             temporary = self.output_path.with_name(
                 f".{self.output_path.name}.tmp"
@@ -6572,9 +6943,17 @@ class AudiobookRun(Run):
                     "audio_sha256": audio_version,
                 },
                 # Which model adapted the book and how much of the author's
-                # prose it kept, then how long this run took, per stage.
+                # prose it kept; the description of each figure and table,
+                # which of them were pinned, and the golden check; then how
+                # long this run took, per stage.
                 "adaptation": (
-                    {"model": self.paper_run.model, "prose": self.paper_run.fidelity}
+                    {
+                        "model": self.paper_run.model,
+                        "prose": self.paper_run.fidelity,
+                        "descriptions": self.paper_run.descriptions,
+                        "pinned": self.paper_run.pinned,
+                        "golden": self.paper_run.golden,
+                    }
                     if self.paper_run is not None and self.paper_run.adapt
                     else None
                 ),
@@ -6630,6 +7009,10 @@ class AudiobookRun(Run):
                     scratch_path=extraction_dir,
                     adapt=self.values["adapt"],
                     local_vision=self.values["local_vision"],
+                    pins=(
+                        description_pins(self.storage, self.input_version)
+                        if self.values["adapt"] else None
+                    ),
                 )
                 self.paper_run.publish = self.publish
                 self.paper_run.stop_requested = self.stop_requested
@@ -7037,6 +7420,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_asset("document", body.get("name", ""))
         if route == "/api/audiobooks/delete":
             return self.delete_asset("audiobook", body.get("name", ""))
+        if route in ("/api/audiobooks/pin", "/api/audiobooks/unpin"):
+            return self.pin_asset(body.get("name", ""), route.endswith("/pin"))
         if route == "/api/voices/save":
             return self.save_draft(
                 str(body.get("draft", "")), str(body.get("name", "")).strip()
@@ -7368,6 +7753,22 @@ class Handler(BaseHTTPRequestHandler):
                 f"Could not delete {name}: {exc.strerror or 'file system error'}.",
             )
         return self.reply(HTTPStatus.OK, {"assets": asset_catalog(storage)})
+
+    def pin_asset(self, name, pin):
+        try:
+            state = pin_descriptions(self.server.storage, name, pin)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileNotFoundError:
+            return self.fail(HTTPStatus.NOT_FOUND, "That audiobook no longer exists.")
+        except OSError as exc:
+            # Operating-system messages name server paths; browsers get the reason.
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not {'pin' if pin else 'unpin'} the descriptions: "
+                f"{exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, {"descriptions": state})
 
     def save_draft(self, draft_id, name):
         storage = self.server.storage
@@ -8325,6 +8726,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               id="reader-original" type="checkbox"
               onchange="$('reader-content').classList.toggle('show-original', this.checked)">
               Original</label>
+            <button id="reader-pin" type="button" class="hidden"
+              onclick="toggleReaderPins()">Pin descriptions</button>
             <button type="button" onclick="downloadBook()">Download MP3</button>
           </div>
         </div>
@@ -8791,6 +9194,7 @@ function clearReader() {
   $("reader-panel").classList.add("hidden");
   $("reader-unavailable").classList.add("hidden");
   $("reader-original-toggle").classList.add("hidden");
+  $("reader-pin").classList.add("hidden");
 }
 
 function readerCueAt(sample) {
@@ -9133,6 +9537,7 @@ async function openAudiobook(name, focus) {
     $("reader-original-toggle").classList.toggle(
       "hidden", !renderReaderOriginals(payload.originals || [])
     );
+    showReaderPins(payload.descriptions);
     details.push(payload.word_timing !== "unavailable"
       ? "Words highlight as they're read"
       : payload.timing_precision === "estimated"
@@ -9159,6 +9564,42 @@ function closeBook() {
 function downloadBook() {
   if (state.player.book)
     location.href = "/api/download?asset=" + encodeURIComponent(state.player.book);
+}
+
+// A pinned description is read as it stands whenever the same document is
+// made into an audiobook again; unpinning lets the next one describe anew.
+function showReaderPins(descriptions) {
+  const { count = 0, pinned = false, pinned_from: from = "" } = descriptions || {};
+  const button = $("reader-pin");
+  button.classList.toggle("hidden", !count && !pinned);
+  button.dataset.pinned = pinned ? "true" : "";
+  button.textContent = pinned ? "Unpin descriptions" : "Pin descriptions";
+  button.title = pinned
+    ? `This document's figure and table descriptions are pinned${from ? ` from ${from}` : ""}. `
+      + "Unpin them to have the next audiobook of it describe them anew."
+    : `Keep this audiobook's ${count} figure and table descriptions: later `
+      + "audiobooks of this document read them as they are.";
+}
+async function toggleReaderPins() {
+  const name = state.player.book, button = $("reader-pin");
+  if (!name) return;
+  const pin = !button.dataset.pinned;
+  button.disabled = true;
+  try {
+    const answer = await jsonRequest(`/api/audiobooks/${pin ? "pin" : "unpin"}`, {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name }),
+    });
+    if (state.player.book !== name) return;
+    showReaderPins(answer.descriptions);
+    setStatus(pin
+      ? "Pinned the figure and table descriptions."
+      : "Unpinned the figure and table descriptions.");
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function refreshLibrary(restore) {

@@ -135,7 +135,12 @@ figure, table, or equation carries a **Description** label. **Original**
 shows the author's text muted beneath the passage made from it, headed with the
 PDF page it starts on, and shows passages the model left out, such as a
 copyright notice, as **Not narrated**. Books narrated without adaptation, or
-adapted before Hilde recorded the original text, have no **Original**. If
+adapted before Hilde recorded the original text, have no **Original**.
+**Pin descriptions** keeps the book's figure and table descriptions for its
+document: every later audiobook of the same content reads them as they are,
+and **Unpin descriptions** lets the next one describe them anew (see
+[Text adaptation](text-adaptation.md#pinned-descriptions)). A PDF table's
+picture carries its whole caption for screen readers. If
 forced alignment is partially or fully unavailable, exact sentence timing
 remains usable. Existing paragraph-era reader sidecars receive estimated
 sentence cues. Audiobooks created before reader sidecars were introduced remain

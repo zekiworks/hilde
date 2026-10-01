@@ -132,7 +132,10 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   instead. That count measures dropped wording, not meaning: a sentence
   reworded with the same words, or an added claim, goes unnoticed.
 - **Figure descriptions are model-generated and can be wrong.** Check the
-  original figure before relying on a number or a trend.
+  original figure before relying on a number or a trend. Once a book's
+  descriptions are right, **Pin descriptions** keeps them for every later
+  audiobook of that document, whichever model adapts it; see
+  [Pinned descriptions](docs/text-adaptation.md#pinned-descriptions).
 - **Text-only local models never see the figure.** They describe it from the
   text extracted from it (labels, numbers, caption), so a figure with few
   labels gets a thin description, and an equation printed as an image is left

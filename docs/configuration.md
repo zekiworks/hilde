@@ -48,6 +48,7 @@ User/
 │   ├── .readers/
 │   └── .versions/
 ├── Documents/
+│   └── .descriptions/
 └── in_progress/
 ```
 
@@ -56,11 +57,15 @@ User/
   voices made before fixed previews, a rendered `preview.wav`.
 - **Documents** contains uploaded files, URL downloads, and prepared narration
   text. URL downloads use an optional filename or infer one from the response.
+  Hidden `.descriptions` holds pinned figure and table descriptions, one file
+  per document content, named by its SHA-256.
 - **Audiobooks** contains completed MP3 files. Hidden `.readers` and `.versions`
   directories hold content-addressed Markdown/timing sidecars and their commit
   records. A book's record in `.versions` also keeps the model that adapted it,
-  how many prose paragraphs kept at least 95% of the author's words, how long
-  each stage of the run that finished it took, and the length of its audio.
+  how many prose paragraphs kept at least 95% of the author's words, each
+  figure and table description and which were pinned, the golden check's
+  result when its document has a golden file, how long each stage of the run
+  that finished it took, and the length of its audio.
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   and narration chunks for unfinished jobs. It is removed for a job only after
   its final audiobook is committed.
