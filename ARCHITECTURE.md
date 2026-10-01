@@ -90,6 +90,8 @@ A saved local voice is:
 
 Without `--resume-dir`, single-device local narration uses whole-book or fixed-size batches and writes the selected container directly. OpenAI-compatible narration sends one `POST {server}/audio/speech` request per chunk and requires all returned WAV chunks to keep one sample rate/channel layout. Multi-worker local/SSH narration requires `--resume-dir`.
 
+`load_model()` imports Qwen through `import_qwen_tts()`, which captures file descriptors 1 and 2 during the import and replays them only if it fails. `qwen_tts` warns on import that flash-attn and the SoX executable are missing; Hilde needs neither (SoX serves only Qwen's 25 Hz tokenizer), and without the capture every worker would repeat both warnings in each job log.
+
 ### Durable narration resume
 
 `--resume-dir` enables a checkpointed publication path:
@@ -192,12 +194,14 @@ hyphens, at most 60 characters, `book` when none) then `--` and the first 12
 hexadecimal digits of the hash. `book_for_source()` finds a book by that suffix
 and the full hash in `book.json`.
 
-- `book.json` (`BOOK_SCHEMA` 1): `source_sha256`, `title`, `source_filenames`
+- `book.json`: `schema` (`BOOK_SCHEMA` 1, the layout of this file),
+  `source_sha256`, `title`, `source_filenames`
   (every name the content came under), `source_file` (`source.<ext>`, or
   `null` for a migrated book), `created_at`, `updated_at`, `hilde_version`
   (`HILDE_VERSION`), `git_commit` (`git rev-parse HEAD`, or `null` outside a
   checkout), `prompt_hash` (the SHA-256 of the system prompt, `null` without
-  adaptation), `schema_version` (`EXTRACTION_SCHEMA`), `model`, `adapted`,
+  adaptation), `schema_version` (`EXTRACTION_SCHEMA`, the paragraph-selection
+  rules the text was made under; unrelated to `schema`), `model`, `adapted`,
   `chunk_max_chars` (the chunk size its reader splits the text at), `prose`
   (`adaptation_fidelity()`), `seconds` for reading and adapting, and
   `narration_sha256`, the SHA-256 of `narration.json`'s bytes. `voices` lists

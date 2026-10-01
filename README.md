@@ -164,7 +164,7 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
 
 [Quickstart](#quickstart) installs the tested stack: Python 3.12 with PyTorch
 2.10 for CUDA 13.0, or its CPU build. [Installation](docs/installation.md)
-covers other platforms, the MP3 and SoX dependencies, FlashAttention 2, and
+covers other platforms, MP3 support, FlashAttention 2, and
 downloading the models ahead of time.
 
 ## Configuration

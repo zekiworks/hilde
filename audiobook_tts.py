@@ -458,6 +458,37 @@ def read_text(args, parser):
     return text
 
 
+def import_qwen_tts():
+    """Import Qwen3TTSModel, showing its import output only when the import fails.
+
+    qwen_tts warns on import that flash-attn and the SoX executable are missing.
+    Hilde needs neither: SoX serves only Qwen's 25 Hz tokenizer, and FlashAttention
+    is an explicit option. The SoX check runs a shell, so both file descriptors are
+    captured, not just Python's streams.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = (os.dup(1), os.dup(2))
+    failed = True
+    with tempfile.TemporaryFile() as captured:
+        os.dup2(captured.fileno(), 1)
+        os.dup2(captured.fileno(), 2)
+        try:
+            from qwen_tts import Qwen3TTSModel
+            failed = False
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for descriptor, copy in zip((1, 2), saved):
+                os.dup2(copy, descriptor)
+                os.close(copy)
+            if failed:
+                captured.seek(0)
+                sys.stderr.write(captured.read().decode(errors="replace"))
+                sys.stderr.flush()
+    return Qwen3TTSModel
+
+
 def load_model(model, args, parser):
     try:
         model_path = resolve_model(model, args.allow_downloads)
@@ -494,7 +525,7 @@ def load_model(model, args, parser):
 
         set_seed(args.seed)
 
-    from qwen_tts import Qwen3TTSModel
+    Qwen3TTSModel = import_qwen_tts()
 
     print(f"Runtime: {device}, {dtype}, {args.attn_implementation}", flush=True)
     print(f"Loading model: {model_path}", flush=True)

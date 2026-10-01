@@ -33,8 +33,8 @@ in `~/hilde`. Optional settings:
 | `HILDE_TORCH` | Chosen from the driver: `cu130`, `cu128`, `cu126`, or `cpu` forces a PyTorch build (Linux). |
 | `HILDE_REPO` | This repository: the Git URL or path to clone. |
 
-For example, `curl -fsSL …/install.sh | HILDE_TORCH=cpu sh`. MP3 writing,
-SoX, and FlashAttention notes below apply to both ways of installing.
+For example, `curl -fsSL …/install.sh | HILDE_TORCH=cpu sh`. The MP3 writing
+and FlashAttention notes below apply to both ways of installing.
 
 ## By hand
 
@@ -84,9 +84,10 @@ python -m pip install -r requirements.txt
 
 - MP3 writing depends on the installed SoundFile/libsndfile build. If Hilde
   reports unsupported MP3 encoding, use WAV or install a build with MP3 support.
-- The Python `sox` package and the SoX executable are separate. If Qwen reports
-  a missing executable, install SoX through your operating system's package
-  manager.
+- Hilde does not need the SoX executable. Qwen's package checks for it on
+  import, but only its 25 Hz tokenizer uses it; Hilde runs the 12 Hz models.
+  Hilde hides that check's warning, and the flash-attn one, unless the import
+  fails.
 - The web reader force-aligns transcript words with TorchAudio's `MMS_FA`
   bundle and Uroman. The first alignment downloads and caches the approximately
   1.2 GB MMS model through TorchAudio. Alignment runs on CPU after narration, so
