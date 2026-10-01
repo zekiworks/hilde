@@ -840,7 +840,21 @@ def voice_catalog(storage):
             "comparable": comparable,
             # Changes whenever the clip is replaced, so browsers refetch it.
             "preview": version,
+            "modified": voice_modified(path),
         })
+    return voices
+
+
+def voice_modified(path):
+    """When a saved voice last changed, in Unix seconds: its newest sample,
+    transcript, or prompt. A preview rendered later is not a change."""
+    times = []
+    for name in (*VOICE_FILES, VOICE_DESCRIPTION_FILE):
+        try:
+            times.append((path / name).stat().st_mtime)
+        except OSError:
+            pass
+    return max(times) if times else None
     return voices
 
 
@@ -1012,7 +1026,8 @@ def library_catalog(storage):
             cached = (signature, library_entry(storage, output))
             with _LIBRARY_LOCK:
                 _LIBRARY_ENTRIES[key] = cached
-        books.append((status.st_mtime_ns, cached[1]))
+        # When the book was last made: its MP3 is replaced only then.
+        books.append((status.st_mtime_ns, {**cached[1], "modified": status.st_mtime}))
     books.sort(key=lambda item: item[0], reverse=True)
     return [book for _, book in books]
 
@@ -7851,6 +7866,8 @@ legend + * { clear:both; }
 .book-table .duration { width:120px; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
 .book-table .source { width:26%; color:var(--dim); overflow-wrap:anywhere; }
+.data-table .modified { width:1%; color:var(--dim); white-space:nowrap;
+                        font-variant-numeric:tabular-nums; }
 .book-title { font-weight:600; }
 .selected-badge { display:inline-flex; align-items:center; gap:6px; padding:0 8px;
                   color:var(--accent); font-weight:650; white-space:nowrap; }
@@ -7948,15 +7965,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
   .voice-table tr { grid-template-columns:auto minmax(0,1fr); align-items:center; }
   .voice-table .preview { grid-row:1 / span 2; }
-  .voice-table .name, .voice-table .description { grid-column:2; }
+  .voice-table .name, .voice-table .description, .voice-table .modified { grid-column:2; }
   .voice-table .description { color:var(--dim); font-size:14px; }
-  .voice-table .select { grid-column:2; grid-row:3; display:flex; flex-wrap:wrap;
+  .data-table .modified { font-size:13px; }
+  .voice-table .select { grid-column:2; grid-row:4; display:flex; flex-wrap:wrap;
                          align-items:center; gap:6px; }
   .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
-  .book-table .title, .book-table .duration, .book-table .source { grid-column:1; }
+  .book-table .title, .book-table .duration, .book-table .source,
+  .book-table .modified { grid-column:1; }
   .book-table .duration, .book-table .source { font-size:13px; }
-  .book-table td[data-label]::before { content:attr(data-label) ": "; }
-  .book-table .action { grid-column:2; grid-row:1 / span 3; align-self:center; }
+  .data-table td[data-label]::before { content:attr(data-label) ": "; }
+  .book-table .action { grid-column:2; grid-row:1 / span 4; align-self:center; }
   .book-table .action { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
   .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
 }
@@ -8250,7 +8269,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
       <thead><tr><th scope="col">Preview</th><th scope="col">Voice name</th>
-        <th scope="col">Prompt</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+        <th scope="col">Prompt</th><th scope="col">Modified</th>
+        <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
     </table>
     <p id="voice-none" class="empty hidden"></p>
@@ -8273,7 +8293,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <table id="book-table" class="data-table book-table">
           <caption class="visually-hidden">Audiobooks</caption>
           <thead><tr><th scope="col">Title</th><th scope="col">Duration</th>
-            <th scope="col">Source name</th>
+            <th scope="col">Source name</th><th scope="col">Modified</th>
             <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
           <tbody id="book-rows"></tbody>
         </table>
@@ -8981,6 +9001,21 @@ function updateReaderHighlight() {
     readerWordElements[nextWord].classList.add("active");
 }
 
+const MODIFIED_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" });
+// When a voice or book last changed, from the server's file times, in this
+// browser's own date format; the exact time is in the tooltip.
+function modifiedCell(seconds) {
+  const node = cell("modified", "Modified");
+  if (!Number.isFinite(seconds)) { node.textContent = "Unknown"; return node; }
+  const date = new Date(seconds * 1000);
+  const time = document.createElement("time");
+  time.dateTime = date.toISOString();
+  time.title = date.toString();
+  time.textContent = MODIFIED_FORMAT.format(date);
+  node.append(time);
+  return node;
+}
+
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds)) return "Unknown";
   if (seconds < 59.5) return `${Math.round(seconds)} s`;
@@ -9129,7 +9164,7 @@ function bookRow(book) {
   listen.setAttribute("aria-label", `Listen to ${book.title}`);
   listen.addEventListener("click", () => openAudiobook(book.name, true));
   action.append(listen, deleteButton(`Delete ${book.title}`, (button) => deleteBook(book, button)));
-  row.append(title, duration, source, action);
+  row.append(title, duration, source, modifiedCell(book.modified), action);
   return row;
 }
 
@@ -9205,7 +9240,7 @@ function voiceRow(voice) {
     select.append(button);
   }
   select.append(deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
-  row.append(preview, name, description, select);
+  row.append(preview, name, description, modifiedCell(voice.modified), select);
   return row;
 }
 

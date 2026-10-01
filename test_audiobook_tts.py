@@ -3643,6 +3643,15 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertEqual(mark_preview, b"fixed passage in Mark's voice")
         self.assertEqual(zoe_preview, (fixed / "reference.wav").read_bytes())
         self.assertEqual(refused.exception.code, 400)
+        # A voice changed when its sample, transcript, or prompt last did; a
+        # preview rendered later is not a change.
+        os.utime(rendered / "reference.wav", (1_700_000_000, 1_700_000_000))
+        os.utime(rendered / "transcript.txt", (1_700_000_100, 1_700_000_100))
+        os.utime(rendered / "preview.wav", (1_800_000_000, 1_800_000_000))
+        self.assertEqual(
+            next(voice for voice in web.voice_catalog(self.storage) if voice["name"] == "mark")["modified"],
+            1_700_000_100,
+        )
 
     def test_every_new_voice_reads_the_fixed_passage(self):
         state = normalize({
@@ -3772,6 +3781,11 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         again = web.library_catalog(self.storage)[0]
 
         self.assertEqual((again["title"], again["voice"]), ("new tale", "Sarah"))
+        # A book changed when its MP3 was last made.
+        os.utime(book, (1_750_000_000, 1_750_000_000))
+        self.assertEqual(web.library_catalog(self.storage)[0]["modified"], 1_750_000_000)
+        os.utime(book, (1_760_000_000, 1_760_000_000))
+        self.assertEqual(web.library_catalog(self.storage)[0]["modified"], 1_760_000_000)
 
     def test_preview_refuses_a_voice_linked_from_outside_the_library(self):
         elsewhere = tempfile.TemporaryDirectory()
