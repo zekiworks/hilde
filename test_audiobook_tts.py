@@ -1077,6 +1077,40 @@ class PaperWorkflowTests(unittest.TestCase):
             list(captions),
         )
 
+    def test_a_figure_caption_above_a_table_is_not_the_tables(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        caption = "Table 1: GLUE results for every model."
+
+        def draw(page):
+            # BERT, page 6: Figure 1's caption, printed below the figure,
+            # sits right above Table 1, whose caption is printed below it.
+            figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+            figure.set_rect(figure.irect, (40, 90, 160))
+            page.insert_image(pymupdf.Rect(150, 60, 450, 200), pixmap=figure)
+            page.insert_text((120, 216), "Figure 1: Overall pre-training and fine-tuning procedures.", fontsize=9)
+            edges, top = [100, 250, 360, 510], 232
+            rows = [("System", "Score", "Average")] + [(f"Model {n}", f"{80 + n}.1", f"{70 + n}.5") for n in range(4)]
+            for row, cells in enumerate(rows):
+                for column, cell in enumerate(cells):
+                    page.insert_text((edges[column] + 5, top + 14 + row * 20), cell, fontsize=10)
+            for row in range(len(rows) + 1):
+                page.draw_line((edges[0], top + row * 20), (edges[-1], top + row * 20))
+            for edge in edges:
+                page.draw_line((edge, top), (edge, top + len(rows) * 20))
+            page.insert_text((150, top + len(rows) * 20 + 16), caption, fontsize=9)
+            for line in range(12):
+                page.insert_text((72, 420 + 14 * line), "Fine-tuning improves every task.", fontsize=10)
+
+        paragraphs = self.converted_page(Path(temporary.name), draw)
+        self.assertEqual(
+            [match.group(1) for p in paragraphs
+             for match in [re.fullmatch(r"!\[(.*)\]\(images/[^)]*-table-\d+\.png\)", p)] if match],
+            [caption],
+        )
+
     def test_a_listing_cut_by_a_page_or_a_table_stays_whole_and_takes_no_sentence(self):
         def joined(*pages):
             return web.split_paper_paragraphs(web.join_pdf_pages(list(pages))[0])

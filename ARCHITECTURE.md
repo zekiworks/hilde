@@ -355,7 +355,9 @@ PDF work is page-addressable:
    anything else is that table's, above before below, and one between two
    tables, as Table 1's sits over Table 2 when captions are printed below
    them (BERT), goes to whichever has none of its own, the nearer if both.
-   No caption is used twice.
+   No caption is used twice, and a caption box that opens another kind of
+   caption (`OTHER_CAPTION`: "Figure 1:", "Algorithm 2:") is never a table's,
+   as BERT's Figure 1 caption sits right above its Table 1.
    A listing set in a typewriter font (a program, a prompt, a skill file)
    comes out of the layout as many boxes, one per paragraph or list item,
    with a list item started wherever a line wraps and the font's spaces
@@ -943,7 +945,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 118 tests. It covers voice persistence
+The regression suite currently has 119 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, nodes added while a book waits and kept while
@@ -951,7 +953,8 @@ one narrates, `workers.yaml` validation, per-worker SSH settings from the
 server's command to the staged worker, loopback-only worker changes, a
 typewriter-font listing extracted as one block with its words apart and no
 duplicate glyphs, a listing going on in the next column kept in order,
-captions printed below their tables given to their own tables, listings
+captions printed below their tables given to their own tables, a figure's
+caption above a table not taken for the table's, listings
 kept whole across a page break or a table and
 never joined to a sentence, a sentence continued behind a code mark,
 internal device pinning, FIFO scheduling and

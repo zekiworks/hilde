@@ -504,6 +504,11 @@ boxes = chunk.get("page_boxes") or []
 # A caption opens with its number and punctuation, "Table 6:"; a sentence
 # about the table, "Table 5 lists…", does not.
 TABLE_CAPTION = re.compile(r"(?:table|tab\\.)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?[ \\t]*[:.|](?:\\s|$)", re.I)
+# The caption of something else: a figure's printed below it can sit right
+# above a table, and is never that table's.
+OTHER_CAPTION = re.compile(
+    r"(?:figure|fig\\.|algorithm|listing|code)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?[ \\t]*[:.|](?:\\s|$)", re.I
+)
 MONOSPACE_FONT = re.compile(r"mono|courier|consol|menlo|typewriter|tt\\d", re.I)
 # Layout classes a listing's lines come out as; a table or picture never is one.
 LISTING_CLASSES = {"text", "list-item", "section-header", "code"}
@@ -534,6 +539,13 @@ def gap(upper, lower):
     return boxes[lower]["bbox"][1] - boxes[upper]["bbox"][3]
 
 
+def table_caption_part(position):
+    # A caption box that does not open another kind of caption.
+    return boxes[position].get("class") == "caption" and OTHER_CAPTION.match(
+        plain(box_text(position)).strip()
+    ) is None
+
+
 def caption_chains(position):
     # The caption boxes right above a table and right below it, with whether
     # each set also borders another table. A caption can be broken over
@@ -545,19 +557,17 @@ def caption_chains(position):
             above.append(other)
             other -= 1
             break
-        if boxes[other].get("class") != "caption":
+        if not table_caption_part(other):
             break
         above.append(other)
         other -= 1
     above_shared = bool(above) and other >= 0 and boxes[other].get("class") == "table"
     above.reverse()
     below, other = [], position + 1
-    if other < len(boxes) and (
-        boxes[other].get("class") == "caption" or opens_table_caption(other)
-    ):
+    if other < len(boxes) and (table_caption_part(other) or opens_table_caption(other)):
         below.append(other)
         other += 1
-        while other < len(boxes) and boxes[other].get("class") == "caption":
+        while other < len(boxes) and table_caption_part(other):
             below.append(other)
             other += 1
     below_shared = bool(below) and other < len(boxes) and boxes[other].get("class") == "table"
