@@ -204,7 +204,9 @@ and the full hash in `book.json`.
   `source_sha256`, `title`, `source_filenames`
   (every name the content came under), `source_file` (`source.<ext>`, or
   `null` for a migrated book), `created_at`, `updated_at`, `hilde_version`
-  (`HILDE_VERSION`), `git_commit` (`git rev-parse HEAD`, or `null` outside a
+  (`HILDE_VERSION`), `git_commit` (`git rev-parse HEAD` read once as the
+  server starts, so it names the code that made the book even when the
+  checkout moves on while the server runs, or `null` outside a
   checkout), `prompt_hash` (the SHA-256 of the system prompt, `null` without
   adaptation), `schema_version` (`EXTRACTION_SCHEMA`, the paragraph-selection
   rules the text was made under; unrelated to `schema`), `model`, `adapted`,
@@ -345,7 +347,21 @@ PDF work is page-addressable:
    label screen readers announce (`Table` without one), cut from its box at
    200 dpi, followed by its cells between picture-text markers: kinds `image`
    and `labels`, the same parts as a figure, so the reader shows the table as
-   printed and the model gets the picture and the cells;
+   printed and the model gets the picture and the cells. `caption_near()`
+   takes the caption boxes directly above the table, or below it; a box the
+   layout files as body `text` counts when it opens a caption ("Table 6:",
+   `TABLE_CAPTION`), never a sentence about the table ("Table 5 lists…").
+   A listing set in a typewriter font (a program, a prompt, a skill file)
+   comes out of the layout as many boxes, one per paragraph or list item,
+   with a list item started wherever a line wraps and the font's spaces
+   lost. `listing_runs()` finds each run of consecutive text, list-item,
+   heading, or code boxes whose characters are at least 80% monospace (the
+   span's monospace flag or a typewriter font name), and `listing_text()`
+   rewrites it as one fenced block from the page's own lines: pieces of one
+   printed row joined in order, indentation kept in characters, a row's
+   second drawing as scattered glyphs over the first dropped, and no blank
+   line inside, so the listing stays one paragraph. Table and listing
+   replacements are applied from the end of the page;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a
    paragraph, and the model sees each batch without the narration before it,
@@ -370,7 +386,12 @@ PDF work is page-addressable:
    inside its sentence; `paper_batches()` then sends it with both halves.
    Captions are recognized as "Figure 2:", "Table 4.",
    or "Figure 1 | …". A caption broken above its table or figure is mended
-   too. Last, `_place_after_mentions()` moves each numbered figure or table
+   too. A sentence goes on behind a code mark (`` `test_normal` tasks``
+   continues in lowercase). No sentence is joined into or onto a fenced
+   listing (`_is_listing()`), and `_merge_listings()` makes a listing that a
+   page break, footnote, or figure or table cut into one again, with what
+   cut it following, so the whole listing reaches the model in one request.
+   Last, `_place_after_mentions()` moves each numbered figure or table
    printed before the paragraph that first mentions it ("Figure 3(b)", "Figs.
    2 and 3", "Tables 1–4"), on its own page or the next, to follow that
    paragraph, so a description never comes before the author introduces its
@@ -914,12 +935,15 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 114 tests. It covers voice persistence
+The regression suite currently has 116 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, nodes added while a book waits and kept while
 one narrates, `workers.yaml` validation, per-worker SSH settings from the
-server's command to the staged worker, loopback-only worker changes,
+server's command to the staged worker, loopback-only worker changes, a
+typewriter-font listing extracted as one block with its words apart and no
+duplicate glyphs, listings kept whole across a page break or a table and
+never joined to a sentence, a sentence continued behind a code mark,
 internal device pinning, FIFO scheduling and
 deduplication, GPU enumeration when CUDA cannot open one device, public worker
 and model configuration without hosts or paths, GPU-preferred resolution, extensionless document

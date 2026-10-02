@@ -66,7 +66,12 @@ the author's text stops. The job log names any description that doesn't.
 In a PDF, a sentence that a page break, a figure, or a footnote splits is
 joined back together before the model sees it; what split it then follows the
 sentence. An equation printed as a picture stays inside its sentence and goes
-to the model with it, so the sentence is read through. A figure
+to the model with it, so the sentence is read through. A listing set in a
+typewriter font, such as a program, a prompt, or a skill file, reaches the
+model as one block from the page's own lines, even across a page break or a
+table printed inside it, so a sentence wrapped from one line to the next is
+read through rather than split into two passages. A table whose caption the
+PDF stores as ordinary text ("Table 6: …") still gets that caption. A figure
 or table printed before the text that first mentions it ("as Figure 3
 shows…"), on the same page or the next, moves after that text, so its
 description never comes before the author introduces it or in the middle of

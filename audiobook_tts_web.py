@@ -90,7 +90,7 @@ BOOK_SCHEMA = 1
 # Bump whenever the paragraphs or batches a job adapts change, through
 # with_title_heading(), join_pdf_pages(), narrated_source_paragraphs(), or
 # paper_batches(): checkpoints and the reader number paragraphs.
-EXTRACTION_SCHEMA = 12
+EXTRACTION_SCHEMA = 13
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -448,9 +448,11 @@ with pymupdf.open(sys.argv[1]) as document:
 
 _PDF_CONVERTER = """\
 import os
+import re
 import sys
 from pathlib import Path
 
+import pymupdf
 import pymupdf4llm
 from pymupdf4llm.helpers.document_layout import select_ocr_function
 
@@ -498,12 +500,13 @@ markdown = chunk.get("text")
 if not isinstance(markdown, str):
     raise RuntimeError(f"PDF page {page + 1} returned invalid Markdown")
 
-# A table's cells come out of the layout unreliably: words split across
-# columns ("BL|EU"), stray emphasis, and tags. Show each table as printed,
-# cut from the page, and keep its cells behind the picture as its text, as
-# figures keep the labels read from inside them. The cells only reach the
-# model, so emphasis marks and tags come out; "10<sup>20</sup>" stays a power.
 boxes = chunk.get("page_boxes") or []
+# A caption opens with its number and punctuation, "Table 6:"; a sentence
+# about the table, "Table 5 lists…", does not.
+TABLE_CAPTION = re.compile(r"(?:table|tab\\.)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?[ \\t]*[:.|](?:\\s|$)", re.I)
+MONOSPACE_FONT = re.compile(r"mono|courier|consol|menlo|typewriter|tt\\d", re.I)
+# Layout classes a listing's lines come out as; a table or picture never is one.
+LISTING_CLASSES = {"text", "list-item", "section-header", "code"}
 
 
 def plain(text):
@@ -513,49 +516,161 @@ def plain(text):
     return text
 
 
+def box_text(position):
+    start, end = boxes[position].get("pos") or (0, 0)
+    return markdown[start:end]
+
+
+def opens_table_caption(position):
+    return boxes[position].get("class") in ("caption", "text") and TABLE_CAPTION.match(
+        plain(box_text(position)).strip()
+    ) is not None
+
+
 def caption_near(position):
-    # A table's caption sits right above or below it on the page, sometimes
-    # broken over consecutive boxes.
-    for step in (-1, 1):
-        parts, other = [], position + step
-        while 0 <= other < len(boxes) and boxes[other].get("class") == "caption":
-            start, end = boxes[other].get("pos") or (0, 0)
-            parts.append(markdown[start:end])
-            other += step
-        if step < 0:
-            parts.reverse()
-        text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
-        if text:
-            return text
-    return "Table"
+    # A table's caption sits right above or below it, sometimes broken over
+    # consecutive caption boxes. The layout can file a caption as body text,
+    # which counts when it opens "Table N:".
+    parts, other = [], position - 1
+    while other >= 0:
+        if opens_table_caption(other):
+            parts.append(box_text(other))
+            break
+        if boxes[other].get("class") != "caption":
+            break
+        parts.append(box_text(other))
+        other -= 1
+    parts.reverse()
+    other = position + 1
+    while not parts and other < len(boxes) and (
+        boxes[other].get("class") == "caption" or opens_table_caption(other)
+    ):
+        parts.append(box_text(other))
+        other += 1
+        while other < len(boxes) and boxes[other].get("class") == "caption":
+            parts.append(box_text(other))
+            other += 1
+    text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
+    return text or "Table"
 
 
-tables = [
-    (position, box, caption_near(position))
-    for position, box in enumerate(boxes)
-    if box.get("class") == "table" and box.get("pos") and box.get("bbox")
-]
-if tables:
-    import pymupdf
+def monospace_share(sheet, bbox):
+    total = mono = 0
+    for block in sheet.get_text("dict", clip=pymupdf.Rect(bbox))["blocks"]:
+        for line in block.get("lines", ()):
+            for span in line["spans"]:
+                size = len(span["text"].strip())
+                total += size
+                if span["flags"] & 8 or MONOSPACE_FONT.search(span["font"]):
+                    mono += size
+    return mono / total if total else 0.0
 
-    with pymupdf.open(source) as document:
-        sheet = document[page]
-        for number, (_, box, caption) in reversed(list(enumerate(tables, 1))):
-            start, end = box["pos"]
-            cells = markdown[start:end].strip()
-            if not cells.startswith("|"):
-                continue
-            clip = (pymupdf.Rect(box["bbox"]) + (-4, -4, 4, 4)) & sheet.rect
-            name = f"page-{page + 1:04d}-table-{number}.png"
-            sheet.get_pixmap(clip=clip, dpi=200).save(images / name)
-            # Screen readers announce the caption; the spoken description
-            # sits beside the picture as text.
-            markdown = (
-                markdown[:start]
-                + f"\\n\\n![{caption}](images/{name})\\n\\n"
-                + f"<!-- Start of picture text -->\\n{plain(cells)}\\n<!-- End of picture text -->\\n\\n"
-                + markdown[end:]
-            )
+
+def listing_runs(sheet):
+    # A listing set in a typewriter font, such as a program, a prompt, or a
+    # skill file, is laid out as many boxes, one per paragraph or list item.
+    runs, run = [], []
+    for position, box in enumerate(boxes):
+        if (
+            box.get("class") in LISTING_CLASSES and box.get("pos") and box.get("bbox")
+            and monospace_share(sheet, box["bbox"]) >= 0.8
+        ):
+            run.append(position)
+            continue
+        if run:
+            runs.append(run)
+        run = []
+    if run:
+        runs.append(run)
+    return runs
+
+
+def listing_text(sheet, run):
+    # The page's own lines, not the layout's Markdown, which drops a
+    # typewriter font's spaces and starts a list item wherever a line wraps.
+    # Pieces of one printed row join; indentation is kept in characters.
+    rows, seen = [], set()
+    for position in run:
+        clip = pymupdf.Rect(boxes[position]["bbox"]) + (-1, -1, 1, 1)
+        for block in sheet.get_text("dict", clip=clip)["blocks"]:
+            for line in block.get("lines", ()):
+                text = "".join(span["text"] for span in line["spans"]).strip()
+                x0, _, x1, y1 = line["bbox"]
+                key = (round(x0), round(y1), text)
+                if not text or key in seen:
+                    continue
+                seen.add(key)
+                row = next((row for row in rows if abs(row[0] - y1) < 2), None)
+                if row is None:
+                    row = [y1, []]
+                    rows.append(row)
+                row[1].append((x0, x1, text))
+    if not rows:
+        return ""
+    rows.sort(key=lambda row: row[0])
+    # Some typesetting draws a row twice, the second time as scattered glyphs
+    # at the same places; a piece overlapping a longer one is that copy.
+    for row in rows:
+        kept = []
+        for piece in sorted(row[1], key=lambda piece: piece[0] - piece[1]):
+            if all(piece[1] <= other[0] + 1 or piece[0] >= other[1] - 1 for other in kept):
+                kept.append(piece)
+        row[1] = sorted(kept)
+    widths = sorted((x1 - x0) / len(text) for _, parts in rows for x0, x1, text in parts)
+    width = widths[len(widths) // 2] or 1.0
+    left = min(x0 for _, parts in rows for x0, _, _ in parts)
+    lines = []
+    for _, parts in rows:
+        line = " " * round((parts[0][0] - left) / width) + parts[0][2]
+        end = parts[0][1]
+        for x0, x1, text in parts[1:]:
+            line += " " * max(1, round((x0 - end) / width)) + text
+            end = x1
+        lines.append(line.rstrip())
+    return "\\n".join(lines)
+
+
+# Replacements are made from the end of the page, so earlier positions hold.
+edits = []
+with pymupdf.open(source) as document:
+    sheet = document[page]
+    # A table's cells come out of the layout unreliably: words split across
+    # columns ("BL|EU"), stray emphasis, and tags. Show each table as printed,
+    # cut from the page, and keep its cells behind the picture as its text, as
+    # figures keep the labels read from inside them. The cells only reach the
+    # model, so emphasis marks and tags come out; "10<sup>20</sup>" stays a power.
+    tables = [
+        (box, caption_near(position))
+        for position, box in enumerate(boxes)
+        if box.get("class") == "table" and box.get("pos") and box.get("bbox")
+    ]
+    for number, (box, caption) in enumerate(tables, 1):
+        start, end = box["pos"]
+        cells = markdown[start:end].strip()
+        if not cells.startswith("|"):
+            continue
+        clip = (pymupdf.Rect(box["bbox"]) + (-4, -4, 4, 4)) & sheet.rect
+        name = f"page-{page + 1:04d}-table-{number}.png"
+        sheet.get_pixmap(clip=clip, dpi=200).save(images / name)
+        # Screen readers announce the caption; the spoken description
+        # sits beside the picture as text.
+        edits.append((start, end, (
+            f"\\n\\n![{caption}](images/{name})\\n\\n"
+            f"<!-- Start of picture text -->\\n{plain(cells)}\\n<!-- End of picture text -->\\n\\n"
+        )))
+    # One fenced block per listing, without blank lines, so the whole listing
+    # stays one paragraph and reaches the model in one request.
+    for run in listing_runs(sheet):
+        content = listing_text(sheet, run)
+        if not content:
+            continue
+        fence = "````" if "```" in content else "```"
+        edits.append((
+            boxes[run[0]]["pos"][0], boxes[run[-1]]["pos"][1],
+            f"\\n\\n{fence}\\n{content}\\n{fence}\\n\\n",
+        ))
+for start, end, text in sorted(edits, reverse=True):
+    markdown = markdown[:start] + text + markdown[end:]
 output.write_text(markdown, encoding="utf-8")
 print(f"Extracted PDF page {page + 1} ({len(markdown)} Markdown characters).")
 """
@@ -1063,7 +1178,11 @@ _GIT_COMMIT = []
 
 
 def git_commit():
-    """The commit Hilde runs from, or None outside a git checkout."""
+    """The commit Hilde runs from, or None outside a git checkout.
+
+    The server reads it once as it starts, so a book records the code that
+    made it even after the checkout moves on while the server runs.
+    """
     if not _GIT_COMMIT:
         try:
             result = subprocess.run(
@@ -4368,7 +4487,39 @@ def _ends_sentence(paragraph):
 
 
 def _starts_lowercase(paragraph):
-    return _layout_text(paragraph).lstrip("\"'“‘([")[:1].islower()
+    # "`test_normal` tasks" goes on in lowercase behind its code mark.
+    return _layout_text(paragraph).lstrip("\"'“‘([`")[:1].islower()
+
+
+LISTING_FENCE_PATTERN = re.compile(r"(`{3,})[^\n]*\n(.*)\n\1", re.S)
+
+
+def _is_listing(paragraph):
+    """Whether a paragraph is a fenced listing: code, a prompt, a file."""
+    return LISTING_FENCE_PATTERN.fullmatch(paragraph.strip()) is not None
+
+
+def _merge_listings(document, kinds, starts):
+    """Join a listing that a page break, a footnote, or a figure or table cut
+    in two, in place, so it reaches the model whole; what cut it then follows.
+    Return how many were joined."""
+    joined = index = 0
+    while index < len(document):
+        after = index + 1
+        while after < len(document) and kinds[after] in PAGE_BREAK_SKIPPED_KINDS:
+            after += 1
+        if after < len(document) and _is_listing(document[index]) and _is_listing(document[after]):
+            body = "\n".join(
+                LISTING_FENCE_PATTERN.fullmatch(document[part].strip()).group(2)
+                for part in (index, after)
+            )
+            fence = "````" if "```" in body else "```"
+            document[index] = f"{fence}\n{body}\n{fence}"
+            del document[after], kinds[after], starts[after]
+            joined += 1
+            continue
+        index += 1
+    return joined
 
 
 def _join_halves(first, second, vocabulary):
@@ -4428,6 +4579,8 @@ def _rejoin_page_break(before, before_kinds, after, after_kinds, vocabulary):
         tail < 0
         or head == len(after)
         or before_kinds[tail] != "prose"
+        or _is_listing(before[tail])
+        or _is_listing(after[head])
         or _ends_sentence(before[tail])
         or not _interrupts_sentence(before_kinds[tail + 1:] + after_kinds[:head])
     ):
@@ -4592,7 +4745,7 @@ def _continues_sentence(before, after):
     ends on and `after` starts with a letter or digit."""
     if _starts_lowercase(after):
         return True
-    start = _layout_text(after).lstrip("\"'“‘([")[:1]
+    start = _layout_text(after).lstrip("\"'“‘([`")[:1]
     return bool(start) and start.isalnum() and bool(
         DANGLING_END_PATTERN.search(_layout_text(before))
     )
@@ -4609,10 +4762,12 @@ def _rejoin_cut_sentences(paragraphs, kinds, vocabulary):
             after += 1
         if (
             kinds[index] == "prose"
+            and not _is_listing(paragraphs[index])
             and after > index + 1
             and _interrupts_sentence(kinds[index + 1:after])
             and after < len(paragraphs)
             and kinds[after] == "prose"
+            and not _is_listing(paragraphs[after])
             and not _ends_sentence(paragraphs[index])
             and _continues_sentence(paragraphs[index], paragraphs[after])
             and not LIST_ITEM_PATTERN.match(paragraphs[after].strip())
@@ -4767,9 +4922,11 @@ def join_pdf_pages(pages):
     halves become one paragraph again, and the footnotes, page numbers, and
     figures or tables that sat between them follow it; a figure, table, or
     footnote that cuts a sentence within a page follows it the same way. A
-    caption broken above its table or figure is mended too. Then each
-    footnote moves after the paragraph that cites it, and a figure or table
-    printed before the text introduces it moves after that text.
+    caption broken above its table or figure is mended too. A listing cut
+    the same way, or by a page break, becomes one listing, and no sentence is
+    ever joined into one. Then each footnote moves after the paragraph that
+    cites it, and a figure or table printed before the text introduces it
+    moves after that text.
     """
     vocabulary = "\n".join(pages).casefold()
     document, kinds, starts, rejoined = [], [], [], 0
@@ -4784,6 +4941,7 @@ def join_pdf_pages(pages):
         document.extend(paragraphs)
         kinds.extend(page_kinds)
         starts.extend([number] * len(paragraphs))
+    rejoined += _merge_listings(document, kinds, starts)
     document, kinds, starts, notes = _place_footnotes(document, kinds, starts)
     document, kinds, starts, moved = _place_after_mentions(document, kinds, starts)
     return "\n\n".join(document), starts, rejoined, moved, notes
@@ -11996,6 +12154,7 @@ def main():
     if not SCRIPT.is_file():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
     tts_models = configured_tts_models(args, parser)
+    git_commit()
     storage = SharedStorage(args.storage_root)
     try:
         prepare_library(storage)

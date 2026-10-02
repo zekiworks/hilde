@@ -948,6 +948,110 @@ class PaperWorkflowTests(unittest.TestCase):
         # The caption, picture, and cells reach the model in one request.
         self.assertEqual(web.paper_batches(paragraphs, 1)[0], (1, 3))
 
+    def test_a_listing_reaches_the_model_whole_with_its_words_apart(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "listing.pdf"
+        # Harness-Zero, Skill 1: a skill file set in a typewriter font, with a
+        # sentence wrapped over two lines, a heading, a list item, and a file
+        # tree whose comments sit to the right of each name.
+        listing = [
+            ("name: student-harness-evolve", None),
+            ("description: evolve a shared harness, use a swarm (default 10", None),
+            ("  coder subagents) to analyze rollouts in parallel.", None),
+            ("## Campaign parameters (set at each instantiation)", None),
+            ("- tools/ -- prebuilt tools loaded into the agent;", None),
+            ("|-- registry.py", "# single entry point; API contract below"),
+            ("|-- manifest.json", "# enablement manifest"),
+        ]
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            for line in range(4):
+                page.insert_text((72, 72 + 14 * line),
+                                 "The skill below guides the evolution agent.", fontsize=10)
+            for line, (text, comment) in enumerate(listing):
+                page.insert_text((80, 150 + 10 * line), text, fontsize=8, fontname="cour")
+                if comment:
+                    page.insert_text((200, 150 + 10 * line), comment, fontsize=8, fontname="cour")
+            # Harness-Zero draws some rows a second time as scattered glyphs
+            # over the first; that copy must not reach the text.
+            heading = listing[3][0]
+            for column in range(3, len(heading), 7):
+                page.insert_text((80 + 4.8 * column, 180), heading[column], fontsize=8, fontname="cour")
+            for line in range(4):
+                page.insert_text((72, 250 + 14 * line),
+                                 "Evaluation uses the student with the harness attached.", fontsize=10)
+            pdf.save(source)
+        stage = root / "stage"
+        stage.mkdir()
+        output = stage / "page.md"
+        subprocess.run(
+            [sys.executable, "-c", web._PDF_CONVERTER, str(source), str(output),
+             str(stage / "images"), "0"],
+            check=True, capture_output=True,
+        )
+        paragraphs = web.split_paper_paragraphs(output.read_text(encoding="utf-8"))
+        listings = [paragraph for paragraph in paragraphs if web._is_listing(paragraph)]
+
+        # One fenced block, so the wrapped sentence reaches the model whole,
+        # with every line in order and no words run together.
+        self.assertEqual(len(listings), 1, paragraphs)
+        self.assertEqual(
+            [" ".join(line.split()) for line in listings[0].splitlines()[1:-1]],
+            [" ".join(" ".join(filter(None, row)).split()) for row in listing],
+        )
+        self.assertTrue(any("guides the evolution agent" in p for p in paragraphs))
+        self.assertFalse(any("guides the evolution agent" in p for p in listings))
+
+    def test_a_listing_cut_by_a_page_or_a_table_stays_whole_and_takes_no_sentence(self):
+        def joined(*pages):
+            return web.split_paper_paragraphs(web.join_pdf_pages(list(pages))[0])
+
+        table = "Table 7: Components of the reference harness.\n\n![Table 7](images/t.png)"
+        # Harness-Zero, Code 3: a recipe runs over a page break, with Table 7
+        # printed at the top of the next page above its second half.
+        self.assertEqual(joined(
+            "Code 3 shows the recipe.\n\n```\ncat > tool.py <<'PY'\nimport sys\n```",
+            f"{table}\n\n```\nprint('PASS')\nPY\n```\n\nThe recipe then runs the check.",
+        ), [
+            "Code 3 shows the recipe.",
+            "```\ncat > tool.py <<'PY'\nimport sys\nprint('PASS')\nPY\n```",
+            "Table 7: Components of the reference harness.",
+            "![Table 7](images/t.png)",
+            "The recipe then runs the check.",
+        ])
+        # A listing ending a page, or a sentence left open before one, is
+        # never joined with what follows, even a listing whose language tag
+        # starts in lowercase.
+        self.assertEqual(joined(
+            "The recipe prints:\n\n```\nPASS when nothing\n```",
+            "matters for every command.",
+        ), [
+            "The recipe prints:",
+            "```\nPASS when nothing\n```",
+            "matters for every command.",
+        ])
+        self.assertEqual(joined(
+            "Each call starts a fresh shell, so the\n\nTable 2: Tools.\n\n|a|b|\n|---|---|\n|1|2|"
+            "\n\n```bash\nls -la\n```",
+        ), [
+            "Each call starts a fresh shell, so the",
+            "Table 2: Tools.",
+            "|a|b|\n|---|---|\n|1|2|",
+            "```bash\nls -la\n```",
+        ])
+        # Harness-Zero, Section 4.1: Table 1 cuts a sentence whose second
+        # half opens in code.
+        self.assertEqual(joined(
+            "We merge the official train split and hold out the 168"
+            "\n\nTable 1: Results.\n\n|a|b|\n|---|---|\n|1|2|\n\n"
+            "`test_normal` tasks, grouped into scenarios.",
+        )[0], "We merge the official train split and hold out the 168 "
+              "`test_normal` tasks, grouped into scenarios.")
+
     def test_figures_reach_the_model_whole(self):
         paragraphs = [
             "The output is a weighted sum of the values.",
