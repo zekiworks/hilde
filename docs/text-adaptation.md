@@ -33,7 +33,9 @@ adaptation**:
     `haiku`. Hilde never sees the sign-in, which Anthropic permits only
     inside its own apps, and passages count against your plan's usage limits;
     a limit reached ends the job with Claude Code's message. **Check again**
-    looks for Claude Code after you install it or sign in.
+    looks for Claude Code after you install it or sign in. Connecting any
+    provider updates **Create** at once: a "needs a model" message goes away
+    without choosing another model.
   - **Anthropic API** takes an API key from the
     [Claude Console](https://platform.claude.com/), billed per use. **Remove**
     deletes it.

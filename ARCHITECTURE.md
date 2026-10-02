@@ -591,7 +591,11 @@ the active tab is flush with an accent top edge and opens into the page below.
   ones are complete.
   1. **Add your book**: choose a document, upload a PDF/Markdown/text file, or
      add one under **Add from a link**; **Continue** downloads a link first.
-     **Delete** beside the dropdown removes the chosen document.
+     **Delete** beside the dropdown removes the chosen document. A typed link
+     outranks the dropdown: it hides **You already have this one** and shows
+     **Continue**. `clearBookChoice()` empties the step (document, link, and
+     save-as name) when **Start another audiobook**, **Create another
+     audiobook**, or **Start listening** begins the next book.
   2. **Choose a voice**: the saved-voice dropdown with **Search voices** beside
      it (opens **Voices**) and a card previewing the chosen voice. A narration
      speech server takes a server voice ID instead.
@@ -600,6 +604,10 @@ the active tab is flush with an accent top edge and opens into the page below.
      Claude Code's status, and the Anthropic API key), and **Add local** (a
      local model server with its type and whether its model sees images) under
      it, since adapting cannot run without a model; then **Create audiobook**.
+     Step 3's missing-model problem comes from the server's check of the saved
+     providers, so connecting or removing one (the OpenAI sign-in completing,
+     an Anthropic key saved or removed, **Check again** for Claude Code) syncs
+     again to replace it, as choosing another model already did.
 
   A run this browser starts, reopens after a refresh, or chooses to view
   replaces the steps with four plain stages: Reading your document (PDF

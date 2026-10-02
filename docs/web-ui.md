@@ -25,7 +25,13 @@ Audiobooks made from it are kept, and a job already queued keeps its own copy.
 A document whose content is already a book, under any file name, shows **You
 already have this one** with **Open** and **Change voice**. Change voice
 continues to the voice step, and **Add this voice** reads the book's own text
-in that voice: no model runs and nothing is written again.
+in that voice: no model runs and nothing is written again. A link typed under
+**Add from a link** is the next book whatever the dropdown shows, so that
+notice gives way to **Continue**.
+
+**Start another audiobook** and **Create another audiobook** open the first
+step empty, as does **Start listening**: the document just made into a book is
+no longer chosen.
 
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:

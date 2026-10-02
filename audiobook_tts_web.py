@@ -9614,7 +9614,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div></div>
     <div class="footer">
       <span class="grow"></span>
-      <button onclick="refreshPaperModels()">Check again</button>
+      <button onclick="refreshPaperModels().then(sync)">Check again</button>
     </div>
   </section>
   <section class="provider">
@@ -10855,8 +10855,18 @@ function continueFromVoice() {
   if (voiceReady()) setStep("create");
 }
 function searchVoices() { setTab("voice"); $("voice-search").focus(); }
+// A finished book's document is not the next book's: once a book is made, the
+// first step starts empty, with no document chosen and no link typed.
+function clearBookChoice() {
+  state.audiobook.document = "";
+  state.audiobook.source_url = ""; state.audiobook.download_name = "";
+  $("source-url").value = ""; $("download-name").value = "";
+  $("link-details").open = false;
+  populateAssets();
+}
 function createAnother() {
   createView = "compose";
+  clearBookChoice();
   setStep("book");
 }
 function createFirstAudiobook() {
@@ -10891,7 +10901,9 @@ function startListening() {
   const info = resultInfo || {};
   createView = "compose";
   state.audiobook.step = "book";
+  clearBookChoice();
   if (info.book) openAudiobook(info.book, true, info.voice);
+  else { render(); queueSync(); }
 }
 
 function stageFor(phase, unit) {
@@ -10937,8 +10949,9 @@ function renderCreate() {
   $("voice-change").classList.toggle("hidden", step === "voice" || !done.book);
   // A document that is already a book with its own text gets a new voice,
   // read from that text without any model.
+  // A typed link is the next book, whatever the dropdown still shows.
   const existing = state.tab === "audiobook" && facts.tab === "audiobook" && bookReady()
-    ? facts.existing_book : null;
+    && !state.audiobook.source_url.trim() ? facts.existing_book : null;
   const voiceOnly = !!(existing && existing.has_text);
   $("existing-book").classList.toggle("hidden", !existing || step !== "book");
   if (existing) {
@@ -11627,7 +11640,7 @@ async function pollPaperOpenAI() {
     const info = await jsonRequest("/api/paper/openai/status");
     renderPaperOpenAI(info);
     if (info.active) paperOAuthTimer = setTimeout(pollPaperOpenAI, 1000);
-    else if (info.status === "connected") await refreshPaperModels();
+    else if (info.status === "connected") { await refreshPaperModels(); await sync(); }
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
 async function openPaperProviders() {
@@ -11653,6 +11666,8 @@ async function savePaperAnthropic() {
     });
     $("paper-anthropic-key").value = "";
     applyPaperCatalog(catalog);
+    // Create's model check reads the server's providers; ask it again.
+    await sync();
   } catch (error) { $("paper-anthropic-status").textContent = error.message; }
   finally { $("paper-anthropic-save").disabled = false; }
 }
@@ -11661,6 +11676,7 @@ async function removePaperAnthropic() {
     applyPaperCatalog(await jsonRequest("/api/paper/anthropic/remove", {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     }));
+    await sync();
   } catch (error) { $("paper-anthropic-status").textContent = error.message; }
 }
 async function startPaperOpenAI() {
