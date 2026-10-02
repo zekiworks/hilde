@@ -347,20 +347,28 @@ PDF work is page-addressable:
    label screen readers announce (`Table` without one), cut from its box at
    200 dpi, followed by its cells between picture-text markers: kinds `image`
    and `labels`, the same parts as a figure, so the reader shows the table as
-   printed and the model gets the picture and the cells. `caption_near()`
-   takes the caption boxes directly above the table, or below it; a box the
+   printed and the model gets the picture and the cells. `caption_chains()`
+   finds the caption boxes directly above and below each table; a box the
    layout files as body `text` counts when it opens a caption ("Table 6:",
    `TABLE_CAPTION`), never a sentence about the table ("Table 5 lists…").
+   `table_captions()` then gives each table one: a caption between a table and
+   anything else is that table's, above before below, and one between two
+   tables, as Table 1's sits over Table 2 when captions are printed below
+   them (BERT), goes to whichever has none of its own, the nearer if both.
+   No caption is used twice.
    A listing set in a typewriter font (a program, a prompt, a skill file)
    comes out of the layout as many boxes, one per paragraph or list item,
    with a list item started wherever a line wraps and the font's spaces
    lost. `listing_runs()` finds each run of consecutive text, list-item,
    heading, or code boxes whose characters are at least 80% monospace (the
    span's monospace flag or a typewriter font name), and `listing_text()`
-   rewrites it as one fenced block from the page's own lines: pieces of one
-   printed row joined in order, indentation kept in characters, a row's
-   second drawing as scattered glyphs over the first dropped, and no blank
-   line inside, so the listing stays one paragraph. Table and listing
+   rewrites it as one fenced block from the page's own lines in the
+   layout's reading order: a box printed wholly above the lines gathered so
+   far, where a listing goes on at the head of the next column, starts a
+   section with its own left edge. Pieces of one printed row are joined in
+   order, indentation is kept in characters, a row's second drawing as
+   scattered glyphs over the first is dropped, and no blank line is left
+   inside, so the listing stays one paragraph. Table and listing
    replacements are applied from the end of the page;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a
@@ -935,14 +943,16 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 116 tests. It covers voice persistence
+The regression suite currently has 118 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, nodes added while a book waits and kept while
 one narrates, `workers.yaml` validation, per-worker SSH settings from the
 server's command to the staged worker, loopback-only worker changes, a
 typewriter-font listing extracted as one block with its words apart and no
-duplicate glyphs, listings kept whole across a page break or a table and
+duplicate glyphs, a listing going on in the next column kept in order,
+captions printed below their tables given to their own tables, listings
+kept whole across a page break or a table and
 never joined to a sentence, a sentence continued behind a code mark,
 internal device pinning, FIFO scheduling and
 deduplication, GPU enumeration when CUDA cannot open one device, public worker

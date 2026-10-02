@@ -527,31 +527,72 @@ def opens_table_caption(position):
     ) is not None
 
 
-def caption_near(position):
-    # A table's caption sits right above or below it, sometimes broken over
-    # consecutive caption boxes. The layout can file a caption as body text,
+def gap(upper, lower):
+    # The space between a box and a box printed below it, or None.
+    if not boxes[upper].get("bbox") or not boxes[lower].get("bbox"):
+        return None
+    return boxes[lower]["bbox"][1] - boxes[upper]["bbox"][3]
+
+
+def caption_chains(position):
+    # The caption boxes right above a table and right below it, with whether
+    # each set also borders another table. A caption can be broken over
+    # consecutive caption boxes, and the layout can file one as body text,
     # which counts when it opens "Table N:".
-    parts, other = [], position - 1
+    above, other = [], position - 1
     while other >= 0:
         if opens_table_caption(other):
-            parts.append(box_text(other))
+            above.append(other)
+            other -= 1
             break
         if boxes[other].get("class") != "caption":
             break
-        parts.append(box_text(other))
+        above.append(other)
         other -= 1
-    parts.reverse()
-    other = position + 1
-    while not parts and other < len(boxes) and (
+    above_shared = bool(above) and other >= 0 and boxes[other].get("class") == "table"
+    above.reverse()
+    below, other = [], position + 1
+    if other < len(boxes) and (
         boxes[other].get("class") == "caption" or opens_table_caption(other)
     ):
-        parts.append(box_text(other))
+        below.append(other)
         other += 1
         while other < len(boxes) and boxes[other].get("class") == "caption":
-            parts.append(box_text(other))
+            below.append(other)
             other += 1
-    text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
-    return text or "Table"
+    below_shared = bool(below) and other < len(boxes) and boxes[other].get("class") == "table"
+    return (above, above_shared), (below, below_shared)
+
+
+def table_captions(positions):
+    # Each table's caption, or "Table" without one. A caption between a table
+    # and anything else is that table's, above before below; one between two
+    # tables, as Table 1's sits over Table 2 when captions are printed below
+    # them, goes to whichever of the two has no caption of its own.
+    chains = {position: caption_chains(position) for position in positions}
+    chosen, taken = {}, set()
+    for position, sides in chains.items():
+        own = next((chain for chain, shared in sides if chain and not shared), None)
+        if own:
+            chosen[position] = own
+            taken.update(own)
+    for position, sides in chains.items():
+        if position in chosen:
+            continue
+        free = [
+            (gap(chain[-1], position) if chain[-1] < position else gap(position, chain[0]), chain)
+            for chain, _ in sides if chain and not taken & set(chain)
+        ]
+        if free:
+            chain = min(free, key=lambda item: float("inf") if item[0] is None else item[0])[1]
+            chosen[position] = chain
+            taken.update(chain)
+    captions = {}
+    for position in positions:
+        parts = [box_text(index) for index in chosen.get(position, ())]
+        text = " ".join(plain(" ".join(parts)).replace("[", "").replace("]", "").split())
+        captions[position] = text or "Table"
+    return captions
 
 
 def monospace_share(sheet, bbox):
@@ -588,10 +629,15 @@ def listing_runs(sheet):
 def listing_text(sheet, run):
     # The page's own lines, not the layout's Markdown, which drops a
     # typewriter font's spaces and starts a list item wherever a line wraps.
-    # Pieces of one printed row join; indentation is kept in characters.
-    rows, seen = [], set()
+    # Boxes keep the layout's reading order: one printed wholly above the
+    # lines gathered so far, as where a listing goes on at the top of the
+    # next column, starts a section with its own left edge; one beside or
+    # below them joins their rows. Pieces of one printed row join, and
+    # indentation is kept in characters.
+    sections, seen = [], set()
     for position in run:
         clip = pymupdf.Rect(boxes[position]["bbox"]) + (-1, -1, 1, 1)
+        pieces = []
         for block in sheet.get_text("dict", clip=clip)["blocks"]:
             for line in block.get("lines", ()):
                 text = "".join(span["text"] for span in line["spans"]).strip()
@@ -600,33 +646,47 @@ def listing_text(sheet, run):
                 if not text or key in seen:
                     continue
                 seen.add(key)
-                row = next((row for row in rows if abs(row[0] - y1) < 2), None)
-                if row is None:
-                    row = [y1, []]
-                    rows.append(row)
-                row[1].append((x0, x1, text))
-    if not rows:
+                pieces.append((x0, x1, y1, text))
+        if not pieces:
+            continue
+        if not sections or max(piece[2] for piece in pieces) < min(
+            row[0] for row in sections[-1]
+        ) - 2:
+            sections.append([])
+        rows = sections[-1]
+        for x0, x1, y1, text in pieces:
+            row = next((row for row in rows if abs(row[0] - y1) < 2), None)
+            if row is None:
+                row = [y1, []]
+                rows.append(row)
+            row[1].append((x0, x1, text))
+    if not sections:
         return ""
-    rows.sort(key=lambda row: row[0])
-    # Some typesetting draws a row twice, the second time as scattered glyphs
-    # at the same places; a piece overlapping a longer one is that copy.
-    for row in rows:
-        kept = []
-        for piece in sorted(row[1], key=lambda piece: piece[0] - piece[1]):
-            if all(piece[1] <= other[0] + 1 or piece[0] >= other[1] - 1 for other in kept):
-                kept.append(piece)
-        row[1] = sorted(kept)
-    widths = sorted((x1 - x0) / len(text) for _, parts in rows for x0, x1, text in parts)
+    for rows in sections:
+        rows.sort(key=lambda row: row[0])
+        # Some typesetting draws a row twice, the second time as scattered
+        # glyphs at the same places; a piece overlapping a longer one is that copy.
+        for row in rows:
+            kept = []
+            for piece in sorted(row[1], key=lambda piece: piece[0] - piece[1]):
+                if all(piece[1] <= other[0] + 1 or piece[0] >= other[1] - 1 for other in kept):
+                    kept.append(piece)
+            row[1] = sorted(kept)
+    widths = sorted(
+        (x1 - x0) / len(text)
+        for rows in sections for _, parts in rows for x0, x1, text in parts
+    )
     width = widths[len(widths) // 2] or 1.0
-    left = min(x0 for _, parts in rows for x0, _, _ in parts)
     lines = []
-    for _, parts in rows:
-        line = " " * round((parts[0][0] - left) / width) + parts[0][2]
-        end = parts[0][1]
-        for x0, x1, text in parts[1:]:
-            line += " " * max(1, round((x0 - end) / width)) + text
-            end = x1
-        lines.append(line.rstrip())
+    for rows in sections:
+        left = min(x0 for _, parts in rows for x0, _, _ in parts)
+        for _, parts in rows:
+            line = " " * round((parts[0][0] - left) / width) + parts[0][2]
+            end = parts[0][1]
+            for x0, x1, text in parts[1:]:
+                line += " " * max(1, round((x0 - end) / width)) + text
+                end = x1
+            lines.append(line.rstrip())
     return "\\n".join(lines)
 
 
@@ -639,11 +699,12 @@ with pymupdf.open(source) as document:
     # cut from the page, and keep its cells behind the picture as its text, as
     # figures keep the labels read from inside them. The cells only reach the
     # model, so emphasis marks and tags come out; "10<sup>20</sup>" stays a power.
-    tables = [
-        (box, caption_near(position))
-        for position, box in enumerate(boxes)
+    positions = [
+        position for position, box in enumerate(boxes)
         if box.get("class") == "table" and box.get("pos") and box.get("bbox")
     ]
+    captions = table_captions(positions)
+    tables = [(boxes[position], captions[position]) for position in positions]
     for number, (box, caption) in enumerate(tables, 1):
         start, end = box["pos"]
         cells = markdown[start:end].strip()

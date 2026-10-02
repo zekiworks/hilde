@@ -1006,6 +1006,77 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertTrue(any("guides the evolution agent" in p for p in paragraphs))
         self.assertFalse(any("guides the evolution agent" in p for p in listings))
 
+    @staticmethod
+    def converted_page(root, draw):
+        import pymupdf
+
+        source = root / "page.pdf"
+        with pymupdf.open() as pdf:
+            draw(pdf.new_page())
+            pdf.save(source)
+        stage = root / "stage"
+        stage.mkdir()
+        output = stage / "page.md"
+        subprocess.run(
+            [sys.executable, "-c", web._PDF_CONVERTER, str(source), str(output),
+             str(stage / "images"), "0"],
+            check=True, capture_output=True,
+        )
+        return web.split_paper_paragraphs(output.read_text(encoding="utf-8"))
+
+    def test_a_listing_going_on_in_the_next_column_keeps_its_order(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        prompt = [f"Step {number}: check the student's work before it runs." for number in range(1, 9)]
+
+        def draw(page):
+            # A two-column paper: the prompt starts at the foot of the left
+            # column and goes on at the head of the right one.
+            for line in range(36):
+                page.insert_text((52, 72 + 14 * line), "Body text of the left column.", fontsize=10)
+            for line, text in enumerate(prompt[:5]):
+                page.insert_text((52, 600 + 10 * line), text, fontsize=7, fontname="cour")
+            for line, text in enumerate(prompt[5:]):
+                page.insert_text((312, 72 + 10 * line), text, fontsize=7, fontname="cour")
+            for line in range(36):
+                page.insert_text((312, 130 + 14 * line), "Body text of the right column.", fontsize=10)
+
+        paragraphs = self.converted_page(Path(temporary.name), draw)
+        listings = [paragraph for paragraph in paragraphs if web._is_listing(paragraph)]
+        self.assertEqual(len(listings), 1, paragraphs)
+        # In reading order, and the right column is not pushed far right.
+        lines = listings[0].splitlines()[1:-1]
+        self.assertEqual([line.strip() for line in lines], prompt)
+        self.assertTrue(all(len(line) - len(line.lstrip()) < 4 for line in lines), lines)
+
+    def test_captions_printed_below_their_tables_name_their_own_table(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        captions = ("Table 1: GLUE results for every model.", "Table 2: SQuAD results for every model.")
+
+        def draw(page):
+            # BERT prints each caption below its table, so Table 1's caption
+            # sits right above Table 2 too, a little nearer to it than to its own.
+            edges = [100, 250, 360, 510]
+            for number, top in enumerate((90, 214)):
+                rows = [("System", "Score", "Average")] + [(f"Model {n}", f"{80 + n}.{number}", f"{70 + n}.5") for n in range(4)]
+                for row, cells in enumerate(rows):
+                    for column, cell in enumerate(cells):
+                        page.insert_text((edges[column] + 5, top + 14 + row * 20), cell, fontsize=10)
+                for row in range(len(rows) + 1):
+                    page.draw_line((edges[0], top + row * 20), (edges[-1], top + row * 20))
+                for edge in edges:
+                    page.draw_line((edge, top), (edge, top + len(rows) * 20))
+                page.insert_text((150, top + len(rows) * 20 + 16), captions[number], fontsize=9)
+            for line in range(12):
+                page.insert_text((72, 600 + 14 * line), "Fine-tuning improves every task.", fontsize=10)
+
+        paragraphs = self.converted_page(Path(temporary.name), draw)
+        self.assertEqual(
+            [match.group(1) for p in paragraphs for match in [re.fullmatch(r"!\[(.+)\]\(images/[^)]+\)", p)] if match],
+            list(captions),
+        )
+
     def test_a_listing_cut_by_a_page_or_a_table_stays_whole_and_takes_no_sentence(self):
         def joined(*pages):
             return web.split_paper_paragraphs(web.join_pdf_pages(list(pages))[0])
