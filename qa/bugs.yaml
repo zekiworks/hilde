@@ -58,6 +58,13 @@ bugs:
     status: open
     fix: Remove the 200-character cap. Never emit a bare "Table" or "Figure" label.
     test: Generic checks G01 and G06; a caption longer than 200 characters survives whole.
+    notes: >
+      Review of 5f2f097 (2026-10-02): table_captions() gives stacked tables with captions below
+      their own captions (reviewer's repro passes). Still open, on 7147e2e, c35f43e and 5f2f097
+      alike: with captions printed below (BERT's style), a figure's caption that sits right above
+      a table becomes that table's label ("Figure 1: Overall pre-training…" on Table 1's picture),
+      because a caption box counts without naming a table. Repro: a picture, "Figure 1: …" under
+      it, a table, "Table 1: …" under it, on one page.
 
   - id: B05
     slug: caption-format-not-detected
@@ -79,6 +86,12 @@ bugs:
       without final punctuation with its continuation after a figure, table or algorithm. Never
       bridge a gap with invented words.
     test: Generic check G06 (no body paragraph ends without final punctuation).
+    notes: >
+      Review of c35f43e (2026-10-02): listing_text() sorts a listing's rows by height across the whole run,
+      so a listing that goes on from the left column to the right column of a two-column page comes out
+      right column first, indented about 60 spaces. On 7147e2e the order was right. Harness-Zero is one
+      column, so R8-01 is not affected; two-column papers with prompts in an appendix are.
+      Fixed in 5f2f097; the reviewer's repro keeps the column order there.
 
   - id: B07
     slug: verbatim-altered
@@ -281,3 +294,35 @@ bugs:
     status: open
     fix: Spell-check generated descriptions.
     test: CLM-17.
+
+  - id: B28
+    slug: symbol-names-drift
+    title: One symbol spoken under several names across passages
+    priority: P1
+    layer: adapt
+    status: proposed
+    fix: >
+      Proposed. Each batch is adapted on its own, so each picks its own words for a symbol:
+      Harness-Zero's K became "external knowledge", "adapted knowledge", "knowledge source",
+      "private guidance", "guidance" and bare "K", and one wrong name flipped a sentence's meaning
+      (R8-05). Give each symbol one name, from the author's definition, and carry the chosen names
+      from batch to batch, as acronyms already are.
+    test: HZ-07, HZ-04.
+
+  - id: B29
+    slug: numbered-label-lost
+    title: A numbered label loses its number ("Obs.❶" read as "Observation. First")
+    priority: P3
+    layer: normalize
+    status: proposed
+    fix: Proposed. Keep a label's number ("Observation 1"); "First… Second…" only for points counted inside one sentence.
+    test: HZ-09.
+
+  - id: B30
+    slug: visual-only-typography
+    title: Descriptions mention what only the eye can see ("in bold", "underlined")
+    priority: P3
+    layer: describe
+    status: proposed
+    fix: Proposed. Say what the typography marks (the best result) or leave it out.
+    test: HZ-10.

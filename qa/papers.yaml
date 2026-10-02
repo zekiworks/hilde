@@ -55,3 +55,16 @@ papers:
     quirks:
       - Figure 5 and Table 1 share a page.
       - The acknowledgments name contains the ligature character U+0133 in the PDF text layer.
+
+  - id: harness-zero
+    title: "Harness-Zero: Harness Distillation via Agent-as-Harness"
+    url: https://arxiv.org/pdf/2609.24974v1
+    version: v1
+    sha256:
+      - bf0331faa974d446aa360d7ac8bf9bb0cb44363a4fcebc06aea52c6cfcc8101f   # R8; the book's book.json
+    quirks:
+      - Table 1's "Relative improvement" row (+22.5%, +27.6%) is the mean of six per-setting relative gains, not the gain between the two averages (9.5 / 68.6 = 13.8%). Both are the paper's; keep each with what it measures.
+      - Appendix F writes differences in points with "%" ("+1.0% on GPT-5.6 Sol", "-12.0% on Qwen3.6-35B-A3B"). Keep as printed (D07).
+      - Listings (Skill 1, Prompt 1, Codes 1 to 3) are monospace boxes with hard-wrapped lines, Skill 1 over three pages and Code 3 under Table 7.
+      - Five authors, four affiliations with superscript numbers; the printed order is Peking University (State Key Lab), Peking University (College of Future Technology), Google, HKUST.
+      - Observations are labeled with circled digits ("Obs.❶").

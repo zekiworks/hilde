@@ -1,0 +1,90 @@
+# Golden assertions for "Harness-Zero: Harness Distillation via Agent-as-Harness".
+# Checked against https://arxiv.org/pdf/2609.24974v1 on 2026-10-02 (run R8).
+paper: harness-zero
+asserts:
+  - id: HZ-01
+    bug: B06
+    about: Listing lines cut by layout boxes are one sentence again (Skill 1, Prompt 1)
+    must_not_contain:
+      - '(?m)\band are not\s*$'
+      - '(?m)^Subject to this restriction'
+      - '(?m)^Evol-r N\b'
+      - '(?m)^Loader problem\.'
+      - '(?m)^material rather than adding new tools'
+      - '(?m)^Material for rewriting'
+      - '(?m)^Next step in the student'
+
+  - id: HZ-02
+    bug: B04
+    about: The appendix title page is not left as "Harness-Zero:" over a bare "Table" (G01 checks the bare labels)
+    must_not_contain: '(?m)^Harness-Zero:\s*$'
+
+  - id: HZ-03
+    bug: B02
+    about: student-harness-evolve names the evolution skill, not a harness
+    must_not_contain: '(?i)the harness is named student-harness-evolve'
+
+  - id: HZ-04
+    bug: B02
+    about: Harness evolution starts from rollouts under h, the bare target harness
+    must_not_contain: '(?i)rollouts under the student-side harness on the training split'
+
+  - id: HZ-05
+    bug: B11
+    about: Table 1's 22.5% and 27.6% are mean per-setting gains, not the gains between the averages (13.8%, 18.2%)
+    must_not_contain: ['(?i)increase of 9\.5,? and a relative improvement of 22\.5', '(?i)increase of 12\.5,? and a relative improvement of 27\.6']
+
+  - id: HZ-06
+    bug: B11
+    about: A "best overall" claim names the cell it loses (DeepSeek on AppWorld, 91.1 vs 89.3)
+    must_contain: '91\.1'
+
+  - id: HZ-07
+    bug: B28
+    about: K keeps one name; it is never knowledge or bare guidance
+    must_not_contain: ['(?i)external knowledge', '(?i)adapted knowledge', '(?i)knowledge source', '(?i)with empty guidance']
+
+  - id: HZ-08
+    bug: B20
+    about: No raw symbols or table markup reach the voice
+    must_not_contain: ['(?i)\bh star\b', '(?m)^\s*\|\s*:?-{3,}']
+
+  - id: HZ-09
+    bug: B29
+    about: Observation 1 keeps its number
+    must_not_contain: '(?m)^Observation\.\s+First\b'
+    must_contain: '(?i)Observation (1|one)\b'
+
+  - id: HZ-10
+    bug: B30
+    about: Typography only the eye sees is not spoken
+    must_not_contain: '(?i)(shown in bold|in bold and|are underlined|second-best results are underlined)'
+
+  - id: HZ-11
+    bug: B19
+    about: Liu (2026) and Qian et al. (2026) stay two citations
+    must_not_contain: '(?i)Liu and Qian and colleagues'
+
+  - id: HZ-12
+    bug: B06
+    about: AppWorld's test split sentence is whole across Table 1
+    must_not_contain: '(?m)hold out the 168\s*$'
+    must_contain: '(?i)hold out the 168 test[ _]normal tasks'
+
+  - id: HZ-13
+    bug: B13
+    about: The code link names its owner
+    must_contain: '(?i)metaevo'
+
+  - id: HZ-14
+    bug: null
+    about: Source quirks kept as printed (D07); the key results survive
+    must_contain: ['(?i)plus 1\.0 percent|\+1\.0 ?%', '23\.3', '44\.3', '41\.7', '82\.3']
+
+manual:
+  - bug: B18
+    check: Affiliations follow the printed order (PKU State Key Lab, PKU College of Future Technology, Google, HKUST), kept together since 5 authors share 4 affiliations.
+  - bug: B12
+    check: Section 1 names the target harness, the optimized harness and the private reference harness where the paper defines h, h⋆ and K.
+  - bug: B07
+    check: Prompt 1 (App. C.3) is read word for word apart from markup (Q07).

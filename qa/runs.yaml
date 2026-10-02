@@ -86,3 +86,16 @@ runs:
       Fresh build for the storage and re-voice verification. narration.json sha256
       8f50a16eb86968ffd2420a0b4c207e51d092de99184ff17825a374582b67edd3, unchanged by the Bragi
       voice. qa.py check with book folders: 25 of 28; fails G09 and ATT-03 (R7-01) and ATT-21 (R7-02).
+
+  - id: R8
+    date: 2026-10-02
+    papers: [harness-zero]
+    hilde_commit: 7147e2e   # as book.json records it; the server started earlier, but the text-writing code is the same from c7981cf to 7147e2e (Q05)
+    model: openai-codex/gpt-5.6-sol
+    voice: Eir
+    output_file: outputs/R8-harness-zero.txt
+    pdf_sha256: bf0331faa974d446aa360d7ac8bf9bb0cb44363a4fcebc06aea52c6cfcc8101f
+    reviewers: [claude, chatgpt]
+    notes: >
+      Follow-along text (1 h 31 min) compared with the arXiv PDF by Claude and ChatGPT independently; text only,
+      no listening pass. Every number checked matches the paper. Published 2026-10-02 15:09 UTC (Q05).

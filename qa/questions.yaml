@@ -10,7 +10,11 @@ questions:
     asked: 2026-09-30
     by: claude
     question: Is the word "Description" read aloud before each figure and equation?
-    status: open
+    status: answered
+    answer: >
+      No. It is a label the follow-along view puts above a model-written description
+      (renderReaderOriginals in the page script); it is not in narration.json, so no voice reads it.
+      It shows up in text copied from the Follow along view. Answered by claude from the code, 2026-10-02.
 
   - id: Q03
     asked: 2026-10-01
@@ -23,3 +27,31 @@ questions:
     by: claude
     question: Record the titles of the Chollet paper and the Procedural Graphs paper in papers.yaml.
     status: open
+
+  - id: Q05
+    asked: 2026-10-02
+    by: claude
+    question: Which Hilde commit and model produced R8 (Harness-Zero), and what is the PDF's sha256? Its book.json has all three.
+    status: answered
+    answer: >
+      Can, 2026-10-02: book.json says openai-codex/gpt-5.6-sol, published 15:09 UTC, commit 7147e2e. The commit
+      was read at the first publish, after the checkout had moved past the 14:32 server start, but the code that
+      writes a book's text is the same from c7981cf to 7147e2e. Since c35f43e the commit is read at server start.
+      The PDF's sha256 is still to be added to papers.yaml.
+
+  - id: Q06
+    asked: 2026-10-02
+    by: claude
+    question: >
+      Tables are shown as printed (D01), so a table's spoken summary is short; Harness-Zero's Table 4 summary covers
+      about 10 of 28 rows. Should someone listening without a screen get fuller table summaries?
+    status: open
+
+  - id: Q07
+    asked: 2026-10-02
+    by: claude
+    question: >
+      Should instructions a paper prints as a listing, such as Harness-Zero's Prompt 1, be read word for word
+      (markup, paths and placeholders said in words), while code is still described? R8-12 assumes yes.
+    status: open
+
