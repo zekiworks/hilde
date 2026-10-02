@@ -32,8 +32,9 @@ or it waits in the shared queue:
 1. A PDF is extracted page by page, and a sentence a page break splits is
    joined back together. Text and Markdown skip extraction unless
    **Adapt the text for listening** is selected.
-2. Optional adaptation runs the chosen language model in bounded concurrent
-   paragraph batches; see [Text adaptation](text-adaptation.md).
+2. Optional adaptation runs the language model chosen under **Adapt the text for
+   listening** in bounded concurrent paragraph batches; see
+   [Text adaptation](text-adaptation.md).
 3. Narration reads the text in the chosen voice.
 4. The finished book appears in **Listen**: its text, its follow-along view,
    and the voice's audio, kept together in one folder per book (see
@@ -212,8 +213,8 @@ button reads **Simple** and hides them again:
   encoding, and an optional seed.
 - **Narration**, on **Create**: **Chunking**, the longest chunk in characters;
   [**Batch size**](configuration.md#batch-size); and **MP3 compression**.
-- **Text adaptation**, on **Create** while adaptation is selected; see
-  [Text adaptation](text-adaptation.md).
+- **Text adaptation**, on **Create** while adaptation is selected: how many
+  batches run at once; see [Text adaptation](text-adaptation.md).
 - **Voice files**, on **Voices**: **Reference WAV encoding**. It remains
   because the generated sample is required for local voice cloning; it is not
   an output-location choice.

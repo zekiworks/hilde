@@ -10,8 +10,9 @@ or bibliography under its own heading is removed before the model sees the
 text, even without adaptation and even when the PDF runs the heading into the
 paragraph before it. Inline attributions and the sections after the
 bibliography, such as appendices, remain.
-While adaptation is selected, its settings appear under **Advanced** in
-**Text adaptation**:
+While adaptation is selected, **Model**, **Providers**, and **Add local**
+appear right under it, and **Workers** under **Advanced** in **Text
+adaptation**:
 
 - **Model** picks the model that rewrites the text. Left on Default, a job uses
   your local server's first model once you add one under **Add local**; if that

@@ -99,10 +99,10 @@ update; your library in `~/hilde/User` stays.
 
 The page opens at `http://127.0.0.1:8800/`, reachable only from this computer,
 with eight stock voices. Each speech model, about 4.3 GB, downloads the first
-time it is used. Text adaptation needs a language model: connect a provider
-(ChatGPT, your own Claude Code, or an Anthropic API key) or add a local model server under **Advanced**, or clear
-**Adapt the text for listening** before you create an audiobook; see
-[Text adaptation](docs/text-adaptation.md).
+time it is used. Text adaptation needs a language model: under **Adapt the text
+for listening** on **Create**, connect a provider (ChatGPT, your own Claude
+Code, or an Anthropic API key) or add a local model server, or clear that box
+before you create an audiobook; see [Text adaptation](docs/text-adaptation.md).
 [Installation](docs/installation.md) covers the installer's settings, installing
 by hand, Windows, local model folders, and FlashAttention.
 

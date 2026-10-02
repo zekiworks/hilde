@@ -3192,7 +3192,9 @@ def openai_access(refused_token=None):
     with _OPENAI_SIGN_IN_LOCK:
         credentials = read_openai_credentials()
         if credentials is None:
-            raise RuntimeError("Sign in with OpenAI in Providers, under Advanced, first.")
+            raise RuntimeError(
+                "Sign in with OpenAI in Providers, under Adapt the text for listening, first."
+            )
         # Another request may already have renewed the token that was refused.
         if (
             credentials["expires_at"] - 300 > time.time()
@@ -3513,7 +3515,9 @@ def anthropic_model_names(key=None):
     """List the models an Anthropic API key may use, newest first."""
     key = key or read_anthropic_key()
     if not key:
-        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+        raise RuntimeError(
+            "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
+        )
     request = urllib.request.Request(
         f"{ANTHROPIC_API_URL}/v1/models?limit=1000", headers=_anthropic_headers(key),
     )
@@ -3593,7 +3597,9 @@ def anthropic_response(model, system_prompt, text, images, open_stream, pause):
     """Adapt one batch with a Claude model through Anthropic's Messages API."""
     key = read_anthropic_key()
     if key is None:
-        raise RuntimeError("Add an Anthropic API key in Providers, under Advanced, first.")
+        raise RuntimeError(
+            "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
+        )
     content = _claude_content(text, images)
     body = json.dumps({
         "model": model,
@@ -5160,7 +5166,7 @@ def _adaptation_problem(values):
     ):
         return (
             "The adaptation model doesn't match your local server's type. "
-            "Choose one of its models under Advanced."
+            "Choose one of its models under Adapt the text for listening."
         )
     checks = (
         (
@@ -5196,23 +5202,26 @@ def _adaptation_problem(values):
             and not values["local_server"]
         ):
             return (
-                "Text adaptation needs a model: connect a provider or add a local "
-                "model server under Advanced, or clear Adapt the text for listening."
+                "Text adaptation needs a model: under Adapt the text for listening, "
+                "connect a provider or add a local model server, or clear that box."
             )
     elif provider == OPENAI_MODEL_PROVIDER:
         if read_openai_credentials() is None:
-            return "Sign in with OpenAI in Providers, under Advanced, to use this model."
+            return ("Sign in with OpenAI in Providers, under Adapt the text for listening, "
+                    "to use this model.")
     elif provider == ANTHROPIC_MODEL_PROVIDER:
         if read_anthropic_key() is None:
-            return "Add an Anthropic API key in Providers, under Advanced, to use this model."
+            return ("Add an Anthropic API key in Providers, under Adapt the text for "
+                    "listening, to use this model.")
     elif provider == CLAUDE_CODE_MODEL_PROVIDER:
         signed_in, status = claude_code_status()
         if not signed_in:
             return status
     elif provider not in LOCAL_MODEL_PROVIDERS:
-        return "This adaptation model is no longer available; choose one under Advanced."
+        return ("This adaptation model is no longer available; choose one under Adapt the "
+                "text for listening.")
     elif not values["local_server"]:
-        return "Add the local model server for this model under Advanced."
+        return "Add the local model server for this model under Adapt the text for listening."
     return None
 
 
@@ -7304,11 +7313,11 @@ class AudiobookRun(Run):
                 if not model:
                     raise RuntimeError(
                         "Your local model server did not answer, and a document "
-                        "goes to a cloud provider only when you choose one under "
-                        f"Advanced: {catalog['local_error']}"
+                        "goes to a cloud provider only when you choose one as its "
+                        f"model: {catalog['local_error']}"
                         if catalog["local_error"] else
                         "No text-adaptation model is available: connect a provider "
-                        "or add a local model server under Advanced."
+                        "or add a local model server under Adapt the text for listening."
                     )
             self.paper_run = PaperRun(
                 input_path,
@@ -8853,14 +8862,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="adaptation-advanced">
       <legend>Text adaptation</legend>
-      <div class="row"><label for="paper-model">Model</label><div class="line">
-        <select id="paper-model"><option value="">Loading models…</option></select>
-        <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
-        <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
-        <input id="paper-local-server" type="hidden">
-        <input id="paper-local-provider" type="hidden">
-        <span id="paper-model-status" class="note"></span>
-      </div></div>
       <div class="row"><label for="paper-in-flight">Workers</label><div class="line">
         <input id="paper-in-flight" type="number" min="1" max="32" step="1">
         <label class="note" for="paper-paragraphs-per-worker">Paragraphs per worker</label>
@@ -8976,6 +8977,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <label class="check"><input id="adapt" type="checkbox"> Adapt the text for listening</label>
             <span class="note">Rewrites the text so it sounds natural read aloud and leaves out
               reference lists. It takes longer.</span>
+          </div>
+          <div id="adaptation-model" class="field">
+            <label for="paper-model">Model</label>
+            <div class="line">
+              <select id="paper-model"><option value="">Loading models…</option></select>
+              <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
+              <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
+              <input id="paper-local-server" type="hidden">
+              <input id="paper-local-provider" type="hidden">
+              <span id="paper-model-status" class="note"></span>
+            </div>
           </div>
           <p id="create-problem" class="problem hidden"></p>
           <div class="actions">
@@ -10524,6 +10536,8 @@ function renderCreate() {
   $("book-continue").disabled =
     submitting || !(done.book || state.audiobook.source_url.trim());
   $("adapt").closest(".field").classList.toggle("hidden", voiceOnly);
+  // Adapting needs a model, so its choice sits with the choice to adapt.
+  $("adaptation-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   $("run").textContent = voiceOnly ? "Add this voice" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;

@@ -580,7 +580,11 @@ the active tab is flush with an accent top edge and opens into the page below.
   2. **Choose a voice**: the saved-voice dropdown with **Search voices** beside
      it (opens **Voices**) and a card previewing the chosen voice. A narration
      speech server takes a server voice ID instead.
-  3. **Create audiobook**: optional text adaptation, then **Create audiobook**.
+  3. **Create audiobook**: **Adapt the text for listening** with, while it is
+     ticked, the adaptation **Model**, **Providers** (the OpenAI sign-in,
+     Claude Code's status, and the Anthropic API key), and **Add local** (a
+     local model server with its type and whether its model sees images) under
+     it, since adapting cannot run without a model; then **Create audiobook**.
 
   A run this browser starts, reopens after a refresh, or chooses to view
   replaces the steps with four plain stages: Reading your document (PDF
@@ -670,10 +674,8 @@ idle`, `running`, or `reserved` during voice creation; the tooltip adds the
 device and job) followed by the shared device description, and the narration
 and voice-design models plus the device voice creation uses. It also holds
 precision/attention tuning, language, encoding, and seed; narration
-chunk/batch/MP3 settings on Create; adaptation model/concurrency, **Providers**
-(the OpenAI sign-in, Claude Code's status, and the Anthropic API key), and a local
-model server with its type and whether its model sees images while adaptation is on; and reference-WAV
-encoding on Voices, kept because the
+chunk/batch/MP3 settings on Create; adaptation concurrency while adaptation is
+on; and reference-WAV encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
 configured SSH workers; a GPU whose worker waits for memory inside the job

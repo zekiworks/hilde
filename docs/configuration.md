@@ -3,9 +3,9 @@
 `audiobook_tts_web.py` serves **Hilde**, a browser app over a shared
 server-side library. Its configuration comes from command-line options when the
 server starts; browsers cannot replace that process-wide configuration.
-Settings each browser may change, such as precision, chunking, batch size, and
-the text-adaptation model, are under **Advanced** in the page; see
-[Advanced](web-ui.md#advanced).
+Settings each browser may change, such as precision, chunking, and batch size,
+are under **Advanced** in the page; see [Advanced](web-ui.md#advanced). The
+text-adaptation model is on **Create**, under **Adapt the text for listening**.
 
 ## Start the server
 
