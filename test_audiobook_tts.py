@@ -7,6 +7,7 @@ import http.cookiejar
 import json
 import os
 import re
+import shlex
 import stat
 import struct
 import subprocess
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import yaml
 import audiobook_tts as cli
 import audiobook_tts_web as web
 
@@ -264,11 +266,13 @@ class PaperWorkflowTests(unittest.TestCase):
             "source": "local",
             "model": "/srv/private/models/Base",
             "allow_downloads": False,
-            "ssh_workers": ("narrator@spark-one",),
-            "ssh_python": "python3",
-            "ssh_model": "/srv/private/models/Base",
-            "ssh_device": "cuda:0",
         }
+        nodes = [{
+            "host": "narrator@spark-one",
+            "python": "/srv/private/venv/bin/python",
+            "model": "/srv/private/models/Base",
+            "devices": ["cuda:0", "cuda:2"],
+        }]
         devices = [
             {"value": "cpu", "label": "CPU"},
             {
@@ -284,7 +288,7 @@ class PaperWorkflowTests(unittest.TestCase):
                 "memory": 96 * GIB,
             },
         ]
-        jobs = web.JobQueue(web.audiobook_consumers(clone, devices))
+        jobs = web.JobQueue(web.audiobook_consumers(clone, devices, nodes))
         self.addCleanup(jobs.shutdown)
         public = {
             "consumers": jobs.public_consumers_snapshot(),
@@ -320,7 +324,8 @@ class PaperWorkflowTests(unittest.TestCase):
             [
                 ("GPU 0", "Accelerator · 96 GiB", "idle"),
                 ("GPU 1", "Accelerator · 96 GiB", "idle"),
-                ("SSH worker 1", "cuda:0", "idle"),
+                ("Node 1 · GPU 0", "", "idle"),
+                ("Node 1 · GPU 2", "", "idle"),
             ],
         )
         self.assertEqual(public["configuration"], {
@@ -1103,9 +1108,9 @@ class PaperWorkflowTests(unittest.TestCase):
             try:
                 with clients[0].open(f"{origin}/api/state") as response:
                     public_state = json.load(response)
+                # This test's browser is on the server's machine.
                 self.assertEqual(
-                    set(public_state["capabilities"]),
-                    {"airdrop"},
+                    public_state["capabilities"]["manage_workers"], True
                 )
                 long_description = "".join(
                     hashlib.sha256(str(index).encode()).hexdigest()
@@ -5025,6 +5030,198 @@ class PaperConcurrencyTests(unittest.TestCase):
         with run.process_lock:
             self.assertEqual(run.streams, set())
 
+
+class WorkerNodeTests(unittest.TestCase):
+    NODE = {
+        "host": "narrator@10.0.0.5",
+        "python": "/opt/qwen/bin/python",
+        "model": "/models/Base",
+        "devices": ["cuda:1", "cuda:3"],
+    }
+    CLONE = {"source": "local", "model": "/local/Base", "allow_downloads": False}
+
+    def serve(self, nodes=()):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.jobs = web.JobQueue(web.audiobook_consumers(
+            self.CLONE, [{"value": "cuda:0", "label": "CUDA 0"}], list(nodes)
+        ))
+        server.tts_models = {"design": {"source": "missing"}, "clone": dict(self.CLONE)}
+        server.verbose = False
+        server.storage = storage
+        server.worker_nodes = list(nodes)
+        server.workers_path = storage.root / web.WORKERS_FILE
+        server.workers_lock = threading.Lock()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.jobs.shutdown)
+        return server, f"http://127.0.0.1:{server.server_port}"
+
+    @staticmethod
+    def request(origin, path, body=None):
+        request = urllib.request.Request(
+            origin + path,
+            data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="GET" if body is None else "POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.load(error)
+
+    def test_workers_yaml_keeps_each_node_and_refuses_unsafe_or_unclear_ones(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "workers.yaml"
+        self.assertEqual(web.read_worker_nodes(path), [])
+        mac = {**self.NODE, "host": "studio-mac", "devices": ["mps"]}
+        web.write_worker_nodes(path, [self.NODE, mac])
+        self.assertEqual(web.read_worker_nodes(path), [self.NODE, mac])
+
+        refused = {
+            "an option as host": {**self.NODE, "host": "-oProxyCommand=sh"},
+            "an unknown device": {**self.NODE, "devices": ["gpu0"]},
+            "a device twice": {**self.NODE, "devices": ["cuda:1", "cuda:1"]},
+            "no device": {**self.NODE, "devices": []},
+            "a comma in python": {**self.NODE, "python": "/opt/a,b/python"},
+            "an option as model": {**self.NODE, "model": "--help"},
+            "an unknown setting": {**self.NODE, "port": 22},
+            "a host twice": [self.NODE, self.NODE],
+        }
+        for reason, nodes in refused.items():
+            with self.subTest(reason):
+                path.write_text(
+                    yaml.safe_dump({"nodes": nodes if isinstance(nodes, list) else [nodes]})
+                )
+                with self.assertRaises(ValueError):
+                    web.read_worker_nodes(path)
+        path.write_text("nodes: [unclosed")
+        with self.assertRaises(ValueError):
+            web.read_worker_nodes(path)
+
+    def test_each_node_device_narrates_with_that_nodes_python_model_and_device(self):
+        workers = [
+            {"kind": "local", "device": "cuda:0"},
+            *(consumer["worker"] for consumer in web.remote_consumers([self.NODE])),
+        ]
+        command = web.narrate_command({
+            "clone": self.CLONE, "input": "book.txt", "encoding": "utf-8",
+            "output": "book.mp3", "chunk_max_chars": "500", "resume_dir": "work",
+            "mp3_level": "", "voice_dir": "voices/Eir", "batch_size": "2",
+            "workers": workers, "device": "cuda:0", "dtype": "auto",
+            "attn": "sdpa", "language": "", "seed": "",
+        })
+        parser = cli.build_parser()
+        args = parser.parse_args(command[3:])
+        cli.check_distributed_mode(args, parser)
+
+        self.assertEqual(args.ssh_worker, [
+            {"target": "narrator@10.0.0.5", "device": device,
+             "python": "/opt/qwen/bin/python", "model": "/models/Base"}
+            for device in ("cuda:1", "cuda:3")
+        ])
+        with mock.patch.object(cli.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                mock.patch.object(cli, "_run_transport"):
+            label, staged, _ = cli._stage_ssh_worker(args, args.ssh_worker[1], Path("voices/Eir"))
+        remote = shlex.split(staged[-1])
+        self.assertEqual(staged[-2], "narrator@10.0.0.5")
+        self.assertEqual(remote[0], "/opt/qwen/bin/python")
+        self.assertEqual(remote[remote.index("--device") + 1], "cuda:3")
+        self.assertEqual(remote[remote.index("--clone-model-path") + 1], "/models/Base")
+
+    def test_a_bare_ssh_target_takes_the_shared_settings_and_workers_stay_distinct(self):
+        parser = cli.build_parser()
+        base = [
+            "narrate", "--text", "Hello.", "--output", "out.wav", "--voice-dir", "voice",
+            "--clone-model-path", "/models/Base", "--device", "cuda:0",
+            "--attn-implementation", "sdpa", "--resume-dir", "work",
+        ]
+        args = parser.parse_args(base + [
+            "--ssh-worker", "spark", "--ssh-worker", "spark,device=cuda:1",
+            "--ssh-device", "cuda:2", "--ssh-python", "/venv/bin/python",
+        ])
+        cli.check_distributed_mode(args, parser)
+        self.assertEqual(
+            [(worker["device"], worker["python"], worker["model"]) for worker in args.ssh_worker],
+            [("cuda:2", "/venv/bin/python", "/models/Base"),
+             ("cuda:1", "/venv/bin/python", "/models/Base")],
+        )
+        refused = (
+            ["--ssh-worker", "spark,device=cuda:1", "--ssh-worker", "spark,device=cuda:1"],
+            ["--ssh-worker", "spark,gpu=1"],
+            ["--ssh-worker", "spark,python=-c"],
+        )
+        for extra in refused:
+            with self.subTest(extra), mock.patch("sys.stderr", io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                cli.check_distributed_mode(parser.parse_args(base + extra), parser)
+
+    def test_only_a_browser_on_the_servers_machine_sees_or_changes_workers(self):
+        for address, local in (
+            ("127.0.0.1", True), ("::1", True), ("::ffff:127.0.0.1", True),
+            ("192.168.1.20", False), ("::ffff:10.0.0.2", False), ("unknown", False),
+        ):
+            self.assertEqual(web.is_loopback_address(address), local, address)
+        server, origin = self.serve([self.NODE])
+        with mock.patch.object(web, "is_loopback_address", return_value=False), \
+                mock.patch.object(web, "probe_worker_node") as probe:
+            self.assertEqual(self.request(origin, "/api/workers")[0], 403)
+            for path, body in (
+                ("/api/workers/probe", {"host": "spark"}),
+                ("/api/workers/add", {**self.NODE, "host": "spark"}),
+                ("/api/workers/remove", {"host": self.NODE["host"]}),
+            ):
+                self.assertEqual(self.request(origin, path, body)[0], 403, path)
+            state = self.request(origin, "/api/state")[1]
+        probe.assert_not_called()
+        self.assertFalse(state["capabilities"]["manage_workers"])
+        self.assertEqual(server.worker_nodes, [self.NODE])
+        self.assertFalse(server.workers_path.exists())
+        serialized = json.dumps(state)
+        for private in ("10.0.0.5", "narrator", "/opt/qwen", "/models/Base"):
+            self.assertNotIn(private, serialized)
+
+    def test_a_node_added_while_a_book_waits_narrates_it_and_stays_until_the_book_ends(self):
+        server, origin = self.serve()
+        jobs = server.jobs
+        first, _ = JobQueueTests.reserve(self, jobs, "first")
+        first_run = JobQueueTests.ControlledRun("first.mp3")
+        self.assertEqual(jobs.commit(first, first_run)["status"], "running")
+        second, _ = JobQueueTests.reserve(self, jobs, "second")
+        second_run = JobQueueTests.ControlledRun("second.mp3")
+        self.assertEqual(jobs.commit(second, second_run)["status"], "queued")
+
+        status, answer = self.request(origin, "/api/workers/add", self.NODE)
+        self.assertEqual(status, 200, answer)
+        self.assertEqual(web.read_worker_nodes(server.workers_path), [self.NODE])
+        first_run.close(0)
+        self.assertTrue(second_run.started.wait(2))
+        self.assertEqual(
+            [(worker["target"], worker["device"])
+             for worker in second_run.assigned_workers if worker["kind"] == "ssh"],
+            [("narrator@10.0.0.5", "cuda:1"), ("narrator@10.0.0.5", "cuda:3")],
+        )
+
+        status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
+        self.assertEqual(status, 409)
+        self.assertEqual(web.read_worker_nodes(server.workers_path), [self.NODE])
+        second_run.close(0)
+        deadline = time.monotonic() + 2
+        while jobs.busy_consumer_ids() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        status, answer = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
+        self.assertEqual((status, answer["nodes"]), (200, []))
+        self.assertEqual(web.read_worker_nodes(server.workers_path), [])
+        self.assertEqual([item["label"] for item in answer["consumers"]], ["GPU 0"])
 
 
 if __name__ == "__main__":

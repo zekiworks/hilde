@@ -180,7 +180,8 @@ each browser changes only its own settings, under **Advanced**.
 - [speech models](docs/configuration.md#speech-models), local or on a speech
   server;
 - [narration workers](docs/configuration.md#narration-workers): every GPU the
-  server sees, plus [SSH workers](docs/ssh-workers.md);
+  server sees, plus the GPUs of [other machines](docs/ssh-workers.md), added
+  under **Advanced**;
 - [batch size](docs/configuration.md#batch-size) and GPU memory.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a

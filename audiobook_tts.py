@@ -196,6 +196,30 @@ def ssh_target(value):
     return target
 
 
+SSH_WORKER_SETTINGS = ("device", "python", "model")
+
+
+def ssh_worker(value):
+    """Parse TARGET[,device=D][,python=P][,model=M] for one SSH narration worker.
+
+    Settings a worker leaves out come from --ssh-device, --ssh-python, and
+    --ssh-model-path, so one host can lend several GPUs and hosts may differ.
+    """
+    target, *settings = value.split(",")
+    worker = {"target": ssh_target(target)}
+    for setting in settings:
+        key, separator, setting_value = setting.partition("=")
+        key, setting_value = key.strip(), setting_value.strip()
+        if key not in SSH_WORKER_SETTINGS or not separator or key in worker:
+            raise argparse.ArgumentTypeError(
+                "must be TARGET or TARGET,device=…,python=…,model=…, each setting once"
+            )
+        if not setting_value or setting_value.startswith("-"):
+            raise argparse.ArgumentTypeError(f"{key} needs a value that is not an option")
+        worker[key] = setting_value
+    return worker
+
+
 def generate_clone_batch(model, texts, language, prompt):
     """Clone one batch; if CUDA memory runs out, retry its chunks one at a time."""
     import torch
@@ -362,32 +386,34 @@ def build_parser():
         "--ssh-worker",
         action="append",
         default=[],
-        type=ssh_target,
-        metavar="TARGET",
+        type=ssh_worker,
+        metavar="TARGET[,device=D][,python=P][,model=M]",
         help=(
-            "Passwordless OpenSSH target that narrates chunks on its own GPU; "
-            "repeat for more hosts. Requires --resume-dir."
+            "Passwordless OpenSSH target that narrates chunks on one of its "
+            "devices; repeat for more hosts or more GPUs of one host. Settings "
+            "after the target override --ssh-device, --ssh-python, and "
+            "--ssh-model-path for that worker. Requires --resume-dir."
         ),
     )
     narration.add_argument(
         "--ssh-python",
         default="python3",
         metavar="PATH",
-        help="Python executable on every SSH worker (default: python3).",
+        help="Python executable on SSH workers that name none (default: python3).",
     )
     narration.add_argument(
         "--ssh-model-path",
         metavar="PATH_OR_ID",
         help=(
-            "Base model path or Hugging Face ID on SSH workers; defaults to "
-            "--clone-model-path."
+            "Base model path or Hugging Face ID on SSH workers that name none; "
+            "defaults to --clone-model-path."
         ),
     )
     narration.add_argument(
         "--ssh-device",
         default="cuda:0",
         metavar="DEVICE",
-        help="PyTorch device on every SSH worker (default: cuda:0).",
+        help="PyTorch device on SSH workers that name none (default: cuda:0).",
     )
     output = narrate.add_argument_group("audio output")
     output.add_argument(
@@ -1226,7 +1252,8 @@ def _run_transport(command, action):
         ) from exc
 
 
-def _stage_ssh_worker(args, target, voice_dir):
+def _stage_ssh_worker(args, worker, voice_dir):
+    target = worker["target"]
     ssh = shutil.which("ssh")
     scp = shutil.which("scp")
     if ssh is None or scp is None:
@@ -1278,21 +1305,20 @@ def _stage_ssh_worker(args, target, voice_dir):
         cleanup()
         raise
 
-    remote_model = args.ssh_model_path or args.clone_model_path
     remote_arguments = [
-        args.ssh_python,
+        worker["python"],
         "-u",
         f"{remote_root}/{Path(__file__).name}",
         *_worker_arguments(
             args,
-            remote_model,
+            worker["model"],
             remote_root,
-            args.ssh_device,
+            worker["device"],
         ),
     ]
     command = [ssh, *options, target, shlex.join(remote_arguments)]
     return (
-        f"SSH {target} {args.ssh_device}",
+        f"SSH {target} {worker['device']}",
         command,
         cleanup,
     )
@@ -1321,9 +1347,9 @@ def _narration_worker_specifications(args, voice_dir):
             )
         )
     try:
-        for target in args.ssh_worker:
+        for worker in args.ssh_worker:
             specifications.append(
-                (*_stage_ssh_worker(args, target, voice_dir), None)
+                (*_stage_ssh_worker(args, worker, voice_dir), None)
             )
     except BaseException:
         for _, _, cleanup, _ in specifications:
@@ -1358,13 +1384,11 @@ def _save_worker_checkpoint(directory, index, encoded, sf):
 def _worker_topology(args):
     return {
         "local_devices": [args.device, *args.worker_device],
-        "ssh_workers": list(args.ssh_worker),
-        "ssh_device": args.ssh_device if args.ssh_worker else None,
-        "ssh_model": (
-            args.ssh_model_path or args.clone_model_path
-            if args.ssh_worker
-            else None
-        ),
+        # The Python executable does not change the audio, so it is left out.
+        "ssh_workers": [
+            {key: worker[key] for key in ("target", "device", "model")}
+            for worker in args.ssh_worker
+        ],
     }
 
 
@@ -1899,10 +1923,20 @@ def check_distributed_mode(args, parser):
     local_devices = [args.device, *args.worker_device]
     if len(set(local_devices)) != len(local_devices):
         parser.error("local narration worker devices must be unique")
-    if len(set(args.ssh_worker)) != len(args.ssh_worker):
-        parser.error("SSH narration worker targets must be unique")
     if not args.ssh_python.strip():
         parser.error("--ssh-python must not be empty")
+    args.ssh_worker = [
+        {
+            "target": worker["target"],
+            "device": worker.get("device") or args.ssh_device,
+            "python": worker.get("python") or args.ssh_python,
+            "model": worker.get("model") or args.ssh_model_path or args.clone_model_path,
+        }
+        for worker in args.ssh_worker
+    ]
+    pairs = [(worker["target"], worker["device"]) for worker in args.ssh_worker]
+    if len(set(pairs)) != len(pairs):
+        parser.error("each SSH narration worker must be a different target or device")
 
 
 def main():

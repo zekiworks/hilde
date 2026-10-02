@@ -33,7 +33,6 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-clone-server`, `--voice-clone-server-model` | A speech server for narration instead of the model; the server model defaults to `tts-1`. |
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
-| `--narration-ssh-worker`, `--narration-ssh-python`, `--narration-ssh-model`, `--narration-ssh-device` | Passwordless SSH narration workers; see [SSH narration workers](ssh-workers.md). |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](web-ui.md#voices). |
 
 ## Storage
@@ -55,7 +54,8 @@ User/
 │               ├── audio.mp3
 │               └── timings.json
 ├── Documents/
-└── in_progress/
+├── in_progress/
+└── workers.yaml
 ```
 
 - **Voices** contains one directory per narrator: `reference.wav`, the exact
@@ -87,6 +87,8 @@ User/
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   and narration chunks for unfinished jobs. It is removed for a job only after
   its book is published.
+- **workers.yaml**, present once a node is added, lists the other machines
+  that narrate over SSH; see [Narration workers on other machines](ssh-workers.md).
 
 On its first start, this version moves audiobooks kept in the earlier layout
 (`Audiobooks/<name>.mp3` with hidden `.readers` and `.versions` folders) into
@@ -126,9 +128,9 @@ from `OPENAI_API_KEY` in the server environment.
 ## Narration workers
 
 With a local narration model, the server creates one worker for every CUDA
-device visible to its process and adds any SSH workers configured at startup.
-A remote OpenAI-compatible narration backend, or a local host without CUDA, has
-one fallback worker.
+device visible to its process and one for every device of the nodes in
+`workers.yaml`. A remote OpenAI-compatible narration backend, or a local host
+without CUDA, has one fallback worker.
 
 The pool is process-owned configuration, not a browser setting or a hardcoded
 machine count. Local membership is the CUDA devices visible to the server
@@ -139,15 +141,17 @@ example to keep narration off GPU 0 even when it has room:
 CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 ```
 
-Remote membership comes only from the repeated `--narration-ssh-worker` startup
-flags; see [SSH narration workers](ssh-workers.md).
+Remote membership comes from the nodes in `workers.yaml`, which **Add workers**
+under **Advanced** writes; nodes added or removed there take effect without a
+restart. See [Narration workers on other machines](ssh-workers.md).
 
 The server probes PyTorch-visible CUDA and MPS devices in a short-lived child.
 It counts CUDA devices after initialization, so a GPU the runtime cannot open,
 such as one waiting for a reset, is skipped and the remaining GPUs stay in the
-pool instead of the server falling back to CPU. The pool is fixed at startup:
-restart the server after changing `CUDA_VISIBLE_DEVICES` or the SSH workers,
-or after GPUs are added, removed, or recovered. Voice design runs alone, on the
+pool instead of the server falling back to CPU. Local membership is fixed at
+startup: restart the server after changing `CUDA_VISIBLE_DEVICES` or editing
+`workers.yaml` by hand, or after GPUs are added, removed, or recovered. Voice
+design runs alone, on the
 GPU with the most free memory at that moment, so a GPU another program has
 filled is passed over; `nvidia-smi` measures this without touching any GPU.
 Without CUDA it uses MPS, then CPU.

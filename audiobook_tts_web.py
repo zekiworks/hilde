@@ -34,12 +34,14 @@ import json
 import hashlib
 import html
 import http.client
+import ipaddress
 import mimetypes
 import mmap
 import os
 import platform
 import queue
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -60,6 +62,7 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import yaml
 from markdown_it import MarkdownIt
 
 from audiobook_tts import (
@@ -652,8 +655,8 @@ def public_device(choice):
     }
 
 
-def audiobook_consumers(clone_model, devices=None):
-    """Return local GPU and configured SSH narration workers."""
+def audiobook_consumers(clone_model, devices=None, nodes=()):
+    """Return local GPU narration workers plus those of workers.yaml's nodes."""
     source = clone_model.get("source")
     if source == "server":
         return ({
@@ -707,26 +710,306 @@ def audiobook_consumers(clone_model, devices=None):
         }
         for choice in selected
     ]
-    consumers.extend(
+    consumers.extend(remote_consumers(nodes))
+    return tuple(consumers)
+
+
+def remote_consumers(nodes):
+    """One narration worker per device a workers.yaml node lends."""
+    return tuple(
         {
-            "id": f"ssh:{target}",
+            "id": f"ssh:{node['host']}:{device}",
             "kind": "ssh",
             "device": None,
-            "label": f"SSH {target} — {clone_model['ssh_device']}",
+            "label": f"SSH {node['host']} — {device}",
+            # Browsers see the node's number, never its host.
             "public": {
-                "label": f"SSH worker {index}",
-                "detail": clone_model["ssh_device"],
+                "label": f"Node {number} · {public_device_label(device)}",
+                "detail": "",
             },
             "worker": {
                 "kind": "ssh",
-                "target": target,
-                "device": clone_model["ssh_device"],
-                "label": f"SSH {target} — {clone_model['ssh_device']}",
+                "target": node["host"],
+                "device": device,
+                "python": node["python"],
+                "model": node["model"],
+                "label": f"SSH {node['host']} — {device}",
             },
         }
-        for index, target in enumerate(clone_model.get("ssh_workers", ()), 1)
+        for number, node in enumerate(nodes, 1)
+        for device in node["devices"]
     )
-    return tuple(consumers)
+
+
+WORKERS_FILE = "workers.yaml"
+WORKERS_HEADER = """\
+# Narration workers on other machines, reached over passwordless SSH.
+# Hilde writes this file when a node is added or removed under Advanced in a
+# browser on the server's machine. Stop the server before editing it by hand.
+"""
+WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
+WORKER_NODE_KEYS = ("host", "python", "model", "devices")
+
+
+def worker_node(value):
+    """Validate one workers.yaml node: host, python, model, and devices."""
+    if not isinstance(value, dict):
+        raise ValueError("each node needs host, python, model, and devices")
+    unknown = sorted(set(value) - set(WORKER_NODE_KEYS))
+    if unknown:
+        raise ValueError(f"unknown node setting: {unknown[0]}")
+    try:
+        host = ssh_target(str(value.get("host") or ""))
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(f"host {exc}") from None
+    node = {"host": host}
+    for key in ("python", "model"):
+        text = str(value.get(key) or "").strip()
+        if not text:
+            raise ValueError(f"{host}: {key} is missing")
+        # The narrator receives both inside a comma-separated worker setting.
+        if text.startswith("-") or any(c in text for c in ",\n\r\0"):
+            raise ValueError(f"{host}: {key} must be a path or ID without commas")
+        node[key] = text
+    devices = value.get("devices")
+    if not isinstance(devices, list) or not devices:
+        raise ValueError(f"{host}: devices must list at least one, such as cuda:0")
+    devices = [str(device).strip() for device in devices]
+    for device in devices:
+        if not WORKER_DEVICE_PATTERN.fullmatch(device):
+            raise ValueError(f"{host}: {device!r} is not a device; use cuda:N, mps, or cpu")
+    if len(set(devices)) != len(devices):
+        raise ValueError(f"{host}: each device may appear once")
+    node["devices"] = devices
+    return node
+
+
+def read_worker_nodes(path):
+    """Return workers.yaml's validated nodes, or none when the file is absent."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"not valid YAML: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("nodes") or [], list):
+        raise ValueError("expected a 'nodes:' list")
+    nodes = [worker_node(item) for item in data.get("nodes") or []]
+    hosts = [node["host"] for node in nodes]
+    if len(set(hosts)) != len(hosts):
+        raise ValueError("each host may appear once; list all its devices under it")
+    return nodes
+
+
+def write_worker_nodes(path, nodes):
+    target = Path(path)
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(
+        WORKERS_HEADER
+        + yaml.safe_dump({"nodes": nodes}, sort_keys=False, default_flow_style=None),
+        encoding="utf-8",
+    )
+    temporary.replace(target)
+
+
+# Runs on the node with the Python the shell part found; prints one JSON line.
+_WORKER_PROBE_PYTHON = r"""
+import json, os, subprocess, sys
+
+hint = sys.argv[1]
+import torch
+
+devices = []
+if torch.cuda.is_available():
+    free = {}
+    try:
+        listing = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        listing = ""
+    for line in listing.splitlines():
+        gpu, _, mebibytes = line.partition(",")
+        if mebibytes.strip().isdigit():
+            free[gpu.strip().removeprefix("GPU-")] = int(mebibytes)
+    for index in range(torch.cuda.device_count()):
+        properties = torch.cuda.get_device_properties(index)
+        devices.append({
+            "device": f"cuda:{index}",
+            "name": properties.name,
+            "total_mib": properties.total_memory // 2**20,
+            "free_mib": free.get(str(getattr(properties, "uuid", ""))),
+        })
+elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+    devices.append({"device": "mps", "name": "Apple MPS"})
+else:
+    devices.append({"device": "cpu", "name": "CPU"})
+
+
+def is_model(path):
+    return os.path.isfile(os.path.join(path, "config.json"))
+
+
+def find_model(hint):
+    # The path as given, then a Hugging Face cache entry for an ID, then a
+    # folder of the same name up to four levels inside the home folder.
+    if not hint:
+        return None
+    path = os.path.expanduser(hint)
+    if is_model(path):
+        return os.path.abspath(path)
+    hub = os.environ.get("HF_HUB_CACHE") or os.path.join(
+        os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub")
+    snapshots = os.path.join(hub, "models--" + hint.replace("/", "--"), "snapshots")
+    if not os.path.isabs(hint) and os.path.isdir(snapshots) and any(
+        is_model(os.path.join(snapshots, name)) for name in os.listdir(snapshots)
+    ):
+        return hint
+    name = os.path.basename(hint.rstrip("/"))
+    pending = [(os.path.expanduser("~"), 0)]
+    while pending:
+        folder, depth = pending.pop()
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.name == name and is_model(entry.path):
+                return entry.path
+            if depth < 3 and entry.name not in ("node_modules", "site-packages"):
+                pending.append((entry.path, depth + 1))
+    return None
+
+
+print(json.dumps({"python": sys.executable, "devices": devices, "model": find_model(hint)}))
+"""
+
+# Finds a Python that has PyTorch and Qwen TTS: the one given, else Hilde's
+# installer environment, python3, then pyenv and conda environments.
+_WORKER_PROBE_SHELL = """
+works() {
+  "$1" -c 'import importlib.util as u, sys; sys.exit(not (u.find_spec("torch") and u.find_spec("qwen_tts")))' 2>/dev/null
+}
+found=
+if [ -n "$PY" ]; then
+  works "$PY" && found=$PY
+else
+  for candidate in "$HOME/hilde/.venv/bin/python" "$(command -v python3 2>/dev/null)" \\
+      "$HOME"/.pyenv/versions/*/bin/python "$HOME"/miniconda3/envs/*/bin/python \\
+      "$HOME"/anaconda3/envs/*/bin/python "$HOME"/.conda/envs/*/bin/python \\
+      "$HOME"/miniconda3/bin/python "$HOME"/anaconda3/bin/python; do
+    [ -x "$candidate" ] || continue
+    if works "$candidate"; then found=$candidate; break; fi
+  done
+fi
+if [ -z "$found" ]; then
+  echo '{"python": null, "devices": [], "model": null}'
+  exit 0
+fi
+exec "$found" - "$MODEL" <<'HILDE_PROBE'
+""" + _WORKER_PROBE_PYTHON + "HILDE_PROBE\n"
+
+
+WORKERS_LOCAL_ONLY = (
+    "Workers on other machines are added and removed in a browser on the "
+    "server's own machine."
+)
+
+
+def is_loopback_address(host):
+    """Whether a client address is this machine, including IPv4 mapped into IPv6.
+
+    The server has no sign-in, so only such a browser may choose the machines
+    it reaches over SSH and the programs it runs there.
+    """
+    try:
+        address = ipaddress.ip_address(str(host).split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
+
+
+def ssh_failure(host, stderr):
+    """Say in plain words why ssh could not reach a node."""
+    text = stderr.lower()
+    if "host key verification failed" in text:
+        return (
+            f"This machine's SSH does not know {host} yet. In a terminal here, "
+            f"run ssh {host} once and accept its key, then press Connect again."
+        )
+    if "permission denied" in text:
+        return (
+            f"{host} wants a password. Hilde signs in with a key: in a terminal "
+            f"here, run ssh-copy-id {host}, then press Connect again."
+        )
+    if "could not resolve hostname" in text:
+        return f"No machine is called {host}. Check the name or IP address."
+    if any(
+        phrase in text
+        for phrase in ("timed out", "no route to host", "network is unreachable")
+    ):
+        return f"{host} did not answer. Check that it is on and on this network."
+    if "connection refused" in text:
+        return f"{host} refused SSH. Check that its SSH server is running."
+    lines = stderr.strip().splitlines()
+    return f"Could not use {host}: {lines[-1] if lines else 'ssh failed'}"
+
+
+def probe_worker_node(host, python, model):
+    """Connect to a node over SSH and report its Python, devices, and model.
+
+    BatchMode with StrictHostKeyChecking refuses a password prompt and a host
+    key SSH has not accepted before, so only machines this user already trusts
+    are reached. Raises RuntimeError with a plain message when SSH fails.
+    """
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        raise RuntimeError("This machine has no ssh command.")
+    script = f"PY={shlex.quote(python)}\nMODEL={shlex.quote(model)}\n{_WORKER_PROBE_SHELL}"
+    try:
+        result = subprocess.run(
+            [
+                ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                "-o", "StrictHostKeyChecking=yes", host, "sh -s",
+            ],
+            input=script, capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{host} took more than two minutes to answer.") from None
+    if result.returncode == 255:
+        raise RuntimeError(ssh_failure(host, result.stderr))
+    try:
+        found = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        lines = result.stderr.strip().splitlines()
+        raise RuntimeError(
+            f"{host} could not report its devices: {lines[-1] if lines else 'no answer'}"
+        ) from None
+    problems = []
+    if not found.get("python"):
+        problems.append(
+            f"{python} on {host} cannot import PyTorch and Qwen TTS." if python
+            else f"No Python with PyTorch and Qwen TTS was found on {host}."
+        )
+        problems.append("Enter the path of one under Python and press Connect again.")
+    elif not found.get("model"):
+        problems.append(
+            f"The speech model {model} was not found on {host}. Enter its folder "
+            "or Hugging Face ID under Model and press Connect again."
+        )
+    return {
+        "host": host,
+        "python": found.get("python") or python,
+        "model": found.get("model") or model,
+        "devices": found.get("devices") or [],
+        "problem": " ".join(problems),
+    }
 
 
 # --- pure helpers -------------------------------------------------------------
@@ -4877,32 +5160,6 @@ def configured_tts_models(args, parser):
             "model": model,
             "allow_downloads": args.allow_model_downloads,
         }
-    ssh_workers = tuple(args.narration_ssh_worker)
-    if (
-        args.narration_ssh_model is not None
-        and not ssh_workers
-    ):
-        parser.error(
-            "--narration-ssh-model requires --narration-ssh-worker"
-        )
-    if len(set(ssh_workers)) != len(ssh_workers):
-        parser.error("--narration-ssh-worker targets must be unique")
-    if not args.narration_ssh_python.strip():
-        parser.error("--narration-ssh-python must not be empty")
-    if ssh_workers:
-        clone_model = models["clone"]
-        if clone_model["source"] != "local":
-            parser.error(
-                "--narration-ssh-worker requires --voice-clone-model"
-            )
-        clone_model.update({
-            "ssh_workers": ssh_workers,
-            "ssh_python": args.narration_ssh_python,
-            "ssh_model": (
-                args.narration_ssh_model or clone_model["model"]
-            ),
-            "ssh_device": args.narration_ssh_device,
-        })
     return models
 
 
@@ -4913,13 +5170,7 @@ def model_summary(model, role):
     if model["source"] == "server":
         return f"{label}: server {model['server']} · {model['server_model']}"
     downloads = " (downloads allowed)" if model["allow_downloads"] else ""
-    workers = len(model.get("ssh_workers", ()))
-    remote = (
-        f" + {workers} SSH worker{'s' if workers != 1 else ''}"
-        if workers
-        else ""
-    )
-    return f"{label}: {model['model']}{downloads}{remote}"
+    return f"{label}: {model['model']}{downloads}"
 
 
 def public_configuration(tts_models, devices=None):
@@ -5021,20 +5272,15 @@ def narrate_command(values):
             and worker.get("device") != values["device"]
         ):
             arguments += ["--worker-device", worker["device"]]
-    ssh_workers = [
-        worker for worker in workers if worker.get("kind") == "ssh"
-    ]
-    for worker in ssh_workers:
-        arguments += ["--ssh-worker", worker["target"]]
-    if ssh_workers:
-        arguments += [
-            "--ssh-python",
-            model["ssh_python"],
-            "--ssh-model-path",
-            model["ssh_model"],
-            "--ssh-device",
-            model["ssh_device"],
-        ]
+    for worker in workers:
+        if worker.get("kind") == "ssh":
+            # Each node names its own Python, model, and device.
+            arguments += ["--ssh-worker", ",".join((
+                worker["target"],
+                f"device={worker['device']}",
+                f"python={worker['python']}",
+                f"model={worker['model']}",
+            ))]
     return (
         arguments
         + model_arguments(model, "--clone-model-path")
@@ -5737,6 +5983,21 @@ class JobQueue:
                 "label": "Worker",
                 "worker": None,
             },)
+        normalized = self._normalized(consumers)
+        if not normalized or len({item["id"] for item in normalized}) != len(
+            normalized
+        ):
+            raise ValueError("job consumers must have unique identities")
+        self.lock = threading.RLock()
+        self.consumers = normalized
+        self.active = {}
+        self.exclusive = None
+        self.pending = []
+        self.records = {}
+        self.sequence = 0
+
+    @staticmethod
+    def _normalized(consumers):
         normalized = []
         for index, consumer in enumerate(consumers, 1):
             device = consumer.get("device")
@@ -5763,18 +6024,38 @@ class JobQueue:
                 },
                 "worker": dict(worker) if worker is not None else None,
             })
-        normalized = tuple(normalized)
-        if not normalized or len({item["id"] for item in normalized}) != len(
-            normalized
-        ):
-            raise ValueError("job consumers must have unique identities")
-        self.lock = threading.RLock()
-        self.consumers = normalized
-        self.active = {}
-        self.exclusive = None
-        self.pending = []
-        self.records = {}
-        self.sequence = 0
+        return tuple(normalized)
+
+    def set_remote_consumers(self, consumers):
+        """Replace the SSH workers; one narrating a book cannot be taken away.
+
+        A job already running keeps the workers it started with; queued jobs
+        on any device get the new ones as they start.
+        """
+        remote = self._normalized(consumers)
+        with self.lock:
+            kept = tuple(item for item in self.consumers if item["kind"] != "ssh")
+            replaced = {item["id"] for item in remote}
+            if any(
+                item["kind"] == "ssh"
+                and item["id"] not in replaced
+                and item["id"] in self.active
+                for item in self.consumers
+            ):
+                raise ValueError(
+                    "That node is narrating a book. Change it once the book is done."
+                )
+            combined = kept + remote
+            if len({item["id"] for item in combined}) != len(combined):
+                raise ValueError("job consumers must have unique identities")
+            self.consumers = combined
+            launch = self._dispatch_locked()
+        for item in launch:
+            self._launch(item)
+
+    def busy_consumer_ids(self):
+        with self.lock:
+            return set(self.active)
 
     @staticmethod
     def _public(record, position=None):
@@ -5859,11 +6140,15 @@ class JobQueue:
         for record in tuple(self.pending):
             if record["status"] != "queued":
                 continue
+            # A job on any device takes the workers there are when it starts.
             eligible = [
                 consumer
                 for consumer in self.consumers
                 if consumer["id"] not in self.active
-                and consumer["id"] in record["eligible_consumers"]
+                and (
+                    record["requested_device"] == "auto"
+                    or consumer["id"] in record["eligible_consumers"]
+                )
             ]
             if not eligible:
                 continue
@@ -6110,16 +6395,17 @@ class JobQueue:
 
     def public_consumers_snapshot(self):
         """Return each worker's device and state without hosts or paths."""
-        return [
-            {
-                **consumer["public"],
-                "status": snapshot["status"],
-                "job_id": snapshot["job_id"],
-            }
-            for consumer, snapshot in zip(
-                self.consumers, self.consumers_snapshot(), strict=True
-            )
-        ]
+        with self.lock:
+            return [
+                {
+                    **consumer["public"],
+                    "status": snapshot["status"],
+                    "job_id": snapshot["job_id"],
+                }
+                for consumer, snapshot in zip(
+                    self.consumers, self.consumers_snapshot(), strict=True
+                )
+            ]
 
     def snapshot(self):
         with self.lock:
@@ -7576,6 +7862,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.server.verbose:
             sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
 
+    def local_client(self):
+        """Whether this request comes from a browser on the server's machine."""
+        return is_loopback_address(self.client_address[0])
+
     def cross_origin(self):
         origin = self.headers.get("Origin")
         if not origin:
@@ -7656,8 +7946,17 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     "capabilities": {
                         "airdrop": airdrop_available(),
+                        "manage_workers": self.local_client(),
                     },
                 },
+                extra=(("Cache-Control", "no-store"),),
+            )
+        if route == "/api/workers":
+            if not self.local_client():
+                return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
+            return self.reply(
+                HTTPStatus.OK,
+                self.workers_payload(),
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/voices":
@@ -7867,6 +8166,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route == "/api/airdrop":
             return self.airdrop(body.get("path", ""))
+        if route in ("/api/workers/probe", "/api/workers/add", "/api/workers/remove"):
+            return self.change_workers(route.rsplit("/", 1)[1], body)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
 
     def split(self):
@@ -7874,6 +8175,88 @@ class Handler(BaseHTTPRequestHandler):
         return parsed.path, urllib.parse.parse_qs(parsed.query)
 
     # -- handlers
+
+    def workers_payload(self):
+        busy = self.server.jobs.busy_consumer_ids()
+        return {
+            "available": self.server.tts_models["clone"]["source"] == "local",
+            "nodes": [
+                {
+                    **node,
+                    "busy": any(
+                        f"ssh:{node['host']}:{device}" in busy
+                        for device in node["devices"]
+                    ),
+                }
+                for node in self.server.worker_nodes
+            ],
+            "consumers": self.server.jobs.public_consumers_snapshot(),
+        }
+
+    def change_workers(self, action, body):
+        """Connect to, add, or remove a node of workers.yaml for a local browser."""
+        if not self.local_client():
+            return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
+        clone = self.server.tts_models["clone"]
+        if clone["source"] != "local":
+            return self.fail(
+                HTTPStatus.CONFLICT,
+                "Workers on other machines narrate with the Base model, and this "
+                "server has no --voice-clone-model.",
+            )
+        if action == "probe":
+            try:
+                host = ssh_target(str(body.get("host") or ""))
+            except argparse.ArgumentTypeError:
+                return self.fail(
+                    HTTPStatus.BAD_REQUEST,
+                    "Enter the machine as an IP address, a host name, or user@host.",
+                )
+            python = str(body.get("python") or "").strip()
+            model = str(body.get("model") or "").strip() or clone["model"]
+            if any(character in python + model for character in "\n\r\0"):
+                return self.fail(HTTPStatus.BAD_REQUEST, "Python and Model take one line each.")
+            try:
+                found = probe_worker_node(host, python, model)
+            except RuntimeError as exc:
+                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return self.reply(HTTPStatus.OK, found)
+        with self.server.workers_lock:
+            previous = self.server.worker_nodes
+            nodes = list(previous)
+            if action == "add":
+                try:
+                    node = worker_node({key: body.get(key) for key in WORKER_NODE_KEYS})
+                except ValueError as exc:
+                    return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+                # Adding a host again replaces its settings and devices.
+                index = next(
+                    (i for i, item in enumerate(nodes) if item["host"] == node["host"]),
+                    None,
+                )
+                if index is None:
+                    nodes.append(node)
+                else:
+                    nodes[index] = node
+            else:
+                host = str(body.get("host") or "")
+                if not any(item["host"] == host for item in nodes):
+                    return self.fail(HTTPStatus.NOT_FOUND, "There is no such node.")
+                nodes = [item for item in nodes if item["host"] != host]
+            try:
+                self.server.jobs.set_remote_consumers(remote_consumers(nodes))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
+            try:
+                write_worker_nodes(self.server.workers_path, nodes)
+            except OSError as exc:
+                self.server.jobs.set_remote_consumers(remote_consumers(previous))
+                return self.fail(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    f"Could not save {WORKERS_FILE}: {exc}",
+                )
+            self.server.worker_nodes = nodes
+        return self.reply(HTTPStatus.OK, self.workers_payload())
 
 
     def upload_document(self, name):
@@ -8832,6 +9215,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div class="row"><span class="row-label">Narration workers</span>
         <div class="stack"><span id="compute-workers" class="worker-list"></span>
           <span id="compute-detail" class="note"></span></div></div>
+      <div class="row"><span class="row-label">Other machines</span>
+        <div class="stack"><div id="node-list" class="stack"></div>
+          <div class="line">
+            <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add workers</button>
+            <span id="nodes-note" class="note"></span>
+          </div></div></div>
       <div class="row"><span class="row-label">Models</span>
         <span id="compute-models"></span></div>
     </fieldset>
@@ -9275,6 +9664,33 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <span class="grow"></span>
     <button onclick="closePaperLocal()">Cancel</button>
     <button id="paper-local-save" class="primary" onclick="savePaperLocal()">Use server</button>
+  </div>
+</dialog>
+
+<dialog id="workers-dialog">
+  <h2>Add workers</h2>
+  <p class="note">Another machine narrates with its own GPUs once this server can
+    reach it with ssh and no password.</p>
+  <div class="row"><label for="worker-host">Machine:</label><div class="line">
+    <input id="worker-host" type="text" autocomplete="off"
+      placeholder="IP address, host name, or user@host">
+    <button id="worker-connect" type="button" onclick="connectWorker()">Connect</button>
+  </div></div>
+  <div id="worker-found" class="hidden">
+    <div class="row"><label for="worker-python">Python:</label><div class="line">
+      <input id="worker-python" type="text" autocomplete="off">
+    </div></div>
+    <div class="row"><label for="worker-model">Model:</label><div class="line">
+      <input id="worker-model" type="text" autocomplete="off">
+    </div></div>
+    <div class="row"><span class="row-label">Devices:</span>
+      <div id="worker-devices" class="stack"></div></div>
+  </div>
+  <div id="worker-status" class="note" role="status"></div>
+  <div class="footer">
+    <span class="grow"></span>
+    <button type="button" onclick="closeWorkers()">Cancel</button>
+    <button id="worker-add" class="primary" type="button" onclick="addWorkerNode()" disabled>Add node</button>
   </div>
 </dialog>
 
@@ -10841,7 +11257,11 @@ function setTab(tab) {
   }
   render(); sync();
 }
-function toggleAdvanced() { advancedOpen = !advancedOpen; render(); }
+function toggleAdvanced() {
+  advancedOpen = !advancedOpen;
+  render();
+  if (advancedOpen) refreshWorkers();
+}
 function log(text) {
   const box = $("log");
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
@@ -11296,6 +11716,144 @@ async function removePaperLocal() {
   await sync(); closePaperLocal(); await refreshPaperModels();
 }
 
+// Workers on other machines: only a browser on the server's machine sees
+// their hosts and paths and may change them; others see numbered chips.
+let workerNodes = null, workerProbe = null;
+const MIN_NARRATION_MIB = 6 * 1024;
+function deviceName(value) {
+  return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
+    : value === "mps" ? "Apple MPS" : "CPU";
+}
+async function refreshWorkers() {
+  if (!caps.manage_workers) { renderWorkers(); return; }
+  try { applyWorkers(await jsonRequest("/api/workers")); }
+  catch (error) { $("nodes-note").textContent = error.message; }
+}
+function applyWorkers(answer) {
+  workerNodes = answer;
+  consumers = answer.consumers || consumers;
+  renderWorkers(); renderQueue();
+}
+function renderWorkers() {
+  const local = !!caps.manage_workers;
+  const available = !!(workerNodes && workerNodes.available);
+  $("workers-open").classList.toggle("hidden", !local || !available);
+  $("nodes-note").textContent = !local
+    ? "Added in a browser on the server's own machine."
+    : workerNodes && !available
+      ? "They need a local narration model (--voice-clone-model)."
+      : workerNodes && !workerNodes.nodes.length ? "None yet." : "";
+  const nodes = local && workerNodes ? workerNodes.nodes : [];
+  $("node-list").replaceChildren(...nodes.map((node, index) => {
+    const row = document.createElement("div");
+    row.className = "line";
+    const text = document.createElement("span");
+    text.textContent = `Node ${index + 1}: ${node.host} — ${node.devices.map(deviceName).join(", ")}`;
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "link"; remove.textContent = "Remove";
+    remove.disabled = node.busy;
+    remove.title = node.busy ? "It is narrating a book; remove it once the book is done." : "";
+    remove.setAttribute("aria-label", `Remove ${node.host}`);
+    remove.addEventListener("click", () => removeWorkerNode(node.host));
+    row.append(text, remove);
+    return row;
+  }));
+}
+function openWorkers() {
+  workerProbe = null;
+  $("worker-host").value = ""; $("worker-python").value = ""; $("worker-model").value = "";
+  $("worker-found").classList.add("hidden");
+  $("worker-status").textContent = ""; $("worker-add").disabled = true;
+  $("workers-dialog").showModal();
+  $("worker-host").focus();
+}
+function closeWorkers() { $("workers-dialog").close(); }
+function workerDeviceOption(found) {
+  const label = document.createElement("label");
+  label.className = "check";
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.value = found.device; box.checked = true;
+  box.addEventListener("change", updateWorkerAdd);
+  const parts = [deviceName(found.device), found.name];
+  if (Number.isFinite(found.free_mib) && Number.isFinite(found.total_mib)) {
+    parts.push(`${(found.free_mib / 1024).toFixed(1)} of ${(found.total_mib / 1024).toFixed(0)} GiB free`
+      + (found.free_mib < MIN_NARRATION_MIB ? ": too full to narrate now" : ""));
+  }
+  label.append(box, " " + parts.filter(Boolean).join(" · "));
+  return label;
+}
+function updateWorkerAdd() {
+  const ticked = $("worker-devices").querySelectorAll("input:checked").length;
+  $("worker-add").disabled = !workerProbe || !!workerProbe.problem || workerProbe.stale || !ticked;
+}
+async function connectWorker() {
+  const host = $("worker-host").value.trim();
+  if (!host) { $("worker-status").textContent = "Enter the machine's IP address or name."; return; }
+  // Asking the same machine again checks the Python and Model as edited.
+  const again = !!workerProbe && workerProbe.host === host;
+  $("worker-connect").disabled = true; $("worker-add").disabled = true;
+  $("worker-status").textContent = `Connecting to ${host}…`;
+  try {
+    workerProbe = await jsonRequest("/api/workers/probe", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        host,
+        python: again ? $("worker-python").value : "",
+        model: again ? $("worker-model").value : "",
+      }),
+    });
+    $("worker-python").value = workerProbe.python || "";
+    $("worker-model").value = workerProbe.model || "";
+    $("worker-devices").replaceChildren(...workerProbe.devices.map(workerDeviceOption));
+    $("worker-found").classList.remove("hidden");
+    const count = workerProbe.devices.length;
+    $("worker-status").textContent = workerProbe.problem
+      || `Connected. ${count} device${count === 1 ? "" : "s"} found; untick any this server should leave alone.`;
+  } catch (error) {
+    workerProbe = null;
+    $("worker-found").classList.add("hidden");
+    $("worker-status").textContent = error.message;
+  } finally {
+    $("worker-connect").disabled = false;
+    updateWorkerAdd();
+  }
+}
+function workerProbeChanged() {
+  if (!workerProbe || workerProbe.stale) return;
+  workerProbe.stale = true;
+  $("worker-status").textContent = "Press Connect to check this change.";
+  updateWorkerAdd();
+}
+async function addWorkerNode() {
+  const devices = [...$("worker-devices").querySelectorAll("input:checked")].map((box) => box.value);
+  $("worker-add").disabled = true;
+  try {
+    const answer = await jsonRequest("/api/workers/add", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({
+        host: workerProbe.host, python: $("worker-python").value,
+        model: $("worker-model").value, devices,
+      }),
+    });
+    applyWorkers(answer);
+    closeWorkers();
+    setStatus(`${workerProbe.host} now narrates on ${devices.map(deviceName).join(", ")}.`);
+  } catch (error) {
+    $("worker-status").textContent = error.message;
+    updateWorkerAdd();
+  }
+}
+async function removeWorkerNode(host) {
+  if (!confirm(`Stop narrating on ${host}? You can add it again later.`)) return;
+  try {
+    applyWorkers(await jsonRequest("/api/workers/remove", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ host }),
+    }));
+    setStatus(`${host} no longer narrates.`);
+  } catch (error) { setStatus(error.message, true); }
+}
+
 for (const [id] of FIELDS) {
   const node = $(id);
   node.addEventListener(node.tagName === "SELECT" ? "change" : "input", () => {
@@ -11308,6 +11866,18 @@ $("shared-voice").addEventListener("change", () => { stopPreview(); renderVoiceT
 $("document-file").addEventListener("change", uploadDocument);
 $("voice-search").addEventListener("input", () => { voiceLimit = PAGE_SIZE; renderVoiceTable(); });
 $("book-search").addEventListener("input", () => { bookLimit = PAGE_SIZE; renderLibrary(); });
+$("worker-host").addEventListener("input", () => {
+  if (!workerProbe) return;
+  workerProbe = null;
+  $("worker-found").classList.add("hidden");
+  $("worker-status").textContent = "";
+  updateWorkerAdd();
+});
+$("worker-python").addEventListener("input", workerProbeChanged);
+$("worker-model").addEventListener("input", workerProbeChanged);
+$("worker-host").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); connectWorker(); }
+});
 previewAudio.addEventListener("play", syncPreviewButtons);
 previewAudio.addEventListener("pause", syncPreviewButtons);
 previewAudio.addEventListener("ended", () => { previewing = ""; syncPreviewButtons(); });
@@ -11330,6 +11900,7 @@ fetch("/api/state").then((response) => response.json()).then((data) => {
   load(data);
   if (!caps.airdrop) $("airdrop").title = "AirDrop requires a macOS server";
   refreshPaperModels();
+  refreshWorkers();
   setInterval(refreshJobs, 2000);
 });
 </script>
@@ -11405,37 +11976,6 @@ def main():
             "no audiobook is being made."
         ),
     )
-    models.add_argument(
-        "--narration-ssh-worker",
-        action="append",
-        default=[],
-        type=ssh_target,
-        metavar="TARGET",
-        help=(
-            "Passwordless OpenSSH target used as an audiobook chunk worker; "
-            "repeat for multiple hosts. Requires --voice-clone-model."
-        ),
-    )
-    models.add_argument(
-        "--narration-ssh-python",
-        default="python3",
-        metavar="PATH",
-        help="Python executable on every narration SSH worker (default: python3).",
-    )
-    models.add_argument(
-        "--narration-ssh-model",
-        metavar="PATH_OR_ID",
-        help=(
-            "Base model path or ID on narration SSH workers; defaults to the "
-            "local clone model value."
-        ),
-    )
-    models.add_argument(
-        "--narration-ssh-device",
-        default="cuda:0",
-        metavar="DEVICE",
-        help="PyTorch device on narration SSH workers (default: cuda:0).",
-    )
     args = parser.parse_args()
     if not SCRIPT.is_file():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
@@ -11456,14 +11996,27 @@ def main():
         print("Every saved voice now previews the same passage.")
         return
     loopback = args.host in ("127.0.0.1", "::1", "localhost")
+    workers_path = storage.root / WORKERS_FILE
+    try:
+        nodes = read_worker_nodes(workers_path)
+    except (OSError, ValueError) as exc:
+        parser.error(f"{workers_path}: {exc}")
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
-    server.jobs = JobQueue(audiobook_consumers(tts_models["clone"]))
+    server.jobs = JobQueue(audiobook_consumers(tts_models["clone"], nodes=nodes))
+    server.worker_nodes = nodes
+    server.workers_path = workers_path
+    server.workers_lock = threading.Lock()
     server.openai_login = OpenAIOAuthLogin()
     server.tts_models = tts_models
     server.storage = storage
     server.verbose = args.verbose
+    if nodes and tts_models["clone"]["source"] != "local":
+        print(
+            f"{workers_path} is not used: its nodes narrate with --voice-clone-model.",
+            flush=True,
+        )
     browser_host = "127.0.0.1" if loopback or args.host in ("0.0.0.0", "::") else args.host
     url = f"http://{browser_host}:{server.server_port}/"
     print(f"Hilde listening on {args.host}:{server.server_port}", flush=True)

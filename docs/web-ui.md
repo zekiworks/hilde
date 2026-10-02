@@ -62,9 +62,10 @@ server-owned pool of [narration workers](configuration.md#narration-workers): on
 all currently idle compatible workers, and each worker dynamically pulls chunk
 batches from that audiobook. A second job waits when the first has claimed the
 whole pool. Browsers see each worker's device (GPU index, model, memory) and
-live state plus active and waiting jobs. SSH workers appear as numbered SSH
-workers; SSH targets, server hostnames, speech-server URLs, and filesystem
-paths are not published.
+live state plus active and waiting jobs. GPUs of other machines appear as
+`Node 1 · GPU 2` and so on. Speech-server URLs and filesystem paths are not
+published; the nodes' hosts and paths are shown only to a browser on the
+server's own machine.
 
 A job ID is derived only from the selected document's content version and the
 voice version, plus whether it makes a new voice or remakes the book. Submitting
@@ -207,8 +208,12 @@ button reads **Simple** and hides them again:
 
 - **This server** shows the narration workers as live chips, for example
   `GPU 0 idle` through `GPU 3 running`, followed by the device model and
-  memory; hover a chip for its job. It also names the narration and
-  voice-design models and the device voice creation uses.
+  memory; hover a chip for its job. **Other machines** lists the nodes that
+  narrate over SSH, each with **Remove**, and **Add workers** adds one: enter
+  its address, **Connect**, untick any GPU to leave alone, **Add node**; see
+  [Narration workers on other machines](ssh-workers.md). Only a browser on
+  the server's own machine sees the hosts and may change them. It also names
+  the narration and voice-design models and the device voice creation uses.
 - **Speech tuning**: precision and attention implementation, language, text
   encoding, and an optional seed.
 - **Narration**, on **Create**: **Chunking**, the longest chunk in characters;
@@ -220,14 +225,17 @@ button reads **Simple** and hides them again:
   an output-location choice.
 
 Settings a remote speech server cannot use are disabled. Browsers cannot
-select, pin, or name devices and cannot configure SSH hosts.
+select, pin, or name devices.
 
 ## Browser state
 
 Editable form settings are stored in bounded `HttpOnly; SameSite=Strict`
 cookies per browser. Model paths, model IDs, speech-server endpoints, worker
 devices/hosts, credentials, storage paths, and output paths remain
-server-owned. Public API responses name local devices and models but omit
-hostnames, SSH targets, speech-server URLs, and paths. **AirDrop…** appears
+server-owned; only a browser on the server's machine may add or remove the
+nodes in `workers.yaml`. Public API responses name local devices and models but omit
+hostnames, SSH targets, speech-server URLs, and paths; only `/api/workers`,
+which answers a browser on the server's own machine alone, names the nodes'
+hosts and paths. **AirDrop…** appears
 only when the server runs on macOS with `pyobjc-framework-Cocoa`; other
 clients use **Download MP3**.

@@ -37,7 +37,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `docs/text-adaptation.md` | User guide to text adaptation: what it changes, models and providers, local servers and images, workers, and what the job log reports. |
 | `docs/web-ui.md` | User guide to the page: creating an audiobook, the Listen reader, Voices, Advanced, and browser state. The README links to it. |
 | `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
-| `docs/ssh-workers.md` | User reference for SSH narration workers: requirements, web-server flags, and the CLI form. The README links to it. |
+| `docs/ssh-workers.md` | User guide to narration workers on other machines: requirements, **Add workers** and `workers.yaml`, and the CLI form. The README links to it. |
 | `docs/command-line-options.md` | User reference listing every `audiobook_tts.py` flag with its default. The README links to it. |
 | `AGENTS.md` | Short standing instructions that coding agents load automatically; the details stay in this document. |
 
@@ -107,8 +107,12 @@ Single-worker local identity includes the contents of `reference.wav` and `trans
 ### Distributed narration workers
 
 `--worker-device` adds persistent local model processes to the primary
-`--device`; repeated `--ssh-worker` targets add persistent model processes
-through passwordless OpenSSH. `narration_worker()` implements a private
+`--device`; repeated `--ssh-worker` values add persistent model processes
+through passwordless OpenSSH, one per device of a machine. `ssh_worker()`
+parses `TARGET[,device=D][,python=P][,model=M]`; `check_distributed_mode()`
+fills what a worker leaves out from `--ssh-device`, `--ssh-python`, and
+`--ssh-model-path` (then `--clone-model-path`) and refuses a target and device
+given twice. `narration_worker()` implements a private
 newline-delimited JSON protocol. A worker emits readiness, accepts indexed
 chunk batches, and returns base64-encoded FLOAT WAV data or a fatal error.
 
@@ -130,7 +134,8 @@ the run, as does having no worker alive and none waiting; committed chunks are
 kept. The coordinator validates and atomically commits each returned
 checkpoint immediately, then assembles all checkpoints in source order.
 Waiting GPUs do not change the checkpoint identity, which names the configured
-worker topology.
+worker topology: the local devices and each SSH worker's target, device, and
+model, but not its Python, which does not change the audio.
 
 An SSH transport stages the current script plus the saved `reference.wav` and
 `transcript.txt` in a unique remote `/tmp/audiobook-tts-*` directory. The text
@@ -172,8 +177,9 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │           ├── audio.mp3
 │           └── timings.json
 ├── Documents/
-└── in_progress/
-    └── voice-drafts/
+├── in_progress/
+│   └── voice-drafts/
+└── workers.yaml
 ```
 
 Browser state contains only flat asset names and book ids. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser; `read_book()` accepts only an id matching `BOOK_ID_PATTERN` and `voice_folder()` only a single safe component. File-serving and AirDrop paths must resolve inside the shared root.
@@ -267,6 +273,10 @@ first served (`release_migration_backup()`). The empty `.versions` and
 - Unfinished workflow: `in_progress/<job-id>/`.
 - Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
+- Workers on other machines: `workers.yaml`, a `nodes:` list of `host`,
+  `python`, `model`, and `devices` (`cuda:N`, `mps`, or `cpu`) with a comment
+  header, written atomically by `write_worker_nodes()` when a node is added or
+  removed and read at startup.
 
 For remote narration, the remote server voice ID supplies `<voice-name>`.
 
@@ -519,9 +529,14 @@ submission owns its labels and execution settings. A job record names its
 remake as one.
 
 For a local narration model, `audiobook_consumers()` creates one worker
-descriptor per CUDA GPU visible to the server process and appends passwordless
-SSH workers configured at startup. `CUDA_VISIBLE_DEVICES` controls local
-membership; repeated `--narration-ssh-worker` flags control remote membership.
+descriptor per CUDA GPU visible to the server process and, through
+`remote_consumers()`, one per device of each node in `workers.yaml`.
+`CUDA_VISIBLE_DEVICES` controls local membership. Remote membership is the
+file's nodes: `read_worker_nodes()` validates it at startup (an invalid node
+stops the server), and **Add workers** replaces it at run time through
+`JobQueue.set_remote_consumers()`, which refuses to take away a worker that is
+narrating and starts any queued job that can now run. A job on the automatic
+pool takes the workers that exist when it starts, not when it was queued.
 Every HTTP submission requests the process-owned automatic pool and atomically
 claims every currently idle compatible worker as one gang. Each worker then
 dynamically pulls batches for that job; a second job waits when the first owns
@@ -671,14 +686,36 @@ means designing them again; a test checks each one.
 
 **Advanced** shows **This server**: one live chip per narration worker (`GPU 0
 idle`, `running`, or `reserved` during voice creation; the tooltip adds the
-device and job) followed by the shared device description, and the narration
-and voice-design models plus the device voice creation uses. It also holds
+device and job; a node's GPU reads `Node 1 · GPU 2`) followed by the shared
+device description, **Other machines**, and the narration
+and voice-design models plus the device voice creation uses.
+
+**Other machines** lists the nodes of `workers.yaml` with **Remove**, and
+**Add workers** opens a dialog: the machine's address, **Connect**, then the
+Python, model, and devices it found, then **Add node**. Connect runs
+`probe_worker_node()`: `ssh` with `BatchMode=yes` and `StrictHostKeyChecking=yes`
+(so a password or a host key SSH has not accepted fails, and `ssh_failure()`
+says which in plain words) runs `sh -s` with a script on stdin. Values reach
+the script only through `shlex.quote`. It takes the given Python or the first
+of `~/hilde/.venv/bin/python`, `python3`, and pyenv and conda environments that
+can find both `torch` and `qwen_tts`, then that Python lists CUDA devices with
+their names, total memory, and free memory (from `nvidia-smi` by UUID), or MPS,
+or CPU, and looks for the model: the path given (by default the server's own
+`--voice-clone-model`), a Hugging Face cache entry for an ID, then a folder of
+the same name up to four levels inside the home folder. Every device is ticked,
+and one with less than 6 GiB free is marked too full to narrate. Adding a host
+again replaces its node. Only a browser whose address is loopback
+(`is_loopback_address()`, IPv4-mapped included) sees the hosts and paths
+(`capabilities.manage_workers`, `GET /api/workers`) or may probe, add, or
+remove; others get HTTP 403 and see only the chips.
+
+**Advanced** also holds
 precision/attention tuning, language, encoding, and seed; narration
 chunk/batch/MP3 settings on Create; adaptation concurrency while adaptation is
 on; and reference-WAV encoding on Voices, kept because the
 generated WAV is required for local cloning. Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
-configured SSH workers; a GPU whose worker waits for memory inside the job
+node workers; a GPU whose worker waits for memory inside the job
 still shows `running`, and the job's log names it. Voice design runs on the
 GPU with the most free memory (`roomiest_cuda_device()` reads the same
 `gpu_free_mebibytes()` as the narration coordinator), else MPS, else CPU.
@@ -798,12 +835,14 @@ playable but have no synchronized text.
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove` | Save an Anthropic API key once Anthropic accepts it, or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local model whose provider differs from the saved server type. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
+| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), and the public worker chips. |
+| `POST /api/workers/probe`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
 ## Core invariants
 
-- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths.
+- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`'s nodes, which only a browser on the server's own machine (a loopback address) may add or remove, because the server has no sign-in.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
 - **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
@@ -835,7 +874,7 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 - Exact-version overwrite confirmation uses both input and voice versions.
 - Automatic local audiobook work receives its complete worker set before the child coordinator starts.
 - OpenAI-compatible narration never uploads local reference clips because that schema names a server-owned voice. SSH model workers do receive the staged reference and text.
-- Browser-facing payloads describe local devices (runtime GPU index, device name, memory) and model directory names or IDs, but omit hostnames, SSH targets, speech-server URLs, script paths, model paths, and storage paths.
+- Browser-facing payloads describe local devices (runtime GPU index, device name, memory) and model directory names or IDs, but omit hostnames, SSH targets, speech-server URLs, script paths, model paths, and storage paths. Nodes appear only as `Node N · <device>`; their hosts, Python, and model paths go only to a browser on the server's own machine.
 - The ChatGPT sign-in and the Anthropic API key stay in `~/.hilde/`, readable only by the server's user; no route or event returns them. Claude Code's sign-in stays with Claude Code: Hilde only runs `claude` and asks `claude auth status` whether it is signed in.
 - A document reaches a cloud provider only when one of its models is chosen, or when Default is used and the browser has added no local server; an added local server that does not answer never hands the document to the cloud.
 
@@ -852,9 +891,9 @@ python audiobook_tts_web.py \
   --port 8800
 ```
 
-Add passwordless SSH workers to the web server with repeated
-`--narration-ssh-worker USER@HOST`; configure their shared executable/model
-using `--narration-ssh-python` and `--narration-ssh-model`.
+Add passwordless SSH workers to the web server under **Advanced** › **Add
+workers** in a browser on its machine, or by listing nodes in
+`<storage-root>/workers.yaml` while it is stopped.
 
 Voices whose `transcript.txt` is not the fixed preview passage get a comparable
 `preview.wav` from one pass, run while no audiobook is being made:
@@ -867,10 +906,13 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 109 tests. It covers voice persistence
+The regression suite currently has 114 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 book identity by content, document/voice-only job identity, gang scheduling
-across local and SSH workers, internal device pinning, FIFO scheduling and
+across local and SSH workers, nodes added while a book waits and kept while
+one narrates, `workers.yaml` validation, per-worker SSH settings from the
+server's command to the staged worker, loopback-only worker changes,
+internal device pinning, FIFO scheduling and
 deduplication, GPU enumeration when CUDA cannot open one device, public worker
 and model configuration without hosts or paths, GPU-preferred resolution, extensionless document
 URL inference, remote chunk reuse, resumable paragraph adaptation with bounded
@@ -976,4 +1018,4 @@ server can reach, and Stop
 cutting off requests a busy model server has not answered. It does not load a
 Qwen model or require a GPU.
 
-Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in, a signed-in Claude Code, an Anthropic API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.
+Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, PyYAML (for `workers.yaml`), matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in, a signed-in Claude Code, an Anthropic API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.

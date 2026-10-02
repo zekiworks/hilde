@@ -42,10 +42,10 @@ python audiobook_tts.py narrate --help
 | `--chunk-max-chars` | `500`; must be positive. |
 | `--batch-size` | `0` for all chunks on one device and one chunk per distributed worker; positive values set the chunks per clone call. A batch that runs out of CUDA memory is retried one chunk at a time. |
 | `--worker-device` | Unset; repeat to add local devices to one resumable narration. A GPU with less than 6 GiB free joins once it has room. |
-| `--ssh-worker` | Unset; repeat passwordless `HOST` or `USER@HOST` targets. See [SSH narration workers](ssh-workers.md). |
-| `--ssh-python` | `python3`; Python executable shared by SSH workers. |
-| `--ssh-model-path` | Uses `--clone-model-path`; remote model path or permitted Hub ID. |
-| `--ssh-device` | `cuda:0`; device used on every SSH worker. |
+| `--ssh-worker` | Unset; repeat for each device of each machine: `TARGET[,device=D][,python=P][,model=M]`, where the target is `HOST` or `USER@HOST`. See [Narration workers on other machines](ssh-workers.md). |
+| `--ssh-python` | `python3`; Python executable for SSH workers that name none. |
+| `--ssh-model-path` | Uses `--clone-model-path`; model path or permitted Hub ID for SSH workers that name none. |
+| `--ssh-device` | `cuda:0`; device for SSH workers that name none. |
 | `--wav-subtype` | `PCM_16` for WAV; choices as above. |
 | `--mp3-compression-level` | Encoder default; optional value from `0` to `1` for MP3 only. |
 | `--overwrite` | Disabled; allows replacing an audiobook, never its saved reference or input file. |
