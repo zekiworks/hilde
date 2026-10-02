@@ -9946,7 +9946,8 @@ let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
 // A draft is the clip Listen made; Save stores exactly that clip.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
-let etaSample = null, etaSecondsPerUnit = null, etaDeadline = null, etaTimer = null;
+// A step's first and latest progress reports; the estimate is their average pace.
+let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
 let etaPhase = null, etaPhaseStarted = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
 let readerBlocks = [], readerWordElements = [], readerFrame = 0;
@@ -10167,7 +10168,7 @@ function beginEta(phase) {
   if (etaPhase && etaPhase !== phase) rememberPhaseDuration();
   clearInterval(etaTimer);
   etaPhase = phase; etaPhaseStarted = performance.now();
-  etaSample = null; etaSecondsPerUnit = null; etaDeadline = null;
+  etaSample = null; etaStart = null; etaDeadline = null;
   const historical = phaseHistory(phase);
   if (Number.isFinite(historical) && historical > 0)
     etaDeadline = performance.now() + historical * 1000;
@@ -10177,29 +10178,37 @@ function beginEta(phase) {
 function endEta() {
   rememberPhaseDuration();
   clearInterval(etaTimer);
-  etaTimer = null; etaSample = null; etaSecondsPerUnit = null;
+  etaTimer = null; etaSample = null; etaStart = null;
   etaDeadline = null; etaPhase = null; etaPhaseStarted = null;
   $("progress-eta").textContent = "";
 }
-function updateEta(done, total, elapsed, streamElapsed) {
+// The pace is the average since the step's first report: the time since then
+// over the units finished since then. Workers finish chunks in bursts, so the
+// pace between two reports swings from minutes to hours; the step's average
+// barely moves with each report and settles as the step goes on. A step is
+// one kind of unit, as extraction reads pages, then paragraphs; its first
+// report can count work kept from before, as a resumed narration's does.
+// The average includes the step's start, such as loading the model, so it
+// waits for some headway, 5% of the step but at least three units, before
+// it replaces the previous run's duration of the step.
+function updateEta(done, total, elapsed, streamElapsed, unit) {
   done = Number(done); total = Number(total); elapsed = Number(elapsed);
   streamElapsed = Number(streamElapsed);
   if (![done,total,elapsed].every(Number.isFinite) || total <= 0) return;
-  const sample = { done,total,elapsed };
-  if (!etaSample || etaSample.total !== total ||
+  const sample = { done, total, elapsed, unit: unit || "" };
+  if (!etaStart || etaStart.total !== total || etaStart.unit !== sample.unit ||
       done < etaSample.done || elapsed < etaSample.elapsed) {
-    etaSample = sample; etaSecondsPerUnit = null; renderEta(); return;
+    etaStart = etaSample = sample; renderEta(); return;
   }
-  const advanced = done - etaSample.done, duration = elapsed - etaSample.elapsed;
-  if (advanced > 0 && duration > 0) {
-    const observed = duration / advanced;
-    etaSecondsPerUnit = etaSecondsPerUnit === null
-      ? observed : etaSecondsPerUnit * 0.65 + observed * 0.35;
+  etaSample = sample;
+  const advanced = done - etaStart.done, duration = elapsed - etaStart.elapsed;
+  const headway = Math.min(total - etaStart.done, Math.max(3, Math.ceil((total - etaStart.done) * 0.05)));
+  if (advanced >= headway && advanced > 0 && duration > 0) {
     const stale = Number.isFinite(streamElapsed) ? Math.max(0, streamElapsed - elapsed) : 0;
-    const remaining = Math.max(0, etaSecondsPerUnit * Math.max(0,total-done) - stale);
+    const remaining = Math.max(0, duration / advanced * Math.max(0, total - done) - stale);
     etaDeadline = performance.now() + remaining * 1000;
   }
-  etaSample = sample; renderEta();
+  renderEta();
 }
 
 function readerPlayer(book, voice) {
@@ -11663,7 +11672,7 @@ function watch(jobId="") {
     $("progress").max = info.total; $("progress").value = info.done;
     updateEta(
       info.done, info.total, info.phase_elapsed,
-      info.phase_stream_elapsed
+      info.phase_stream_elapsed, info.unit
     );
     runStage = stageFor(info.phase, info.unit) || runStage;
     $("progress-detail").textContent = progressDetail(info);

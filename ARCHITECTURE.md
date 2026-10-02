@@ -600,7 +600,7 @@ runs, and polling follows another active job after the viewed one ends. If the
 server restarted, the browser reports interruption and directs the user to
 resubmit; durable audiobook work then resumes from its version-pair stage.
 
-The page resets ETA at every phase boundary. It combines historical phase duration from browser `localStorage` with observed seconds per completed unit, renders a one-second countdown (`About 3m 10s left`), and shows `Estimating time…` or `Almost done…` when no useful numeric estimate exists. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines.
+The page resets ETA at every phase boundary. Until a step has made headway it counts down the phase's historical duration from browser `localStorage`, or shows `Estimating time…`. A step is one series of progress reports with the same unit and total (extraction reads pages, then paragraphs). `updateEta()` estimates from the step's average pace: the seconds since the step's first report over the units finished since it, which leaves out work a resumed narration kept. Workers finish chunks in bursts, so a pace measured between reports, or smoothed from them, swung between minutes and hours; the step's average moves little with each report. It replaces the historical countdown once the step has finished 5% of its remaining units, and at least three. The page renders a one-second countdown (`About 3m 10s left`) and shows `Almost done…` at the end. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines.
 
 ## UI contract
 
