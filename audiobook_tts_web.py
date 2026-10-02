@@ -303,6 +303,9 @@ TEXT_KINDS = frozenset({"prose", "heading", "footnote"})
 BATCH_LINE = re.compile(r"^Generating batch \d+ \(chunks \d+-(\d+)/(\d+)\)")
 CHUNK_LINE = re.compile(r"^Requesting chunk (\d+)/(\d+)")
 CHECKPOINT_LINE = re.compile(r"^Checkpointed chunk (\d+)/(\d+)")
+# After the last chunk the narrator joins them into one file, which takes
+# minutes for a long book; it is a step of its own on the page.
+JOIN_LINE = re.compile(r"^Joined chunk (\d+)/(\d+)")
 WROTE_LINE = re.compile(r"^Wrote (.+) \([\d.]+s, \d+ Hz\)$")
 SAVED_LINE = re.compile(r"^Saved voice: (.+) \([\d.]+s, \d+ Hz\)$")
 READER_BLOCK_PATTERN = re.compile(
@@ -6161,6 +6164,10 @@ class Run:
         if progress is not None:
             done, total = (int(value) for value in progress.groups())
             self.publish("progress", {"done": done, "total": total})
+        joined = JOIN_LINE.match(line)
+        if joined is not None:
+            done, total = (int(value) for value in joined.groups())
+            self.publish("progress", {"done": done, "total": total, "unit": "join"})
         for pattern in (WROTE_LINE, SAVED_LINE):
             match = pattern.match(line)
             if match is not None:
@@ -10198,6 +10205,9 @@ function updateEta(done, total, elapsed, streamElapsed, unit) {
   const sample = { done, total, elapsed, unit: unit || "" };
   if (!etaStart || etaStart.total !== total || etaStart.unit !== sample.unit ||
       done < etaSample.done || elapsed < etaSample.elapsed) {
+    // A later step of the phase, such as joining after speaking, has no
+    // estimate of its own yet; the phase's earlier step's is not its own.
+    if (etaStart) etaDeadline = null;
     etaStart = etaSample = sample; renderEta(); return;
   }
   etaSample = sample;
@@ -11151,11 +11161,19 @@ function stageFor(phase, unit) {
   if (phase === "alignment") return "finish";
   return null;
 }
+// Each step says what it is doing, so a long one, such as joining tens of
+// thousands of parts after the last one is spoken, never looks stuck.
 function progressDetail(info) {
   if (info.unit === "document") return "Using the text prepared earlier";
-  const noun = { page:"Page", paragraph:"Paragraph", sentence:"Sentence" }[info.unit]
-    || (info.phase === "narration" ? "Part" : "Step");
-  return `${noun} ${info.done} of ${info.total}`;
+  const count = (value) => Number(value).toLocaleString();
+  const of = `${count(info.done)} of ${count(info.total)}`;
+  switch (info.unit) {
+    case "page": return `Reading page ${of}`;
+    case "paragraph": return `Rewriting for listening: paragraph ${of}`;
+    case "join": return `Joining the parts into one recording: ${of}`;
+    case "sentence": return `Matching the words to the audio: sentence ${of}`;
+  }
+  return info.phase === "narration" ? `Speaking part ${of}` : `Step ${of}`;
 }
 function progressSubject() {
   const job = jobs.find((item) => item.id === currentJobId);
@@ -11680,7 +11698,9 @@ function watch(jobId="") {
   });
   source.addEventListener("activity", (event) => {
     const info = JSON.parse(event.data);
-    $("progress-detail").textContent = `Paragraph ${info.completed} of ${info.total}`;
+    $("progress-detail").textContent = progressDetail({
+      unit:"paragraph", done:info.completed, total:info.total,
+    });
   });
   source.addEventListener("done", async (event) => {
     const info = JSON.parse(event.data);

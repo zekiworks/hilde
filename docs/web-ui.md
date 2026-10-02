@@ -58,10 +58,13 @@ voice name. When the job finishes, **Start listening** opens the book in
 
 While a job runs, Create names its stage in plain words: Reading your
 document, Preparing the narration, Creating the audio, and Finishing your
-audiobook. Each stage has its own progress count and time left, worked out
-from the stage's average pace so far, so it settles instead of jumping as
-chunks finish in bursts; until the stage is a little way in, the browser
-counts down how long that stage took last time. A reload returns
+audiobook. Under the bar, a line says what is happening: reading page 3 of
+12, rewriting paragraph 40 of 135, speaking part 900 of 35,226, joining the
+parts into one recording after the last one is spoken, and matching the words
+to the audio for the follow-along view. Each step has its own time left,
+worked out from its average pace so far, so it settles instead of jumping as
+chunks finish in bursts; until a stage is a little way in, the browser counts
+down how long that stage took last time. A reload returns
 to the running job's progress and reconnects to its server-sent event stream
 without duplicating received log lines.
 

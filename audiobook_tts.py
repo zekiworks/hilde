@@ -783,7 +783,11 @@ def assemble_checkpoints(
     compression_level,
     sf,
 ):
-    """Atomically encode ordered checkpoints into the requested final container."""
+    """Atomically encode ordered checkpoints into the requested final container.
+
+    Joining a long book takes minutes after the last chunk is made, so about
+    200 "Joined chunk N/T" lines report it, starting with 0.
+    """
     temporary = output_path.with_name(f".{output_path.name}.assembling")
     temporary.unlink(missing_ok=True)
     total_samples = 0
@@ -801,6 +805,8 @@ def assemble_checkpoints(
         ) as output:
             sample_rate = output.samplerate
             channels = output.channels
+            report_every = max(1, -(-count // 200))
+            print(f"Joined chunk 0/{count}", flush=True)
             for index in range(1, count + 1):
                 waveform, current_rate = sf.read(
                     _checkpoint_path(directory, index),
@@ -815,6 +821,8 @@ def assemble_checkpoints(
                     )
                 output.write(waveform)
                 total_samples += len(waveform)
+                if index % report_every == 0 or index == count:
+                    print(f"Joined chunk {index}/{count}", flush=True)
         temporary.replace(output_path)
     except BaseException:
         temporary.unlink(missing_ok=True)

@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 import urllib.request
 import urllib.error
@@ -1397,6 +1398,33 @@ class EventStreamTests(unittest.TestCase):
         self.assertGreaterEqual(progress["elapsed"], 0)
         self.assertGreaterEqual(progress["stream_elapsed"], progress["elapsed"])
 
+    def test_joining_the_parts_reports_its_progress_to_the_page(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        count = 450
+        tone = np.zeros(240, dtype=np.float32)
+        for index in range(1, count + 1):
+            sf.write(cli._checkpoint_path(root, index), tone, 24000, subtype="FLOAT")
+        printed = io.StringIO()
+        with redirect_stdout(printed):
+            cli.assemble_checkpoints(root, count, root / "book.wav", "WAV", "PCM_16", None, sf)
+
+        # Each line the narrator prints while joining reaches the page as
+        # progress of its own step, from 0 to every part.
+        run = web.Run([], "audiobook", "book.wav")
+        for line in printed.getvalue().splitlines():
+            run.inspect(line)
+        steps = [
+            (data["done"], data["total"]) for event, data in run.history
+            if event == "progress" and data.get("unit") == "join"
+        ]
+        self.assertEqual(steps[0], (0, count))
+        self.assertEqual(steps[-1], (count, count))
+        # Often enough to show movement, not once per part.
+        self.assertLessEqual(len(steps), 205)
+        self.assertGreaterEqual(len(steps), 100)
+
 
 class WebTtsConfigurationTests(unittest.TestCase):
     def test_browser_cannot_replace_server_owned_voice_model(self):
@@ -2156,14 +2184,18 @@ class UnifiedWorkflowTests(unittest.TestCase):
             ],
             ["extraction", "narration", "alignment"],
         )
+        narration = [
+            (data.get("unit"), data["done"])
+            for event, data in run.history
+            if event == "progress" and data["phase"] == "narration"
+        ]
+        # Committed chunks drive the narration's progress; joining them into
+        # one file afterwards is a step of its own.
         self.assertEqual(
-            [
-                data["done"]
-                for event, data in run.history
-                if event == "progress" and data["phase"] == "narration"
-            ],
+            [done for unit, done in narration if unit != "join"],
             list(range(1, requests["count"] + 1)),
         )
+        self.assertEqual(narration[-1], ("join", requests["count"]))
 
     def test_each_book_records_its_model_prose_kept_and_times_across_a_resume(self):
         temporary = tempfile.TemporaryDirectory()
