@@ -83,6 +83,7 @@ SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
+INSTALL_SCRIPT_PATH = ROOT / "install.sh"
 # Hilde's release, recorded in every book; git checkouts also record the commit.
 HILDE_VERSION = "0.1.0"
 # The layout of a book's book.json; narration.json carries its own schema.
@@ -1199,6 +1200,162 @@ def probe_worker_node(host, python, model):
         "devices": found.get("devices") or [],
         "problem": " ".join(problems),
     }
+
+
+# Runs on the node with the Python Hilde found there: downloads the Base model
+# into ~/hilde/models/<name>, a folder the probe's home search finds by name.
+_WORKER_MODEL_DOWNLOAD = r"""
+import os, sys
+from huggingface_hub import snapshot_download
+
+repo = sys.argv[1]
+target = os.path.join(os.path.expanduser("~"), "hilde", "models", repo.rsplit("/", 1)[-1])
+snapshot_download(repo_id=repo, local_dir=target)
+print(f"Downloaded {repo} to {target}")
+"""
+
+
+def worker_model_repo(model):
+    """The Hugging Face ID a node downloads for the server's Base model.
+
+    The server keeps a local folder as its absolute path, named as Qwen
+    publishes it, and a model it downloads as its Hugging Face ID.
+    """
+    return f"Qwen/{os.path.basename(model.rstrip('/'))}" if os.path.isabs(model) else model
+
+
+class WorkerSetup:
+    """Prepare a node over SSH so it can narrate: Hilde's installer, then the model.
+
+    The installer is this checkout's install.sh, which gives the node
+    ~/hilde/.venv with PyTorch and Qwen TTS; it runs only when no such Python
+    is found. The Base model is downloaded only when the probe does not find
+    it. A setup ends with the probe's report, so the browser can add the node.
+    """
+
+    LOG_LINES = 12
+
+    def __init__(self, host, model):
+        self.host = host
+        self.model = model
+        self.lock = threading.Lock()
+        self.status = "running"
+        self.step = "Checking the machine"
+        self.log = collections.deque(maxlen=self.LOG_LINES)
+        self.error = ""
+        self.found = None
+        self.process = None
+        self.stopped = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def running(self):
+        with self.lock:
+            return self.status == "running"
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "host": self.host,
+                "status": self.status,
+                "step": self.step,
+                "log": list(self.log),
+                "error": self.error,
+                "found": self.found,
+            }
+
+    def stop(self):
+        with self.lock:
+            self.stopped = True
+            process = self.process
+        if process is not None:
+            process.terminate()
+
+    def set_step(self, step):
+        with self.lock:
+            if self.stopped:
+                raise RuntimeError("Setup stopped.")
+            self.step = step
+
+    def run(self):
+        try:
+            found = probe_worker_node(self.host, "", self.model)
+            if not found["python"]:
+                self.set_step("Installing Python, PyTorch, and Qwen TTS in ~/hilde")
+                self.remote(INSTALL_SCRIPT_PATH.read_text(encoding="utf-8"))
+                found = probe_worker_node(self.host, "", self.model)
+                if not found["python"]:
+                    raise RuntimeError(found["problem"])
+            if found["problem"]:
+                repo = worker_model_repo(self.model)
+                self.set_step(f"Downloading the speech model {repo}")
+                self.remote(
+                    f"exec {shlex.quote(found['python'])} - {shlex.quote(repo)} "
+                    f"<<'HILDE_DOWNLOAD'\n{_WORKER_MODEL_DOWNLOAD}HILDE_DOWNLOAD\n"
+                )
+                found = probe_worker_node(self.host, found["python"], self.model)
+                if found["problem"]:
+                    raise RuntimeError(found["problem"])
+        except (OSError, RuntimeError) as exc:
+            with self.lock:
+                self.status = "stopped" if self.stopped else "failed"
+                self.error = "Setup stopped." if self.stopped else str(exc)
+            return
+        with self.lock:
+            self.status = "done"
+            self.step = "Ready"
+            self.found = found
+
+    def remote(self, script):
+        """Run a shell script on the node, keeping the last lines it prints."""
+        ssh = shutil.which("ssh")
+        if ssh is None:
+            raise RuntimeError("This machine has no ssh command.")
+        with self.lock:
+            if self.stopped:
+                raise RuntimeError("Setup stopped.")
+            self.process = subprocess.Popen(
+                [
+                    ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "StrictHostKeyChecking=yes", self.host, "sh -s",
+                ],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+        process = self.process
+        try:
+            process.stdin.write(script.encode("utf-8"))
+            process.stdin.close()
+        except OSError:
+            pass
+        pending = b""
+        # Progress bars redraw with a carriage return, so it ends a line too.
+        for chunk in iter(lambda: process.stdout.read1(4096), b""):
+            *lines, pending = re.split(rb"[\r\n]", pending + chunk)
+            self.keep(lines)
+        self.keep([pending])
+        code = process.wait()
+        with self.lock:
+            self.process = None
+            lines = list(self.log)
+        if self.stopped:
+            raise RuntimeError("Setup stopped.")
+        if code == 255:
+            raise RuntimeError(ssh_failure(self.host, "\n".join(lines)))
+        if code:
+            raise RuntimeError(
+                f"Setting up {self.host} failed: {lines[-1] if lines else f'exit status {code}'}"
+            )
+
+    def keep(self, lines):
+        text = [
+            line.decode("utf-8", "replace").strip() for line in lines if line.strip()
+        ]
+        if text:
+            with self.lock:
+                self.log.extend(text)
 
 
 # --- pure helpers -------------------------------------------------------------
@@ -8402,8 +8559,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route == "/api/airdrop":
             return self.airdrop(body.get("path", ""))
-        if route in ("/api/workers/probe", "/api/workers/add", "/api/workers/remove"):
-            return self.change_workers(route.rsplit("/", 1)[1], body)
+        if route in (
+            "/api/workers/probe", "/api/workers/add", "/api/workers/remove",
+            "/api/workers/setup", "/api/workers/setup/stop",
+        ):
+            return self.change_workers(route.removeprefix("/api/workers/"), body)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
 
     def split(self):
@@ -8427,10 +8587,11 @@ class Handler(BaseHTTPRequestHandler):
                 for node in self.server.worker_nodes
             ],
             "consumers": self.server.jobs.public_consumers_snapshot(),
+            "setup": self.server.worker_setup and self.server.worker_setup.snapshot(),
         }
 
     def change_workers(self, action, body):
-        """Connect to, add, or remove a node of workers.yaml for a local browser."""
+        """Connect to, set up, add, or remove a node of workers.yaml for a local browser."""
         if not self.local_client():
             return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
         clone = self.server.tts_models["clone"]
@@ -8440,7 +8601,11 @@ class Handler(BaseHTTPRequestHandler):
                 "Workers on other machines narrate with the Base model, and this "
                 "server has no --voice-clone-model.",
             )
-        if action == "probe":
+        if action == "setup/stop":
+            if self.server.worker_setup is not None:
+                self.server.worker_setup.stop()
+            return self.reply(HTTPStatus.OK, self.workers_payload())
+        if action in ("probe", "setup"):
             try:
                 host = ssh_target(str(body.get("host") or ""))
             except argparse.ArgumentTypeError:
@@ -8448,6 +8613,15 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "Enter the machine as an IP address, a host name, or user@host.",
                 )
+            if action == "setup":
+                with self.server.workers_lock:
+                    current = self.server.worker_setup
+                    if current is not None and current.running():
+                        return self.fail(
+                            HTTPStatus.CONFLICT, f"{current.host} is still being set up."
+                        )
+                    self.server.worker_setup = WorkerSetup(host, clone["model"]).start()
+                return self.reply(HTTPStatus.OK, self.workers_payload())
             python = str(body.get("python") or "").strip()
             model = str(body.get("model") or "").strip() or clone["model"]
             if any(character in python + model for character in "\n\r\0"):
@@ -9213,19 +9387,18 @@ label.check input { width:18px; height:18px; margin:0; accent-color:var(--accent
 .step.is-done .step-marker { color:var(--text); }
 .step-title { font-size:17px; }
 .step.is-upcoming .step-title { color:var(--dim); }
-.step-summary { flex:1; min-width:0; overflow:hidden; color:var(--dim);
-                text-overflow:ellipsis; white-space:nowrap; }
+.step-summary { flex:1; min-width:0; color:var(--dim); }
 .step-body { display:grid; gap:16px; margin-top:18px; padding-left:44px; }
 .step:not(.is-active) .step-body { display:none; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
 details.from-link[open] > summary { margin-bottom:12px; }
 details.from-link .field + .field { margin-top:12px; }
-details.technical pre { margin:8px 0 0; color:var(--dim); white-space:pre-wrap;
+details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-space:pre-wrap;
                         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .voice-card { display:flex; align-items:center; gap:14px; padding:12px 14px;
               background:var(--raised); border-radius:10px; }
 .voice-meta { display:grid; gap:2px; min-width:0; }
-.clamp { display:-webkit-box; overflow:hidden; -webkit-line-clamp:2;
+.clamp { display:-webkit-box; overflow:hidden; overflow-wrap:anywhere; -webkit-line-clamp:2;
          -webkit-box-orient:vertical; }
 .preview-button { display:grid; place-items:center; flex:0 0 auto; width:40px; height:40px;
                   min-height:0; padding:0; border-radius:50%; }
@@ -9259,7 +9432,6 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
 .job-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:12px;
            align-items:center; padding-top:8px; border-top:1px solid var(--line); }
 .job-row:first-child { padding-top:0; border-top:0; }
-.job-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .job-state { color:var(--dim); font-size:13px; white-space:nowrap; }
 .job-actions { display:flex; gap:6px; }
 .job-row button { min-height:0; padding:5px 10px; font-size:13px; }
@@ -9506,7 +9678,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <section id="page-audiobook" class="page" role="tabpanel" aria-labelledby="tab-audiobook">
     <h2 class="visually-hidden">Create an audiobook</h2>
     <div id="create-banner" class="banner hidden">
-      <span id="create-banner-text"></span>
+      <span id="create-banner-text" class="clamp"></span>
       <button class="link" type="button" onclick="viewProgress()">View progress</button>
     </div>
     <ol id="create-steps" class="steps">
@@ -9515,7 +9687,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <span class="step-marker" aria-hidden="true">1</span>
           <h3 class="step-title" tabindex="-1">Add your book</h3>
           <span class="visually-hidden step-state"></span>
-          <span id="book-summary" class="step-summary"></span>
+          <span id="book-summary" class="step-summary clamp"></span>
           <button id="book-change" class="link" type="button" aria-label="Change book"
             onclick="setStep('book')">Change</button>
         </div>
@@ -9567,7 +9739,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <span class="step-marker" aria-hidden="true">2</span>
           <h3 class="step-title" tabindex="-1">Choose a voice</h3>
           <span class="visually-hidden step-state"></span>
-          <span id="voice-summary" class="step-summary"></span>
+          <span id="voice-summary" class="step-summary clamp"></span>
           <button id="voice-change" class="link" type="button" aria-label="Change voice"
             onclick="setStep('voice')">Change</button>
         </div>
@@ -9626,7 +9798,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
     <section id="create-progress" class="card hidden" aria-labelledby="progress-title">
       <h3 id="progress-title" tabindex="-1">Creating your audiobook</h3>
-      <p id="progress-subject" class="note"></p>
+      <p id="progress-subject" class="note clamp"></p>
       <ol id="stages" class="stages">
         <li class="stage" data-stage="read"><span class="stage-icon" aria-hidden="true"></span>Reading
           your document<span class="visually-hidden stage-state"></span></li>
@@ -9651,7 +9823,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
     <section id="create-result" class="card hidden" aria-labelledby="result-title">
       <h3 id="result-title" tabindex="-1"></h3>
-      <p id="result-text"></p>
+      <p id="result-text" class="clamp"></p>
       <details id="result-details" class="technical hidden">
         <summary>Technical details</summary><pre id="result-detail-text"></pre>
       </details>
@@ -9906,7 +10078,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <dialog id="workers-dialog">
   <h2>Add workers</h2>
   <p class="note">Another machine narrates with its own GPUs once this server can
-    reach it with ssh and no password.</p>
+    reach it with ssh and no password. <strong>Set up</strong> installs what it
+    needs there.</p>
   <div class="row"><label for="worker-host">Machine:</label><div class="line">
     <input id="worker-host" type="text" autocomplete="off"
       placeholder="IP address, host name, or user@host">
@@ -9923,7 +10096,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div id="worker-devices" class="stack"></div></div>
   </div>
   <div id="worker-status" class="note" role="status"></div>
+  <div id="worker-setup-progress" class="hidden">
+    <p id="worker-setup-step"></p>
+    <pre id="worker-setup-log" class="setup-log"></pre>
+  </div>
   <div class="footer">
+    <button id="worker-setup" class="hidden" type="button" onclick="setupWorker()">Set up</button>
+    <button id="worker-setup-stop" class="hidden" type="button" onclick="stopWorkerSetup()">Stop setup</button>
     <span class="grow"></span>
     <button type="button" onclick="closeWorkers()">Cancel</button>
     <button id="worker-add" class="primary" type="button" onclick="addWorkerNode()" disabled>Add node</button>
@@ -10810,7 +10989,7 @@ function bookRow(book) {
   const row = document.createElement("tr");
   const title = cell("title");
   const name = document.createElement("div");
-  name.className = "book-title"; name.textContent = book.title;
+  name.className = "book-title clamp"; name.textContent = book.title; name.title = book.title;
   title.append(name);
   const narrators = book.voices.filter((voice) => voice.status === "ready").map((voice) => voice.name);
   if (narrators.length) {
@@ -11198,6 +11377,7 @@ function renderCreate() {
       active ? "(current step)" : complete ? "(done)" : "";
   });
   $("book-summary").textContent = step !== "book" && done.book ? state.audiobook.document : "";
+  $("book-summary").title = state.audiobook.document;
   $("book-change").classList.toggle("hidden", step === "book");
   const voiceName = facts.clone_server
     ? state.audiobook.server_voice.trim() : state.audiobook.voice;
@@ -11372,9 +11552,9 @@ function jobRow(job) {
   const row = document.createElement("div");
   row.className = "job-row";
   const name = document.createElement("div");
-  name.className = "job-name";
+  name.className = "clamp";
   name.textContent = `${job.document} · ${job.voice}`;
-  name.title = job.id;
+  name.title = `${job.document}\n${job.id}`;
   const status = document.createElement("span");
   status.className = "job-state";
   const workers = consumers.filter((consumer) => consumer.job_id === job.id);
@@ -11992,7 +12172,7 @@ async function removePaperLocal() {
 
 // Workers on other machines: only a browser on the server's machine sees
 // their hosts and paths and may change them; others see numbered chips.
-let workerNodes = null, workerProbe = null;
+let workerNodes = null, workerProbe = null, workerSetupStatus = "", workerSetupTimer = null;
 const MIN_NARRATION_MIB = 6 * 1024;
 function deviceName(value) {
   return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
@@ -12006,7 +12186,7 @@ async function refreshWorkers() {
 function applyWorkers(answer) {
   workerNodes = answer;
   consumers = answer.consumers || consumers;
-  renderWorkers(); renderQueue();
+  renderWorkers(); renderWorkerSetup(); renderQueue();
 }
 function renderWorkers() {
   const local = !!caps.manage_workers;
@@ -12033,11 +12213,40 @@ function renderWorkers() {
     return row;
   }));
 }
+function workerSetupRunning() {
+  return !!(workerNodes && workerNodes.setup && workerNodes.setup.status === "running");
+}
+function renderWorkerSetup() {
+  const setup = workerNodes && workerNodes.setup;
+  const running = workerSetupRunning();
+  // The page follows a running setup until it ends.
+  if (running && !workerSetupTimer) workerSetupTimer = setInterval(refreshWorkers, 2000);
+  if (!running && workerSetupTimer) { clearInterval(workerSetupTimer); workerSetupTimer = null; }
+  const finished = !!setup && workerSetupStatus === "running" && !running;
+  workerSetupStatus = setup ? setup.status : "";
+  // A failed setup keeps its last lines in view while its machine is the one shown.
+  const failed = !!setup && !running && setup.status !== "done"
+    && !!workerProbe && workerProbe.host === setup.host;
+  $("worker-setup-progress").classList.toggle("hidden", !running && !failed);
+  if (running || failed) {
+    $("worker-setup-step").textContent = running
+      ? `Setting up ${setup.host}: ${setup.step}…` : `Setup of ${setup.host} ended at: ${setup.step}`;
+    $("worker-setup-log").textContent = setup.log.join("\n");
+  }
+  $("worker-host").disabled = running;
+  if (finished && $("workers-dialog").open && $("worker-host").value.trim() === setup.host) {
+    if (setup.status === "done") showWorkerProbe(setup.found, "Set up.");
+    else $("worker-status").textContent = setup.error;
+  }
+  updateWorkerAdd();
+}
 function openWorkers() {
   workerProbe = null;
-  $("worker-host").value = ""; $("worker-python").value = ""; $("worker-model").value = "";
+  $("worker-host").value = workerSetupRunning() ? workerNodes.setup.host : "";
+  $("worker-python").value = ""; $("worker-model").value = "";
   $("worker-found").classList.add("hidden");
-  $("worker-status").textContent = ""; $("worker-add").disabled = true;
+  $("worker-status").textContent = "";
+  renderWorkerSetup();
   $("workers-dialog").showModal();
   $("worker-host").focus();
 }
@@ -12057,8 +12266,28 @@ function workerDeviceOption(found) {
   return label;
 }
 function updateWorkerAdd() {
+  const running = workerSetupRunning();
   const ticked = $("worker-devices").querySelectorAll("input:checked").length;
-  $("worker-add").disabled = !workerProbe || !!workerProbe.problem || workerProbe.stale || !ticked;
+  $("worker-add").disabled = running || !workerProbe || !!workerProbe.problem
+    || workerProbe.stale || !ticked;
+  $("worker-connect").disabled = running;
+  // Setup answers a probe that found no Python with PyTorch and Qwen TTS, or no model.
+  $("worker-setup").classList.toggle("hidden",
+    running || !workerProbe || !workerProbe.problem || !!workerProbe.stale);
+  $("worker-setup-stop").classList.toggle("hidden", !running);
+}
+// Shows what a probe found: the Python, the model, and the devices to tick.
+function showWorkerProbe(found, outcome) {
+  workerProbe = found;
+  $("worker-python").value = found.python || "";
+  $("worker-model").value = found.model || "";
+  $("worker-devices").replaceChildren(...found.devices.map(workerDeviceOption));
+  $("worker-found").classList.remove("hidden");
+  const count = found.devices.length;
+  $("worker-status").textContent = found.problem
+    ? `${found.problem} Or press Set up: it installs Hilde's Python environment in ~/hilde`
+      + ` on ${found.host} and downloads the speech model there, several gigabytes in all.`
+    : `${outcome} ${count} device${count === 1 ? "" : "s"} found; untick any this server should leave alone.`;
 }
 async function connectWorker() {
   const host = $("worker-host").value.trim();
@@ -12068,21 +12297,14 @@ async function connectWorker() {
   $("worker-connect").disabled = true; $("worker-add").disabled = true;
   $("worker-status").textContent = `Connecting to ${host}…`;
   try {
-    workerProbe = await jsonRequest("/api/workers/probe", {
+    showWorkerProbe(await jsonRequest("/api/workers/probe", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({
         host,
         python: again ? $("worker-python").value : "",
         model: again ? $("worker-model").value : "",
       }),
-    });
-    $("worker-python").value = workerProbe.python || "";
-    $("worker-model").value = workerProbe.model || "";
-    $("worker-devices").replaceChildren(...workerProbe.devices.map(workerDeviceOption));
-    $("worker-found").classList.remove("hidden");
-    const count = workerProbe.devices.length;
-    $("worker-status").textContent = workerProbe.problem
-      || `Connected. ${count} device${count === 1 ? "" : "s"} found; untick any this server should leave alone.`;
+    }), "Connected.");
   } catch (error) {
     workerProbe = null;
     $("worker-found").classList.add("hidden");
@@ -12090,6 +12312,32 @@ async function connectWorker() {
   } finally {
     $("worker-connect").disabled = false;
     updateWorkerAdd();
+  }
+}
+async function setupWorker() {
+  const host = workerProbe.host;
+  $("worker-setup").classList.add("hidden");
+  $("worker-status").textContent = "";
+  try {
+    applyWorkers(await jsonRequest("/api/workers/setup", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ host }),
+    }));
+  } catch (error) {
+    $("worker-status").textContent = error.message;
+    updateWorkerAdd();
+  }
+}
+async function stopWorkerSetup() {
+  $("worker-setup-stop").disabled = true;
+  try {
+    applyWorkers(await jsonRequest("/api/workers/setup/stop", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
+    }));
+  } catch (error) {
+    $("worker-status").textContent = error.message;
+  } finally {
+    $("worker-setup-stop").disabled = false;
   }
 }
 function workerProbeChanged() {
@@ -12283,6 +12531,7 @@ def main():
     server.worker_nodes = nodes
     server.workers_path = workers_path
     server.workers_lock = threading.Lock()
+    server.worker_setup = None
     server.openai_login = OpenAIOAuthLogin()
     server.tts_models = tts_models
     server.storage = storage

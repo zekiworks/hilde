@@ -5297,6 +5297,7 @@ class WorkerNodeTests(unittest.TestCase):
         server.worker_nodes = list(nodes)
         server.workers_path = storage.root / web.WORKERS_FILE
         server.workers_lock = threading.Lock()
+        server.worker_setup = None
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(thread.join)
@@ -5418,6 +5419,8 @@ class WorkerNodeTests(unittest.TestCase):
             self.assertEqual(self.request(origin, "/api/workers")[0], 403)
             for path, body in (
                 ("/api/workers/probe", {"host": "spark"}),
+                ("/api/workers/setup", {"host": "spark"}),
+                ("/api/workers/setup/stop", {}),
                 ("/api/workers/add", {**self.NODE, "host": "spark"}),
                 ("/api/workers/remove", {"host": self.NODE["host"]}),
             ):
@@ -5430,6 +5433,89 @@ class WorkerNodeTests(unittest.TestCase):
         serialized = json.dumps(state)
         for private in ("10.0.0.5", "narrator", "/opt/qwen", "/models/Base"):
             self.assertNotIn(private, serialized)
+
+    @staticmethod
+    def probed(python="", model="", problem=""):
+        return {
+            "host": "narrator@10.0.0.5", "python": python, "model": model,
+            "devices": [{"device": "mps", "name": "Apple MPS"}] if python else [],
+            "problem": problem,
+        }
+
+    def run_setup(self, model, probes):
+        scripts = []
+        with mock.patch.object(web, "probe_worker_node", side_effect=probes) as probe, \
+                mock.patch.object(web.WorkerSetup, "remote", autospec=True,
+                                  side_effect=lambda setup, script: scripts.append(script)):
+            setup = web.WorkerSetup("narrator@10.0.0.5", model).start()
+            setup.thread.join(5)
+        return setup.snapshot(), scripts, probe
+
+    def test_setup_installs_only_what_the_node_lacks_and_ends_with_its_report(self):
+        venv = "/Users/narrator/hilde/.venv/bin/python"
+        ready = self.probed(venv, "/Users/narrator/hilde/models/Qwen3-TTS-12Hz-1.7B-Base")
+        snapshot, scripts, probe = self.run_setup(
+            "/local/models/Qwen3-TTS-12Hz-1.7B-Base",
+            [self.probed(problem="No Python."), self.probed(venv, problem="No model."), ready],
+        )
+        self.assertEqual((snapshot["status"], snapshot["found"]), ("done", ready))
+        self.assertEqual(scripts[0], web.INSTALL_SCRIPT_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(len(scripts), 2)
+        self.assertIn(f"exec {venv} - Qwen/Qwen3-TTS-12Hz-1.7B-Base <<", scripts[1])
+        self.assertEqual(probe.call_args_list[-1].args[1], venv)
+
+        # A node with Python but no model only downloads it, by the server's
+        # Hugging Face ID; a node with both installs nothing.
+        snapshot, scripts, _ = self.run_setup(
+            "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            [self.probed("/opt/qwen/bin/python", problem="No model."), ready],
+        )
+        self.assertEqual(snapshot["status"], "done")
+        self.assertEqual(len(scripts), 1)
+        self.assertIn("/opt/qwen/bin/python - Qwen/Qwen3-TTS-12Hz-0.6B-Base <<", scripts[0])
+        snapshot, scripts, _ = self.run_setup("/local/Base", [ready])
+        self.assertEqual((snapshot["status"], scripts), ("done", []))
+
+    def test_setup_fails_with_the_reason_when_the_install_does_not_take(self):
+        snapshot, scripts, _ = self.run_setup(
+            "/local/Base",
+            [self.probed(problem="No Python."),
+             self.probed(problem="No Python with PyTorch and Qwen TTS was found.")],
+        )
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(
+            (snapshot["status"], snapshot["error"], snapshot["found"]),
+            ("failed", "No Python with PyTorch and Qwen TTS was found.", None),
+        )
+
+    def test_one_setup_runs_at_a_time_and_stop_ends_it(self):
+        server, origin = self.serve()
+        installing, stopped = threading.Event(), threading.Event()
+
+        def remote(setup, script):
+            installing.set()
+            stopped.wait(5)
+            raise RuntimeError("ssh ended")
+
+        def stop(setup):
+            setup.stopped = True
+            stopped.set()
+
+        with mock.patch.object(web, "probe_worker_node",
+                               return_value=self.probed(problem="No Python.")), \
+                mock.patch.object(web.WorkerSetup, "remote", autospec=True, side_effect=remote), \
+                mock.patch.object(web.WorkerSetup, "stop", autospec=True, side_effect=stop):
+            status, answer = self.request(origin, "/api/workers/setup", {"host": "narrator@10.0.0.5"})
+            self.assertEqual((status, answer["setup"]["status"]), (200, "running"))
+            self.assertTrue(installing.wait(5))
+            self.assertEqual(self.request(origin, "/api/workers/setup", {"host": "other"})[0], 409)
+            self.assertEqual(self.request(origin, "/api/workers/setup/stop", {})[0], 200)
+            server.worker_setup.thread.join(5)
+        setup = self.request(origin, "/api/workers")[1]["setup"]
+        self.assertEqual(
+            (setup["host"], setup["status"], setup["error"]),
+            ("narrator@10.0.0.5", "stopped", "Setup stopped."),
+        )
 
     def test_a_node_added_while_a_book_waits_narrates_it_and_stays_until_the_book_ends(self):
         server, origin = self.serve()

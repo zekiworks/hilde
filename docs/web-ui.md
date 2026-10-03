@@ -22,6 +22,11 @@ name, with **Search voices** beside it for finding one by description.
 **Delete** beside the dropdown removes the chosen document after you confirm.
 Audiobooks made from it are kept, and a job already queued keeps its own copy.
 
+Long document names and book titles take at most two lines, ending in an
+ellipsis, in the step summaries, the progress card, the **In progress** list,
+and the **Listen** table. Hover over one in the step summary, the list, or the
+table to see the full name.
+
 A document whose content is already a book, under any file name, shows **You
 already have this one** with **Open** and **Change voice**. Change voice
 continues to the voice step, and **Add this voice** reads the book's own text
@@ -221,7 +226,8 @@ button reads **Simple** and hides them again:
   `GPU 0 idle` through `GPU 3 running`, followed by the device model and
   memory; hover a chip for its job. **Other machines** lists the nodes that
   narrate over SSH, each with **Remove**, and **Add workers** adds one: enter
-  its address, **Connect**, untick any GPU to leave alone, **Add node**; see
+  its address, **Connect**, **Set up** if it lacks Hilde's Python or the speech
+  model, untick any GPU to leave alone, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Only a browser on
   the server's own machine sees the hosts and may change them. It also names
   the narration and voice-design models and the device voice creation uses.

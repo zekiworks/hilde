@@ -9,10 +9,15 @@ their GPUs loads its own Base model and pulls chunk batches like a
 
 The server's machine must already reach the other machine with
 `ssh -o BatchMode=yes TARGET`: a key, not a password, and a host key it has
-accepted before. In a terminal on the server's machine, `ssh-copy-id TARGET`
-installs the key, and one `ssh TARGET` accepts the host key. The other machine
-needs a Python environment with PyTorch and Qwen TTS (Hilde's installer makes
-one in `~/hilde/.venv`) and the Base model.
+accepted before. Turn on the other machine's SSH server first (on a Mac,
+System Settings › General › Sharing › Remote Login). Then, in a terminal on the
+server's machine, `ssh-copy-id TARGET` installs the key, and one `ssh TARGET`
+accepts the host key. The other machine also needs `git` and `curl`.
+
+Narrating there takes a Python environment with PyTorch and Qwen TTS and the
+Base model. The web server's **Set up** installs both (below); for the command
+line, run Hilde's installer there, which makes `~/hilde/.venv`, and download
+the model.
 
 The coordinator uses `scp` to stage `audiobook_tts.py` plus `reference.wav` and
 `transcript.txt`, sends narration chunks over the SSH process, receives WAV
@@ -38,6 +43,14 @@ nodes, and **Add workers** adds one:
    model at the server's own model path, in the Hugging Face cache, and in a
    folder of the same name up to four levels inside the home folder. Edit
    **Python** or **Model** and press **Connect** again to use others.
+
+   When it finds no such Python or no model, **Set up** installs them in that
+   account, without sudo: it runs Hilde's installer there over SSH, which makes
+   `~/hilde` and its `.venv` with PyTorch and Qwen TTS, and downloads the
+   server's Base model into `~/hilde/models`. It skips whichever is already
+   there. The download is several gigabytes, so it takes a while; the dialog
+   shows each step and the latest output, and **Stop setup** ends it. When it is
+   done, the dialog shows what it found, as after **Connect**.
 3. Untick any GPU the server should leave alone, then press **Add node**.
 
 The node narrates from the next book on, without a restart; a book already

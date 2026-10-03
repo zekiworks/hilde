@@ -30,7 +30,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `User/` | The default library: voices, documents, audiobooks, and unfinished jobs. Created on first start and ignored by git. |
 | `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
-| `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. |
+| `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. **Set up** in **Add workers** pipes it to a node over SSH. |
 | `README.md` | User guide: what Hilde does, how it reads a paper, measured results, a two-command quickstart through `install.sh`, known limitations, access and security, and License. Short summaries link to the guides below. |
 | `docs/installation.md` | User guide to installing: the one-command installer and its settings, then by hand: environment, PyTorch/TorchAudio builds, dependencies, FlashAttention 2, and model downloads. |
 | `docs/configuration.md` | User reference for the web server: starting it and its options, storage, speech models, narration workers, and batch size. |
@@ -687,6 +687,14 @@ the active tab is flush with an accent top edge and opens into the page below.
   book with its own text, step 3 hides adaptation and offers **Add this
   voice**, which reads the book's text without any model.
 
+Document names and book titles wrap to at most two lines, the second ending in
+an ellipsis when cut (the `.clamp` class, which also breaks a name with no
+spaces): the step summaries, the progress subject and banner, the **In
+progress** list, the result card, and the **Listen** table. Step 1's summary,
+the **In progress** list, and **Listen** rows show the full name as a tooltip.
+The document dropdown is a native `<select>`, which shows one line and clips
+it at its width.
+
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
 while its request runs. Deleting the selected voice or document clears that
 selection, so Create reopens the step that needs it, and deleting a voice just
@@ -743,10 +751,27 @@ or CPU, and looks for the model: the path given (by default the server's own
 `--voice-clone-model`), a Hugging Face cache entry for an ID, then a folder of
 the same name up to four levels inside the home folder. Every device is ticked,
 and one with less than 6 GiB free is marked too full to narrate. Adding a host
-again replaces its node. Only a browser whose address is loopback
+again replaces its node.
+
+When Connect finds no such Python or no model, **Set up** runs `WorkerSetup`
+in a thread, one setup at a time: it probes again, pipes this checkout's
+`install.sh` to `sh -s` over the same `ssh` options when no Python with
+PyTorch and Qwen TTS is found (giving the node `~/hilde` and its `.venv`), then,
+when the model is still missing, runs `huggingface_hub.snapshot_download()`
+with that Python into `~/hilde/models/<name>`, which the probe's home search
+finds. The model's ID is `worker_model_repo()`: the server's own ID, or
+`Qwen/<folder name>` for a local folder. A final probe fills the dialog, so
+**Add node** follows as after Connect. `GET /api/workers` carries the setup's
+step, last twelve output lines (a carriage return ends a line, so download
+progress shows), and outcome; the dialog polls it every two seconds while the
+setup runs and disables Connect and Add node. **Stop setup** terminates the
+`ssh` process. SSH access itself (a key, an accepted host key, an SSH server
+on the node) and `git` and `curl` there remain the user's to provide.
+
+Only a browser whose address is loopback
 (`is_loopback_address()`, IPv4-mapped included) sees the hosts and paths
-(`capabilities.manage_workers`, `GET /api/workers`) or may probe, add, or
-remove; others get HTTP 403 and see only the chips.
+(`capabilities.manage_workers`, `GET /api/workers`) or may probe, set up, add,
+or remove; others get HTTP 403 and see only the chips.
 
 **Advanced** also holds
 precision/attention tuning, language, encoding, and seed; narration
@@ -874,8 +899,8 @@ playable but have no synchronized text.
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove` | Save an Anthropic API key once Anthropic accepts it, or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local model whose provider differs from the saved server type. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
-| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), and the public worker chips. |
-| `POST /api/workers/probe`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
+| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
+| `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
@@ -945,12 +970,15 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 119 tests. It covers voice persistence
+The regression suite currently has 123 tests. It covers voice persistence
 (including stale prompts and previews on replacement),
 book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, nodes added while a book waits and kept while
 one narrates, `workers.yaml` validation, per-worker SSH settings from the
-server's command to the staged worker, loopback-only worker changes, a
+server's command to the staged worker, loopback-only worker changes, node
+setup that installs only what the probe finds missing (Hilde's installer, then
+the model by the server's ID or a local folder's Qwen name), fails with the
+probe's reason, runs one at a time, and stops, a
 typewriter-font listing extracted as one block with its words apart and no
 duplicate glyphs, a listing going on in the next column kept in order,
 captions printed below their tables given to their own tables, a figure's
