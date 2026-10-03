@@ -101,8 +101,103 @@ asserts:
     about: Approved Figure 4 description keeps both words "its" attends to (checked against the image)
     must_contain: '(?i)\bits\b[^\n]{0,120}\blaw\b[^\n]{0,60}\bapplication\b'
 
+  # Added 2026-10-03 from the 3 Oct review (Claude, Astra) and Can's two Mistral runs on 90b9e7f.
+  - id: ATT-22
+    bug: B19
+    about: §3.4 credits weight sharing to Press and Wolf (ref. 30), not to the paper's own authors
+    must_contain: '(?i)similar to [^.\n]{0,40}\bPress\b'
+    must_not_contain: 'Vaswani (and (others|colleagues)|et al)'
+
+  - id: ATT-23
+    bug: B19
+    about: Citation handling leaves no numbered brackets and no dangling "and." where a citation was removed
+    must_not_contain: ['\[\d{1,3}(\s*[,–-]\s*\d{1,3})*\]', '\band\.(\s|$)']
+
+  - id: ATT-24
+    bug: B02
+    about: Figure 1 keeps the decoder's masked self-attention apart from the (unmasked) attention over the encoder output
+    must_not_contain: '(?i)\bmasked\b[^.,;\n]{0,40}\b(?:(?:that|which)\s+(?:attends?|looks?)|attending|looking)\b[^.,;\n]{0,20}\bencoder'
+
+  - id: ATT-25
+    bug: B02
+    about: Table 3 rows (B) vary the key size d k, not d v
+    must_not_contain: '(?i)\b(variation|rows?|group) \(?B\)?[^.\n]{0,60}\bd v\b'
+
+  - id: ATT-26
+    bug: B03
+    about: >
+      The multi-head and positional-encoding equations are unnumbered in the paper; their descriptions
+      open with no Figure, Table or Equation number and carry no equation number anywhere
+    must_contain: ['averaging inhibits this', 'different frequencies:']
+    must_not_contain:
+      - 'averaging inhibits this\.\s+(?i:description\s+)?(?:Figures?|Tables?|Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'averaging inhibits this\.\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'different frequencies:\s+(?i:description\s+)?(?:Figures?|Tables?|Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'different frequencies:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+
+  - id: ATT-27
+    bug: B03
+    about: >
+      Equations 1, 2 (FFN) and 3 are named by their printed number: no description opens with "Figure N"
+      or "Table N", and none names another equation number
+    must_contain: ['outputs as:', 'ReLU activation in between', 'according to the formula:']
+    must_not_contain:
+      - 'outputs as:\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'outputs as:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!1\b|one\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'ReLU activation in between\.\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'ReLU activation in between\.\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!2\b|two\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'according to the formula:\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - 'according to the formula:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!3\b|three\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+
+  - id: ATT-28
+    bug: B20
+    about: Footnote 4's sum runs from i equals 1, not "from d i"
+    must_not_contain: '(?i)\bfrom d i\b'
+
+  - id: ATT-29
+    bug: B20
+    about: The size of W O is read "h times d v", not "h d v"
+    must_not_contain: '\bh d v\b'
+
+  - id: ATT-30
+    bug: B13
+    about: >
+      Table 2's description gives the base model's own BLEU (27.3 EN-DE, 38.1 EN-FR); the prose claims the base
+      model beats every earlier model and only the table holds the number. Revisit if Q06 decides short table
+      summaries may drop it.
+    must_contain: ['27\.3', '38\.1']
+
+  - id: ATT-31
+    bug: B11
+    about: >
+      No overclaims: self-attention ties convolution and restricted self-attention at O(1) sequential operations,
+      so it is not "the most efficient"; 8 layers (25.5) is below the base model's 25.8, so it does not "improve"
+    must_not_contain:
+      - '(?i)self-attention[^.\n]{0,100}\bmost efficient\b'
+      - '(?i)\b8\b[^.\n]{0,20}\bimprov\w*[^.\n]{0,20}\b25\.5\b'
+
+  - id: ATT-32
+    bug: B02
+    about: >
+      Equation 3: the learning rate falls with d model (d model to the power of negative 0.5); no equation
+      description invents a "schematic". From Can's 3 Oct Mistral runs; the reviewer has not seen those
+      passages, so both patterns are guesses at their wording.
+    must_not_contain:
+      - '(?i)\b(learning rate|it)\s+(rises|increases|grows|goes up)\s+with\s+(the\s+)?(model (dimension|size)|d model)'
+      - '(?i)\bequations?\b[^.\n]{0,80}\bschematic\b|\bschematic\b[^.\n]{0,80}\bequations?\b'
+
+  - id: ATT-33
+    bug: B15
+    about: >
+      Heuristic for the order of operations (the manual check below still applies): the positional encoding
+      is not one run-on "divided by … raised to … divided by", and Equation 3 does not raise "the product of
+      step number and warmup steps" to a power
+    must_not_contain:
+      - '(?i)divided by [^.,;\n]{1,30} raised to the power of [^.,;\n]{1,30} divided by'
+      - '(?i)product of [^.,;\n]{1,40} and [^.,;\n]{1,40} raised to the power'
+
 manual:
   - bug: B15
-    check: Equation 1, Equation 2 and the positional encoding are spoken as ordered steps, innermost first.
+    check: Equations 1, 2 and 3, multi-head attention and the positional encoding are spoken as ordered steps, innermost first (ATT-33 is only a heuristic).
   - bug: B01
     check: Word highlight stays in step with speech near the start, near the end, and after seeking.
