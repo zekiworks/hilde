@@ -28,7 +28,7 @@ python audiobook_tts.py narrate --help
 | --- | --- |
 | `--model-path` | Required VoiceDesign model directory or permitted Hub ID. |
 | `--voice-dir` | Required destination directory; an existing directory requires `--overwrite`. |
-| `--overwrite` | Disabled; replace the existing `reference.wav`, `transcript.txt`, and `description.txt` after the new files are staged, removing a `preview.wav` rendered from the old voice. |
+| `--overwrite` | Disabled; keep a copy of the existing voice in `.versions/vN`, then replace its `reference.wav`, `transcript.txt`, and `description.txt` after the new files are staged, removing a `preview.wav` rendered from the old voice. |
 | `--instruct` | Required nonempty voice description. |
 | `--wav-subtype` | `FLOAT`; choices: `PCM_16`, `PCM_24`, `PCM_32`, `FLOAT`, `DOUBLE`. |
 
@@ -43,6 +43,7 @@ python audiobook_tts.py narrate --help
 | `--batch-size` | `0` for all chunks on one device and one chunk per distributed worker; positive values set the chunks per clone call. A batch that runs out of CUDA memory is retried one chunk at a time. |
 | `--worker-device` | Unset; repeat to add local devices to one resumable narration. A GPU with less than 6 GiB free joins once it has room. |
 | `--ssh-worker` | Unset; repeat for each device of each machine: `TARGET[,device=D][,python=P][,model=M]`, where the target is `HOST` or `USER@HOST`. See [Narration workers on other machines](ssh-workers.md). |
+| `--no-local-worker` | Off; with `--ssh-worker`, only the SSH workers narrate and `--device` starts no worker. Excludes `--worker-device`. |
 | `--ssh-python` | `python3`; Python executable for SSH workers that name none. |
 | `--ssh-model-path` | Uses `--clone-model-path`; model path or permitted Hub ID for SSH workers that name none. |
 | `--ssh-device` | `cuda:0`; device for SSH workers that name none. |

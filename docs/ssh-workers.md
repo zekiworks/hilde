@@ -57,9 +57,18 @@ The node narrates from the next book on, without a restart; a book already
 being narrated keeps its workers. Adding a machine again replaces its settings
 and GPUs. **Remove** takes a node away, except while it narrates a book.
 
-Hilde keeps the nodes in `workers.yaml` in the library folder (`--storage-root`):
+The server's own devices narrate too. **This machine narrates on**, under
+**This server**, has a box for each; untick one to keep it out of narration
+from the next book on, for example to time a book on one Spark alone. Its chip
+then reads `off`. A GPU narrating a book cannot be unticked until the book is
+done, and one worker always stays: the last local device cannot be unticked
+without a node, nor the last node removed while every local device is off.
+
+Hilde keeps the nodes, and the local devices that are off, in `workers.yaml`
+in the library folder (`--storage-root`):
 
 ```yaml
+local_off: [cuda:0]
 nodes:
 - host: user@gpu-box
   python: /home/user/hilde/.venv/bin/python
@@ -67,9 +76,9 @@ nodes:
   devices: [cuda:1, cuda:2, cuda:3]
 ```
 
-`devices` takes `cuda:N`, `mps`, or `cpu`. To edit the file by hand, stop the
-server first; it reads the file when it starts and refuses to start if a node
-is invalid.
+`devices` and `local_off` take `cuda:N`, `mps`, or `cpu`. To edit the file by
+hand, stop the server first; it reads the file when it starts and refuses to
+start if a node is invalid or no worker would be left.
 
 The server has no sign-in, so only a browser on its own machine sees the hosts
 and paths or changes the nodes. A browser on another device sees the node's
@@ -102,5 +111,6 @@ python audiobook_tts.py narrate \
 ```
 
 Settings take `device=`, `python=`, and `model=`; their values cannot contain
-commas. A target may appear once per device. The defaults are in
+commas. A target may appear once per device. With `--no-local-worker`, only the
+SSH workers narrate; `--device` starts none. The defaults are in
 [Narration options](command-line-options.md#narration-options).

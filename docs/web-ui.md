@@ -6,11 +6,13 @@ Open the address the server prints when it starts, for example
 
 ## Create an audiobook
 
-**Create** walks through three steps, one at a time: **Add your book**,
+**Create** walks through three steps, one at a time: **Add the source document**,
 **Choose a voice**, and **Create audiobook**. A finished step collapses to a
 summary with **Change**.
 
-A book is a document from the dropdown, an upload, or a direct HTTP(S) URL
+A book is made from a document chosen under **Your documents**, uploaded with
+**Upload a file** or dropped anywhere on the first step's panel, or downloaded
+from a direct HTTP(S) URL
 under **Add from a link**. The save-as filename is optional: the server infers
 the document type and adds the matching extension when needed, including for
 extensionless PDF URLs such as arXiv `/pdf/<id>` links. Files are limited to
@@ -59,7 +61,11 @@ Output folders and filenames are derived; the form never asks for either.
 For a remote narration backend, the configured server voice ID is used as the
 voice name. When the job finishes, **Start listening** opens the book in
 **Listen** and **Download MP3** saves the voice's audio as
-`<document>-<voice>.mp3`.
+`<document>-<voice>.mp3`. The card also gives the total time, counted from
+when the job left the queue, and each stage's share: for example
+`Total time: 6m 03s (363.2 s): reading 12s, adapting 1m 30s, narrating 4m 00s,
+aligning 21s`. The job log ends with the same line. A run continued after a
+stop counts only its own work.
 
 While a job runs, Create names its stage in plain words: Reading your
 document, Preparing the narration, Creating the audio, and Finishing your
@@ -179,14 +185,17 @@ that does not establish that the generated file is silent.
 
 **Voices** lists every saved voice in a compact table: Preview, Voice name,
 Prompt, Modified (when its sample, transcript, or prompt last changed), and
-**Select**, **Use**, and **Delete** buttons, 50 rows at a time. The
+**Select**, **Use**, **Rename**, and **Delete** buttons, 50 rows at a time. The
 prompt is the voice description given to VoiceDesign, and search looks only at
 prompts: every word you type must appear, in any order and case, so
 `warm british female` finds voices whose prompt contains all three. The
 preview plays in place. **Use** makes the voice current and returns to
 **Create**; the voice in use shows **In use** instead. **Delete** removes a
 voice after you confirm; audiobooks made with it are kept, and a job already
-queued keeps its own copy.
+queued keeps its own copy. **Rename** gives a voice a new name and keeps
+everything else: its sample, transcript, and prompt stay as they are, and the
+audiobooks it read show the new name too. It waits while an audiobook is being
+made with the voice, and refuses a name another voice already has.
 
 A new library comes with eight stock voices, each with its prompt: Balder,
 Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun (female).
@@ -195,7 +204,9 @@ To change a voice, choose **Select**: its name and prompt load into the editor
 at the top. Change the prompt and choose **Listen**. VoiceDesign makes a new
 version, which plays as soon as it is ready, while the saved voice stays as it
 was. Listen again after each change until you like it, then choose **Save**,
-which keeps exactly the version you heard. Save under another name to keep both
+which keeps exactly the version you heard. The version it replaces is kept
+inside the voice's folder, in `.versions/v1`, `v2`, and so on, so books made
+with it still count as read by this voice. Save under another name to keep both
 voices. **New voice** opens the same editor empty, and **Stop** cancels a
 version being made. Every voice reads the same fixed passage, so previews
 compare pace, tone, and naturalness on the same words; the passage is saved as
@@ -224,7 +235,9 @@ button reads **Simple** and hides them again:
 
 - **This server** shows the narration workers as live chips, for example
   `GPU 0 idle` through `GPU 3 running`, followed by the device model and
-  memory; hover a chip for its job. **Other machines** lists the nodes that
+  memory; hover a chip for its job. **This machine narrates on** has a box for
+  each of the server's own devices: untick one and its chip reads `off`, and
+  it takes no book until ticked again. **Other machines** lists the nodes that
   narrate over SSH, each with **Remove**, and **Add workers** adds one: enter
   its address, **Connect**, **Set up** if it lacks Hilde's Python or the speech
   model, untick any GPU to leave alone, **Add node**; see

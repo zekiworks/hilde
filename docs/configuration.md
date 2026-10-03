@@ -87,8 +87,9 @@ User/
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   and narration chunks for unfinished jobs. It is removed for a job only after
   its book is published.
-- **workers.yaml**, present once a node is added, lists the other machines
-  that narrate over SSH; see [Narration workers on other machines](ssh-workers.md).
+- **workers.yaml**, present once a node is added or a local device turned off,
+  lists the other machines that narrate over SSH and this machine's devices
+  that do not; see [Narration workers on other machines](ssh-workers.md).
 
 On its first start, this version moves audiobooks kept in the earlier layout
 (`Audiobooks/<name>.mp3` with hidden `.readers` and `.versions` folders) into
@@ -140,6 +141,10 @@ example to keep narration off GPU 0 even when it has room:
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 ```
+
+Without a restart, **This machine narrates on** under **Advanced** turns each
+local device off or on; with a node added, every local device can be off, so
+only the other machines narrate.
 
 Remote membership comes from the nodes in `workers.yaml`, which **Add workers**
 under **Advanced** writes; nodes added or removed there take effect without a

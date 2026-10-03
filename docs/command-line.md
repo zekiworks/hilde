@@ -43,7 +43,7 @@ in Hilde too; any other folder works for the command line alone.
 - `reference.wav` contains the generated voice. Its default encoding is 32-bit floating-point WAV, preserving the model's waveform samples.
 - `transcript.txt` contains the exact text passed to voice generation, saved as UTF-8.
 - `description.txt` keeps the `--instruct` description; the web app searches voices by it.
-- Parent directories are created as needed. Without `--overwrite`, an existing voice directory is rejected. With `--overwrite`, the newly staged files replace the existing voice after generation succeeds, and a `preview.wav` rendered from the old voice is removed; other files in the directory are left alone.
+- Parent directories are created as needed. Without `--overwrite`, an existing voice directory is rejected. With `--overwrite`, the existing voice's `reference.wav`, `transcript.txt`, and `description.txt` are first copied into `.versions/vN` inside the voice directory (`v1`, then `v2`, and so on), then the newly staged files replace them after generation succeeds, and a `preview.wav` rendered from the old voice is removed; other files in the directory are left alone.
 - A voice is a WAV and a UTF-8 transcript, not serialized model tensors. Copy the files together when moving a voice to another machine. Do not change the transcript independently of its audio.
 - Narration needs both `reference.wav` and a nonempty UTF-8 `transcript.txt`. The WAV must contain nonempty, finite, non-silent mono audio. Do not point `--voice-dir` at a model directory.
 

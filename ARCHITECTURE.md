@@ -72,7 +72,7 @@ A saved local voice is:
 └── preview.wav       optional; the fixed preview passage rendered for older voices
 ```
 
-`save_voice()` stages the clip, transcript, and description in a sibling directory. Without `--overwrite`, an existing destination is rejected. With it, the owned files are replaced: a replacement without a description removes the old `description.txt`, and every replacement removes a `preview.wav` rendered from the old audio. Unrelated files remain. `transcript.txt` is the exact UTF-8 passage used for generation and is written last as the commit marker.
+`save_voice()` stages the clip, transcript, and description in a sibling directory. Without `--overwrite`, an existing destination is rejected. With it, `keep_voice_version()` first copies the voice being replaced (clip, transcript, and description; never a preview) into `<voice>/.versions/vN`, N one past the highest kept, and then the owned files are replaced: a replacement without a description removes the old `description.txt`, and every replacement removes a `preview.wav` rendered from the old audio. Unrelated files remain. `transcript.txt` is the exact UTF-8 passage used for generation and is written last as the commit marker.
 
 `read_voice()` rejects empty transcripts and empty, non-mono, non-finite, or silent audio. These checks keep a persisted voice suitable for later prompt construction.
 
@@ -108,7 +108,9 @@ Single-worker local identity includes the contents of `reference.wav` and `trans
 
 `--worker-device` adds persistent local model processes to the primary
 `--device`; repeated `--ssh-worker` values add persistent model processes
-through passwordless OpenSSH, one per device of a machine. `ssh_worker()`
+through passwordless OpenSSH, one per device of a machine. With
+`--no-local-worker` only the SSH workers narrate and `--device` starts no
+worker (`_local_worker_devices()`). `ssh_worker()`
 parses `TARGET[,device=D][,python=P][,model=M]`; `check_distributed_mode()`
 fills what a worker leaves out from `--ssh-device`, `--ssh-python`, and
 `--ssh-model-path` (then `--clone-model-path`) and refuses a target and device
@@ -269,16 +271,17 @@ first served (`release_migration_backup()`). The empty `.versions` and
 
 ### Naming
 
-- Saved voice: `Voices/<voice-name>/reference.wav` plus `transcript.txt`, with `description.txt` and an optional rendered `preview.wav`.
+- Saved voice: `Voices/<voice-name>/reference.wav` plus `transcript.txt`, with `description.txt`, an optional rendered `preview.wav`, and the versions it replaced in `.versions/vN/`. Job snapshots copy only `reference.wav` and `transcript.txt`.
 - Book: `Audiobooks/<slug>--<hash12>/`, as above. A voice's download is named
   `<document-stem>-<voice-name>.mp3` (`narration_output_name()`).
 - Unfinished workflow: `in_progress/<job-id>/`.
 - Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
-- Workers on other machines: `workers.yaml`, a `nodes:` list of `host`,
-  `python`, `model`, and `devices` (`cuda:N`, `mps`, or `cpu`) with a comment
-  header, written atomically by `write_worker_nodes()` when a node is added or
-  removed and read at startup.
+- Workers: `workers.yaml`, a `nodes:` list of `host`, `python`, `model`, and
+  `devices` (`cuda:N`, `mps`, or `cpu`) and an optional `local_off:` list of
+  this machine's devices that do not narrate, with a comment header, written
+  atomically by `write_workers()` when a node is added or removed or a local
+  device is turned off or on, and read at startup by `read_workers()`.
 
 For remote narration, the remote server voice ID supplies `<voice-name>`.
 
@@ -370,8 +373,14 @@ PDF work is page-addressable:
    section with its own left edge. Pieces of one printed row are joined in
    order, indentation is kept in characters, a row's second drawing as
    scattered glyphs over the first is dropped, and no blank line is left
-   inside, so the listing stays one paragraph. Table and listing
-   replacements are applied from the end of the page;
+   inside, so the listing stays one paragraph. An equation the layout cuts
+   out as a picture (a `formula` box whose Markdown is a bare image) keeps
+   the page's own text of that box behind the picture as its picture text,
+   which ends with the number printed beside it, "(3)", taken from the same
+   line to its right when the box leaves it out; a model that reads no images
+   then knows what the equation says, and the prompt calls it by that number
+   and no other. Table, equation, and listing replacements are applied from
+   the end of the page;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a
    paragraph, and the model sees each batch without the narration before it,
@@ -461,9 +470,10 @@ When adaptation is enabled:
 - `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, roadmap sentences that announce later sections even without numbers, numbered cross-references except a figure's or table's own number, page furniture, citation machinery) is left out; headings keep the paper's own numbers and appendix letters as printed, one rule for every heading, never "Part" or "Section" added; tables (keeping the values that bound the comparison and the caption's caveats), formulas and notation (nested operations as steps, innermost first), long lists, runs of numbers, figures, and code are tuned down to their point; operations and sizes stay exact wherever math is spoken, the author's sentences included ("one over the square root of d k"); a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word, every quantity and every footnote statement included, in the author's voice;
 - `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A captioned figure or table (`visual_label()` names it by its caption, "Table 3") is a batch of its own, never merged with the prose around it, so its narration is its description alone: one figure or table passage in `narration.json`. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link;
 - `model_paragraphs()` gives the model each paragraph as it should see it. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own. A heading the paper numbers (`numbered_heading()`: `NUMBERED_HEADING_PATTERN`, "4 Why Self-Attention", "3.1. A Regularization View", "B. Baseline Methods", "II. Results"; a lone capital needs its period, so "A Short Paper" is a title) is a batch of its own that never reaches the model: its checkpoint is the heading's words as printed, so every heading of a book follows one rule. A model rendered RRSI's printed "1. Introduction", "B. Baseline Methods", and "C. Method Details" as "1 Introduction", "Appendix B. Baseline Methods", and "Appendix C Method Details" in one run. Unnumbered headings still go to the model;
-- compacted prior summaries provide bounded continuity context, and `defined_acronyms()` lists the acronyms the author spelled out ("Wall Street Journal (WSJ)", checked letter by letter against the words before it) in the paragraphs before each batch, computed from the source so it does not depend on which batches finish first; the prompt expands an acronym only where the author does, once;
+- prose batches carry the compacted summaries of earlier batches for continuity; a batch that is only a figure, table, or equation (`_describes_visual()`) carries instead `visual_context()`: the author's prose paragraphs that mention its number (`_mentioned_visuals()`), else the prose paragraph before it, at most two of `VISUAL_CONTEXT_CHARS` each, marked as context never to narrate. Both come from the source, so a description's request is the same on every run: summaries are model-written, so with them any earlier difference changed every later description. `defined_acronyms()` lists the acronyms the author spelled out ("Wall Street Journal (WSJ)", checked letter by letter against the words before it) in the paragraphs before each batch, computed from the source so it does not depend on which batches finish first; the prompt expands an acronym only where the author does, once;
+- `reference_entries()` reads the numbered reference list from the whole source, before it is left out: each entry that opens a paragraph, follows another inside one, or follows the References heading extraction ran it into, as its authors' surnames (one, two, or the first "and colleagues") and its last year, with at least three entries. `resolve_citations()` then writes each numbered citation in a request as what it stands for, "[30]" as "[Press and Wolf, 2016]", ranges and lists included; a bracket naming a number the list lacks stays as printed. The model keeps the attribution the prompt asks for instead of guessing whom "[30]" means;
 - referenced extracted figures become image inputs for OpenAI and Claude models, and for a local model when the browser's `local_vision` is set (**This model sees images** in Add local); otherwise a local server receives only their extracted text, since it may run a text-only model;
-- malformed response payloads are retried up to the configured attempt limit;
+- malformed response payloads are retried up to the configured attempt limit, and a request whose connection drops or is refused (`ModelConnectionError`, from `PaperRun.model_stream()`) is sent again after 1, 2, 4, then 8 seconds, each named in the log, before the job fails; a stream silent for `MODEL_STREAM_TIMEOUT` is not, since it would only stall again;
 - a batch that is entirely excluded material, such as reference entries that
   extraction did not place under a standalone heading, a contents list the
   filter did not catch, or a bare image the model cannot describe, returns an
@@ -473,6 +483,7 @@ When adaptation is enabled:
 - format-control-only narration paragraphs are removed;
 - a batch made only of a figure, table, or equation (with its labels or caption) whose narration names none of them (`VISUAL_CUE_PATTERN`) in its first twelve words is named in the log; the job goes on, since a listener would otherwise hear no border between the author's text and the description;
 - a batch of the author's prose (`TEXT_KINDS`) is scored by `prose_kept()`: the share of its words of four letters or more (`CONTENT_WORD_PATTERN`, any script) its narration still contains, after citation marks, superscripts, and links are set aside. Passages under `PROSE_KEPT_MIN_WORDS` are not judged; one under `PROSE_KEPT_LOW` (80%) is named in the log with its missing words, and the job goes on. A passage the model left out whole is not scored: the log already names it with the model's reason, and it is usually apparatus, such as a reference entry extraction glued to the text. The score catches dropped wording, not changed meaning or added claims. Once adaptation ends, or when a finished adaptation is reused, `adaptation_fidelity()` summarizes the saved checkpoints (narrated passages judged, how many kept at least 95%, how many fell under 80%, the lowest, and how many were left out whole) into the log and the audiobook's record;
+- `grounding_problems()` names in the log what a batch's narration states that its source does not: any narration that credits work to a name ("Press and Wolf", "Vaswani and others": `ATTRIBUTION_PATTERN`) its batch's request never mentions, citations as `resolve_citations()` wrote them included; and in a description, a number of two or more digits or a decimal that the batch and its `visual_context()` do not print, a printed number rounded allowed, and an opening "Equation N" other than the number printed beside it. It only points at a passage worth a look: the narration is kept as written, and nothing in it mentions the check;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.
 
@@ -483,7 +494,7 @@ The web server calls the model itself; `PaperRun.model_response()` routes by the
 - `openai-codex/<model>` streams a Responses request to the ChatGPT Codex backend (`CHATGPT_CODEX_URL/responses`, `store: false`) with the system prompt as `instructions` and the batch plus figures as input. `openai_model_names()` lists the signed-in account's models from `CHATGPT_CODEX_URL/models` in OpenAI's priority order, without hidden ones. The backend fails requests intermittently, both with an HTTP status and with an error event inside a stream it had accepted ("Unable to verify model access right now. Please retry."). A status in `RETRYABLE_STATUSES`, or an error event whose code is in `OPENAI_BUSY_CODES` or whose message asks for a retry, is asked again up to `MODEL_RETRIES` times after `_retry_delay()`: the `retry-after` (at most 60 seconds), else 1, 2, 4, then 8 seconds. Stop cuts the wait short. Other refusals fail at once.
 - `anthropic/<model>` streams `POST /v1/messages` to Anthropic with the API key, the system prompt as `system`, and the batch plus figures as base64 image blocks; only `text_delta` events form the answer, never the thinking recent Claude models always do first. `max_tokens` is `ANTHROPIC_MAX_TOKENS` (32,000): every model Anthropic still serves accepts it, thinking counts toward it, and Anthropic's rate limit counts only the tokens produced. A status in `RETRYABLE_STATUSES` (429, 500, 502, 503, 504, or 529) before the stream starts is asked again up to `MODEL_RETRIES` times after `_retry_delay()`, and Stop cuts the wait short; a response that ends at `max_tokens` fails with advice to lower **Paragraphs per worker**. `anthropic_model_names()` lists the key's models from `/v1/models`, newest first.
 - `claude-code/<alias>` (`sonnet`, `opus`, `haiku`: `CLAUDE_CODE_MODELS`) runs the user's own, unmodified Claude Code for each batch through `PaperRun.run_child()`, so Stop terminates it: `claude -p --model <alias> --system-prompt <prompt> --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence` with stream-json input and output (`claude_code_request()`). The batch goes in as one user message whose content is `_claude_content()`, the same text and base64 image blocks the Anthropic API gets; the answer is the final `result` event, and an error result, such as a plan's usage limit, fails the job with Claude Code's own text (`claude_code_answer()`). It runs in `~/.hilde`, outside the project, so no instructions file joins the prompt. Never `--bare`: that mode reads only `ANTHROPIC_API_KEY` and skips the subscription sign-in. `claude_code_command()` finds `claude` on PATH or where its installer puts it (`CLAUDE_CODE_CANDIDATES`), and `claude_code_status()` asks `claude auth status` whether it is signed in; Hilde never reads Claude Code's credentials.
-- `ollama/<model>` and `lm-studio/<model>` stream `POST /v1/chat/completions` to the saved local server; only `content` deltas form the answer, never reasoning. The user message is plain text, or, when `local_vision` is set and the batch links figures, OpenAI-style content parts with each figure as an `image_url` data URL, which Ollama, vLLM, SGLang, and LM Studio accept. Whether the model sees images is the user's choice, never detected: a 400 from a text-only model fails the job with advice to clear the checkbox.
+- `ollama/<model>` and `lm-studio/<model>` stream `POST /v1/chat/completions` to the saved local server at `temperature` `LOCAL_MODEL_TEMPERATURE` (0.2); left to the server, a model samples at its own default, often 1.0, and the same paper reads differently on every run. Adapting the Attention paper twice with Mistral Small 4 kept 48 of 92 prose batches word for word at 0.2 against 31 at 1.0, with the same tone, and 0 was no steadier. Only `content` deltas form the answer, never reasoning. The user message is plain text, or, when `local_vision` is set and the batch links figures, OpenAI-style content parts with each figure as an `image_url` data URL, which Ollama, vLLM, SGLang, and LM Studio accept. Whether the model sees images is the user's choice, never detected: a 400 from a text-only model fails the job with advice to clear that setting.
 - Each request is a `ModelStream` registered with the run. Stop shuts down its socket, which wakes a blocked read at once, including a request a busy server has not started answering.
 - A job without a chosen model resolves `paper_model_catalog()`'s default at start and records that concrete model in its identity. When the browser has added a local server, the default is its first model; while that server does not answer there is no default, and the job stops with the server's error instead of sending the document to a cloud provider. Without a local server, the default is OpenAI's first model once signed in, then Claude Code's `sonnet` once signed in, then the Anthropic key's first model.
 
@@ -562,12 +573,19 @@ remake as one.
 For a local narration model, `audiobook_consumers()` creates one worker
 descriptor per CUDA GPU visible to the server process and, through
 `remote_consumers()`, one per device of each node in `workers.yaml`.
-`CUDA_VISIBLE_DEVICES` controls local membership. Remote membership is the
-file's nodes: `read_worker_nodes()` validates it at startup (an invalid node
-stops the server), and **Add workers** replaces it at run time through
+`CUDA_VISIBLE_DEVICES` sets which local GPUs exist; `local_off` takes some of
+them out of narration. `read_workers()` validates the file at startup (an
+invalid node, or a `local_off` that leaves no worker, stops the server).
+**Add workers** replaces the nodes at run time through
 `JobQueue.set_remote_consumers()`, which refuses to take away a worker that is
-narrating and starts any queued job that can now run. A job on the automatic
-pool takes the workers that exist when it starts, not when it was queued.
+narrating and starts any queued job that can now run. **This machine narrates
+on** sets `local_off` through `JobQueue.set_local_off()`: it refuses to turn
+off a GPU that is narrating, and both setters refuse a pool with no worker
+left (`_check_pool()`). An off worker stays in the consumer list, reported as
+`off`, and dispatch skips it. A job whose workers are all nodes runs `narrate`
+with `--no-local-worker`, so `--device` starts no worker of its own. A job on
+the automatic pool takes the workers that exist when it starts, not when it
+was queued.
 Every HTTP submission requests the process-owned automatic pool and atomically
 claims every currently idle compatible worker as one gang. Each worker then
 dynamically pulls batches for that job; a second job waits when the first owns
@@ -620,8 +638,10 @@ the active tab is flush with an accent top edge and opens into the page below.
 - **Create** shows three steps, one open at a time; a finished step collapses
   to a summary with **Change**, and a later step opens only after the earlier
   ones are complete.
-  1. **Add your book**: choose a document, upload a PDF/Markdown/text file, or
-     add one under **Add from a link**; **Continue** downloads a link first.
+  1. **Add the source document**: choose one under **Your documents**, upload a
+     PDF/Markdown/text file with **Upload a file** or by dropping it anywhere on
+     the step's panel, or add one under **Add from a link**; **Continue**
+     downloads a link first.
      **Delete** beside the dropdown removes the chosen document. A typed link
      outranks the dropdown: it hides **You already have this one** and shows
      **Continue**. `clearBookChoice()` empties the step (document, link, and
@@ -644,7 +664,12 @@ the active tab is flush with an accent top edge and opens into the page below.
   replaces the steps with four plain stages: Reading your document (PDF
   pages), Preparing the narration (adaptation paragraphs or reused text),
   Creating the audio (narration), and Finishing your audiobook (alignment),
-  with progress, ETA, and **Stop**. Its outcome offers **Start listening**
+  with progress, ETA, and **Stop**. A finished run's card and notice show its
+  total time, from leaving the queue (`Run.start()` sets `work_started_at`) to
+  the published book, then each stage it timed (`RUN_STAGES`: reading,
+  adapting, narrating, aligning); `total_time_summary()` writes it, and the
+  log's last line repeats it as `Total time: 6m 03s (363.2 s): …`. A resumed
+  run counts only its own work. Its outcome offers **Start listening**
   (opens the book on **Listen**) and **Download MP3**, both tied to that
   result even after the next queued run starts; a stopped run offers
   **Continue** and a failed one **Try again**, with its last log lines under
@@ -656,7 +681,7 @@ the active tab is flush with an accent top edge and opens into the page below.
   View/Stop/Cancel appears whenever it holds a job other than the followed
   one. Focus moves to the heading of each card that replaces the steps.
 - **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
-  **Use**, and **Delete** buttons, 50 rows at a time with **Show more**. The
+  **Use**, **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
   prompt is the VoiceDesign description
   saved as `description.txt`. Search reads prompts only: every typed word must
   begin a prompt word (AND, any order, case- and accent-insensitive, so `male`
@@ -668,7 +693,9 @@ the active tab is flush with an accent top edge and opens into the page below.
   the prompt without touching the saved voice and plays it when ready. **Save**
   stores exactly that draft under the name and is enabled only while the prompt
   matches the one heard; saving under another name keeps both voices. **Stop**
-  cancels a draft.
+  cancels a draft. **Rename** (`window.prompt`, then `POST /api/voices/rename`)
+  moves the voice to its new name and carries the browser's selected voice,
+  open book's voice, and editor name along.
 - **Listen** is a compact table: Title, Duration, Source name, Modified, and **Listen**
   and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
   only, with the same rules.
@@ -732,10 +759,12 @@ means designing them again; a test checks each one.
 ### Advanced and devices
 
 **Advanced** shows **This server**: one live chip per narration worker (`GPU 0
-idle`, `running`, or `reserved` during voice creation; the tooltip adds the
-device and job; a node's GPU reads `Node 1 · GPU 2`) followed by the shared
-device description, **Other machines**, and the narration
-and voice-design models plus the device voice creation uses.
+idle`, `running`, `reserved` during voice creation, or `off`; the tooltip adds
+the device and job; a node's GPU reads `Node 1 · GPU 2`) followed by the shared
+device description, **This machine narrates on** (a box per local device, for a
+browser on the server's machine only: `POST /api/workers/local`), **Other
+machines**, and the narration and voice-design models plus the device voice
+creation uses.
 
 **Other machines** lists the nodes of `workers.yaml` with **Remove**, and
 **Add workers** opens a dialog: the machine's address, **Connect**, then the
@@ -884,6 +913,7 @@ playable but have no synchronized text.
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
 | `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
@@ -899,14 +929,15 @@ playable but have no synchronized text.
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove` | Save an Anthropic API key once Anthropic accepts it, or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate a local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and refresh its catalog. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local model whose provider differs from the saved server type. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
-| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
+| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
+| `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
 ## Core invariants
 
-- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`'s nodes, which only a browser on the server's own machine (a loopback address) may add or remove, because the server has no sign-in.
+- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`, whose nodes and local devices turned off only a browser on the server's own machine (a loopback address) may change, because the server has no sign-in.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
 - **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
@@ -970,15 +1001,27 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 123 tests. It covers voice persistence
-(including stale prompts and previews on replacement),
+The regression suite currently has 131 tests. It covers voice persistence
+(including stale prompts and previews on replacement, and each replaced
+version kept in `.versions/`), voice renames that keep the version and carry
+the name into every book read by any of its versions while refusing taken
+names, books with that name already, and voices a job is reading with,
 book identity by content, document/voice-only job identity, gang scheduling
 across local and SSH workers, nodes added while a book waits and kept while
 one narrates, `workers.yaml` validation, per-worker SSH settings from the
 server's command to the staged worker, loopback-only worker changes, node
 setup that installs only what the probe finds missing (Hilde's installer, then
 the model by the server's ID or a local folder's Qwen name), fails with the
-probe's reason, runs one at a time, and stops, a
+probe's reason, runs one at a time, and stops, a local GPU turned off that
+takes no book, cannot leave one it narrates, and never leaves the pool empty
+(nor can the last node go while every local GPU is off), a book on nodes alone
+starting no local worker, numbered citations written as the authors and year
+their reference-list entry gives (a heading the list ran into, initials,
+lists, and ranges included; a number the list lacks kept), a figure's request
+carrying the paragraph that mentions it instead of the running summaries, the
+log naming a credited name, an unprinted number, or a wrong equation number
+while rounded numbers pass, a dropped or refused model connection asked again
+after growing waits while a silent stream is not and Stop ends the wait, a
 typewriter-font listing extracted as one block with its words apart and no
 duplicate glyphs, a listing going on in the next column kept in order,
 captions printed below their tables given to their own tables, a figure's

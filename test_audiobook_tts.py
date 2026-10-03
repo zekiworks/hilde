@@ -1554,6 +1554,16 @@ class VoicePersistenceTests(unittest.TestCase):
             self.voice, self.waveform, 24000, "Third passage.", "FLOAT", overwrite=True,
         )
         self.assertFalse((self.voice / "description.txt").exists())
+        # Each replacement kept the voice it replaced, prompt and all.
+        kept = self.voice / ".versions"
+        self.assertEqual(sorted(path.name for path in kept.iterdir()), ["v1", "v2"])
+        self.assertEqual(read_voice(kept / "v1")[2], "Original passage.")
+        self.assertEqual(
+            (kept / "v1" / "description.txt").read_text(encoding="utf-8"), "Warm narrator."
+        )
+        self.assertEqual(read_voice(kept / "v2")[2], "Second passage.")
+        self.assertEqual(read_voice(self.voice)[2], "Third passage.")
+        self.assertFalse((kept / "v1" / "preview.wav").exists())
 
 
 class SharedLibraryTests(unittest.TestCase):
@@ -2196,6 +2206,23 @@ class UnifiedWorkflowTests(unittest.TestCase):
             list(range(1, requests["count"] + 1)),
         )
         self.assertEqual(narration[-1], ("join", requests["count"]))
+        # The end of the run reports how long it took, as the log does.
+        done = [data for event, data in run.history if event == "done"][-1]
+        self.assertRegex(
+            done["total_time"],
+            r"^\d+s \(\d+\.\d s\): reading \d+s(, adapting \d+s)?, narrating \d+s, aligning \d+s$",
+        )
+        self.assertIn(
+            f"Total time: {done['total_time']}.\n",
+            [data for event, data in run.history if event == "log"],
+        )
+
+    def test_total_time_rounds_to_whole_seconds_and_lists_only_timed_stages(self):
+        self.assertEqual(
+            web.total_time_summary({"total": 3723.4, "narrating": 3600.0, "reading": 59.6}),
+            "1h 02m 03s (3723.4 s): reading 1m 00s, narrating 1h 00m 00s",
+        )
+        self.assertEqual(web.total_time_summary({"total": 4.0}), "4s (4.0 s)")
 
     def test_each_book_records_its_model_prose_kept_and_times_across_a_resume(self):
         temporary = tempfile.TemporaryDirectory()
@@ -2520,9 +2547,10 @@ class UnifiedWorkflowTests(unittest.TestCase):
         run.pump()
 
         self.assertEqual(run.code, 0)
+        # Sent once to be narrated; the figure's request may quote it as context.
         self.assertEqual(sum(
             "The output is computed as a weighted sum of the values, where each "
-            "weight comes from a key." in text
+            "weight comes from a key." in text.partition("Current source")[2]
             for text, _ in requests
         ), 1)
         # The request that sends the figure also holds its caption, and no
@@ -4441,6 +4469,64 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertEqual(listed, ["Keep"])
         self.assertEqual([path.name for path in self.storage.voices.iterdir()], ["Keep"])
 
+    def test_renaming_a_voice_keeps_its_version_and_renames_it_in_the_books_it_read(self):
+        voice = self.add_voice("Martin", web.VOICE_REFERENCE_TEXT, description="Calm.")
+        first = web.saved_voice_version(voice)
+        save_voice(
+            voice, np.linspace(0.5, -0.5, 2400, dtype=np.float32), 24000,
+            web.VOICE_REFERENCE_TEXT, "FLOAT", overwrite=True, description="Calmer.",
+        )
+        current = web.saved_voice_version(voice)
+        # One book read each version; a third was read by an unrelated Martin.
+        old = store_book(self.storage, "Old", "a" * 64, "Martin", voice_fields={"voice_version": first})
+        new = store_book(self.storage, "New", "b" * 64, "Martin", voice_fields={"voice_version": current})
+        other = store_book(self.storage, "Other", "c" * 64, "Martin", voice_fields={"voice_version": "f" * 64})
+        origin = self.serve()
+
+        status, payload = self.post(
+            origin, "/api/voices/rename", {"name": "Martin", "new_name": " Marten "}
+        )
+        self.assertEqual((status, payload["name"], payload["assets"]["voices"]),
+                         (200, "Marten", ["Marten"]))
+        renamed = self.storage.voices / "Marten"
+        self.assertEqual(web.saved_voice_version(renamed), current)
+        self.assertEqual((renamed / "description.txt").read_text(encoding="utf-8"), "Calmer.")
+        for book, name in ((old, "Marten"), (new, "Marten"), (other, "Martin")):
+            path, record = web.read_book(self.storage, book)
+            self.assertEqual([entry["name"] for entry in record["voices"]], [name], book)
+            self.assertTrue((path / "voices" / name / "audio.mp3").is_file(), book)
+
+        self.add_voice("Sarah", web.VOICE_REFERENCE_TEXT)
+        refused = {
+            "Sarah": 409,                    # another voice's name
+            "../Sarah": 400, ".hidden": 400,  # not one plain name
+        }
+        for new_name, expected in refused.items():
+            with self.subTest(new_name):
+                status, _ = self.post(
+                    origin, "/api/voices/rename", {"name": "Marten", "new_name": new_name}
+                )
+                self.assertEqual(status, expected)
+        self.assertEqual(
+            self.post(origin, "/api/voices/rename", {"name": "Nobody", "new_name": "X"})[0], 404
+        )
+        # A book that already has a voice of the new name stops the rename.
+        store_book(self.storage, "Old", "a" * 64, "Mia", voice_fields={"voice_version": "e" * 64})
+        status, payload = self.post(
+            origin, "/api/voices/rename", {"name": "Marten", "new_name": "Mia"}
+        )
+        self.assertEqual(status, 409, payload)
+        self.assertTrue(renamed.is_dir())
+        # So does a job still reading with the voice.
+        self.jobs.reserve_audiobook(
+            "document-version", current, "Old.pdf", "Marten", "Old-Marten.mp3", "auto", None
+        )
+        status, payload = self.post(
+            origin, "/api/voices/rename", {"name": "Marten", "new_name": "Max"}
+        )
+        self.assertEqual(status, 409, payload)
+        self.assertTrue(renamed.is_dir())
+
     def test_deleting_a_linked_voice_removes_only_the_link(self):
         elsewhere = tempfile.TemporaryDirectory()
         self.addCleanup(elsewhere.cleanup)
@@ -5272,6 +5358,143 @@ class PaperConcurrencyTests(unittest.TestCase):
             self.assertEqual(run.streams, set())
 
 
+class GroundingTests(unittest.TestCase):
+    REFERENCES = [
+        "**Acknowledgements** We thank our colleagues. **References** [1] Jimmy Lei Ba, "
+        "Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization. arXiv, 2016.",
+        "- [2] Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio. Neural machine "
+        "translation. CoRR, abs/1409.0473, 2014.",
+        "- [3] Francois Chollet. Xception. arXiv preprint arXiv:1610.02357, 2016.",
+        "- [4] Quoc V. Le and Tomas Mikolov. Distributed representations. In ICML, 2014.",
+    ]
+
+    def test_numbered_citations_become_the_authors_and_year_of_their_entry(self):
+        entries = web.reference_entries(self.REFERENCES)
+        self.assertEqual(entries, {
+            1: "Ba and colleagues, 2016", 2: "Bahdanau and colleagues, 2014",
+            3: "Chollet, 2016", 4: "Le and Mikolov, 2014",
+        })
+        self.assertEqual(
+            web.resolve_citations("as in [3], and in [1, 2] and [2–4], but not [4, 9].", entries),
+            "as in [Chollet, 2016], and in [Ba and colleagues, 2016; Bahdanau and colleagues, "
+            "2014] and [Bahdanau and colleagues, 2014; Chollet, 2016; Le and Mikolov, 2014], "
+            "but not [4, 9].",
+        )
+        # Two bracketed numbers are no reference list.
+        self.assertEqual(web.reference_entries(self.REFERENCES[1:3]), {})
+
+    def test_a_figure_is_read_with_the_text_that_mentions_it_never_the_summaries(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "The encoder maps the input to a sequence of representations.\n\n"
+            "![](images/a.png)\n\n"
+            "Figure 1: The Transformer architecture.\n\n"
+            "The decoder is shown in the right half of Figure 1, as in [3].\n\n"
+            "Unrelated closing words.\n\n"
+            "# References\n\n" + "\n\n".join(self.REFERENCES[1:]),
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        requests = {}
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                requests[request_path.stem] = request_path.read_text(encoding="utf-8")
+                return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "prepared.txt", "utf-8", in_flight=1, prompt_path=prompt)
+        run.pump()
+
+        self.assertEqual(run.code, 0)
+        figure = requests["paragraphs-2-3"]
+        self.assertNotIn("Compacted summaries", figure)
+        self.assertIn("The decoder is shown in the right half of Figure 1", figure)
+        self.assertNotIn("Unrelated closing words", figure)
+        self.assertIn("Compacted summaries", requests["paragraphs-5-5"])
+        # The citation reaches the model as its entry names it.
+        self.assertIn("as in [Chollet, 2016].", requests["paragraphs-4-4"])
+
+    def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):
+        source = (
+            "![](images/t.png)",
+            "<!-- Start of picture text -->\nBLEU 27.3 41.8 params 65M\n<!-- End of picture text -->",
+            "Table 2: The Transformer, similar to [Press and Wolf, 2016].",
+        )
+        self.assertEqual(web.grounding_problems(
+            "Table 2 shows BLEU of 27.3, about 42 for the big model, with 65 million "
+            "parameters, as Press and Wolf found.", source, describes=True,
+        ), [])
+        self.assertEqual(web.grounding_problems(
+            "Table 2 shows BLEU of 28.4, as Vaswani and others found.", source, describes=True,
+        ), [
+            "the narration credits Vaswani, whom its source never names",
+            "the description says 28.4, which its source does not print",
+        ])
+        equation = (
+            "![](images/e.png)",
+            "<!-- Start of picture text -->\nFFN(x) = max(0, xW1 + b1)W2 + b2 (2)\n"
+            "<!-- End of picture text -->",
+        )
+        self.assertEqual(web.grounding_problems("Equation 2 says…", equation, describes=True), [])
+        self.assertEqual(
+            web.grounding_problems("Equation 3 says…", equation, describes=True),
+            ["the description calls it Equation 3, but the paper prints (2) beside it"],
+        )
+        # In prose, only whom it credits is checked.
+        self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.4.",)), [])
+
+    def test_a_dropped_model_connection_is_asked_again_and_a_silent_one_is_not(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        run = PaperRun(Path(temporary.name) / "paper.md", Path(temporary.name) / "out.txt", "utf-8")
+        logs = []
+        run.publish = lambda event, data: logs.append(data)
+        answers = iter([
+            web.ModelConnectionError("Model request failed: [Errno 104] Connection reset by peer"),
+            web.ModelConnectionError("Model request failed: [Errno 111] Connection refused"),
+            "<NARRATION>Read.</NARRATION><SUMMARY>S.</SUMMARY>",
+        ])
+
+        def answer(*_):
+            value = next(answers)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with mock.patch.object(run, "request_model", side_effect=answer), \
+                mock.patch.object(run.stop_requested, "wait", return_value=False) as waited:
+            self.assertEqual(run.model_response(Path("request.txt"), "prompt"),
+                             "<NARRATION>Read.</NARRATION><SUMMARY>S.</SUMMARY>")
+        self.assertEqual([call.args[0] for call in waited.call_args_list], [1, 2])
+        self.assertEqual(len(logs), 2)
+        self.assertIn("Connection reset by peer; asking again in 1 s (1 of 4)", logs[0])
+
+        # One that keeps dropping fails after the retries; Stop ends the wait.
+        with mock.patch.object(run, "request_model",
+                               side_effect=web.ModelConnectionError("Model request failed")), \
+                mock.patch.object(run.stop_requested, "wait", return_value=False), \
+                self.assertRaises(web.ModelConnectionError):
+            run.model_response(Path("request.txt"), "prompt")
+        with mock.patch.object(run, "request_model",
+                               side_effect=web.ModelConnectionError("Model request failed")), \
+                mock.patch.object(run.stop_requested, "wait", return_value=True), \
+                self.assertRaises(InterruptedError):
+            run.model_response(Path("request.txt"), "prompt")
+        # A reset is a dropped connection; a stream that went silent is not.
+        for failure, retried in ((ConnectionResetError(104, "reset"), True),
+                                 (TimeoutError("timed out"), False)):
+            with self.subTest(failure), \
+                    mock.patch.object(web.ModelStream, "open", side_effect=failure), \
+                    self.assertRaises(RuntimeError) as raised:
+                with run.model_stream("http://127.0.0.1:9/v1", {}, b"{}"):
+                    pass
+            self.assertEqual(isinstance(raised.exception, web.ModelConnectionError), retried)
+
+
 class WorkerNodeTests(unittest.TestCase):
     NODE = {
         "host": "narrator@10.0.0.5",
@@ -5324,10 +5547,12 @@ class WorkerNodeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         path = Path(temporary.name) / "workers.yaml"
-        self.assertEqual(web.read_worker_nodes(path), [])
+        self.assertEqual(web.read_workers(path), ([], []))
         mac = {**self.NODE, "host": "studio-mac", "devices": ["mps"]}
-        web.write_worker_nodes(path, [self.NODE, mac])
-        self.assertEqual(web.read_worker_nodes(path), [self.NODE, mac])
+        web.write_workers(path, [self.NODE, mac], {"cuda:2", "cuda:0"})
+        self.assertEqual(web.read_workers(path), ([self.NODE, mac], ["cuda:0", "cuda:2"]))
+        web.write_workers(path, [mac], set())
+        self.assertEqual(web.read_workers(path), ([mac], []))
 
         refused = {
             "an option as host": {**self.NODE, "host": "-oProxyCommand=sh"},
@@ -5345,10 +5570,17 @@ class WorkerNodeTests(unittest.TestCase):
                     yaml.safe_dump({"nodes": nodes if isinstance(nodes, list) else [nodes]})
                 )
                 with self.assertRaises(ValueError):
-                    web.read_worker_nodes(path)
+                    web.read_workers(path)
+        for reason, local_off in {
+            "not a device": ["gpu0"], "a device twice": ["cuda:0", "cuda:0"], "not a list": "cuda:0",
+        }.items():
+            with self.subTest(reason):
+                path.write_text(yaml.safe_dump({"local_off": local_off, "nodes": []}))
+                with self.assertRaises(ValueError):
+                    web.read_workers(path)
         path.write_text("nodes: [unclosed")
         with self.assertRaises(ValueError):
-            web.read_worker_nodes(path)
+            web.read_workers(path)
 
     def test_each_node_device_narrates_with_that_nodes_python_model_and_device(self):
         workers = [
@@ -5529,7 +5761,7 @@ class WorkerNodeTests(unittest.TestCase):
 
         status, answer = self.request(origin, "/api/workers/add", self.NODE)
         self.assertEqual(status, 200, answer)
-        self.assertEqual(web.read_worker_nodes(server.workers_path), [self.NODE])
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], []))
         first_run.close(0)
         self.assertTrue(second_run.started.wait(2))
         self.assertEqual(
@@ -5540,15 +5772,86 @@ class WorkerNodeTests(unittest.TestCase):
 
         status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
         self.assertEqual(status, 409)
-        self.assertEqual(web.read_worker_nodes(server.workers_path), [self.NODE])
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], []))
         second_run.close(0)
+        self.idle(jobs)
+        status, answer = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
+        self.assertEqual((status, answer["nodes"]), (200, []))
+        self.assertEqual(web.read_workers(server.workers_path), ([], []))
+        self.assertEqual([item["label"] for item in answer["consumers"]], ["GPU 0"])
+
+    def idle(self, jobs):
         deadline = time.monotonic() + 2
         while jobs.busy_consumer_ids() and time.monotonic() < deadline:
             time.sleep(0.01)
-        status, answer = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
-        self.assertEqual((status, answer["nodes"]), (200, []))
-        self.assertEqual(web.read_worker_nodes(server.workers_path), [])
-        self.assertEqual([item["label"] for item in answer["consumers"]], ["GPU 0"])
+
+    def test_a_gpu_turned_off_takes_no_book_and_the_pool_never_empties(self):
+        server, origin = self.serve()
+        jobs = server.jobs
+        off = {"device": "cuda:0", "narrates": False}
+        # This machine's only GPU stays on until another machine can narrate.
+        self.assertEqual(self.request(origin, "/api/workers/local", off)[0], 409)
+        self.assertEqual(self.request(origin, "/api/workers/add", self.NODE)[0], 200)
+        status, answer = self.request(origin, "/api/workers/local", off)
+        self.assertEqual(status, 200, answer)
+        self.assertEqual([item["narrates"] for item in answer["local"]], [False])
+        self.assertEqual([item["status"] for item in answer["consumers"]], ["off", "idle", "idle"])
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], ["cuda:0"]))
+
+        record, _ = JobQueueTests.reserve(self, jobs, "nodes only")
+        run = JobQueueTests.ControlledRun("nodes-only.mp3")
+        self.assertEqual(jobs.commit(record, run)["status"], "running")
+        self.assertTrue(run.started.wait(2))
+        self.assertEqual({worker["kind"] for worker in run.assigned_workers}, {"ssh"})
+        run.close(0)
+        self.idle(jobs)
+        # Nor can the last machine go while every GPU here is off.
+        status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
+        self.assertEqual(status, 409)
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], ["cuda:0"]))
+
+        # Back on, the GPU narrates the next book and cannot leave it midway.
+        status, answer = self.request(
+            origin, "/api/workers/local", {"device": "cuda:0", "narrates": True}
+        )
+        self.assertEqual((status, answer["consumers"][0]["status"]), (200, "idle"))
+        record, _ = JobQueueTests.reserve(self, jobs, "everywhere")
+        run = JobQueueTests.ControlledRun("everywhere.mp3")
+        self.assertEqual(jobs.commit(record, run)["status"], "running")
+        self.assertTrue(run.started.wait(2))
+        self.assertIn("cuda:0", [worker["device"] for worker in run.assigned_workers])
+        self.assertEqual(self.request(origin, "/api/workers/local", off)[0], 409)
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], []))
+        run.close(0)
+        self.idle(jobs)
+
+    def test_a_book_on_nodes_alone_starts_no_worker_on_this_machine(self):
+        workers = [consumer["worker"] for consumer in web.remote_consumers([self.NODE])]
+        command = web.narrate_command({
+            "clone": self.CLONE, "input": "book.txt", "encoding": "utf-8",
+            "output": "book.mp3", "chunk_max_chars": "500", "resume_dir": "work",
+            "mp3_level": "", "voice_dir": "voices/Eir", "batch_size": "2",
+            "workers": workers, "device": "cuda:0", "dtype": "auto",
+            "attn": "sdpa", "language": "", "seed": "",
+        })
+        parser = cli.build_parser()
+        args = parser.parse_args(command[3:])
+        cli.check_distributed_mode(args, parser)
+        with mock.patch.object(cli.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                mock.patch.object(cli, "_run_transport"):
+            specifications = cli._narration_worker_specifications(args, Path("voices/Eir"))
+        self.assertEqual(
+            [label for label, *_ in specifications],
+            ["SSH narrator@10.0.0.5 cuda:1", "SSH narrator@10.0.0.5 cuda:3"],
+        )
+        self.assertEqual(cli._worker_topology(args)["local_devices"], [])
+
+        base = command[3:command.index("--no-local-worker")]
+        for extra in (["--no-local-worker"], ["--no-local-worker", "--worker-device", "cuda:1",
+                                               "--ssh-worker", "spark"]):
+            with self.subTest(extra), mock.patch("sys.stderr", io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                cli.check_distributed_mode(parser.parse_args(base + extra), parser)
 
 
 if __name__ == "__main__":

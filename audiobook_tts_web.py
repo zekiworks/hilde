@@ -68,6 +68,7 @@ from markdown_it import MarkdownIt
 from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
+    VOICE_VERSIONS_DIR,
     gpu_free_mebibytes,
     read_voice,
     save_voice,
@@ -90,8 +91,10 @@ HILDE_VERSION = "0.1.0"
 BOOK_SCHEMA = 1
 # Bump whenever the paragraphs or batches a job adapts change, through
 # with_title_heading(), join_pdf_pages(), narrated_source_paragraphs(), or
-# paper_batches(): checkpoints and the reader number paragraphs.
-EXTRACTION_SCHEMA = 13
+# paper_batches(): checkpoints and the reader number paragraphs. Bump too when
+# what a request carries changes, through resolve_citations() or
+# visual_context(), so checkpoints made from the old requests are redone.
+EXTRACTION_SCHEMA = 14
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -162,7 +165,8 @@ CLAUDE_CODE_STATUS_TIMEOUT = 20
 ANTHROPIC_API_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
 # A busy or rate-limited cloud provider is asked again this many times, after
-# its retry-after or 1, 2, 4, then 8 seconds.
+# its retry-after or 1, 2, 4, then 8 seconds. A model request whose connection
+# drops or is refused, from any provider, is asked again the same way.
 MODEL_RETRIES = 4
 # Statuses that mean "come back later": a rate limit, a server error, a
 # gateway failure, or Anthropic's overload.
@@ -179,6 +183,11 @@ MODEL_STREAM_TIMEOUT = 30 * 60
 LOCAL_SERVER_TIMEOUT = 5
 PAPER_DOWNLOAD_TIMEOUT = 60
 LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
+# Local servers otherwise sample at the model's default, often 1.0, and the
+# same paper then reads differently on every run. Adapting the Attention paper
+# twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
+# against 31 at 1.0, with the same informal tone; 0 was no steadier.
+LOCAL_MODEL_TEMPERATURE = 0.2
 PAPER_RESPONSE_ATTEMPTS = 3
 PAPER_DEFAULT_IN_FLIGHT = 4
 PAPER_MAX_IN_FLIGHT = 32
@@ -733,6 +742,31 @@ with pymupdf.open(source) as document:
             f"\\n\\n![{caption}](images/{name})\\n\\n"
             f"<!-- Start of picture text -->\\n{plain(cells)}\\n<!-- End of picture text -->\\n\\n"
         )))
+    # An equation the layout cuts out as a picture keeps its printed text
+    # behind the picture, ending with the number set beside it, "(3)", so a
+    # model that reads no images still knows what it says and what it is
+    # called, and none guesses its number.
+    for box in boxes:
+        if box.get("class") != "formula" or not box.get("pos") or not box.get("bbox"):
+            continue
+        start, end = box["pos"]
+        shown = markdown[start:end].strip()
+        if not shown.startswith("![") or "Start of picture text" in shown:
+            continue
+        x0, y0, x1, y1 = box["bbox"]
+        text = " ".join(sheet.get_text("text", clip=pymupdf.Rect(box["bbox"])).split())
+        if text and not re.search(r"\\(\\d+[a-z]?\\)$", text):
+            number = next((
+                word[4] for word in sheet.get_text("words")
+                if re.fullmatch(r"\\(\\d+[a-z]?\\)", word[4])
+                and word[0] >= x1 and y0 <= (word[1] + word[3]) / 2 <= y1
+            ), "")
+            text = f"{text} {number}".strip()
+        if text:
+            edits.append((start, end, (
+                f"\\n\\n{shown}\\n\\n"
+                f"<!-- Start of picture text -->\\n{text}\\n<!-- End of picture text -->\\n\\n"
+            )))
     # One fenced block per listing, without blank lines, so the whole listing
     # stays one paragraph and reaches the model in one request.
     for run in listing_runs(sheet):
@@ -933,9 +967,10 @@ def remote_consumers(nodes):
 
 WORKERS_FILE = "workers.yaml"
 WORKERS_HEADER = """\
-# Narration workers on other machines, reached over passwordless SSH.
-# Hilde writes this file when a node is added or removed under Advanced in a
-# browser on the server's machine. Stop the server before editing it by hand.
+# Narration workers: local_off lists this machine's devices that do not
+# narrate, and nodes the other machines, reached over passwordless SSH.
+# Hilde writes this file when either changes under Advanced in a browser on
+# the server's machine. Stop the server before editing it by hand.
 """
 WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
 WORKER_NODE_KEYS = ("host", "python", "model", "devices")
@@ -974,12 +1009,15 @@ def worker_node(value):
     return node
 
 
-def read_worker_nodes(path):
-    """Return workers.yaml's validated nodes, or none when the file is absent."""
+def read_workers(path):
+    """Return workers.yaml's validated nodes and local devices turned off.
+
+    An absent file has neither.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return []
+        return [], []
     try:
         data = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
@@ -990,15 +1028,24 @@ def read_worker_nodes(path):
     hosts = [node["host"] for node in nodes]
     if len(set(hosts)) != len(hosts):
         raise ValueError("each host may appear once; list all its devices under it")
-    return nodes
+    local_off = data.get("local_off") or []
+    if not isinstance(local_off, list) or not all(
+        isinstance(device, str) and WORKER_DEVICE_PATTERN.fullmatch(device)
+        for device in local_off
+    ):
+        raise ValueError("local_off lists devices such as cuda:0, mps, or cpu")
+    if len(set(local_off)) != len(local_off):
+        raise ValueError("local_off: each device may appear once")
+    return nodes, local_off
 
 
-def write_worker_nodes(path, nodes):
+def write_workers(path, nodes, local_off):
     target = Path(path)
     temporary = target.with_name(f".{target.name}.tmp")
+    data = {"local_off": sorted(local_off)} if local_off else {}
+    data["nodes"] = nodes
     temporary.write_text(
-        WORKERS_HEADER
-        + yaml.safe_dump({"nodes": nodes}, sort_keys=False, default_flow_style=None),
+        WORKERS_HEADER + yaml.safe_dump(data, sort_keys=False, default_flow_style=None),
         encoding="utf-8",
     )
     temporary.replace(target)
@@ -2026,6 +2073,60 @@ def delete_voice(storage, name):
         voice_dir.rename(trash / voice_dir.name)
     finally:
         shutil.rmtree(trash)
+
+
+def voice_versions(voice_dir):
+    """The versions of one saved voice: its current files and every kept one."""
+    versions = {saved_voice_version(voice_dir)}
+    kept = Path(voice_dir) / VOICE_VERSIONS_DIR
+    if kept.is_dir():
+        versions.update(
+            saved_voice_version(folder) for folder in kept.iterdir() if is_saved_voice(folder)
+        )
+    return versions
+
+
+def rename_voice(storage, name, new_name):
+    """Rename a saved voice, and every book voice any of its versions read.
+
+    The files stay as they are, so the voice keeps its version. Book voices are
+    found by version, not by name: one made by another voice of the same name
+    keeps its name.
+    """
+    voice_dir = resolve_asset(storage.voices, name)
+    if not is_saved_voice(voice_dir):
+        raise FileNotFoundError("no such voice")
+    if not new_name or safe_asset_name(new_name) != new_name or new_name.startswith("."):
+        raise ValueError("Enter a voice name without a slash.")
+    if new_name == name:
+        return
+    if os.path.lexists(storage.voices / new_name):
+        raise FileExistsError(f"There is already a voice named {new_name}.")
+    versions = voice_versions(voice_dir)
+    with _BOOK_LOCK:
+        books = []
+        for path in storage.audiobooks.iterdir():
+            record = read_json_file(path / "book.json") if BOOK_ID_PATTERN.fullmatch(path.name) else None
+            entries = [
+                entry for entry in (record or {}).get("voices") or ()
+                if entry.get("voice_version") in versions
+            ]
+            if not entries:
+                continue
+            title = record.get("title") or path.name
+            if any(entry.get("name") == new_name for entry in record["voices"]):
+                raise FileExistsError(f"{title} already has a voice named {new_name}.")
+            if len(entries) > 1:
+                raise FileExistsError(
+                    f"{title} has this voice under {len(entries)} names; "
+                    "delete all but one of them first."
+                )
+            books.append((path, record, entries[0]))
+        voice_dir.rename(storage.voices / new_name)
+        for path, record, entry in books:
+            voice_folder(path, entry["name"]).rename(voice_folder(path, new_name))
+            entry["name"] = new_name
+            write_json_atomic(path / "book.json", record)
 
 
 def delete_document(storage, name):
@@ -3923,6 +4024,10 @@ class ModelBusy(RuntimeError):
     """A provider failure that asking again may clear."""
 
 
+class ModelConnectionError(RuntimeError):
+    """A model request whose connection dropped or was refused; asking again may work."""
+
+
 def _retry_delay(response, attempt):
     """Seconds before asking a busy provider again: its retry-after, else 2^attempt."""
     try:
@@ -4033,6 +4138,7 @@ def local_model_response(server, model, system_prompt, text, images, open_stream
             {"role": "user", "content": content},
         ],
         "stream": True,
+        "temperature": LOCAL_MODEL_TEMPERATURE,
     }).encode("utf-8")
     url = f"{normalize_local_server(server)}/v1/chat/completions"
     headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
@@ -5299,6 +5405,78 @@ def prose_kept(source, narration):
     return 1 - len(lost) / len(words), sorted(lost)
 
 
+# Whom a narration credits: "Press and Wolf", "Vaswani and others".
+ATTRIBUTION_PATTERN = re.compile(
+    r"\b([A-Z][a-z][\w'’-]*)\s+(?:and|&)\s+(?:others|colleagues|[A-Z][a-z][\w'’-]*)\b"
+)
+# A number as printed: "27.3", "512", "2014".
+NUMBER_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![.,]?\d)")
+# The cue a description opens with, naming an equation: "Equation 3 says…".
+EQUATION_CUE_PATTERN = re.compile(r"\s*Equation (\d+)\b")
+# The number printed beside an equation ends its picture text: "(3)".
+PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
+
+
+def _numbers(text):
+    """The numbers a text prints, as written once thousands separators and
+    the emphasis extraction leaves inside a decimal ("3 _._ 5") are gone."""
+    text = re.sub(r"(?<=\d)[\s_*]*\.[\s_*]*(?=\d)", ".", text)
+    return NUMBER_PATTERN.findall(re.sub(r"(?<=\d),(?=\d{3}\b)", "", text))
+
+
+def _printed(number, numbers):
+    """Whether a narrated number is printed, or is a printed one rounded.
+
+    Extraction runs a power into its base, "10000<sup>2i</sup>" into
+    "100002i", so a whole number counts when it opens a printed one.
+    """
+    if number in numbers:
+        return True
+    if "." not in number and any(printed.startswith(number) for printed in numbers):
+        return True
+    places = len(number.partition(".")[2])
+    return any(round(float(printed), places) == float(number) for printed in numbers)
+
+
+def grounding_problems(narration, sources, context=(), describes=False):
+    """What a batch's narration states that its source does not.
+
+    Any narration that credits work to a name its batch's source never
+    mentions; in a description of a figure, table, or equation, also a number
+    with two or more digits, or a decimal, that the source and its context do
+    not print, rounding allowed, and an equation called by a number other than
+    the one printed beside it. These only point at a passage worth a look:
+    the narration is kept as written.
+    """
+    source = "\n\n".join(sources)
+    known = "\n\n".join((source, *(text for _, text in context)))
+    problems = []
+    names = dict.fromkeys(match.group(1) for match in ATTRIBUTION_PATTERN.finditer(narration))
+    for name in names:
+        if name not in known:
+            problems.append(f"the narration credits {name}, whom its source never names")
+    if not describes:
+        return problems
+    printed = set(_numbers(known))
+    unprinted = dict.fromkeys(
+        number for number in _numbers(narration)
+        if (len(number) > 1 or "." in number) and not _printed(number, printed)
+    )
+    for number in unprinted:
+        problems.append(f"the description says {number}, which its source does not print")
+    marks = [
+        match.group(1) for text in PICTURE_TEXT_PATTERN.findall(source)
+        if (match := PRINTED_EQUATION_NUMBER.search(re.sub(r"<!--.*?-->", "", text).strip()))
+    ]
+    cue = EQUATION_CUE_PATTERN.match(narration)
+    if cue and cue.group(1) not in marks:
+        problems.append(
+            f"the description calls it Equation {cue.group(1)}, but the paper prints "
+            + (f"({', '.join(marks)}) beside it" if marks else "no number beside it")
+        )
+    return problems
+
+
 def adaptation_fidelity(paragraphs, checkpoint_dir):
     """Summarize how much of the author's prose the saved narration kept.
 
@@ -5370,7 +5548,9 @@ never write a placeholder, a heading, a lone punctuation mark, or a note that
 something was omitted. SUMMARY is internal compacted context and is never empty; it must not
 shorten or replace any narration or recreate an omitted bibliography.
 Earlier source batches and narration are intentionally absent from later calls:
-use their summaries only for continuity."""
+use their summaries only for continuity. A batch that is only a figure, table,
+or equation comes instead with the author's paragraphs that mention it, or the
+one before it: read them to understand what it shows, never narrate them."""
 
 
 def compact_paper_summary(summary):
@@ -5447,8 +5627,111 @@ def defined_acronyms(paragraphs):
     return [f"{acronym} ({long_form})" for acronym, long_form in found.items()]
 
 
-def paper_request(paragraphs, compacted_summaries, start, end, total, attempt=1,
-                  acronyms=()):
+# A numbered reference-list entry: "[30] Ofir Press and Lior Wolf. Using the…".
+REFERENCE_ENTRY_PATTERN = re.compile(r"(?:^|(?<=\s))\[(\d{1,3})\]\s+(?=[A-Z])")
+# A numbered citation in the text: "[30]", "[35, 2, 5]", "[3–5]".
+NUMBERED_CITATION_PATTERN = re.compile(r"\[(\d{1,3}(?:[ \t]*[,–-][ \t]*\d{1,3})*)\]")
+# The authors end at the first period that does not close an initial.
+REFERENCE_AUTHORS_END = re.compile(r"(?<![\s.][A-Z])\.(?:\s|$)")
+REFERENCE_YEAR_PATTERN = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
+
+
+def reference_entries(paragraphs):
+    """The numbered reference list, as {number: "Press and Wolf, 2016"}.
+
+    An entry opens a paragraph ("- [30] Ofir Press…"), follows another one
+    inside it, or follows the References heading extraction ran it into.
+    Fewer than three entries are not a reference list, and give none.
+    """
+    entries = {}
+    for paragraph in paragraphs:
+        text = paragraph.strip().removeprefix("- ")
+        found = list(REFERENCE_ENTRY_PATTERN.finditer(text))
+        opens = bool(found) and (
+            found[0].start() == 0 or len(found) > 1
+            or re.search(r"(?i)(references|bibliography)\W*$", text[:found[0].start()])
+        )
+        if not opens:
+            continue
+        for match, following in zip(found, found[1:] + [None]):
+            body = " ".join(text[match.end():following.start() if following else None].split())
+            end = REFERENCE_AUTHORS_END.search(body)
+            years = REFERENCE_YEAR_PATTERN.findall(body)
+            if end is None or not years:
+                continue
+            names = [
+                name for name in re.split(r",\s*(?:and\s+)?|\s+and\s+", body[:end.start()])
+                if name.strip()
+            ]
+            surnames = [re.sub(r"[^\w'’-]", "", name.split()[-1]) for name in names]
+            if not surnames or not all(surnames):
+                continue
+            who = (
+                surnames[0] if len(surnames) == 1
+                else f"{surnames[0]} and {surnames[1]}" if len(surnames) == 2
+                else f"{surnames[0]} and colleagues"
+            )
+            entries.setdefault(int(match.group(1)), f"{who}, {years[-1]}")
+    return entries if len(entries) >= 3 else {}
+
+
+def resolve_citations(paragraph, entries):
+    """Write numbered citations as the authors and year they stand for.
+
+    "[30]" becomes "[Press and Wolf, 2016]", so the model keeps the attribution
+    from the reference list instead of guessing it. A bracket naming any number
+    the list lacks stays as printed.
+    """
+    def named(match):
+        numbers = []
+        for part in re.split(r"[ \t]*,[ \t]*", match.group(1)):
+            bounds = [int(piece) for piece in re.split(r"[ \t]*[–-][ \t]*", part)]
+            if len(bounds) == 2 and 0 < bounds[1] - bounds[0] <= 20:
+                numbers.extend(range(bounds[0], bounds[1] + 1))
+            else:
+                numbers.extend(bounds)
+        if not all(number in entries for number in numbers):
+            return match.group(0)
+        return "[" + "; ".join(entries[number] for number in numbers) + "]"
+    return NUMBERED_CITATION_PATTERN.sub(named, paragraph) if entries else paragraph
+
+
+# A figure, table, or equation batch is read with at most this many of the
+# author's paragraphs, each cut to this length.
+VISUAL_CONTEXT_PARAGRAPHS = 2
+VISUAL_CONTEXT_CHARS = 2_000
+
+
+def visual_context(paragraphs, kinds, start, end):
+    """The author's paragraphs a figure, table, or equation batch is read with.
+
+    Those that mention its number come first, else the prose paragraph before
+    it. Both come from the source, so the batch's request is the same on every
+    run, unlike the model's own summaries of the batches before it.
+    """
+    label = visual_label(paragraphs[start - 1:end], kinds[start - 1:end])
+    chosen = []
+    if label:
+        word, number = label.split()
+        wanted = (word.lower(), int(number))
+        chosen = [
+            index for index, (paragraph, kind) in enumerate(zip(paragraphs, kinds), 1)
+            if kind == "prose" and not start <= index <= end
+            and wanted in _mentioned_visuals(_layout_text(paragraph))
+        ]
+    if not chosen:
+        chosen = next(
+            ([index] for index in range(start - 1, 0, -1) if kinds[index - 1] == "prose"), []
+        )
+    return tuple(
+        (index, paragraphs[index - 1][:VISUAL_CONTEXT_CHARS])
+        for index in chosen[:VISUAL_CONTEXT_PARAGRAPHS]
+    )
+
+
+def paper_request(paragraphs, context, start, end, total, attempt=1, acronyms=()):
+    """One batch's request. The context is the compacted summaries of earlier
+    batches, or, for a figure, table, or equation, visual_context()'s pairs."""
     source = "\n\n".join(
         f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
         for number, paragraph in enumerate(paragraphs, start)
@@ -5468,11 +5751,21 @@ element. Do not discuss the retry or add text outside those elements."""
         "Acronyms the author already spelled out in earlier paragraphs; never "
         f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
     )
-    return f"""{defined}Compacted summaries from earlier source batches completed before dispatch:
-{compacted_summaries}
+    if isinstance(context, str):
+        background = f"""Compacted summaries from earlier source batches completed before dispatch:
+{context}
 Some immediately preceding batches may still be processing and therefore absent
 from this snapshot. Adapt the current source independently rather than inventing
-missing material.
+missing material."""
+    else:
+        quoted = "\n\n".join(
+            f'<CONTEXT_PARAGRAPH number="{number}">\n{paragraph}\n</CONTEXT_PARAGRAPH>'
+            for number, paragraph in context
+        ) or "(none)"
+        background = f"""The author's paragraphs that mention this batch, or the one before it.
+Read them to understand what it shows; never narrate them:
+{quoted}"""
+    return f"""{defined}{background}
 
 Current source {batch_label} of {total}:
 {source}{retry}
@@ -5661,6 +5954,9 @@ def narrate_command(values):
             and worker.get("device") != values["device"]
         ):
             arguments += ["--worker-device", worker["device"]]
+    # With every GPU of this machine turned off, only the nodes narrate.
+    if workers and not any(worker.get("kind") == "local" for worker in workers):
+        arguments.append("--no-local-worker")
     for worker in workers:
         if worker.get("kind") == "ssh":
             # Each node names its own Python, model, and device.
@@ -6206,6 +6502,28 @@ def derived(state, tts_models, storage):
 # --- runs ---------------------------------------------------------------------
 
 
+# The stages an audiobook run times, in the order they run.
+RUN_STAGES = ("reading", "adapting", "narrating", "aligning")
+
+
+def format_elapsed(seconds):
+    """A run's time as the log shows it: 45s, 6m 03s, or 1h 02m 03s."""
+    hours, rest = divmod(round(seconds), 3600)
+    minutes, whole = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {whole:02d}s"
+    return f"{minutes}m {whole:02d}s" if minutes else f"{whole}s"
+
+
+def total_time_summary(seconds):
+    """The total time of a run, then each stage it timed."""
+    stages = ", ".join(
+        f"{stage} {format_elapsed(seconds[stage])}" for stage in RUN_STAGES if stage in seconds
+    )
+    total = f"{format_elapsed(seconds['total'])} ({seconds['total']:.1f} s)"
+    return f"{total}: {stages}" if stages else total
+
+
 class Run:
     """One subprocess, its transcript, and the subscribers watching it."""
 
@@ -6230,6 +6548,8 @@ class Run:
         self.current_phase = None
         self.phase_label = None
         self.phase_started_at = self.started_at
+        # When the work began: a queued job starts once it leaves the queue.
+        self.work_started_at = self.started_at
 
     def elapsed(self):
         return max(0.0, time.monotonic() - self.started_at)
@@ -6288,6 +6608,7 @@ class Run:
         }
 
     def start(self):
+        self.work_started_at = time.monotonic()
         threading.Thread(target=self.pump, daemon=True).start()
 
     def pump(self):
@@ -6385,6 +6706,8 @@ class JobQueue:
         self.consumers = normalized
         self.active = {}
         self.exclusive = None
+        # This machine's devices taken out of narration under Advanced.
+        self.local_off = frozenset()
         self.pending = []
         self.records = {}
         self.sequence = 0
@@ -6441,14 +6764,64 @@ class JobQueue:
             combined = kept + remote
             if len({item["id"] for item in combined}) != len(combined):
                 raise ValueError("job consumers must have unique identities")
+            self._check_pool(combined, self.local_off)
             self.consumers = combined
             launch = self._dispatch_locked()
         for item in launch:
             self._launch(item)
 
+    def set_local_off(self, devices):
+        """Take this machine's narration workers out of the pool, by device.
+
+        A worker narrating a book cannot be taken out, and one worker must stay
+        in; putting one back starts any queued job that can now run.
+        """
+        with self.lock:
+            local = {item["id"] for item in self.consumers if item["kind"] == "local"}
+            off = frozenset(devices) & local
+            if any(device in self.active for device in off - self.local_off):
+                raise ValueError(
+                    "That GPU is narrating a book. Turn it off once the book is done."
+                )
+            self._check_pool(self.consumers, off)
+            self.local_off = off
+            launch = self._dispatch_locked()
+        for item in launch:
+            self._launch(item)
+
+    @staticmethod
+    def _check_pool(consumers, local_off):
+        if all(item["id"] in local_off for item in consumers):
+            raise ValueError(
+                "No narration worker would be left: keep a GPU of this machine on, "
+                "or add another machine first."
+            )
+
     def busy_consumer_ids(self):
         with self.lock:
             return set(self.active)
+
+    def voice_in_use(self, name):
+        """Whether a preparing, queued, or running audiobook reads with this voice."""
+        with self.lock:
+            return any(
+                record.get("voice") == name and record["status"] in self.ACTIVE_STATUSES
+                for record in self.records.values()
+            )
+
+    def local_snapshot(self):
+        """This machine's narration workers: whether each narrates, and is busy."""
+        with self.lock:
+            return [
+                {
+                    "device": consumer["id"],
+                    **consumer["public"],
+                    "narrates": consumer["id"] not in self.local_off,
+                    "busy": consumer["id"] in self.active,
+                }
+                for consumer in self.consumers
+                if consumer["kind"] == "local"
+            ]
 
     @staticmethod
     def _public(record, position=None):
@@ -6528,7 +6901,8 @@ class JobQueue:
             return []
         launch = []
         has_local_consumers = any(
-            consumer["kind"] == "local" for consumer in self.consumers
+            consumer["kind"] == "local" and consumer["id"] not in self.local_off
+            for consumer in self.consumers
         )
         for record in tuple(self.pending):
             if record["status"] != "queued":
@@ -6538,6 +6912,7 @@ class JobQueue:
                 consumer
                 for consumer in self.consumers
                 if consumer["id"] not in self.active
+                and consumer["id"] not in self.local_off
                 and (
                     record["requested_device"] == "auto"
                     or consumer["id"] in record["eligible_consumers"]
@@ -6771,7 +7146,9 @@ class JobQueue:
                     "device": consumer["device"],
                     "label": consumer["label"],
                     "status": (
-                        "reserved"
+                        "off"
+                        if consumer["id"] in self.local_off
+                        else "reserved"
                         if exclusive is not None
                         else "running"
                         if consumer["id"] in self.active
@@ -6939,8 +7316,11 @@ class PaperRun(Run):
         except Exception as exc:
             if self.stop_requested.is_set():
                 raise InterruptedError("document processing stopped") from exc
+            # A connection that dropped or was refused may come back; a stream
+            # silent for MODEL_STREAM_TIMEOUT would only stall again.
             if isinstance(exc, (OSError, http.client.HTTPException)):
-                raise RuntimeError(f"Model request failed: {exc}") from exc
+                failure = RuntimeError if isinstance(exc, TimeoutError) else ModelConnectionError
+                raise failure(f"Model request failed: {exc}") from exc
             raise
         finally:
             with self.process_lock:
@@ -7174,6 +7554,24 @@ class PaperRun(Run):
         return markdown_path, images
 
     def model_response(self, request_path, system_prompt, attachments=()):
+        """Ask the model, again after a dropped connection, up to MODEL_RETRIES times."""
+        for retry in range(MODEL_RETRIES + 1):
+            try:
+                return self.request_model(request_path, system_prompt, attachments)
+            except ModelConnectionError as exc:
+                if retry == MODEL_RETRIES:
+                    raise
+                delay = 2 ** retry
+                self.publish(
+                    "log",
+                    f"{exc}; asking again in {delay} s "
+                    f"({retry + 1} of {MODEL_RETRIES})…\n",
+                )
+                if self.stop_requested.wait(delay):
+                    raise InterruptedError("document processing stopped") from None
+        raise AssertionError("unreachable model retry loop")
+
+    def request_model(self, request_path, system_prompt, attachments):
         text = request_path.read_text(encoding="utf-8")
         provider, _, name = self.model.partition("/")
         if provider == OPENAI_MODEL_PROVIDER:
@@ -7201,7 +7599,7 @@ class PaperRun(Run):
         self,
         scratch,
         paragraphs,
-        summary_context,
+        context,
         start,
         end,
         total,
@@ -7240,7 +7638,7 @@ class PaperRun(Run):
             request_path.write_text(
                 paper_request(
                     paragraphs,
-                    summary_context,
+                    context,
                     start,
                     end,
                     total,
@@ -7287,14 +7685,24 @@ class PaperRun(Run):
             return narration, summary
         raise AssertionError("unreachable document response loop")
 
-    def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt):
+    def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
         total = len(paragraphs)
         checkpoint_dir = scratch / "paragraph-checkpoints"
         checkpoint_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         batches = paper_batches(paragraphs, self.paragraphs_per_worker)
         batch_ends = dict(batches)
         kinds = _layout_kinds(paragraphs)
-        requested = model_paragraphs(paragraphs, kinds)
+        references = references or {}
+        requested = [
+            resolve_citations(paragraph, references)
+            for paragraph in model_paragraphs(paragraphs, kinds)
+        ]
+        if references:
+            self.publish(
+                "log",
+                f"Read {len(references)} entries of the reference list; numbered "
+                "citations reach the model as their authors and year.\n",
+            )
         summaries = []
         results = {}
         completed_count = 0
@@ -7338,14 +7746,17 @@ class PaperRun(Run):
 
         def submit(start):
             end = batch_ends[start]
-            summary_context, _ = paper_summary_context(
-                summaries, self.summary_context_chars
-            )
+            # A figure, table, or equation is read with the author's text about
+            # it; prose with the summaries of what came before.
+            if _describes_visual(set(kinds[start - 1:end])):
+                context = visual_context(requested, kinds, start, end)
+            else:
+                context, _ = paper_summary_context(summaries, self.summary_context_chars)
             future = executor.submit(
                 self.paragraph_batch_response,
                 scratch,
                 tuple(requested[start - 1:end]),
-                summary_context,
+                context,
                 start,
                 end,
                 total,
@@ -7449,6 +7860,15 @@ class PaperRun(Run):
                                     f"{named} kept {share:.0%} of the author's words; "
                                     f"missing: {', '.join(lost[:8])}.\n",
                                 )
+                        # What a narration states that its source does not is
+                        # named in the log; the narration is kept as written.
+                        describes = _describes_visual(batch_kinds)
+                        for problem in grounding_problems(
+                            narration, requested[start - 1:end],
+                            visual_context(requested, kinds, start, end) if describes else (),
+                            describes,
+                        ):
+                            self.publish("log", f"{named}: {problem}.\n")
                         completed_count += end - start + 1
                     commit_ready()
                     committed = next_commit - 1
@@ -7612,7 +8032,10 @@ class PaperRun(Run):
             )
             adapting_started = time.monotonic()
             self.process_paragraphs(
-                scratch, paragraphs, image_paths, system_prompt
+                scratch, paragraphs, image_paths, system_prompt,
+                # The reference list is left out of the narration, so it is read
+                # from the whole source.
+                reference_entries(split_paper_paragraphs(source)),
             )
             self.seconds["adapting"] = round(time.monotonic() - adapting_started, 1)
         else:
@@ -8066,9 +8489,18 @@ class AudiobookRun(Run):
                 book = self._make_book(input_path)
             path, record = read_book(self.storage, book)
             self.artifact = str(voice_folder(path, self.values["narrator"]) / "audio.mp3")
-            self.result = {"book": book, "voice": self.values["narrator"], "title": record.get("title")}
+            seconds = {
+                "total": round(time.monotonic() - self.work_started_at, 1),
+                **{stage: self.seconds[stage] for stage in RUN_STAGES if stage in self.seconds},
+            }
+            total_time = total_time_summary(seconds)
+            self.result = {
+                "book": book, "voice": self.values["narrator"], "title": record.get("title"),
+                "total_time": total_time,
+            }
             shutil.rmtree(self.stage, ignore_errors=True)
             self.publish("log", f"Completed audiobook: {record.get('title')} read by {self.values['narrator']}\n")
+            self.publish("log", f"Total time: {total_time}.\n")
             self.close(0)
         except InterruptedError:
             self.publish(
@@ -8449,6 +8881,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self.payload()
         if route == "/api/documents/download":
             return self.download_document(body)
+        if route == "/api/voices/rename":
+            return self.rename_voice(str(body.get("name") or ""), str(body.get("new_name") or ""))
         if route == "/api/voices/delete":
             return self.delete_asset("voice", body.get("name", ""))
         if route == "/api/documents/delete":
@@ -8561,7 +8995,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.airdrop(body.get("path", ""))
         if route in (
             "/api/workers/probe", "/api/workers/add", "/api/workers/remove",
-            "/api/workers/setup", "/api/workers/setup/stop",
+            "/api/workers/setup", "/api/workers/setup/stop", "/api/workers/local",
         ):
             return self.change_workers(route.removeprefix("/api/workers/"), body)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
@@ -8587,11 +9021,12 @@ class Handler(BaseHTTPRequestHandler):
                 for node in self.server.worker_nodes
             ],
             "consumers": self.server.jobs.public_consumers_snapshot(),
+            "local": self.server.jobs.local_snapshot(),
             "setup": self.server.worker_setup and self.server.worker_setup.snapshot(),
         }
 
     def change_workers(self, action, body):
-        """Connect to, set up, add, or remove a node of workers.yaml for a local browser."""
+        """Change workers for a local browser: this machine's devices, or a node."""
         if not self.local_client():
             return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
         clone = self.server.tts_models["clone"]
@@ -8604,6 +9039,27 @@ class Handler(BaseHTTPRequestHandler):
         if action == "setup/stop":
             if self.server.worker_setup is not None:
                 self.server.worker_setup.stop()
+            return self.reply(HTTPStatus.OK, self.workers_payload())
+        if action == "local":
+            device = str(body.get("device") or "")
+            jobs = self.server.jobs
+            if device not in {item["device"] for item in jobs.local_snapshot()}:
+                return self.fail(HTTPStatus.NOT_FOUND, "This machine has no such device.")
+            with self.server.workers_lock:
+                previous = jobs.local_off
+                off = previous - {device} if body.get("narrates") is True else previous | {device}
+                try:
+                    jobs.set_local_off(off)
+                except ValueError as exc:
+                    return self.fail(HTTPStatus.CONFLICT, str(exc))
+                try:
+                    write_workers(self.server.workers_path, self.server.worker_nodes, off)
+                except OSError as exc:
+                    jobs.set_local_off(previous)
+                    return self.fail(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        f"Could not save {WORKERS_FILE}: {exc}",
+                    )
             return self.reply(HTTPStatus.OK, self.workers_payload())
         if action in ("probe", "setup"):
             try:
@@ -8658,7 +9114,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.fail(HTTPStatus.CONFLICT, str(exc))
             try:
-                write_worker_nodes(self.server.workers_path, nodes)
+                write_workers(self.server.workers_path, nodes, self.server.jobs.local_off)
             except OSError as exc:
                 self.server.jobs.set_remote_consumers(remote_consumers(previous))
                 return self.fail(
@@ -8891,6 +9347,31 @@ class Handler(BaseHTTPRequestHandler):
                 f"Could not delete {name}: {exc.strerror or 'file system error'}.",
             )
         return self.reply(HTTPStatus.OK, {"assets": asset_catalog(storage)})
+
+    def rename_voice(self, name, new_name):
+        storage = self.server.storage
+        new_name = new_name.strip()
+        # A job reads the voice under its name until it ends.
+        if self.server.jobs.voice_in_use(name):
+            return self.fail(
+                HTTPStatus.CONFLICT,
+                f"An audiobook is being made with {name}. Rename it once that is done.",
+            )
+        try:
+            rename_voice(storage, name, new_name)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileExistsError as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
+        except FileNotFoundError:
+            return self.fail(HTTPStatus.NOT_FOUND, "That voice no longer exists.")
+        except OSError as exc:
+            # Operating-system messages name server paths; browsers get the reason.
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not rename {name}: {exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, {"name": new_name, "assets": asset_catalog(storage)})
 
     def save_draft(self, draft_id, name):
         storage = self.server.storage
@@ -9379,6 +9860,7 @@ label.check input { width:18px; height:18px; margin:0; accent-color:var(--accent
           padding:12px 16px; background:var(--surface); border-radius:10px; }
 .steps { display:grid; gap:12px; margin:0; padding:0; list-style:none; }
 .step { padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
+.step.drop-target { outline:2px dashed var(--accent); outline-offset:-2px; }
 .step-head { display:flex; align-items:center; gap:14px; min-height:32px; }
 .step-marker { display:grid; place-items:center; flex:0 0 auto; width:30px; height:30px;
                border-radius:50%; background:var(--raised); color:var(--dim);
@@ -9451,6 +9933,7 @@ legend + * { clear:both; }
                        background:var(--dim); }
 .worker-chip.running, .worker-chip.reserved { border-color:var(--accent); }
 .worker-chip.running::before, .worker-chip.reserved::before { background:var(--accent); }
+.worker-chip.off { opacity:.55; }
 .worker-status { color:var(--dim); }
 .search { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
 .search input { flex:1 1 320px; }
@@ -9622,7 +10105,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <legend>This server</legend>
       <div class="row"><span class="row-label">Narration workers</span>
         <div class="stack"><span id="compute-workers" class="worker-list"></span>
-          <span id="compute-detail" class="note"></span></div></div>
+          <span id="compute-detail" class="note"></span>
+          <div id="local-devices" class="line hidden"><span class="note">This machine
+            narrates on:</span><span id="local-device-list" class="line"></span></div></div></div>
       <div class="row"><span class="row-label">Other machines</span>
         <div class="stack"><div id="node-list" class="stack"></div>
           <div class="line">
@@ -9685,26 +10170,26 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <li id="step-book" class="step">
         <div class="step-head">
           <span class="step-marker" aria-hidden="true">1</span>
-          <h3 class="step-title" tabindex="-1">Add your book</h3>
+          <h3 class="step-title" tabindex="-1">Add the source document</h3>
           <span class="visually-hidden step-state"></span>
           <span id="book-summary" class="step-summary clamp"></span>
-          <button id="book-change" class="link" type="button" aria-label="Change book"
+          <button id="book-change" class="link" type="button" aria-label="Change source document"
             onclick="setStep('book')">Change</button>
         </div>
         <div class="step-body">
           <div class="field">
-            <label for="document">Your books</label>
+            <label for="document">Your documents</label>
             <div class="line">
-              <select id="document"><option value="">Choose a book</option></select>
+              <select id="document"><option value="">Choose a document</option></select>
               <button id="document-delete" class="link" type="button"
-                aria-label="Delete the chosen book" onclick="deleteDocument(this)">Delete</button>
+                aria-label="Delete the chosen document" onclick="deleteDocument(this)">Delete</button>
             </div>
           </div>
           <div class="line">
             <input id="document-file" class="hidden" type="file"
               accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
             <button id="document-upload" type="button" onclick="chooseDocument()">Upload a file…</button>
-            <span class="note">PDF, Markdown, or plain text</span>
+            <span class="note">PDF, Markdown, or plain text; or drop a file here</span>
           </div>
           <details id="link-details" class="from-link">
             <summary>Add from a link</summary>
@@ -9824,6 +10309,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <section id="create-result" class="card hidden" aria-labelledby="result-title">
       <h3 id="result-title" tabindex="-1"></h3>
       <p id="result-text" class="clamp"></p>
+      <p id="result-time" class="note"></p>
       <details id="result-details" class="technical hidden">
         <summary>Technical details</summary><pre id="result-detail-text"></pre>
       </details>
@@ -10192,7 +10678,7 @@ function fillAssetSelect(id, values, selected, placeholder) {
 }
 
 function populateAssets() {
-  fillAssetSelect("document", assets.documents, state.audiobook.document, "Choose a book");
+  fillAssetSelect("document", assets.documents, state.audiobook.document, "Choose a document");
   fillAssetSelect("shared-voice", assets.voices, state.audiobook.voice, "Choose a voice");
 }
 
@@ -10253,9 +10739,8 @@ async function sync() {
 function queueSync() { syncSeq++; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 250); }
 
 function chooseDocument() { $("document-file").click(); }
-async function uploadDocument() {
-  const file = $("document-file").files[0];
-  if (!file) return;
+async function uploadDocument(file) {
+  if (!file || $("document-upload").disabled) return;
   $("document-upload").disabled = true;
   setStatus(`Uploading ${file.name}…`);
   try {
@@ -11082,7 +11567,11 @@ function voiceRow(voice) {
     button.addEventListener("click", () => useVoice(voice.name));
     select.append(button);
   }
-  select.append(deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
+  const rename = document.createElement("button");
+  rename.type = "button"; rename.className = "link"; rename.textContent = "Rename";
+  rename.setAttribute("aria-label", `Rename ${voice.name}`);
+  rename.addEventListener("click", () => renameVoice(voice.name, rename));
+  select.append(rename, deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
   row.append(preview, name, description, modifiedCell(voice.modified), select);
   return row;
 }
@@ -11170,6 +11659,34 @@ async function deleteVoice(name, button) {
   render(); queueSync();
   await refreshVoices();
 }
+// Renaming keeps the voice's files, and with them its version; the books it
+// read take the new name too.
+async function renameVoice(name, button) {
+  const entered = window.prompt(`Rename the voice ${name} to:`, name);
+  const newName = (entered || "").trim();
+  if (!newName || newName === name) return;
+  button.disabled = true;
+  try {
+    const answer = await jsonRequest("/api/voices/rename", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name, new_name: newName }),
+    });
+    if (previewing === name) stopPreview();
+    if (voiceResult && voiceResult.saved === name) voiceResult.saved = answer.name;
+    if (state.voice.name === name) { state.voice.name = answer.name; $("voice-name").value = answer.name; }
+    if (state.audiobook.voice === name) state.audiobook.voice = answer.name;
+    if (state.player.voice === name) state.player.voice = answer.name;
+    assets = answer.assets || assets;
+    populateAssets();
+    setStatus(`Renamed ${name} to ${answer.name}.`);
+    render(); queueSync();
+    await Promise.all([refreshVoices(), refreshLibrary()]);
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
 async function deleteBook(book, button) {
   const answer = await deleteAsset("audiobooks", book.id,
     `Delete the audiobook ${book.title}? Every voice of it and its text are removed for good.`,
@@ -11182,7 +11699,7 @@ async function deleteDocument(button) {
   const name = state.audiobook.document;
   if (!name) return;
   const answer = await deleteAsset("documents", name,
-    `Delete ${name} from your books? Audiobooks made from it are kept.`, button);
+    `Delete ${name} from your documents? Audiobooks made from it are kept.`, button);
   if (!answer) return;
   assets = answer.assets || assets;
   if (state.audiobook.document === name) state.audiobook.document = "";
@@ -11448,6 +11965,7 @@ function renderResult() {
   $("result-text").textContent = ok ? (info.title || "")
     : stopped ? "Everything finished so far is kept. Continue whenever you like."
     : "Everything finished so far is kept, so trying again continues from there.";
+  $("result-time").textContent = ok && info.total_time ? `Total time: ${info.total_time}.` : "";
   $("result-primary").textContent = ok ? "Start listening" : stopped ? "Continue" : "Try again";
   $("result-details").classList.toggle("hidden", ok || stopped || !resultDetail);
   $("result-detail-text").textContent = resultDetail;
@@ -11903,7 +12421,10 @@ function watch(jobId="") {
         resultDetail = info.code !== 0 && info.code !== 130 ? recentLog.join("\n") : "";
         if (state.tab === "audiobook") focus = "result-title";
       } else if (info.code === 0) {
-        if (info.title) setStatus(`${info.title} is ready in Listen.`);
+        if (info.title) {
+          setStatus(`${info.title} is ready in Listen.`
+            + (info.total_time ? ` Total time: ${info.total_time}.` : ""));
+        }
       } else {
         // Away from its progress card, a stop or failure is only a notice.
         const subject = job ? `${job.document} with ${job.voice}` : "An audiobook";
@@ -12212,6 +12733,30 @@ function renderWorkers() {
     row.append(text, remove);
     return row;
   }));
+  // Each of this machine's devices narrates while its box is ticked.
+  const devices = local && workerNodes ? workerNodes.local || [] : [];
+  $("local-devices").classList.toggle("hidden", !devices.length);
+  $("local-device-list").replaceChildren(...devices.map((device) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = device.narrates;
+    box.addEventListener("change", () => setLocalDevice(device.device, box.checked));
+    label.append(box, " " + device.label);
+    return label;
+  }));
+}
+async function setLocalDevice(device, narrates) {
+  try {
+    applyWorkers(await jsonRequest("/api/workers/local", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ device, narrates }),
+    }));
+    setStatus(`${deviceName(device)} ${narrates ? "narrates again" : "no longer narrates"}.`);
+  } catch (error) {
+    setStatus(error.message, true);
+    renderWorkers();
+  }
 }
 function workerSetupRunning() {
   return !!(workerNodes && workerNodes.setup && workerNodes.setup.status === "running");
@@ -12385,7 +12930,27 @@ for (const [id] of FIELDS) {
 for (const [id] of FLAGS)
   $(id).addEventListener("change", () => { collect(); render(); sync(); });
 $("shared-voice").addEventListener("change", () => { stopPreview(); renderVoiceTable(); });
-$("document-file").addEventListener("change", uploadDocument);
+$("document-file").addEventListener("change", () => uploadDocument($("document-file").files[0]));
+// The whole first step takes a dropped file, as Upload a file does.
+const bookStep = $("step-book");
+const dragsFile = (event) => [...event.dataTransfer.types].includes("Files");
+for (const type of ["dragenter", "dragover"]) {
+  bookStep.addEventListener(type, (event) => {
+    if (!dragsFile(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    bookStep.classList.add("drop-target");
+  });
+}
+bookStep.addEventListener("dragleave", (event) => {
+  if (!bookStep.contains(event.relatedTarget)) bookStep.classList.remove("drop-target");
+});
+bookStep.addEventListener("drop", (event) => {
+  if (!dragsFile(event)) return;
+  event.preventDefault();
+  bookStep.classList.remove("drop-target");
+  uploadDocument(event.dataTransfer.files[0]);
+});
 $("voice-search").addEventListener("input", () => { voiceLimit = PAGE_SIZE; renderVoiceTable(); });
 $("book-search").addEventListener("input", () => { bookLimit = PAGE_SIZE; renderLibrary(); });
 $("worker-host").addEventListener("input", () => {
@@ -12521,13 +13086,17 @@ def main():
     loopback = args.host in ("127.0.0.1", "::1", "localhost")
     workers_path = storage.root / WORKERS_FILE
     try:
-        nodes = read_worker_nodes(workers_path)
+        nodes, local_off = read_workers(workers_path)
     except (OSError, ValueError) as exc:
         parser.error(f"{workers_path}: {exc}")
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     server.jobs = JobQueue(audiobook_consumers(tts_models["clone"], nodes=nodes))
+    try:
+        server.jobs.set_local_off(local_off)
+    except ValueError as exc:
+        parser.error(f"{workers_path}: local_off: {exc}")
     server.worker_nodes = nodes
     server.workers_path = workers_path
     server.workers_lock = threading.Lock()
@@ -12552,7 +13121,7 @@ def main():
     print(
         "Audiobook consumers: "
         + ", ".join(
-            consumer["label"]
+            consumer["label"] + (" (off)" if consumer["status"] == "off" else "")
             for consumer in server.jobs.consumers_snapshot()
         ),
         flush=True,

@@ -89,6 +89,8 @@ from pathlib import Path
 
 VOICE_DESCRIPTION_FILE = "description.txt"
 VOICE_PREVIEW_FILE = "preview.wav"
+# A replaced voice's clip, transcript, and prompt move to <voice>/.versions/vN.
+VOICE_VERSIONS_DIR = ".versions"
 WORKER_PROTOCOL = "@@AUDIOBOOK_TTS_WORKER@@"
 MAX_WORKER_WAV_BYTES = 256 * 1024 * 1024
 # A narration worker needs the Base model (about 4 GiB) plus room for a batch.
@@ -396,6 +398,14 @@ def build_parser():
         ),
     )
     narration.add_argument(
+        "--no-local-worker",
+        action="store_true",
+        help=(
+            "Narrate only on the --ssh-worker machines: --device runs no "
+            "worker of its own. Requires --ssh-worker; excludes --worker-device."
+        ),
+    )
+    narration.add_argument(
         "--ssh-python",
         default="python3",
         metavar="PATH",
@@ -589,6 +599,7 @@ def save_voice(
             voice_dir.mkdir(exist_ok=True)
             if not voice_dir.is_dir():
                 raise NotADirectoryError(f"voice destination is not a directory: {voice_dir}")
+            keep_voice_version(voice_dir)
         else:
             # Reserve the destination after generation; a concurrent creator still wins safely.
             voice_dir.mkdir()
@@ -601,6 +612,25 @@ def save_voice(
         # nor keep a preview rendered from it.
         (voice_dir / VOICE_PREVIEW_FILE).unlink(missing_ok=True)
         (staged / "transcript.txt").replace(voice_dir / "transcript.txt")
+
+
+def keep_voice_version(voice_dir):
+    """Copy a voice about to be replaced into <voice>/.versions/vN, N counting up.
+
+    A copy, not a move: the voice stays whole until its new files replace it.
+    """
+    voice_dir = Path(voice_dir)
+    if not all((voice_dir / name).is_file() for name in ("reference.wav", "transcript.txt")):
+        return
+    versions = voice_dir / VOICE_VERSIONS_DIR
+    numbers = [
+        int(path.name[1:]) for path in versions.glob("v*") if path.name[1:].isdigit()
+    ] if versions.is_dir() else []
+    target = versions / f"v{max(numbers, default=0) + 1}"
+    target.mkdir(parents=True)
+    for name in ("reference.wav", "transcript.txt", VOICE_DESCRIPTION_FILE):
+        if (voice_dir / name).is_file():
+            shutil.copy2(voice_dir / name, target / name)
 
 
 def voice_destination(args, parser):
@@ -1335,7 +1365,7 @@ def _stage_ssh_worker(args, worker, voice_dir):
 def _narration_worker_specifications(args, voice_dir):
     """Describe every worker as (label, command, cleanup, local device or None)."""
     specifications = []
-    for device in [args.device, *args.worker_device]:
+    for device in _local_worker_devices(args):
         specifications.append(
             (
                 f"Local {device}",
@@ -1389,9 +1419,14 @@ def _save_worker_checkpoint(directory, index, encoded, sf):
         raise
 
 
+def _local_worker_devices(args):
+    """The devices of this machine that narrate: --device, then --worker-device."""
+    return [] if args.no_local_worker else [args.device, *args.worker_device]
+
+
 def _worker_topology(args):
     return {
-        "local_devices": [args.device, *args.worker_device],
+        "local_devices": _local_worker_devices(args),
         # The Python executable does not change the audio, so it is left out.
         "ssh_workers": [
             {key: worker[key] for key in ("target", "device", "model")}
@@ -1895,6 +1930,7 @@ def check_mode(args, parser):
             ("--voice-dir", args.voice_dir),
             ("--batch-size", args.batch_size or None),
             ("--worker-device", args.worker_device or None),
+            ("--no-local-worker", args.no_local_worker or None),
             ("--ssh-worker", args.ssh_worker or None),
             ("--ssh-model-path", args.ssh_model_path),
         ]
@@ -1924,11 +1960,13 @@ def check_distributed_mode(args, parser):
     distributed = bool(args.worker_device or args.ssh_worker)
     if args.ssh_model_path and not args.ssh_worker:
         parser.error("--ssh-model-path requires at least one --ssh-worker")
+    if args.no_local_worker and (not args.ssh_worker or args.worker_device):
+        parser.error("--no-local-worker needs --ssh-worker and excludes --worker-device")
     if not distributed:
         return
     if args.resume_dir is None:
         parser.error("--worker-device and --ssh-worker require --resume-dir")
-    local_devices = [args.device, *args.worker_device]
+    local_devices = _local_worker_devices(args)
     if len(set(local_devices)) != len(local_devices):
         parser.error("local narration worker devices must be unique")
     if not args.ssh_python.strip():
