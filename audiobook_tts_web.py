@@ -5406,16 +5406,28 @@ def prose_kept(source, narration):
     return 1 - len(lost) / len(words), sorted(lost)
 
 
-# Whom a narration credits: "Press and Wolf", "Vaswani and others".
+# Whom a narration credits: "Press and Wolf", "Vaswani and others",
+# "Vaswani et al.".
 ATTRIBUTION_PATTERN = re.compile(
-    r"\b([A-Z][a-z][\w'’-]*)\s+(?:and|&)\s+(?:others|colleagues|[A-Z][a-z][\w'’-]*)\b"
+    r"\b([A-Z][a-z][\w'’-]*)\s+(?:(?:and|&)\s+(?:others|colleagues|[A-Z][a-z][\w'’-]*)\b|et al\b)"
 )
-# A number as printed: "27.3", "512", "2014".
-NUMBER_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![.,]?\d)")
+# A number as printed, also glued to a word: "27.3", "512", "newstest2014".
+NUMBER_PATTERN = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![.,]?\d)")
+NUMBER_WORDS = {
+    word: number for number, word in enumerate((
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen "
+        "fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+    ).split())
+}
+_EQUATION_NUMBER = r"(?:\d+|" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=True)) + r")\b"
 # What a model calls an equation printed as a picture: "Equation 3",
-# "equation (3)", and often "Figure 4" or "the figure", though it is none.
+# "Equations (4) and (5)", "Eq. 6", "Equation six", and often "Figure 4" or
+# "the figure", though it is none.
 EQUATION_NAME_PATTERN = re.compile(
-    r"\b(?:([Ee])quation|([Ff])igure)\s+\(?(\d+)\)?|\b([Tt])he (?:figure|formula)\b"
+    r"\b(?P<kind>[Ee]quations?|[Ee]qs?\.|[Ff]igures?|[Ff]igs?\.|[Ff]ormulas?)\s*\(?"
+    rf"(?P<numbers>{_EQUATION_NUMBER}(?:\)?\s*(?:,|and|&|–|-|to)\s*\(?{_EQUATION_NUMBER})*)\)?"
+    r"(?![\w.]\d)"
+    r"|\b(?P<the>[Tt]he) (?:figure|formula)(?P<plural>s?)\b"
 )
 # The number printed beside an equation ends its picture text: "(3)".
 PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
@@ -5434,64 +5446,99 @@ def _printed(number, numbers):
     """Whether a narrated number is printed, or is a printed one rounded.
 
     Extraction runs a power into its base, "10000<sup>2i</sup>" into
-    "100002i", so a whole number counts when it opens a printed one.
+    "100002i", so a whole number counts when it opens a printed whole number;
+    a printed decimal, "41.8", never vouches for "41".
     """
     if number in numbers:
         return True
-    if "." not in number and any(printed.startswith(number) for printed in numbers):
+    if "." not in number and any(
+        "." not in printed and printed.startswith(number) for printed in numbers
+    ):
         return True
     places = len(number.partition(".")[2])
     return any(round(float(printed), places) == float(number) for printed in numbers)
 
 
 def printed_equation_numbers(sources):
-    """The numbers printed beside the equations in a batch: "(3)" ends one's
-    picture text."""
+    """The numbers printed beside the equations in these paragraphs: "(3)"
+    ends one's picture text."""
     return [
         match.group(1) for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources))
         if (match := PRINTED_EQUATION_NUMBER.search(re.sub(r"<!--.*?-->", "", text).strip()))
     ]
 
 
-def label_equation(narration, sources):
+def label_equation(narration, sources, printed=()):
     """Name an equation in its description as the paper does, in code.
 
     The model is shown the printed number and still writes its own, "Equation
     6" for an equation the paper leaves unnumbered, or calls the picture
-    "Figure 4" though no figure is in the batch. Every such name becomes the
-    printed one: "Equation 3" when the paper prints "(3)" beside it, "the
-    equation" when it prints none. An equation number the paper prints in
-    this batch stays.
+    "Figure 4". The description's opening cue always becomes the paper's
+    name: "Equation 3" when "(3)" is printed beside it, "Equations 4 and 5"
+    for two, "The equation" for one printed without. Further on, an equation
+    number the paper never prints (printed holds the whole paper's) becomes
+    that name too, and "the figure" or "the formula" becomes "the equation";
+    a real reference, "Figure 2" or an equation the paper numbers, stays.
     """
+    # Only an equation's printed text is math; an uncaptioned picture of
+    # something else, a logo or a photograph, keeps whatever it was called.
+    if not any("=" in text for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources))):
+        return narration
     marks = printed_equation_numbers(sources)
 
+    def name(capital, plural):
+        if len(marks) == 1:
+            return f"Equation {marks[0]}"
+        if marks:
+            return f"Equations {', '.join(marks[:-1])}{',' if len(marks) > 2 else ''} and {marks[-1]}"
+        text = f"the equation{'s' if plural else ''}"
+        return text[0].upper() + text[1:] if capital else text
+
     def named(match):
-        number = match.group(3)
-        if match.group(1) and number in marks:
+        before = narration[:match.start()]
+        opening = not before.strip()
+        capital = opening or bool(re.search(r"[.!?]\s*$", before))
+        if match.group("the"):
+            text = f"the equation{match.group('plural')}"
+            return text[0].upper() + text[1:] if capital else text
+        kind = match.group("kind").lower().rstrip(".")
+        plural = kind.endswith("s")
+        if opening:
+            return name(True, plural)
+        if kind.startswith("fig"):
             return match.group(0)
-        capital = (match.group(1) or match.group(2) or match.group(4)).isupper()
-        if len(marks) == 1 and number:
-            return f"{'E' if capital else 'e'}quation {marks[0]}"
-        return f"{'T' if capital else 't'}he equation"
+        numbers = {
+            str(NUMBER_WORDS.get(piece.lower(), piece))
+            for piece in re.findall(_EQUATION_NUMBER, match.group("numbers"))
+        }
+        if numbers <= set(printed) | set(marks):
+            return match.group(0)
+        return name(capital, plural)
     return EQUATION_NAME_PATTERN.sub(named, narration)
 
 
-def grounding_problems(narration, sources, describes=False):
+def grounding_problems(narration, sources, describes=False, known_names=()):
     """What a batch's narration states that its source does not.
 
-    Any narration that credits work to a name its own request never mentions,
-    though the paper names it elsewhere, as "Vaswani" in the author block; in
-    a description of a figure, table, or equation, also a number with two or
-    more digits, or a decimal, that its source does not print, rounding
-    allowed. These only point at a passage worth a look: the narration is kept
-    as written.
+    A name its own request never mentions, though the paper names it
+    elsewhere: any surname of a reference-list author or of the paper's own
+    authors (known_names), as "Vaswani" in the author block, and any name the
+    narration credits work to ("Press and Wolf", "Vaswani et al."), case
+    aside, so "Encoder and Decoder" passes beside "encoder". In a description
+    of a figure, table, or equation, also a number with two or more digits,
+    or a decimal, that its source does not print, rounding allowed. These only
+    point at a passage worth a look: the narration is kept as written.
     """
     source = "\n\n".join(sources)
     problems = []
-    names = dict.fromkeys(match.group(1) for match in ATTRIBUTION_PATTERN.finditer(narration))
-    for name in names:
-        if name not in source:
-            problems.append(f"the narration credits {name}, whom its source never names")
+    credited = [match.group(1) for match in ATTRIBUTION_PATTERN.finditer(narration)]
+    named = [
+        surname for surname in sorted(known_names)
+        if len(surname) >= 3 and re.search(rf"\b{re.escape(surname)}\b", narration)
+    ]
+    for name in dict.fromkeys(credited + named):
+        if not re.search(rf"\b{re.escape(name)}\b", source, flags=re.IGNORECASE):
+            problems.append(f"the narration names {name}, whom its source never names")
     if not describes:
         return problems
     printed = set(_numbers(source))
@@ -5663,13 +5710,13 @@ REFERENCE_YEAR_PATTERN = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
 
 
 def reference_entries(paragraphs):
-    """The numbered reference list, as {number: "Press and Wolf"}.
+    """The numbered reference list, as {number: ["Press", "Wolf"]}, every
+    author's surname in order.
 
     An entry opens a paragraph ("- [30] Ofir Press…"), follows another one
     inside it, or follows the References heading extraction ran it into. It
-    counts once its authors end at a period and a year follows them; one
-    author, two, or the first and colleagues are kept. Fewer than three
-    entries are not a reference list, and give none.
+    counts once its authors end at a period and a year follows them. Fewer
+    than three entries are not a reference list, and give none.
     """
     entries = {}
     for paragraph in paragraphs:
@@ -5691,15 +5738,33 @@ def reference_entries(paragraphs):
                 if name.strip()
             ]
             surnames = [re.sub(r"[^\w'’-]", "", name.split()[-1]) for name in names]
-            if not surnames or not all(surnames):
-                continue
-            who = (
-                surnames[0] if len(surnames) == 1
-                else f"{surnames[0]} and {surnames[1]}" if len(surnames) == 2
-                else f"{surnames[0]} and colleagues"
-            )
-            entries.setdefault(int(match.group(1)), who)
+            if surnames and all(surnames):
+                entries.setdefault(int(match.group(1)), surnames)
     return entries if len(entries) >= 3 else {}
+
+
+def cited_as(works):
+    """How a listener hears a citation of these works, each its surnames.
+
+    One work is its authors: "Chollet", "Press and Wolf", "Ba and
+    colleagues". Several are their first authors: "Kalchbrenner and Gehring",
+    "Wu, Bahdanau, and Gehring". A work the list lacks (None) is "earlier
+    work", and is left out beside named ones.
+    """
+    known = [surnames for surnames in works if surnames]
+    if not known:
+        return "earlier work"
+    if len(known) == 1:
+        surnames = known[0]
+        return (
+            surnames[0] if len(surnames) == 1
+            else f"{surnames[0]} and {surnames[1]}" if len(surnames) == 2
+            else f"{surnames[0]} and colleagues"
+        )
+    firsts = list(dict.fromkeys(surnames[0] for surnames in known))
+    if len(firsts) == 2:
+        return f"{firsts[0]} and {firsts[1]}"
+    return ", ".join(firsts[:-1]) + ", and " + firsts[-1]
 
 
 # Words after which a citation is part of the sentence, "similar to [30]",
@@ -5710,42 +5775,68 @@ CITATION_NEEDED_BEFORE = re.compile(
     r"follows?|following|uses?|using|extends?)|^|[.:;!?])\s*$",
     flags=re.IGNORECASE,
 )
+# What joins citations into one chain: "[17, 18] and [9]", "[2], [5]".
+CITATION_CHAIN_JOIN = re.compile(r"\s*(?:,\s*(?:and|or)?|and|or)\s*", flags=re.IGNORECASE)
+
+
+def _cited_numbers(text):
+    numbers = []
+    for part in re.split(r"[ \t]*,[ \t]*", text):
+        bounds = [int(piece) for piece in re.split(r"[ \t]*[–-][ \t]*", part)]
+        if len(bounds) == 2 and 0 < bounds[1] - bounds[0] <= 20:
+            numbers.extend(range(bounds[0], bounds[1] + 1))
+        else:
+            numbers.extend(bounds)
+    return numbers
 
 
 def resolve_citations(paragraph, entries):
     """Settle numbered citations in code before the model sees them.
 
-    A citation the sentence needs, "similar to [30]", becomes whom it cites,
-    "similar to Press and Wolf", and "earlier work" for a number the list
-    lacks, so the model never guesses an author. A parenthetical one,
-    "networks [13]", is left out, as the prompt leaves out citation numbers;
-    reading every attribution aloud would crowd the prose. Without a
-    reference list the paragraph stays as printed.
+    Citations joined by "and" or a comma are one chain, "such as [17, 18] and
+    [9]". A chain the sentence needs, "similar to [30]", becomes whom it cites
+    (cited_as()): "similar to Press and Wolf", so the model never guesses an
+    author. A parenthetical one, "networks [13]", is left out, as the prompt
+    leaves out citation numbers; reading every attribution aloud would crowd
+    the prose. Without a reference list the paragraph stays as printed.
     """
     if not entries:
         return paragraph
-    pieces, last = [], 0
+    chains = []
     for match in NUMBERED_CITATION_PATTERN.finditer(paragraph):
-        before = paragraph[last:match.start()]
-        if not CITATION_NEEDED_BEFORE.search(paragraph[:match.start()]):
+        if chains and CITATION_CHAIN_JOIN.fullmatch(paragraph[chains[-1][-1].end():match.start()]):
+            chains[-1].append(match)
+        else:
+            chains.append([match])
+    pieces, last = [], 0
+    for chain in chains:
+        start, end = chain[0].start(), chain[-1].end()
+        before = paragraph[last:start]
+        if CITATION_NEEDED_BEFORE.search(paragraph[:start]):
+            numbers = dict.fromkeys(
+                number for match in chain for number in _cited_numbers(match.group(1))
+            )
+            pieces.append(before + cited_as([entries.get(number) for number in numbers]))
+        else:
             pieces.append(before.rstrip())
-            last = match.end()
-            continue
-        numbers = []
-        for part in re.split(r"[ \t]*,[ \t]*", match.group(1)):
-            bounds = [int(piece) for piece in re.split(r"[ \t]*[–-][ \t]*", part)]
-            if len(bounds) == 2 and 0 < bounds[1] - bounds[0] <= 20:
-                numbers.extend(range(bounds[0], bounds[1] + 1))
-            else:
-                numbers.extend(bounds)
-        names = list(dict.fromkeys(
-            entries[number] if number in entries else "earlier work" for number in numbers
-        ))
-        named = names[0] if len(names) == 1 else ", ".join(names[:-1]) + ", and " + names[-1]
-        pieces.append(before + named)
-        last = match.end()
+        last = end
     pieces.append(paragraph[last:])
     return "".join(pieces)
+
+
+def author_surnames(paragraphs):
+    """The surnames of the paper's own authors: bold names of two to four
+    capitalized words on its first page, before the abstract."""
+    surnames = set()
+    for paragraph in paragraphs[:30]:
+        if re.match(r"(?i)\W*abstract\b", _layout_text(paragraph)):
+            break
+        for bold in re.findall(r"\*\*([^*\n]+)\*\*", paragraph):
+            for name in re.split(r",\s*|\s+and\s+", bold):
+                words = name.split()
+                if 2 <= len(words) <= 4 and all(re.fullmatch(r"[A-ZŁ][\w.'’-]*", word) for word in words):
+                    surnames.add(words[-1])
+    return surnames
 
 
 def paper_request(paragraphs, summaries, start, end, total, attempt=1, acronyms=()):
@@ -7715,9 +7806,15 @@ class PaperRun(Run):
         if references:
             self.publish(
                 "log",
-                f"Read {len(references)} entries of the reference list; numbered "
-                "citations reach the model as their authors and year.\n",
+                f"Read {len(references)} entries of the reference list; a citation "
+                "the sentence needs reaches the model as its authors, and one in "
+                "passing is left out.\n",
             )
+        # The names the log watches for, and the equation numbers the paper prints.
+        known_names = author_surnames(paragraphs) | {
+            surname for surnames in references.values() for surname in surnames
+        }
+        printed = set(printed_equation_numbers(requested))
         summaries = []
         results = {}
         completed_count = 0
@@ -7841,7 +7938,9 @@ class PaperRun(Run):
                         if describes and _visual_type(
                             paragraphs[start - 1:end], kinds[start - 1:end]
                         ) == "equation":
-                            narration = label_equation(narration, requested[start - 1:end])
+                            narration = label_equation(
+                                narration, requested[start - 1:end], printed
+                            )
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -7884,7 +7983,7 @@ class PaperRun(Run):
                         # What a narration states that its source does not is
                         # named in the log; the narration is kept as written.
                         for problem in grounding_problems(
-                            narration, requested[start - 1:end], describes,
+                            narration, requested[start - 1:end], describes, known_names,
                         ):
                             self.publish("log", f"{named}: {problem}.\n")
                         completed_count += end - start + 1

@@ -112,10 +112,12 @@ out, once; the rest, such as GPU, stay acronyms.
 
 A citation by number that the sentence needs, as in "similar to [30]", is read
 as whom the paper's reference list names, "similar to Press and Wolf", so the
-narration never guesses an author; one the list lacks becomes "earlier work".
-A citation in passing, as in "networks [13]", is left out. Afterwards the job
-log names what a passage states that its source does not: a name it credits
-work to that its own text never mentions, and, in a description, a number the
+narration never guesses an author. Several works cited together are named by
+their first authors, "such as Kalchbrenner and Gehring", and one the list lacks
+becomes "earlier work". A citation in passing, as in "networks [13]", is left
+out. Afterwards the job log names what a passage states that its source does
+not: an author of the paper or of its references, or a name it credits work
+to, that its own text never mentions, and, in a description, a number the
 source does not print (a rounded one is fine). These lines only point at
 passages worth a look; the narration stays as written.
 

@@ -5370,17 +5370,25 @@ class GroundingTests(unittest.TestCase):
     def test_a_needed_citation_names_its_authors_and_a_parenthetical_one_goes(self):
         entries = web.reference_entries(self.REFERENCES)
         self.assertEqual(entries, {
-            1: "Ba and colleagues", 2: "Bahdanau and colleagues", 3: "Chollet",
-            4: "Le and Mikolov",
+            1: ["Ba", "Kiros", "Hinton"], 2: ["Bahdanau", "Cho", "Bengio"],
+            3: ["Chollet"], 4: ["Le", "Mikolov"],
         })
         self.assertEqual(
             web.resolve_citations(
-                "Normalization [1] helps. We follow [3], as in [2–4] and in [4, 9]. "
-                "[1] showed it.", entries,
+                "Normalization [1] helps. We follow [3], as in [4] and in [2–3]. "
+                "[1] showed it, unlike [9].", entries,
             ),
-            "Normalization helps. We follow Chollet, as in Bahdanau and colleagues, "
-            "Chollet, and Le and Mikolov and in Le and Mikolov, and earlier work. "
-            "Ba and colleagues showed it.",
+            "Normalization helps. We follow Chollet, as in Le and Mikolov and in "
+            "Bahdanau and Chollet. Ba and colleagues showed it, unlike earlier work.",
+        )
+        # Citations joined by "and" or a comma are one chain, named together:
+        # the chain after a named one never leaves "and" hanging.
+        self.assertEqual(
+            web.resolve_citations("models such as [3, 9] and [2]. Networks [4], [1] work.", entries),
+            "models such as Chollet and Bahdanau. Networks work.",
+        )
+        self.assertEqual(
+            web.resolve_citations("as in [1, 2, 3].", entries), "as in Ba, Bahdanau, and Chollet.",
         )
         # Two bracketed numbers are no reference list, and nothing changes.
         self.assertEqual(web.reference_entries(self.REFERENCES[1:3]), {})
@@ -5427,22 +5435,26 @@ class GroundingTests(unittest.TestCase):
             "<!-- Start of picture text -->\nPE(pos,2i) = sin(pos/10000)\n"
             "<!-- End of picture text -->",
         )
-        self.assertEqual(
-            web.label_equation("Equation 5 says two layers apply in turn.", numbered),
-            "Equation 2 says two layers apply in turn.",
-        )
-        self.assertEqual(
-            web.label_equation("Equation 2 says…", numbered), "Equation 2 says…",
-        )
-        self.assertEqual(
-            web.label_equation("Equation 6 gives each position a sine; see equation 6.", unnumbered),
-            "The equation gives each position a sine; see the equation.",
-        )
-        # A picture of an equation is no figure, whatever the model calls it.
-        self.assertEqual(
-            web.label_equation("Figure 4 shows two layers; the figure's formula adds b2.", numbered),
-            "Equation 2 shows two layers; the equation's formula adds b2.",
-        )
+        printed = {"1", "2", "3"}
+        for narration, source, expected in (
+            ("Equation 5 says two layers apply in turn.", numbered,
+             "Equation 2 says two layers apply in turn."),
+            ("Equation 2 says…", numbered, "Equation 2 says…"),
+            # A picture of an equation is no figure, whatever the model calls it.
+            ("Figure 4 shows two layers; the figure's formula adds b2.", numbered,
+             "Equation 2 shows two layers; the equation's formula adds b2."),
+            ("This is what Equation 6 says.", unnumbered, "This is what the equation says."),
+            ("Equations 4 and 5 encode position.", unnumbered, "The equations encode position."),
+            ("Equation six adds a sine. Eq. 6 adds a cosine.", unnumbered,
+             "The equation adds a sine. The equation adds a cosine."),
+            # A real reference further on stays.
+            ("The equation, as in Figure 2, adds a sine, like Equation 1.", unnumbered,
+             "The equation, as in Figure 2, adds a sine, like Equation 1."),
+            # A picture without math is no equation, whatever extraction calls it.
+            ("Figure one shows the logo.", ("![](images/l.png)",), "Figure one shows the logo."),
+        ):
+            with self.subTest(narration):
+                self.assertEqual(web.label_equation(narration, source, printed), expected)
 
     def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):
         source = (
@@ -5458,16 +5470,32 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(web.grounding_problems(
             "Table 2 shows BLEU of 28.4, as Vaswani and others found.", source, describes=True,
         ), [
-            "the narration credits Vaswani, whom its source never names",
+            "the narration names Vaswani, whom its source never names",
             "the description says 28.4, which its source does not print",
         ])
-        # Only the passage's own request counts, never the rest of the paper:
-        # Vaswani heads the author block, and §3.4 still may not credit him.
-        section = ("We share the weight matrix, similar to Press and Wolf.",)
+        # A printed decimal never vouches for its whole part.
         self.assertEqual(
-            web.grounding_problems("We share it, similar to Vaswani and others.", section),
-            ["the narration credits Vaswani, whom its source never names"],
+            web.grounding_problems("Table 2 gives 41 BLEU.", source, describes=True),
+            ["the description says 41, which its source does not print"],
         )
+        # Only the passage's own request counts, never the rest of the paper:
+        # Vaswani heads the author block, and §3.4 still may not name him,
+        # however the narration puts it. Common words that pair up do not count.
+        section = ("We share the weight matrix, similar to Press and Wolf, as the encoder does.",)
+        for narration in (
+            "We share it, similar to Vaswani and others.",
+            "We share it, as Vaswani et al. did.",
+            "We share it, as used by Vaswani.",
+        ):
+            with self.subTest(narration):
+                self.assertEqual(
+                    web.grounding_problems(narration, section, known_names={"Vaswani", "Press"}),
+                    ["the narration names Vaswani, whom its source never names"],
+                )
+        self.assertEqual(web.grounding_problems(
+            "The Encoder and Decoder share it, similar to Press and Wolf.", section,
+            known_names={"Vaswani", "Press"},
+        ), [])
         # In prose, numbers are not checked.
         self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.3.",)), [])
 
