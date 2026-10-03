@@ -92,8 +92,9 @@ BOOK_SCHEMA = 1
 # Bump whenever the paragraphs or batches a job adapts change, through
 # with_title_heading(), join_pdf_pages(), narrated_source_paragraphs(), or
 # paper_batches(): checkpoints and the reader number paragraphs. Bump too when
-# what a request carries changes, through resolve_citations() or
-# visual_context(), so checkpoints made from the old requests are redone.
+# what a request carries changes, through resolve_citations() or the
+# summaries a figure, table, or equation goes without, so checkpoints made
+# from the old requests are redone.
 EXTRACTION_SCHEMA = 14
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
@@ -5411,16 +5412,21 @@ ATTRIBUTION_PATTERN = re.compile(
 )
 # A number as printed: "27.3", "512", "2014".
 NUMBER_PATTERN = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![.,]?\d)")
-# The cue a description opens with, naming an equation: "Equation 3 says…".
-EQUATION_CUE_PATTERN = re.compile(r"\s*Equation (\d+)\b")
+# What a model calls an equation printed as a picture: "Equation 3",
+# "equation (3)", and often "Figure 4" or "the figure", though it is none.
+EQUATION_NAME_PATTERN = re.compile(
+    r"\b(?:([Ee])quation|([Ff])igure)\s+\(?(\d+)\)?|\b([Tt])he (?:figure|formula)\b"
+)
 # The number printed beside an equation ends its picture text: "(3)".
 PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
 
 
 def _numbers(text):
-    """The numbers a text prints, as written once thousands separators and
-    the emphasis extraction leaves inside a decimal ("3 _._ 5") are gone."""
+    """The numbers a text prints, as written once thousands separators, the
+    emphasis extraction leaves inside a decimal ("3 _._ 5"), and a thousands
+    suffix ("100K" steps, said "100,000") are gone."""
     text = re.sub(r"(?<=\d)[\s_*]*\.[\s_*]*(?=\d)", ".", text)
+    text = re.sub(r"\b(\d+)K\b", lambda match: str(int(match.group(1)) * 1000), text)
     return NUMBER_PATTERN.findall(re.sub(r"(?<=\d),(?=\d{3}\b)", "", text))
 
 
@@ -5438,42 +5444,63 @@ def _printed(number, numbers):
     return any(round(float(printed), places) == float(number) for printed in numbers)
 
 
-def grounding_problems(narration, sources, context=(), describes=False):
+def printed_equation_numbers(sources):
+    """The numbers printed beside the equations in a batch: "(3)" ends one's
+    picture text."""
+    return [
+        match.group(1) for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources))
+        if (match := PRINTED_EQUATION_NUMBER.search(re.sub(r"<!--.*?-->", "", text).strip()))
+    ]
+
+
+def label_equation(narration, sources):
+    """Name an equation in its description as the paper does, in code.
+
+    The model is shown the printed number and still writes its own, "Equation
+    6" for an equation the paper leaves unnumbered, or calls the picture
+    "Figure 4" though no figure is in the batch. Every such name becomes the
+    printed one: "Equation 3" when the paper prints "(3)" beside it, "the
+    equation" when it prints none. An equation number the paper prints in
+    this batch stays.
+    """
+    marks = printed_equation_numbers(sources)
+
+    def named(match):
+        number = match.group(3)
+        if match.group(1) and number in marks:
+            return match.group(0)
+        capital = (match.group(1) or match.group(2) or match.group(4)).isupper()
+        if len(marks) == 1 and number:
+            return f"{'E' if capital else 'e'}quation {marks[0]}"
+        return f"{'T' if capital else 't'}he equation"
+    return EQUATION_NAME_PATTERN.sub(named, narration)
+
+
+def grounding_problems(narration, sources, describes=False):
     """What a batch's narration states that its source does not.
 
-    Any narration that credits work to a name its batch's source never
-    mentions; in a description of a figure, table, or equation, also a number
-    with two or more digits, or a decimal, that the source and its context do
-    not print, rounding allowed, and an equation called by a number other than
-    the one printed beside it. These only point at a passage worth a look:
-    the narration is kept as written.
+    Any narration that credits work to a name its own request never mentions,
+    though the paper names it elsewhere, as "Vaswani" in the author block; in
+    a description of a figure, table, or equation, also a number with two or
+    more digits, or a decimal, that its source does not print, rounding
+    allowed. These only point at a passage worth a look: the narration is kept
+    as written.
     """
     source = "\n\n".join(sources)
-    known = "\n\n".join((source, *(text for _, text in context)))
     problems = []
     names = dict.fromkeys(match.group(1) for match in ATTRIBUTION_PATTERN.finditer(narration))
     for name in names:
-        if name not in known:
+        if name not in source:
             problems.append(f"the narration credits {name}, whom its source never names")
     if not describes:
         return problems
-    printed = set(_numbers(known))
+    printed = set(_numbers(source))
     unprinted = dict.fromkeys(
         number for number in _numbers(narration)
         if (len(number) > 1 or "." in number) and not _printed(number, printed)
     )
     for number in unprinted:
         problems.append(f"the description says {number}, which its source does not print")
-    marks = [
-        match.group(1) for text in PICTURE_TEXT_PATTERN.findall(source)
-        if (match := PRINTED_EQUATION_NUMBER.search(re.sub(r"<!--.*?-->", "", text).strip()))
-    ]
-    cue = EQUATION_CUE_PATTERN.match(narration)
-    if cue and cue.group(1) not in marks:
-        problems.append(
-            f"the description calls it Equation {cue.group(1)}, but the paper prints "
-            + (f"({', '.join(marks)}) beside it" if marks else "no number beside it")
-        )
     return problems
 
 
@@ -5549,8 +5576,7 @@ something was omitted. SUMMARY is internal compacted context and is never empty;
 shorten or replace any narration or recreate an omitted bibliography.
 Earlier source batches and narration are intentionally absent from later calls:
 use their summaries only for continuity. A batch that is only a figure, table,
-or equation comes instead with the author's paragraphs that mention it, or the
-one before it: read them to understand what it shows, never narrate them."""
+or equation comes without summaries: describe it from what it carries."""
 
 
 def compact_paper_summary(summary):
@@ -5637,11 +5663,13 @@ REFERENCE_YEAR_PATTERN = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
 
 
 def reference_entries(paragraphs):
-    """The numbered reference list, as {number: "Press and Wolf, 2016"}.
+    """The numbered reference list, as {number: "Press and Wolf"}.
 
     An entry opens a paragraph ("- [30] Ofir Press…"), follows another one
-    inside it, or follows the References heading extraction ran it into.
-    Fewer than three entries are not a reference list, and give none.
+    inside it, or follows the References heading extraction ran it into. It
+    counts once its authors end at a period and a year follows them; one
+    author, two, or the first and colleagues are kept. Fewer than three
+    entries are not a reference list, and give none.
     """
     entries = {}
     for paragraph in paragraphs:
@@ -5656,8 +5684,7 @@ def reference_entries(paragraphs):
         for match, following in zip(found, found[1:] + [None]):
             body = " ".join(text[match.end():following.start() if following else None].split())
             end = REFERENCE_AUTHORS_END.search(body)
-            years = REFERENCE_YEAR_PATTERN.findall(body)
-            if end is None or not years:
+            if end is None or not REFERENCE_YEAR_PATTERN.search(body):
                 continue
             names = [
                 name for name in re.split(r",\s*(?:and\s+)?|\s+and\s+", body[:end.start()])
@@ -5671,18 +5698,39 @@ def reference_entries(paragraphs):
                 else f"{surnames[0]} and {surnames[1]}" if len(surnames) == 2
                 else f"{surnames[0]} and colleagues"
             )
-            entries.setdefault(int(match.group(1)), f"{who}, {years[-1]}")
+            entries.setdefault(int(match.group(1)), who)
     return entries if len(entries) >= 3 else {}
 
 
-def resolve_citations(paragraph, entries):
-    """Write numbered citations as the authors and year they stand for.
+# Words after which a citation is part of the sentence, "similar to [30]",
+# "as in [30]": it is said as whom it cites. Anywhere else it is a
+# parenthetical source, "networks [13]", which a listener does not need.
+CITATION_NEEDED_BEFORE = re.compile(
+    r"(?:\b(?:to|in|by|of|from|see|cf\.?|as|like|than|with|unlike|including|"
+    r"follows?|following|uses?|using|extends?)|^|[.:;!?])\s*$",
+    flags=re.IGNORECASE,
+)
 
-    "[30]" becomes "[Press and Wolf, 2016]", so the model keeps the attribution
-    from the reference list instead of guessing it. A bracket naming any number
-    the list lacks stays as printed.
+
+def resolve_citations(paragraph, entries):
+    """Settle numbered citations in code before the model sees them.
+
+    A citation the sentence needs, "similar to [30]", becomes whom it cites,
+    "similar to Press and Wolf", and "earlier work" for a number the list
+    lacks, so the model never guesses an author. A parenthetical one,
+    "networks [13]", is left out, as the prompt leaves out citation numbers;
+    reading every attribution aloud would crowd the prose. Without a
+    reference list the paragraph stays as printed.
     """
-    def named(match):
+    if not entries:
+        return paragraph
+    pieces, last = [], 0
+    for match in NUMBERED_CITATION_PATTERN.finditer(paragraph):
+        before = paragraph[last:match.start()]
+        if not CITATION_NEEDED_BEFORE.search(paragraph[:match.start()]):
+            pieces.append(before.rstrip())
+            last = match.end()
+            continue
         numbers = []
         for part in re.split(r"[ \t]*,[ \t]*", match.group(1)):
             bounds = [int(piece) for piece in re.split(r"[ \t]*[–-][ \t]*", part)]
@@ -5690,48 +5738,20 @@ def resolve_citations(paragraph, entries):
                 numbers.extend(range(bounds[0], bounds[1] + 1))
             else:
                 numbers.extend(bounds)
-        if not all(number in entries for number in numbers):
-            return match.group(0)
-        return "[" + "; ".join(entries[number] for number in numbers) + "]"
-    return NUMBERED_CITATION_PATTERN.sub(named, paragraph) if entries else paragraph
+        names = list(dict.fromkeys(
+            entries[number] if number in entries else "earlier work" for number in numbers
+        ))
+        named = names[0] if len(names) == 1 else ", ".join(names[:-1]) + ", and " + names[-1]
+        pieces.append(before + named)
+        last = match.end()
+    pieces.append(paragraph[last:])
+    return "".join(pieces)
 
 
-# A figure, table, or equation batch is read with at most this many of the
-# author's paragraphs, each cut to this length.
-VISUAL_CONTEXT_PARAGRAPHS = 2
-VISUAL_CONTEXT_CHARS = 2_000
-
-
-def visual_context(paragraphs, kinds, start, end):
-    """The author's paragraphs a figure, table, or equation batch is read with.
-
-    Those that mention its number come first, else the prose paragraph before
-    it. Both come from the source, so the batch's request is the same on every
-    run, unlike the model's own summaries of the batches before it.
-    """
-    label = visual_label(paragraphs[start - 1:end], kinds[start - 1:end])
-    chosen = []
-    if label:
-        word, number = label.split()
-        wanted = (word.lower(), int(number))
-        chosen = [
-            index for index, (paragraph, kind) in enumerate(zip(paragraphs, kinds), 1)
-            if kind == "prose" and not start <= index <= end
-            and wanted in _mentioned_visuals(_layout_text(paragraph))
-        ]
-    if not chosen:
-        chosen = next(
-            ([index] for index in range(start - 1, 0, -1) if kinds[index - 1] == "prose"), []
-        )
-    return tuple(
-        (index, paragraphs[index - 1][:VISUAL_CONTEXT_CHARS])
-        for index in chosen[:VISUAL_CONTEXT_PARAGRAPHS]
-    )
-
-
-def paper_request(paragraphs, context, start, end, total, attempt=1, acronyms=()):
-    """One batch's request. The context is the compacted summaries of earlier
-    batches, or, for a figure, table, or equation, visual_context()'s pairs."""
+def paper_request(paragraphs, summaries, start, end, total, attempt=1, acronyms=()):
+    """One batch's request. A batch that is only a figure, table, or equation
+    has no summaries (None): it goes alone, so its request is the same on
+    every run."""
     source = "\n\n".join(
         f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
         for number, paragraph in enumerate(paragraphs, start)
@@ -5751,20 +5771,15 @@ element. Do not discuss the retry or add text outside those elements."""
         "Acronyms the author already spelled out in earlier paragraphs; never "
         f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
     )
-    if isinstance(context, str):
+    if summaries is None:
+        background = """This batch is a figure, table, or equation on its own. Describe it from
+what it carries: its caption, its labels or cells, and its picture."""
+    else:
         background = f"""Compacted summaries from earlier source batches completed before dispatch:
-{context}
+{summaries}
 Some immediately preceding batches may still be processing and therefore absent
 from this snapshot. Adapt the current source independently rather than inventing
 missing material."""
-    else:
-        quoted = "\n\n".join(
-            f'<CONTEXT_PARAGRAPH number="{number}">\n{paragraph}\n</CONTEXT_PARAGRAPH>'
-            for number, paragraph in context
-        ) or "(none)"
-        background = f"""The author's paragraphs that mention this batch, or the one before it.
-Read them to understand what it shows; never narrate them:
-{quoted}"""
     return f"""{defined}{background}
 
 Current source {batch_label} of {total}:
@@ -7746,10 +7761,10 @@ class PaperRun(Run):
 
         def submit(start):
             end = batch_ends[start]
-            # A figure, table, or equation is read with the author's text about
-            # it; prose with the summaries of what came before.
+            # A figure, table, or equation goes alone; prose comes with the
+            # summaries of what came before.
             if _describes_visual(set(kinds[start - 1:end])):
-                context = visual_context(requested, kinds, start, end)
+                context = None
             else:
                 context, _ = paper_summary_context(summaries, self.summary_context_chars)
             future = executor.submit(
@@ -7820,6 +7835,13 @@ class PaperRun(Run):
                     ):
                         start, end = futures.pop(future)
                         narration, summary = future.result()
+                        batch_kinds = set(kinds[start - 1:end])
+                        describes = _describes_visual(batch_kinds)
+                        # Code, not the model, names an equation.
+                        if describes and _visual_type(
+                            paragraphs[start - 1:end], kinds[start - 1:end]
+                        ) == "equation":
+                            narration = label_equation(narration, requested[start - 1:end])
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -7833,13 +7855,12 @@ class PaperRun(Run):
                             f"Paragraphs {start}-{end}/{total}" if end > start
                             else f"Paragraph {start}/{total}"
                         )
-                        batch_kinds = set(kinds[start - 1:end])
                         # A listener hears no border between the author's
                         # text and a description of a figure, table, or
                         # equation, so the description must name what it is.
                         if (
                             narration
-                            and _describes_visual(batch_kinds)
+                            and describes
                             and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12]))
                         ):
                             opening = " ".join(narration.split()[:8])
@@ -7862,11 +7883,8 @@ class PaperRun(Run):
                                 )
                         # What a narration states that its source does not is
                         # named in the log; the narration is kept as written.
-                        describes = _describes_visual(batch_kinds)
                         for problem in grounding_problems(
-                            narration, requested[start - 1:end],
-                            visual_context(requested, kinds, start, end) if describes else (),
-                            describes,
+                            narration, requested[start - 1:end], describes,
                         ):
                             self.publish("log", f"{named}: {problem}.\n")
                         completed_count += end - start + 1

@@ -2547,10 +2547,9 @@ class UnifiedWorkflowTests(unittest.TestCase):
         run.pump()
 
         self.assertEqual(run.code, 0)
-        # Sent once to be narrated; the figure's request may quote it as context.
         self.assertEqual(sum(
             "The output is computed as a weighted sum of the values, where each "
-            "weight comes from a key." in text.partition("Current source")[2]
+            "weight comes from a key." in text
             for text, _ in requests
         ), 1)
         # The request that sends the figure also holds its caption, and no
@@ -5368,22 +5367,26 @@ class GroundingTests(unittest.TestCase):
         "- [4] Quoc V. Le and Tomas Mikolov. Distributed representations. In ICML, 2014.",
     ]
 
-    def test_numbered_citations_become_the_authors_and_year_of_their_entry(self):
+    def test_a_needed_citation_names_its_authors_and_a_parenthetical_one_goes(self):
         entries = web.reference_entries(self.REFERENCES)
         self.assertEqual(entries, {
-            1: "Ba and colleagues, 2016", 2: "Bahdanau and colleagues, 2014",
-            3: "Chollet, 2016", 4: "Le and Mikolov, 2014",
+            1: "Ba and colleagues", 2: "Bahdanau and colleagues", 3: "Chollet",
+            4: "Le and Mikolov",
         })
         self.assertEqual(
-            web.resolve_citations("as in [3], and in [1, 2] and [2–4], but not [4, 9].", entries),
-            "as in [Chollet, 2016], and in [Ba and colleagues, 2016; Bahdanau and colleagues, "
-            "2014] and [Bahdanau and colleagues, 2014; Chollet, 2016; Le and Mikolov, 2014], "
-            "but not [4, 9].",
+            web.resolve_citations(
+                "Normalization [1] helps. We follow [3], as in [2–4] and in [4, 9]. "
+                "[1] showed it.", entries,
+            ),
+            "Normalization helps. We follow Chollet, as in Bahdanau and colleagues, "
+            "Chollet, and Le and Mikolov and in Le and Mikolov, and earlier work. "
+            "Ba and colleagues showed it.",
         )
-        # Two bracketed numbers are no reference list.
+        # Two bracketed numbers are no reference list, and nothing changes.
         self.assertEqual(web.reference_entries(self.REFERENCES[1:3]), {})
+        self.assertEqual(web.resolve_citations("Networks [13] work.", {}), "Networks [13] work.")
 
-    def test_a_figure_is_read_with_the_text_that_mentions_it_never_the_summaries(self):
+    def test_a_figure_goes_to_the_model_alone_and_prose_with_the_summaries(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -5392,9 +5395,7 @@ class GroundingTests(unittest.TestCase):
             "The encoder maps the input to a sequence of representations.\n\n"
             "![](images/a.png)\n\n"
             "Figure 1: The Transformer architecture.\n\n"
-            "The decoder is shown in the right half of Figure 1, as in [3].\n\n"
-            "Unrelated closing words.\n\n"
-            "# References\n\n" + "\n\n".join(self.REFERENCES[1:]),
+            "The decoder is shown in the right half of Figure 1, similar to [3].",
             encoding="utf-8",
         )
         prompt = root / "prompt.md"
@@ -5412,21 +5413,47 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(run.code, 0)
         figure = requests["paragraphs-2-3"]
         self.assertNotIn("Compacted summaries", figure)
-        self.assertIn("The decoder is shown in the right half of Figure 1", figure)
-        self.assertNotIn("Unrelated closing words", figure)
-        self.assertIn("Compacted summaries", requests["paragraphs-5-5"])
-        # The citation reaches the model as its entry names it.
-        self.assertIn("as in [Chollet, 2016].", requests["paragraphs-4-4"])
+        self.assertNotIn("The encoder maps", figure)
+        self.assertIn("Compacted summaries", requests["paragraphs-4-4"])
+
+    def test_code_names_an_equation_as_the_paper_prints_it(self):
+        numbered = (
+            "![](images/e.png)",
+            "<!-- Start of picture text -->\nFFN(x) = max(0, xW1 + b1)W2 + b2 (2)\n"
+            "<!-- End of picture text -->",
+        )
+        unnumbered = (
+            "![](images/p.png)",
+            "<!-- Start of picture text -->\nPE(pos,2i) = sin(pos/10000)\n"
+            "<!-- End of picture text -->",
+        )
+        self.assertEqual(
+            web.label_equation("Equation 5 says two layers apply in turn.", numbered),
+            "Equation 2 says two layers apply in turn.",
+        )
+        self.assertEqual(
+            web.label_equation("Equation 2 says…", numbered), "Equation 2 says…",
+        )
+        self.assertEqual(
+            web.label_equation("Equation 6 gives each position a sine; see equation 6.", unnumbered),
+            "The equation gives each position a sine; see the equation.",
+        )
+        # A picture of an equation is no figure, whatever the model calls it.
+        self.assertEqual(
+            web.label_equation("Figure 4 shows two layers; the figure's formula adds b2.", numbered),
+            "Equation 2 shows two layers; the equation's formula adds b2.",
+        )
 
     def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):
         source = (
             "![](images/t.png)",
-            "<!-- Start of picture text -->\nBLEU 27.3 41.8 params 65M\n<!-- End of picture text -->",
-            "Table 2: The Transformer, similar to [Press and Wolf, 2016].",
+            "<!-- Start of picture text -->\nBLEU 27.3 41.8 params 65M steps 100K\n"
+            "<!-- End of picture text -->",
+            "Table 2: The Transformer, similar to Press and Wolf.",
         )
         self.assertEqual(web.grounding_problems(
             "Table 2 shows BLEU of 27.3, about 42 for the big model, with 65 million "
-            "parameters, as Press and Wolf found.", source, describes=True,
+            "parameters after 100,000 steps, as Press and Wolf found.", source, describes=True,
         ), [])
         self.assertEqual(web.grounding_problems(
             "Table 2 shows BLEU of 28.4, as Vaswani and others found.", source, describes=True,
@@ -5434,18 +5461,15 @@ class GroundingTests(unittest.TestCase):
             "the narration credits Vaswani, whom its source never names",
             "the description says 28.4, which its source does not print",
         ])
-        equation = (
-            "![](images/e.png)",
-            "<!-- Start of picture text -->\nFFN(x) = max(0, xW1 + b1)W2 + b2 (2)\n"
-            "<!-- End of picture text -->",
-        )
-        self.assertEqual(web.grounding_problems("Equation 2 says…", equation, describes=True), [])
+        # Only the passage's own request counts, never the rest of the paper:
+        # Vaswani heads the author block, and §3.4 still may not credit him.
+        section = ("We share the weight matrix, similar to Press and Wolf.",)
         self.assertEqual(
-            web.grounding_problems("Equation 3 says…", equation, describes=True),
-            ["the description calls it Equation 3, but the paper prints (2) beside it"],
+            web.grounding_problems("We share it, similar to Vaswani and others.", section),
+            ["the narration credits Vaswani, whom its source never names"],
         )
-        # In prose, only whom it credits is checked.
-        self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.4.",)), [])
+        # In prose, numbers are not checked.
+        self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.3.",)), [])
 
     def test_a_dropped_model_connection_is_asked_again_and_a_silent_one_is_not(self):
         temporary = tempfile.TemporaryDirectory()
