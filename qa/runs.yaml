@@ -152,3 +152,17 @@ runs:
       First unseen paper after 94c8f63; record written by Claude from Can's report. Title block kept; asking
       again recovered paragraph 31 (prose); the venue line and an "Extra information" heading stayed out.
       The Abstract heading was dropped even after asking again.
+
+  - id: R13
+    date: 2026-10-04
+    papers: [attention]
+    hilde_commit: ee62369
+    model: Mistral Small 4, local server on spark (exact model id not reported)
+    voice: null
+    output_file: null   # workspace/runs/p-a and p-b on Can's machine; not shared with the reviewer
+    reviewers: [can]
+    notes: >
+      Two runs (p-a, p-b) with prose batches under 80% of the author's words asked again, up to six short
+      sentences named; record written by Claude from Can's report. Batches asked again 13 and 12; passages
+      under 80% afterwards 0 and 0 (lowest 84%, 82%); passages at 95% or more 46 and 52 of about 63.
+      Golden 34/40 and 31/40. About 13 more requests per run. Paragraph 53 read in both.

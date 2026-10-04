@@ -214,8 +214,8 @@ asserts:
     about: >
       §3.2.2's sentence giving the sizes of the projection matrices (W Q, W K, W V and W O) is read.
       Dropped in every run from f8e8495 until 94c8f63 asked again (R10-02); ATT-29 passed only because
-      the sentence was gone
-    must_contain: '(?i)\bd model (?:by|times|multiplied by|-by-) ?d k\b'
+      the sentence was gone. Any reading of the sizes counts: "d model by d k", "from d model to d k"
+    must_contain: '(?i)\bd model\b[^.\n]{0,12}?(?:\bby|\btimes|\bmultiplied by|\bto|\binto|-by-)\s*d k\b'
 
 manual:
   - bug: B15

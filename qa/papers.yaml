@@ -70,7 +70,10 @@ papers:
       - Observations are labeled with circled digits ("Obs.❶").
 
   - id: ddpm
-    title: Denoising Diffusion Probabilistic Models   # assumed from the name "DDPM"; confirm
+    title: Denoising Diffusion Probabilistic Models
     url: https://arxiv.org/pdf/2006.11239
+    version: v2
+    sha256:
+      - aee5e07a802e8dfd2a386374c94fd61d1d056cb7e1e0fec4f28e8120ff5d8505   # Can's PDF for R12
     quirks:
-      - First paper Hilde had never seen before its prompt examples were invented (94c8f63). sha256 is in the book's book.json on Can's machine.
+      - The unseen paper used after the prompt's examples were invented (94c8f63).
