@@ -348,8 +348,11 @@ bugs:
     title: Text the prompt says to leave out (email addresses, links) is read aloud
     priority: P2
     layer: adapt
-    status: proposed
+    status: fixed
+    fixed_in: afca829
     fix: >
-      Proposed. Anything the prompt drops must not count as lost words, or the ask-again for prose
-      narrated short names it and gets it read (R14-01; Can fixed emails in afca829, as links already were).
+      Anything the prompt drops must not count as lost words, or the ask-again for prose narrated short
+      names it and gets it read (R14-01). afca829 sets email addresses aside in _content_words(), as links
+      already were.
+    notes: Closed under the per-class rule (qa-close-rule); DDPM-01 fails on both R14 runs and passes before and after.
     test: DDPM-01.
