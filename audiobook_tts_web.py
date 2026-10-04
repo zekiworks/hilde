@@ -189,6 +189,11 @@ LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
 # against 31 at 1.0, with the same informal tone; 0 was no steadier.
 LOCAL_MODEL_TEMPERATURE = 0.2
+# A local model can fall into repeating itself and stream for ever: DeepSeek
+# V4.1 Flash wrote for over 20 minutes on one algorithm listing, and a silent-
+# stream timeout never fires while tokens keep coming. Reasoning counts toward
+# the limit, and a batch's narration needs far fewer.
+LOCAL_MAX_TOKENS = 16_000
 PAPER_RESPONSE_ATTEMPTS = 3
 PAPER_DEFAULT_IN_FLIGHT = 4
 PAPER_MAX_IN_FLIGHT = 32
@@ -4029,6 +4034,10 @@ class ModelConnectionError(RuntimeError):
     """A model request whose connection dropped or was refused; asking again may work."""
 
 
+class ModelRanOn(RuntimeError):
+    """A model response cut off at its output limit, usually a model
+    repeating itself; asking again may get a whole answer."""
+
 def _retry_delay(response, attempt):
     """Seconds before asking a busy provider again: its retry-after, else 2^attempt."""
     try:
@@ -4140,6 +4149,7 @@ def local_model_response(server, model, system_prompt, text, images, open_stream
         ],
         "stream": True,
         "temperature": LOCAL_MODEL_TEMPERATURE,
+        "max_tokens": LOCAL_MAX_TOKENS,
     }).encode("utf-8")
     url = f"{normalize_local_server(server)}/v1/chat/completions"
     headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
@@ -4152,7 +4162,7 @@ def local_model_response(server, model, system_prompt, text, images, open_stream
                     "sees images\" under Add local."
                 )
             raise failure
-        parts, finished = [], False
+        parts, finished, cut_off = [], False, False
         for data in sse_events(response):
             if data.strip() == "[DONE]":
                 finished = True
@@ -4177,8 +4187,14 @@ def local_model_response(server, model, system_prompt, text, images, open_stream
                     parts.append(delta["content"])
                 if choice.get("finish_reason"):
                     finished = True
+                    cut_off = choice["finish_reason"] == "length"
         if not finished:
             raise RuntimeError("The local model server ended the response early.")
+        if cut_off:
+            raise ModelRanOn(
+                f"the model was still writing at {LOCAL_MAX_TOKENS:,} tokens, "
+                "most likely repeating itself"
+            )
         return "".join(parts)
 
 
@@ -7909,9 +7925,22 @@ class PaperRun(Run):
                     ),
                     encoding="utf-8",
                 )
-                response = self.model_response(
-                    request_path, system_prompt, attachments
-                )
+                try:
+                    response = self.model_response(
+                        request_path, system_prompt, attachments
+                    )
+                except ModelRanOn as error:
+                    if attempt == PAPER_RESPONSE_ATTEMPTS:
+                        raise RuntimeError(
+                            f"{batch_label.capitalize()}: {error}, "
+                            f"{PAPER_RESPONSE_ATTEMPTS} times."
+                        ) from None
+                    self.publish(
+                        "log",
+                        f"{batch_label.capitalize()}/{total}: {error}; asking again "
+                        f"({attempt + 1}/{PAPER_RESPONSE_ATTEMPTS})…\n",
+                    )
+                    continue
                 try:
                     narration, summary = parse_paper_response(response)
                 except ValueError:

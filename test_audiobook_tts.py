@@ -3522,6 +3522,64 @@ class LocalPaperProviderTests(unittest.TestCase):
                 kept,
             )
 
+    def test_a_model_still_writing_at_its_limit_is_asked_again_and_never_hangs(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        bodies = []
+        answers = []
+
+        class ModelHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                content, reason = answers.pop(0)
+                for event in ({"delta": {"content": content}}, {"delta": {}, "finish_reason": reason}):
+                    self.wfile.write(f"data: {json.dumps({'choices': [event]})}\n\n".encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+
+            def log_message(self, format, *args):
+                pass
+
+        source = root / "paper.md"
+        source.write_text("Recurrent models are slow to train.", encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        looping = ("loop " * 50, "length")
+        whole = ("<NARRATION>Recurrent models are slow to train.</NARRATION><SUMMARY>s</SUMMARY>", "stop")
+        with ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                runs = []
+                for script in ([looping, whole], [looping] * web.PAPER_RESPONSE_ATTEMPTS):
+                    answers[:] = script
+                    stage = root / f"stage-{len(runs)}"
+                    run = PaperRun(
+                        source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
+                        local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
+                        prompt_path=prompt, scratch_path=stage,
+                    )
+                    run.pump()
+                    runs.append(run)
+            finally:
+                server.shutdown()
+                thread.join()
+
+        # Every request caps the model's output.
+        self.assertTrue(all(body["max_tokens"] == web.LOCAL_MAX_TOKENS for body in bodies))
+        asked_again, gave_up = runs
+        self.assertEqual(asked_again.code, 0)
+        self.assertIn(
+            "Recurrent models are slow to train.",
+            (root / "stage-0" / "prepared.txt").read_text(encoding="utf-8"),
+        )
+        # Still writing at the limit every time, the job ends instead of hanging.
+        self.assertEqual(gave_up.code, 1)
+        self.assertTrue(any("repeating itself" in str(data) for _, data in gave_up.history))
+
 
 class OpenAISignInTests(unittest.TestCase):
     def setUp(self):

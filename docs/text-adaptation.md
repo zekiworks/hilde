@@ -129,7 +129,10 @@ A local model server is asked at temperature 0.2. Left at a model's default,
 often 1.0, the same paper read noticeably differently on every run; at 0.2 its
 prose comes out word for word the same far more often, in the same tone. When
 the connection to any model drops or is refused, Hilde asks again after 1, 2,
-4, and then 8 seconds, each noted in the job log, before the job fails.
+4, and then 8 seconds, each noted in the job log, before the job fails. A local
+model may write at most 16,000 tokens for one passage, its reasoning included.
+One still writing at that limit has usually fallen into repeating itself; Hilde
+asks again, up to three times, and then stops the job rather than wait on it.
 
 When a PDF prints each author's affiliation under the name, in columns, Hilde
 pairs them before the model sees the line: "Llion Jones, Google Research;
