@@ -202,6 +202,13 @@ asserts:
       - '(?i)divided by [^.,;\n]{1,30} raised to the power of [^.,;\n]{1,30} divided by'
       - '(?i)product of [^.,;\n]{1,40} and [^.,;\n]{1,40} raised to the power'
 
+  - id: ATT-34
+    bug: B31
+    about: >
+      Gomez's affiliation note (the † footnote) is read once. A second one means a running summary
+      replaced another footnote with it (R9-01, R9-02)
+    must_not_contain: '(?s)Gomez[^.\n]{0,60}\b(?:performed|did|carried out)\b[^.\n]{0,20}\bwork\b.*Gomez[^.\n]{0,60}\b(?:performed|did|carried out)\b[^.\n]{0,20}\bwork\b'
+
 manual:
   - bug: B15
     check: Equations 1, 2 and 3, multi-head attention and the positional encoding are spoken as ordered steps, innermost first (ATT-33 is only a heuristic).

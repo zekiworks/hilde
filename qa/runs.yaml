@@ -99,3 +99,16 @@ runs:
     notes: >
       Follow-along text (1 h 31 min) compared with the arXiv PDF by Claude and ChatGPT independently; text only,
       no listening pass. Every number checked matches the paper. Published 2026-10-02 15:09 UTC (Q05).
+
+  - id: R9
+    date: 2026-10-04
+    papers: [attention]
+    hilde_commit: d4c84b3
+    model: Mistral Small 4, local server on spark (exact model id not reported)
+    voice: null
+    output_file: null   # on Can's machine (/tmp/hilde-temp); not shared with the reviewer
+    reviewers: [can]
+    notes: >
+      Two runs made and checked by Can (fixer); this record was written by Claude from Can's report.
+      Golden 25/38 and 27/38. Across Can's 14 Attention runs since 853dbf4, footnote 5 survives in 1
+      and footnote 4 is lost in 4, including both R9 runs.
