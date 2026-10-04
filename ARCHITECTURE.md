@@ -659,9 +659,8 @@ the active tab is flush with an accent top edge and opens into the page below.
      **Continue**. `clearBookChoice()` empties the step (document, link, and
      save-as name) when **Create another book** or **Start listening** begins
      the next book.
-  2. **Choose a voice**: the saved-voice dropdown with **Search voices** beside
-     it (opens **Voices**) and a card previewing the chosen voice. A narration
-     speech server takes a server voice ID instead.
+  2. **Choose a voice**: the saved-voice dropdown and a card previewing the
+     chosen voice. A narration speech server takes a server voice ID instead.
   3. **Create audiobook**: **Adapt the text for listening** with, while it is
      ticked, the adaptation **Model**, **Providers** (the OpenAI sign-in,
      Claude Code's status, and the Anthropic API key), and **Add local** (a
@@ -697,13 +696,13 @@ the active tab is flush with an accent top edge and opens into the page below.
   other than the followed one. Focus moves to the heading of each card that
   replaces the steps.
 - **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
-  **Use**, **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
+  **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
   prompt is the VoiceDesign description
   saved as `description.txt`. Search reads prompts only: every typed word must
   begin a prompt word (AND, any order, case- and accent-insensitive, so `male`
   does not match `female`). One shared player previews in place, ignoring
-  clips replaced before they start. **Use** makes the voice current and returns
-  to Create with focus on the next step; the voice in use shows **In use**.
+  clips replaced before they start. A book's voice is chosen only in Create's
+  dropdown; the voice it holds shows **In use** here.
   **Select** loads a voice's name and prompt into the editor at the top, titled
   "Edit <name>"; **New voice** opens it empty. **Listen** designs a draft from
   the prompt without touching the saved voice and plays it when ready. **Save**

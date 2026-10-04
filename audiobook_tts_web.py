@@ -10611,10 +10611,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <div class="step-body">
           <div class="field" id="shared-voice-row">
             <label for="shared-voice">Voice</label>
-            <div class="line">
-              <select id="shared-voice"><option value="">Choose a voice</option></select>
-              <button id="search-voices" type="button" onclick="searchVoices()">Search voices</button>
-            </div>
+            <select id="shared-voice"><option value="">Choose a voice</option></select>
           </div>
           <div class="field hidden" id="clone-voice-row">
             <label for="clone-voice">Server voice ID</label>
@@ -11925,7 +11922,7 @@ function voiceRow(voice) {
     older.textContent = "Preview reads an older passage";
     description.append(older);
   }
-  // Select loads a voice into the editor above; Use picks it for audiobooks.
+  // Select loads a voice into the editor above; the voice Create holds says so.
   const select = cell("select");
   const edit = document.createElement("button");
   edit.type = "button"; edit.textContent = "Select";
@@ -11938,12 +11935,6 @@ function voiceRow(voice) {
     badge.innerHTML = CHECK_ICON;
     badge.append("In use");
     select.append(badge);
-  } else if (!facts.clone_server) {
-    const button = document.createElement("button");
-    button.type = "button"; button.textContent = "Use";
-    button.setAttribute("aria-label", `Use ${voice.name}`);
-    button.addEventListener("click", () => useVoice(voice.name));
-    select.append(button);
   }
   const rename = document.createElement("button");
   rename.type = "button"; rename.className = "link"; rename.textContent = "Rename";
@@ -12098,21 +12089,6 @@ function editVoice(voice) {
   $("instruct").focus({ preventScroll:true });
 }
 
-async function useVoice(name) {
-  stopPreview();
-  state.audiobook.voice = name;
-  populateAssets();
-  state.tab = "audiobook";
-  createView = "compose";
-  // Continue at the step that needs the user next.
-  state.audiobook.step = bookReady() ? "create" : "book";
-  setStatus(`${name} is your voice.`);
-  render(); renderVoiceTable();
-  // Create's own checks arrive with this sync; only then is its action enabled.
-  await sync();
-  focusStep();
-}
-
 function renderSelectedVoice() {
   const card = $("selected-voice");
   const voice = facts.clone_server ? null : voiceByName(state.audiobook.voice);
@@ -12176,7 +12152,6 @@ function continueFromVoice() {
   collect();
   if (voiceReady()) setStep("create");
 }
-function searchVoices() { setTab("voice"); $("voice-search").focus(); }
 // A finished book's document is not the next book's: once a book is made, the
 // first step starts empty, with no document chosen and no link typed.
 function clearBookChoice() {

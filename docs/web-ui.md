@@ -18,8 +18,8 @@ the document type and adds the matching extension when needed, including for
 extensionless PDF URLs such as arXiv `/pdf/<id>` links. Files are limited to
 64 MiB. Supported document types are PDF (`.pdf`), Markdown (`.md` or
 `.markdown`), and plain text (`.txt` or `.text`), rather than HTML landing
-pages. The voice step keeps the saved-voice dropdown for voices you know by
-name, with **Search voices** beside it for finding one by description.
+pages. The voice step is a dropdown of your saved voices, with a card that
+previews the one you choose.
 
 **Delete** beside the dropdown removes the chosen document after you confirm.
 Audiobooks made from it are kept, and a job already queued keeps its own copy.
@@ -187,12 +187,12 @@ that does not establish that the generated file is silent.
 
 **Voices** lists every saved voice in a compact table: Preview, Voice name,
 Prompt, Modified (when its sample, transcript, or prompt last changed), and
-**Select**, **Use**, **Rename**, and **Delete** buttons, 50 rows at a time. The
+**Select**, **Rename**, and **Delete** buttons, 50 rows at a time. The
 prompt is the voice description given to VoiceDesign, and search looks only at
 prompts: every word you type must appear, in any order and case, so
 `warm british female` finds voices whose prompt contains all three. The
-preview plays in place. **Use** makes the voice current and returns to
-**Create**; the voice in use shows **In use** instead. **Delete** removes a
+preview plays in place. A book's voice is chosen in **Create**, and the voice
+chosen there shows **In use**. **Delete** removes a
 voice after you confirm; audiobooks made with it are kept, and a job already
 queued keeps its own copy. **Rename** gives a voice a new name and keeps
 everything else: its sample, transcript, and prompt stay as they are, and the
