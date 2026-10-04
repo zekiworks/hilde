@@ -5437,8 +5437,9 @@ def paper_batches(paragraphs, per_worker):
 
 
 def _content_words(text):
-    """Words of four letters or more, without citation marks, superscripts, or links."""
-    text = re.sub(r"<sup>.*?</sup>|\[[\d,\s–-]+\]|https?://\S+", " ", text)
+    """Words of four letters or more, without citation marks, superscripts,
+    links, or email addresses, which the prompt leaves out."""
+    text = re.sub(r"<sup>.*?</sup>|\[[\d,\s–-]+\]|https?://\S+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+", " ", text)
     return set(CONTENT_WORD_PATTERN.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 

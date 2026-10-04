@@ -5482,6 +5482,12 @@ class GroundingTests(unittest.TestCase):
         self.assertIn(second, adapt(f"{first} {second}"))
         # A second answer that keeps less loses to the first.
         self.assertIn(first, adapt("Models are sequential."))
+        # Email addresses, which the prompt leaves out, are never asked back.
+        paragraph = ("Correspondence about this sentence goes to the three authors listed above, "
+                     "jonathanho@berkeley.edu, ajayj@berkeley.edu, and pabbeel@cs.berkeley.edu.")
+        narration = "Correspondence about this sentence goes to the three authors listed above."
+        self.assertEqual(web.prose_kept(paragraph, narration)[0], 1)
+        self.assertEqual(web.missing_sentences([paragraph], narration), [])
 
     def test_text_left_out_whole_is_asked_again_and_author_lines_then_read_as_printed(self):
         temporary = tempfile.TemporaryDirectory()
