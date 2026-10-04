@@ -5452,6 +5452,22 @@ def prose_kept(source, narration):
     return 1 - len(lost) / len(words), sorted(lost)
 
 
+def missing_sentences(paragraphs, narration, limit=6):
+    """The author's sentences a narration left out, cut short, or reworded:
+    those with at least four content words, under PROSE_KEPT_LOW of which the
+    narration keeps. A reworded passage spreads its losses, so a sentence is
+    held to the passage's own bar."""
+    kept = _content_words(narration)
+    missing = []
+    for paragraph in paragraphs:
+        text = re.sub(r"<sup>.*?</sup>", "", _layout_text(paragraph).lstrip(">").strip())
+        for sentence in re.split(r"(?<=[.?!])\s+(?=[A-Z])", text):
+            words = _content_words(sentence)
+            if len(words) >= 4 and len(words & kept) < len(words) * PROSE_KEPT_LOW:
+                missing.append(" ".join(sentence.split()))
+    return missing[:limit]
+
+
 # Whom a narration credits: "Press and Wolf", "Vaswani and others",
 # "Vaswani et al.".
 ATTRIBUTION_PATTERN = re.compile(
@@ -5958,14 +5974,25 @@ publishing boilerplate, or a roadmap; otherwise it is the author's text, and
 you narrate it.""",
 }
 
+def condensed_note(sentences):
+    """What a second request says when the model left out, cut short, or
+    reworded some of the author's sentences."""
+    listed = "\n".join(f"- {sentence}" for sentence in sentences)
+    return f"""Your narration of this batch left out, cut short, or reworded these sentences
+of the author's:
+{listed}
+Narrate the batch again with the author's sentences as written and each of
+these in full, unless the instructions say to leave it out, changing only what
+speech needs."""
+
 
 def paper_request(
-    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), left_out=None,
+    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None,
 ):
     """One batch's request. A batch that is only a figure, table, or equation
     has no summaries (None): it goes alone, so its request is the same on
-    every run. left_out, a key of LEFT_OUT_NOTES, asks again for a batch the
-    model left out whole."""
+    every run. A note asks again for a batch the model left out whole
+    (LEFT_OUT_NOTES) or narrated with sentences missing (condensed_note())."""
     source = "\n\n".join(
         f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
         for number, paragraph in enumerate(paragraphs, start)
@@ -5981,8 +6008,8 @@ Transport retry attempt {attempt} of {PAPER_RESPONSE_ATTEMPTS}:
 The prior response could not be parsed. Adapt the same source batch again under
 the same rules, with one NARRATION element followed by one nonempty SUMMARY
 element. Do not discuss the retry or add text outside those elements."""
-    if left_out:
-        retry += f"\n\n{LEFT_OUT_NOTES[left_out]}"
+    if note:
+        retry += f"\n\n{note}"
     defined = (
         "Acronyms the author already spelled out in earlier paragraphs; never "
         f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
@@ -7931,13 +7958,31 @@ class PaperRun(Run):
                 f"{batch_label.capitalize()}/{total}: asking again, since "
                 f"{'it holds author lines' if left_out == 'title_block' else 'it may be the author’s text'}.\n",
             )
-            narration, summary = ask(left_out)
+            narration, summary = ask(LEFT_OUT_NOTES[left_out])
             if not narration and left_out == "title_block":
                 narration = title_block_text(paragraphs)
                 self.publish(
                     "log",
                     f"{batch_label.capitalize()}/{total}: the author lines are read as printed.\n",
                 )
+        # The model also rewords or drops sentences of prose it narrates,
+        # keeping under 80% of the author's words in a dozen passages a run
+        # though the prompt forbids it. Such a batch is asked once more,
+        # with the sentences named, and keeps the answer that kept more.
+        elif narration and left_out == "prose":
+            share, _ = prose_kept("\n\n".join(paragraphs), narration)
+            sentences = missing_sentences(paragraphs, narration)
+            if share is not None and share < PROSE_KEPT_LOW and sentences:
+                self.publish(
+                    "log",
+                    f"{batch_label.capitalize()}/{total} kept {share:.0%} of the author's "
+                    f"words; asking again with the {len(sentences)} sentence"
+                    f"{'s' if len(sentences) != 1 else ''} it left out or reworded.\n",
+                )
+                second, second_summary = ask(condensed_note(sentences))
+                second_share, _ = prose_kept("\n\n".join(paragraphs), second)
+                if second and second_share is not None and second_share > share:
+                    narration, summary = second, second_summary
         return narration, summary
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):

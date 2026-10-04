@@ -2550,7 +2550,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertEqual(sum(
             "The output is computed as a weighted sum of the values, where each "
             "weight comes from a key." in text
-            for text, _ in requests
+            # A second request for prose the stub narrated short is the same batch.
+            for text, _ in requests if "reworded these sentences" not in text
         ), 1)
         # The request that sends the figure also holds its caption, and no
         # other request does.
@@ -5447,6 +5448,40 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(named[1], "> _†_ Tomas Reyes: Now at Acme Labs.")
         # A note every author carries, and a note in the body, stay as printed.
         self.assertEqual(named[3:], paragraphs[3:])
+
+    def test_prose_narrated_with_sentences_missing_is_asked_again_and_keeps_the_fuller_answer(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        first = "Recurrent models factor computation along the symbol positions of the sequences."
+        second = "This inherently sequential nature precludes parallelization within training examples."
+        source.write_text(f"{first} {second}", encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+
+        def adapt(answer_again):
+            requests = []
+
+            class StubPaperRun(PaperRun):
+                def model_response(self, request_path, system_prompt, attachments=()):
+                    text = request_path.read_text(encoding="utf-8")
+                    requests.append(text)
+                    narration = answer_again if "reworded these sentences" in text else first
+                    return f"<NARRATION>{narration}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+            output = root / f"prepared-{len(requests)}-{len(answer_again)}.txt"
+            run = StubPaperRun(source, output, "utf-8", in_flight=1, prompt_path=prompt)
+            run.pump()
+            self.assertEqual(run.code, 0)
+            # The second request names the sentence the first answer dropped.
+            self.assertEqual(len(requests), 2)
+            self.assertIn(f"- {second}", requests[1])
+            return output.read_text(encoding="utf-8")
+
+        self.assertIn(second, adapt(f"{first} {second}"))
+        # A second answer that keeps less loses to the first.
+        self.assertIn(first, adapt("Models are sequential."))
 
     def test_text_left_out_whole_is_asked_again_and_author_lines_then_read_as_printed(self):
         temporary = tempfile.TemporaryDirectory()

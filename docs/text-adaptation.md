@@ -155,7 +155,10 @@ sentence the model judged a mere definition is read after all. A passage with
 the paper's author lines, bold names on its first page before the abstract, is
 asked for as the title block, and if the model leaves it out again it is read
 as printed, without marks or email addresses. A stray reference entry is not
-asked for again. The job log notes each step.
+asked for again. A passage the model narrates keeping less than 80% of the
+author's words is asked for once more, with the sentences it left out or
+reworded named, and the answer that keeps more of the author's words is used.
+The job log notes each step.
 
 When text extraction leaves reference entries outside a standalone References
 section, the model leaves them out one by one. The log shows each as `Paragraph
