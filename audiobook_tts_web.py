@@ -10229,6 +10229,10 @@ label.check input { width:18px; height:18px; margin:0; accent-color:var(--accent
 .line > select, .line > input[type=text], .line > input[type=search] { flex:1 1 260px; }
 .banner { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px;
           padding:12px 16px; background:var(--surface); border-radius:10px; }
+.create-another { display:flex; flex-wrap:wrap; align-items:center; gap:12px 18px;
+                  margin-bottom:16px; }
+.create-another .note { flex:1 1 220px; margin:0; }
+button.large { min-height:48px; padding:12px 26px; font-size:17px; }
 .steps { display:grid; gap:12px; margin:0; padding:0; list-style:none; }
 .step { padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
 .step.drop-target { outline:2px dashed var(--accent); outline-offset:-2px; }
@@ -10533,6 +10537,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
   <section id="page-audiobook" class="page" role="tabpanel" aria-labelledby="tab-audiobook">
     <h2 class="visually-hidden">Create an audiobook</h2>
+    <div id="create-another" class="create-another hidden">
+      <button class="primary large" type="button" onclick="createAnother()">Create another book</button>
+      <p class="note">You can queue as many books as you like. Hilde starts them in the
+        order you add them.</p>
+    </div>
     <div id="create-banner" class="banner hidden">
       <span id="create-banner-text" class="clamp"></span>
       <button class="link" type="button" onclick="viewProgress()">View progress</button>
@@ -10673,7 +10682,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <p id="progress-detail" class="note"></p>
       <div class="actions">
         <button id="stop" type="button" onclick="stopRun()">Stop</button>
-        <button class="link" type="button" onclick="createAnother()">Start another audiobook</button>
       </div>
     </section>
 
@@ -10688,7 +10696,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <button id="result-primary" class="primary" type="button" onclick="resultAction()"></button>
         <button id="download" class="hidden" type="button" onclick="downloadArtifact()">Download MP3</button>
         <button id="airdrop" class="hidden" type="button" onclick="sendAirdrop()">AirDrop…</button>
-        <button class="link" type="button" onclick="createAnother()">Create another audiobook</button>
       </div>
     </section>
 
@@ -12254,6 +12261,8 @@ function renderCreate() {
   $("create-steps").classList.toggle("hidden", !composing);
   $("create-progress").classList.toggle("hidden", createView !== "progress");
   $("create-result").classList.toggle("hidden", createView !== "result");
+  // Steps already open need no way back to them.
+  $("create-another").classList.toggle("hidden", composing);
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
     const active = name === step, complete = !active && done[name];

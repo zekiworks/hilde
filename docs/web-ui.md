@@ -36,9 +36,11 @@ in that voice: no model runs and nothing is written again. A link typed under
 **Add from a link** is the next book whatever the dropdown shows, so that
 notice gives way to **Continue**.
 
-**Start another audiobook** and **Create another audiobook** open the first
-step empty, as does **Start listening**: the document just made into a book is
-no longer chosen.
+While a book is being made or its result is showing, a large orange **Create
+another book** button sits at the top of **Create**. It opens the first step
+empty, as does **Start listening**: the document just made into a book is no
+longer chosen. You can queue as many books as you like; Hilde starts them in
+the order you add them.
 
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:

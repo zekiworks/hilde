@@ -657,8 +657,8 @@ the active tab is flush with an accent top edge and opens into the page below.
      **Delete** beside the dropdown removes the chosen document. A typed link
      outranks the dropdown: it hides **You already have this one** and shows
      **Continue**. `clearBookChoice()` empties the step (document, link, and
-     save-as name) when **Start another audiobook**, **Create another
-     audiobook**, or **Start listening** begins the next book.
+     save-as name) when **Create another book** or **Start listening** begins
+     the next book.
   2. **Choose a voice**: the saved-voice dropdown with **Search voices** beside
      it (opens **Voices**) and a card previewing the chosen voice. A narration
      speech server takes a server voice ID instead.
@@ -686,12 +686,16 @@ the active tab is flush with an accent top edge and opens into the page below.
   result even after the next queued run starts; a stopped run offers
   **Continue** and a failed one **Try again**, with its last log lines under
   **Technical details**. Both resubmit the reported job's book and voice,
-  whatever the steps hold by then. **Start another audiobook** returns to the
-  steps while the run continues behind a banner with **View progress**; a
-  queued run that starts later never replaces steps being filled in, and a
-  background run's outcome appears as a notice. An **In progress** list with
-  View/Stop/Cancel appears whenever it holds a job other than the followed
-  one. Focus moves to the heading of each card that replaces the steps.
+  whatever the steps hold by then. While the steps are hidden (progress or
+  result), the top of **Create** shows a large primary **Create another
+  book** (`#create-another`, `createAnother()`) beside a note that books queue
+  without limit and start in the order added (`JobQueue.pending` is first in,
+  first out). It returns to the steps while the run continues behind a banner
+  with **View progress**; a queued run that starts later never replaces steps
+  being filled in, and a background run's outcome appears as a notice. An
+  **In progress** list with View/Stop/Cancel appears whenever it holds a job
+  other than the followed one. Focus moves to the heading of each card that
+  replaces the steps.
 - **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
   **Use**, **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
   prompt is the VoiceDesign description
