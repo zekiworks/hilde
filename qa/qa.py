@@ -8,7 +8,7 @@
 
 TARGET is a book folder (Audiobooks/<slug>--<hash12>/), its narration.json, or a plain text file.
 For a book, the checked text is exactly what every voice reads: the non-empty passage texts joined by
-blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10, G11), and the
+blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10, G11, G12), and the
 paper is inferred from book.json's source_sha256 (papers.yaml `sha256`).
 
 Add --json to check, report or next for machine-readable output. `check` exits 1 when anything fails.
@@ -373,6 +373,29 @@ def generic_checks(t: Target):
         if m:
             hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"equation passage opens with {m.group(0)!r}"))
     results.append(("G11", "B03", "Equation passage opens with a figure or table number", hits))
+
+    # G12: an equation passage names an equation number other than the one printed
+    # beside it, "(2)" at the end of its picture text, or any number when none is.
+    hits = []
+    words = {w: str(n) for n, w in enumerate("one two three four five six seven eight nine ten".split(), 1)}
+    number = r"(?:\d+|" + "|".join(words) + r")\b"
+    for p in t.passages:
+        if p.get("type") != "equation":
+            continue
+        printed = set()
+        for s in p.get("sources", []):
+            for block in re.findall(r"<!-- Start of picture text -->(.*?)<!-- End of picture text -->",
+                                    s.get("text", ""), re.S):
+                m = re.search(r"\((\d+)[a-z]?\)\s*$", re.sub(r"<!--.*?-->", "", block).strip())
+                if m:
+                    printed.add(m.group(1))
+        for m in re.finditer(rf"\b(?:Equations?|Eq\.)\s*\(?({number}(?:\)?\s*(?:,|and|&|to|–|-)\s*\(?{number})*)",
+                             p.get("text", "")):
+            said = {words.get(n.lower(), n) for n in re.findall(number, m.group(1), re.I)}
+            if said != printed:
+                want = f"Equation {', '.join(sorted(printed))}" if printed else "an unnumbered equation"
+                hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"says {m.group(0)!r}, source prints {want}"))
+    results.append(("G12", "B03", "Equation passage names a number other than the one printed beside it", hits))
 
     # G10: book folder integrity (only for book folders)
     if t.book is not None:

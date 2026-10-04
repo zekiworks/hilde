@@ -58,10 +58,12 @@ Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows
-what it says. Its description calls it by the number printed beside it,
+what it says. Its description opens with the number printed beside it,
 "Equation 3" for one printed with "(3)", and "the equation" for one the paper
 does not number; Hilde sets that name itself, whatever the model called it,
-including "Figure 4".
+including "Figure 4", and replaces an equation number the paper never prints.
+The job log names any other figure, table, or equation number in the
+description, which may be a slip or a real reference.
 
 Each description of a figure, a table, or an equation opens with a spoken cue
 such as "Figure 2 shows…" or "The equation says…", so a listener hears where

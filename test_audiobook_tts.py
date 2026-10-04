@@ -5443,29 +5443,39 @@ class GroundingTests(unittest.TestCase):
             "<!-- Start of picture text -->\nPE(pos,2i) = sin(pos/10000)\n"
             "<!-- End of picture text -->",
         )
+        printed = {"1", "2", "3"}
         for narration, source, expected in (
             ("Equation 5 says two layers apply in turn.", numbered,
              "Equation 2 says two layers apply in turn."),
             ("Equation 2 says…", numbered, "Equation 2 says…"),
             # A picture of an equation is no figure, whatever the model calls it.
-            ("Figure 4 shows two layers; the figure's formula adds b2.", numbered,
-             "Equation 2 shows two layers; the equation's formula adds b2."),
+            ("Figure 4 shows two layers.", numbered, "Equation 2 shows two layers."),
+            ("The figure shows two layers.", unnumbered, "The equation shows two layers."),
+            # A number the paper prints nowhere is invented, with its article.
             ("This is what Equation 6 says.", unnumbered, "This is what the equation says."),
-            # Every wrong name is replaced, not only the opening one; the
-            # prompt leaves out numbered references to other equations.
-            ("Equation 1 projects. Figure 4 also shows heads, as Table 2 does.", unnumbered,
-             "The equation projects. The equation also shows heads, as Table 2 does."),
+            ("This Equation 6 then projects them.", numbered, "Equation 2 then projects them."),
             ("Equations 4 and 5 encode position.", unnumbered, "The equations encode position."),
             ("Equation six adds a sine. Eq. 6 adds a cosine.", unnumbered,
              "The equation adds a sine. The equation adds a cosine."),
-            # A figure named mid-sentence is a real reference and stays.
-            ("Equation 2, as in Figure 2, adds a sine, like Equation 2.", numbered,
-             "Equation 2, as in Figure 2, adds a sine, like Equation 2."),
+            # Any other name may be a reference or plain wording, and stays.
+            ("Equation 2 is like Equation 1, as in Figure 2. Table 1 lists the costs "
+             "shown in the figure.", numbered,
+             "Equation 2 is like Equation 1, as in Figure 2. Table 1 lists the costs "
+             "shown in the figure."),
             # A picture without math is no equation, whatever extraction calls it.
             ("Figure one shows the logo.", ("![](images/l.png)",), "Figure one shows the logo."),
         ):
             with self.subTest(narration):
-                self.assertEqual(web.label_equation(narration, source), expected)
+                self.assertEqual(web.label_equation(narration, source, printed), expected)
+        # A name left as written that is not this equation's is logged.
+        self.assertEqual(
+            web.equation_label_problems("Equation 2 is like Equation 1. Table 1 lists it.", numbered),
+            ["the description says Equation 1, though it describes Equation 2",
+             "the description says Table 1, though it describes Equation 2"],
+        )
+        self.assertEqual(
+            web.equation_label_problems("The equation adds a sine.", unnumbered), [],
+        )
 
     def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):
         source = (
@@ -5509,6 +5519,20 @@ class GroundingTests(unittest.TestCase):
         ), [])
         # In prose, numbers are not checked.
         self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.3.",)), [])
+
+    def test_a_footnote_is_grounded_by_the_paragraph_its_mark_sits_in(self):
+        paragraphs = [
+            "**Aidan N. Gomez**<sup>_∗†_</sup>, University of Toronto; "
+            "**Llion Jones**<sup>_∗_</sup>, Google Research",
+            "> _†_ Work performed while at Google Brain.",
+            "We suspect the dot products grow large.<sup>4</sup>",
+            "> 4To illustrate why the dot products get large, assume independence.",
+        ]
+        # "†" sits beside Gomez, so his name grounds its note; the "4" note
+        # explains the third paragraph, which never names him.
+        self.assertEqual(
+            web.footnote_citers(paragraphs, web._layout_kinds(paragraphs)), {1: 0, 3: 2},
+        )
 
     def test_a_dropped_model_connection_is_asked_again_and_a_silent_one_is_not(self):
         temporary = tempfile.TemporaryDirectory()

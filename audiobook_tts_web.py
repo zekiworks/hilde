@@ -5209,6 +5209,25 @@ def _cited_markers(paragraph):
     return marks
 
 
+def footnote_citers(paragraphs, kinds):
+    """For each footnote, the index of the nearest paragraph before it whose
+    superscript carries its marker: "†" beside an author's name for "† Work
+    performed while at Google Brain"."""
+    citers = {}
+    for index, kind in enumerate(kinds):
+        marker = _footnote_marker(paragraphs[index]) if kind == "footnote" else None
+        if marker is None:
+            continue
+        citer = next(
+            (other for other in range(index - 1, -1, -1)
+             if kinds[other] != "footnote" and marker in _cited_markers(paragraphs[other])),
+            None,
+        )
+        if citer is not None:
+            citers[index] = citer
+    return citers
+
+
 def _place_footnotes(document, kinds, starts):
     """Move each footnote to follow the nearest paragraph before it, on its
     page or the one before, whose superscript carries its marker.
@@ -5424,6 +5443,7 @@ _EQUATION_NUMBER = r"(?:\d+|" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=T
 # "Equations (4) and (5)", "Eq. 6", "Equation six", and often "Figure 4",
 # "Table 2", or "the figure", though it is none.
 EQUATION_NAME_PATTERN = re.compile(
+    r"(?P<det>\b(?:[Tt]his|[Tt]hat|[Tt]he)\s+)?"
     r"\b(?P<kind>[Ee]quations?|[Ee]qs?\.|[Ff]igures?|[Ff]igs?\.|[Tt]ables?|[Ff]ormulas?)\s*\(?"
     rf"(?P<numbers>{_EQUATION_NUMBER}(?:\)?\s*(?:,|and|&|–|-|to)\s*\(?{_EQUATION_NUMBER})*)\)?"
     r"(?![\w.]\d)"
@@ -5468,22 +5488,40 @@ def printed_equation_numbers(sources):
     ]
 
 
-def label_equation(narration, sources):
+def _equation_label(match):
+    """What a name found by EQUATION_NAME_PATTERN calls: its kind, whether it
+    is plural, and the numbers it gives."""
+    if match.group("the"):
+        return "the", bool(match.group("plural")), set()
+    kind = match.group("kind").lower().rstrip(".")
+    numbers = {
+        str(NUMBER_WORDS.get(piece.lower(), piece))
+        for piece in re.findall(_EQUATION_NUMBER, match.group("numbers"))
+    }
+    return kind, kind.endswith("s"), numbers
+
+
+def _equation_math(sources):
+    # Only an equation's printed text is math; an uncaptioned picture of
+    # something else, a logo or a photograph, keeps whatever it was called.
+    return any("=" in text for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources)))
+
+
+def label_equation(narration, sources, printed=()):
     """Name an equation in its description as the paper does, in code.
 
     The model is shown the printed number and still writes its own, "Equation
     6" for an equation the paper leaves unnumbered, or calls the picture
-    "Figure 4". Every such name becomes the paper's: "Equation 3" when "(3)"
-    is printed beside it, "Equations 4 and 5" for two, "the equation" for one
-    printed without. That is every equation number but this one's, since the
-    prompt leaves out numbered cross-references, and every "Figure N" or
-    "Table N" opening a sentence, as no figure or table is in the batch;
-    "the figure" and "the formula" become "the equation". A figure or table
-    named mid-sentence, "as in Figure 2", is a real reference and stays.
+    "Figure 4". Two names are certain to be wrong and become the paper's,
+    "Equation 3" when "(3)" is printed beside it, "Equations 4 and 5" for
+    two, "the equation" for one printed without: whatever opens the
+    description, and an equation number the paper prints nowhere (printed
+    holds the whole paper's), with the word before it ("This Equation 6").
+    Any other name may be a real reference or plain wording ("as in Figure
+    2", "shown in the figure") and stays; `equation_label_problems()` puts
+    a doubtful one in the log.
     """
-    # Only an equation's printed text is math; an uncaptioned picture of
-    # something else, a logo or a photograph, keeps whatever it was called.
-    if not any("=" in text for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources))):
+    if not _equation_math(sources):
         return narration
     marks = printed_equation_numbers(sources)
 
@@ -5496,20 +5534,35 @@ def label_equation(narration, sources):
         return text[0].upper() + text[1:] if capital else text
 
     def named(match):
-        capital = bool(re.search(r"(?:^|[.!?])\s*$", narration[:match.start()]))
-        if match.group("the"):
-            text = f"the equation{match.group('plural')}"
-            return text[0].upper() + text[1:] if capital else text
-        kind = match.group("kind").lower().rstrip(".")
-        plural = kind.endswith("s")
-        if kind.startswith(("fig", "tab")):
-            return name(True, plural) if capital else match.group(0)
-        numbers = {
-            str(NUMBER_WORDS.get(piece.lower(), piece))
-            for piece in re.findall(_EQUATION_NUMBER, match.group("numbers"))
-        }
-        return match.group(0) if numbers <= set(marks) else name(capital, plural)
+        before = narration[:match.start()]
+        kind, plural, numbers = _equation_label(match)
+        if not before.strip():
+            return name(True, plural)
+        if not kind.startswith("eq") or numbers <= set(printed) | set(marks):
+            return match.group(0)
+        return name(bool(re.search(r"[.!?]\s*$", before)), plural)
     return EQUATION_NAME_PATTERN.sub(named, narration)
+
+
+def equation_label_problems(narration, sources):
+    """Names in an equation's description that are not its own and that
+    label_equation() left, as possible references: "Figure 4 also shows…",
+    "like Equation 1". The prompt leaves out numbered references to other
+    equations, and no figure or table is in an equation's batch, so each is
+    worth a look; the narration is kept as written."""
+    if not _equation_math(sources):
+        return []
+    marks = set(printed_equation_numbers(sources))
+    problems = []
+    for match in EQUATION_NAME_PATTERN.finditer(narration):
+        kind, _, numbers = _equation_label(match)
+        if numbers and (not kind.startswith("eq") or numbers != marks):
+            label = match.group(0)[len(match.group("det") or ""):]
+            own = (
+                f"Equation {', '.join(sorted(marks))}" if marks else "an unnumbered equation"
+            )
+            problems.append(f"the description says {label}, though it describes {own}")
+    return problems
 
 
 def grounding_problems(narration, sources, describes=False, known_names=()):
@@ -7823,10 +7876,13 @@ class PaperRun(Run):
                 "the sentence needs reaches the model as its authors, and one in "
                 "passing is left out.\n",
             )
-        # The names the log watches for.
+        # The names the log watches for, the equation numbers the paper
+        # prints, and the paragraph whose mark each footnote explains.
         known_names = author_surnames(paragraphs) | {
             surname for surnames in references.values() for surname in surnames
         }
+        printed = set(printed_equation_numbers(requested))
+        citers = footnote_citers(paragraphs, kinds)
         summaries = []
         results = {}
         completed_count = 0
@@ -7947,10 +8003,13 @@ class PaperRun(Run):
                         batch_kinds = set(kinds[start - 1:end])
                         describes = _describes_visual(batch_kinds)
                         # Code, not the model, names an equation.
-                        if describes and _visual_type(
+                        equation = describes and _visual_type(
                             paragraphs[start - 1:end], kinds[start - 1:end]
-                        ) == "equation":
-                            narration = label_equation(narration, requested[start - 1:end])
+                        ) == "equation"
+                        if equation:
+                            narration = label_equation(
+                                narration, requested[start - 1:end], printed
+                            )
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -7992,9 +8051,20 @@ class PaperRun(Run):
                                 )
                         # What a narration states that its source does not is
                         # named in the log; the narration is kept as written.
-                        for problem in grounding_problems(
-                            narration, requested[start - 1:end], describes, known_names,
-                        ):
+                        # A footnote's source includes the paragraph its mark
+                        # sits in, as "†" beside an author's name.
+                        grounded = requested[start - 1:end] + [
+                            requested[citers[index]]
+                            for index in range(start - 1, end) if index in citers
+                        ]
+                        problems = grounding_problems(
+                            narration, grounded, describes, known_names,
+                        )
+                        if equation:
+                            problems += equation_label_problems(
+                                narration, requested[start - 1:end]
+                            )
+                        for problem in problems:
                             self.publish("log", f"{named}: {problem}.\n")
                         completed_count += end - start + 1
                     commit_ready()
