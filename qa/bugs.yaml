@@ -342,3 +342,14 @@ bugs:
       -11, -15) above what unseen papers get. (Reviewer's first guess, the running summary, was wrong:
       a request with no summary and no "Gomez" still got the pasted note.)
     test: ATT-01, ATT-02, ATT-34.
+
+  - id: B32
+    slug: dropped-apparatus-read-aloud
+    title: Text the prompt says to leave out (email addresses, links) is read aloud
+    priority: P2
+    layer: adapt
+    status: proposed
+    fix: >
+      Proposed. Anything the prompt drops must not count as lost words, or the ask-again for prose
+      narrated short names it and gets it read (R14-01; Can fixed emails in afca829, as links already were).
+    test: DDPM-01.

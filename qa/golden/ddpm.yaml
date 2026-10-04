@@ -1,0 +1,20 @@
+# Golden assertions for "Denoising Diffusion Probabilistic Models" (arXiv 2006.11239 v2).
+# Same format as attention.yaml.
+paper: ddpm
+asserts:
+  - id: DDPM-01
+    bug: B32
+    about: No author email address is read, written or spoken ("at berkeley dot edu")
+    must_not_contain: ['[\w.+-]+@[\w-]+(\.[\w-]+)+', '(?i)\bat\s+[\w-]+\s+dot\s+(edu|com|org|net)\b']
+
+  - id: DDPM-02
+    bug: B02
+    about: No equation description invents a "schematic"
+    must_not_contain: '(?i)\bequations?\b[^.\n]{0,80}\bschematic\b|\bschematic\b[^.\n]{0,80}\bequations?\b'
+
+  - id: DDPM-03
+    bug: B13
+    about: The title block keeps the three authors and their affiliation
+    must_contain: ['Jonathan Ho', 'Ajay Jain', 'Pieter Abbeel', '(?i)Berkeley']
+
+manual: []
