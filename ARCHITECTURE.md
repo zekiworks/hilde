@@ -652,13 +652,16 @@ The run log shows below every page but **Listen**. Each page:
 - **Create** shows three steps, one open at a time; a finished step collapses
   to a summary with **Change**, and a later step opens only after the earlier
   ones are complete.
-  1. **Add the source document**: choose one under **Your documents**, upload a
-     PDF/Markdown/text file with **Upload a file** or by dropping it anywhere on
-     the step's panel, or add one under **Add from a link**; **Continue**
-     downloads a link first.
-     **Delete** beside the dropdown removes the chosen document. A typed link
-     outranks the dropdown: it hides **You already have this one** and shows
-     **Continue**. `clearBookChoice()` empties the step (document, link, and
+  1. **Add the source document**: choose one under **Your documents**, or add
+     a new one under **Or add a new one**, a two-tab panel (`#add-tabs`,
+     `addVia`, page-local): **URL** (first and selected) takes a link and an
+     optional save-as name, which **Continue** downloads first; **File** holds
+     **Upload a file**. A file dropped anywhere on the step's panel uploads
+     from either tab. Switching to **File** clears a typed link, which would
+     otherwise act unseen. **Delete** beside the dropdown removes the chosen
+     document. A typed link outranks the dropdown: it hides **You already have
+     this one** and shows **Continue**. `clearBookChoice()` empties the step
+     (document, link, and
      save-as name) once **Create audiobook** has queued a book, and when
      **Create another book** or **Start listening** begins the next one.
   2. **Choose a voice**: the saved-voice dropdown and a card previewing the

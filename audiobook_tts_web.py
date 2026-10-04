@@ -10248,8 +10248,16 @@ button.large { min-height:48px; padding:12px 26px; font-size:17px; }
 .step-body { display:grid; gap:16px; margin-top:18px; padding-left:44px; }
 .step:not(.is-active) .step-body { display:none; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-details.from-link[open] > summary { margin-bottom:12px; }
-details.from-link .field + .field { margin-top:12px; }
+.add-document { display:grid; gap:10px; }
+.add-heading { color:var(--dim); font-size:13px; }
+.subtabs { display:flex; gap:4px; width:max-content; padding:3px; background:var(--raised);
+           border-radius:9px; }
+.subtabs [role=tab] { min-height:0; padding:6px 18px; border:0; border-radius:7px;
+                      background:transparent; color:var(--dim); font-weight:600; }
+.subtabs [role=tab]:hover:not([aria-selected=true]) { background:var(--hover); color:var(--text); }
+.subtabs [role=tab][aria-selected=true] { background:var(--surface); color:var(--text);
+                                          box-shadow:inset 0 -2px 0 var(--accent); }
+.subtab-panel { display:grid; gap:12px; }
 details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-space:pre-wrap;
                         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .voice-card { display:flex; align-items:center; gap:14px; padding:12px 14px;
@@ -10572,24 +10580,34 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 aria-label="Delete the chosen document" onclick="deleteDocument(this)">Delete</button>
             </div>
           </div>
-          <div class="line">
-            <input id="document-file" class="hidden" type="file"
-              accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
-            <button id="document-upload" type="button" onclick="chooseDocument()">Upload a file…</button>
-            <span class="note">PDF, Markdown, or plain text; or drop a file here</span>
+          <div class="add-document">
+            <span id="add-heading" class="add-heading">Or add a new one</span>
+            <div id="add-tabs" class="subtabs" role="tablist" aria-labelledby="add-heading">
+              <button id="add-tab-url" type="button" role="tab" aria-controls="add-url"
+                onclick="setAddVia('url')">URL</button>
+              <button id="add-tab-file" type="button" role="tab" aria-controls="add-file"
+                onclick="setAddVia('file')">File</button>
+            </div>
+            <div id="add-url" class="subtab-panel" role="tabpanel" aria-labelledby="add-tab-url">
+              <div class="field">
+                <label for="source-url">Link to a PDF, Markdown, or text file</label>
+                <input id="source-url" type="text" inputmode="url"
+                  placeholder="https://arxiv.org/pdf/2508.21433">
+              </div>
+              <div class="field">
+                <label for="download-name">Save as (optional)</label>
+                <input id="download-name" type="text" placeholder="For example paper.pdf">
+              </div>
+            </div>
+            <div id="add-file" class="subtab-panel hidden" role="tabpanel" aria-labelledby="add-tab-file">
+              <div class="line">
+                <input id="document-file" class="hidden" type="file"
+                  accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
+                <button id="document-upload" type="button" onclick="chooseDocument()">Upload a file…</button>
+                <span class="note">PDF, Markdown, or plain text; or drop a file here</span>
+              </div>
+            </div>
           </div>
-          <details id="link-details" class="from-link">
-            <summary>Add from a link</summary>
-            <div class="field">
-              <label for="source-url">Link to a PDF, Markdown, or text file</label>
-              <input id="source-url" type="text" inputmode="url"
-                placeholder="https://arxiv.org/pdf/2508.21433">
-            </div>
-            <div class="field">
-              <label for="download-name">Save as (optional)</label>
-              <input id="download-name" type="text" placeholder="For example paper.pdf">
-            </div>
-          </details>
           <div id="existing-book" class="notice hidden" role="status">
             <p><strong>You already have this one:</strong>
               <span id="existing-book-title"></span>.
@@ -10994,6 +11012,8 @@ let paperOpenAIConnected = false, paperAnthropicConnected = false;
 let advancedOpen = false, voiceFormOpen = false;
 // Create shows a run's outcome above its steps while resultShown; Progress follows the run.
 let submitting = false, resultShown = false, stopping = false, waitingJobId = "";
+// How step 1 adds a document: from a link ("url", first) or a file ("file").
+let addVia = "url";
 let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
 // A draft is the clip Listen made; Save stores exactly that clip.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
@@ -11077,7 +11097,6 @@ function load(data) {
   }
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
-  $("link-details").open = !!state.audiobook.source_url;
   populateAssets();
   const activeRun = runs.find((item) => item.active) || null;
   if (activeRun) followActive(activeRun, true);
@@ -12161,8 +12180,18 @@ function clearBookChoice() {
   state.audiobook.document = "";
   state.audiobook.source_url = ""; state.audiobook.download_name = "";
   $("source-url").value = ""; $("download-name").value = "";
-  $("link-details").open = false;
   populateAssets();
+}
+function setAddVia(via) {
+  addVia = via;
+  // A typed link outranks the dropdown and Continue downloads it, so one
+  // hidden under File would act unseen.
+  if (via === "file" && (state.audiobook.source_url || state.audiobook.download_name)) {
+    state.audiobook.source_url = ""; state.audiobook.download_name = "";
+    $("source-url").value = ""; $("download-name").value = "";
+    queueSync();
+  }
+  render();
 }
 // From Progress: back to Create, with the first step empty for the next book.
 function createAnother() {
@@ -12238,6 +12267,12 @@ function renderCreate() {
   const done = { book:bookReady(), voice:voiceReady(), create:false };
   // A finished run's card sits above the steps, which stay ready for the next book.
   $("create-result").classList.toggle("hidden", !resultShown || !resultInfo);
+  for (const via of ["url", "file"]) {
+    const selected = via === addVia;
+    $(`add-tab-${via}`).setAttribute("aria-selected", String(selected));
+    $(`add-tab-${via}`).tabIndex = selected ? 0 : -1;
+    $(`add-${via}`).classList.toggle("hidden", !selected);
+  }
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
     const active = name === step, complete = !active && done[name];
@@ -13348,6 +13383,14 @@ $("tab-list").addEventListener("keydown", (event) => {
   event.preventDefault();
   setTab(next);
   $(`tab-${next}`).focus();
+});
+$("add-tabs").addEventListener("keydown", (event) => {
+  // Two tabs: any arrow, Home, or End moves to the other one.
+  const next = { ArrowRight:"file", ArrowLeft:"url", Home:"url", End:"file" }[event.key];
+  if (!next) return;
+  event.preventDefault();
+  setAddVia(next);
+  $(`add-tab-${next}`).focus();
 });
 
 fetch("/api/state").then((response) => response.json()).then((data) => {

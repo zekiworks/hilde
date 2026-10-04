@@ -10,10 +10,12 @@ Open the address the server prints when it starts, for example
 **Choose a voice**, and **Create audiobook**. A finished step collapses to a
 summary with **Change**.
 
-A book is made from a document chosen under **Your documents**, uploaded with
-**Upload a file** or dropped anywhere on the first step's panel, or downloaded
-from a direct HTTP(S) URL
-under **Add from a link**. The save-as filename is optional: the server infers
+A book is made from a document chosen under **Your documents**, or a new one
+added under **Or add a new one**, which has two tabs. **URL**, selected first,
+downloads a document from a direct HTTP(S) link when you press **Continue**.
+**File** holds **Upload a file**; a file dropped anywhere on the first step's
+panel uploads from either tab. Switching to **File** clears a link you typed.
+The save-as filename under **URL** is optional: the server infers
 the document type and adds the matching extension when needed, including for
 extensionless PDF URLs such as arXiv `/pdf/<id>` links. Files are limited to
 64 MiB. Supported document types are PDF (`.pdf`), Markdown (`.md` or
@@ -33,8 +35,8 @@ A document whose content is already a book, under any file name, shows **You
 already have this one** with **Open** and **Change voice**. Change voice
 continues to the voice step, and **Add this voice** reads the book's own text
 in that voice: no model runs and nothing is written again. A link typed under
-**Add from a link** is the next book whatever the dropdown shows, so that
-notice gives way to **Continue**.
+**URL** is the next book whatever the dropdown shows, so that notice gives way
+to **Continue**.
 
 Once **Create audiobook** has queued a book, the first step is empty again,
 ready for the next one; **Start listening** empties it too. You can queue as
