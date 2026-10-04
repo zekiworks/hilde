@@ -23,8 +23,8 @@ asserts:
 
   - id: ATT-04
     bug: B18
-    about: Polosukhin's affiliation note names him
-    must_contain: '(?i)Polosukhin[^.\n]{0,40}(performed|did) (this|the) work while at Google Research'
+    about: 'Polosukhin''s affiliation note names him, in any word order ("Illia Polosukhin: Work performed while at Google Research" passes)'
+    must_contain: '(?i)(?:Polosukhin(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Research|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Polosukhin(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Research)'
 
   - id: ATT-05
     bug: B18
@@ -208,6 +208,14 @@ asserts:
       Gomez's affiliation note (the † footnote) is read once. A second one means a running summary
       replaced another footnote with it (R9-01, R9-02)
     must_not_contain: '(?si)(?:Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain).*(?:Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain)'
+
+  - id: ATT-35
+    bug: B13
+    about: >
+      §3.2.2's sentence giving the sizes of the projection matrices (W Q, W K, W V and W O) is read.
+      Dropped in every run from f8e8495 until 94c8f63 asked again (R10-02); ATT-29 passed only because
+      the sentence was gone
+    must_contain: '(?i)\bd model (?:by|times|multiplied by|-by-) ?d k\b'
 
 manual:
   - bug: B15

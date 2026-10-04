@@ -124,3 +124,31 @@ runs:
     notes: >
       Two runs made and checked by Can after the B31 prompt fix; record written by Claude from Can's
       report. Golden 31/39 and 32/39. No footnote replaced; footnote 4 read in both, footnote 5 dropped in one.
+
+  - id: R11
+    date: 2026-10-04
+    papers: [attention]
+    hilde_commit: 94c8f63
+    model: Mistral Small 4, local server on spark (exact model id not reported)
+    voice: null
+    output_file: null   # workspace/runs/n-a and n-b on Can's machine; not shared with the reviewer
+    reviewers: [can]
+    notes: >
+      Two runs (n-a, n-b) after the prompt's examples were all invented and left-out text is asked for again;
+      record written by Claude from Can's report. Golden 29/39 in both, down from 31-32: ATT-11 and ATT-29 had
+      passed on values and omissions the old prompt supplied. Author lines kept after asking again; §3.2.2's
+      W-matrix sentence read in both; Gomez and Polosukhin notes named; no footnote replaced; footnote 5 read
+      in one. About 5-8 extra requests per run.
+
+  - id: R12
+    date: 2026-10-04
+    papers: [ddpm]
+    hilde_commit: 94c8f63
+    model: Mistral Small 4, local server on spark (exact model id not reported)
+    voice: null
+    output_file: null   # workspace/runs/u-b on Can's machine; not shared with the reviewer
+    reviewers: [can]
+    notes: >
+      First unseen paper after 94c8f63; record written by Claude from Can's report. Title block kept; asking
+      again recovered paragraph 31 (prose); the venue line and an "Extra information" heading stayed out.
+      The Abstract heading was dropped even after asking again.

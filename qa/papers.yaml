@@ -68,3 +68,9 @@ papers:
       - Listings (Skill 1, Prompt 1, Codes 1 to 3) are monospace boxes with hard-wrapped lines, Skill 1 over three pages and Code 3 under Table 7.
       - Five authors, four affiliations with superscript numbers; the printed order is Peking University (State Key Lab), Peking University (College of Future Technology), Google, HKUST.
       - Observations are labeled with circled digits ("Obs.❶").
+
+  - id: ddpm
+    title: Denoising Diffusion Probabilistic Models   # assumed from the name "DDPM"; confirm
+    url: https://arxiv.org/pdf/2006.11239
+    quirks:
+      - First paper Hilde had never seen before its prompt examples were invented (94c8f63). sha256 is in the book's book.json on Can's machine.
