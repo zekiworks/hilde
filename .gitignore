@@ -7,3 +7,5 @@ __pycache__/
 /User/
 # QA outputs hold adapted paper text; qa/outputs/README.md explains them.
 /qa/outputs/*.txt
+# Local working files: reviews, patches, and throwaway runs.
+/workspace/
