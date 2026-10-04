@@ -1,0 +1,67 @@
+# Golden assertions for "A Comprehensive Survey of Small Language Models…" (arXiv 2411.03350).
+# Same format as attention.yaml. From R16 (Claude and Astra, 2026-10-04).
+paper: slm-survey
+asserts:
+  - id: SLM-01
+    bug: B19
+    about: Figure 5 is Gu and Dao's; the survey's own first author is never credited with it
+    must_not_contain: ['Fali Wang and colleagues', '(?i)as presented by [^.\n]{0,20}\bWang\b']
+
+  - id: SLM-02
+    bug: B03
+    about: The taxonomy is Figure 1, not "Table 1"
+    must_not_contain: '(?i)\bTable 1 (provides|shows|presents|gives)[^.\n]{0,60}\btaxonomy'
+
+  - id: SLM-03
+    bug: B03
+    about: The Transformer architecture is Figure 4, not Figure 2
+    must_not_contain: '(?i)\bFigure 2 (shows|illustrates|depicts)[^.\n]{0,20}Transformer architecture'
+
+  - id: SLM-04
+    bug: B03
+    about: Filter-then-rerank is Figure 31 and the trust dimensions are Figure 32
+    must_not_contain:
+      - '(?i)\bFigure 30 (shows|illustrates|depicts)[^.\n]{0,20}Filter-then-rerank'
+      - '(?i)\bFigure 31 (shows|illustrates|depicts)[^.\n]{0,200}\b(robustness|sycophancy|toxicity)\b'
+
+  - id: SLM-05
+    bug: B02
+    about: RMS Norm divides the input by the root mean square
+    must_contain: '(?i)\bRMS[^\n]*?(divid\w*\s+(the\s+)?inputs?\s+(x\s+)?by|inputs?\s+(x\s+)?(is\s+|are\s+)?divided\s+by|\bx\s+divided\s+by)'
+
+  - id: SLM-06
+    bug: B02
+    about: The quantization scale divides by two to the power of N minus one, not by two to the power of N
+    must_not_contain: '(?i)\btwo (raised )?to the power of N\b(?![\s-]*minus)'
+
+  - id: SLM-07
+    bug: B02
+    about: Equation 5 weights the logits, not the probabilities
+    must_not_contain: '(?i)\balpha (multiplied by|times) the probabilit(y|ies)\b'
+
+  - id: SLM-08
+    bug: B02
+    about: Learning percentage is the drop in epoch i over the total drop, not initial over current perplexity
+    must_not_contain: '(?i)initial perplexity divided by the perplexity at the end of epoch'
+
+  - id: SLM-09
+    bug: B06
+    about: The running footer is never read
+    must_not_contain: '(?i)Manuscript submitted to ACM'
+
+  - id: SLM-10
+    bug: B06
+    about: No sentence cut at a page break or float, and no word fragment, in the places R16 found
+    must_not_contain:
+      - '(?m)\buses multiple\s*$'
+      - '(?m)\bAs shown in\s*$'
+      - '(?m)\bThese methods\s*$'
+      - '(?m)\bPer-\s*$'
+      - '(?m)^(cation|forming)\b'
+
+  - id: SLM-12
+    bug: B02
+    about: In Hymba the heads run in parallel and the mean comes after them, not before the SSM head (Astra, from the image)
+    must_not_contain: '(?i)\bmean operation to feed into the SSM head'
+
+manual: []

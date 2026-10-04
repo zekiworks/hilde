@@ -194,3 +194,16 @@ runs:
       One run (u-f) with the email fix; record written by Claude from Can's report. Batches asked again 8;
       passages under 80% afterwards 4; at 95% or more 43. No email read; author line "Jonathan Ho, Ajay Jain,
       and Pieter Abbeel / University of California, Berkeley".
+
+  - id: R16
+    date: 2026-10-04
+    papers: [slm-survey]
+    hilde_commit: null   # in the book's book.json (git_commit); the text has code-resolved citations, so f23eed9 or later
+    model: null          # in the book's book.json
+    voice: Hilde
+    output_file: null    # follow-along text pasted into the review chat
+    reviewers: [claude, astra]
+    notes: >
+      4 h 7 min book. Text only, no listening pass. Claude's PDF fetch covered pages 1-25 (to §4.1.2): facts
+      checked there; §4.2-§10 checked for structure only (labels, broken sentences, footers). Astra checked
+      the whole PDF, including figure images. Merged review: R16-01..R16-12.
