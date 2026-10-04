@@ -426,7 +426,10 @@ PDF work is page-addressable:
    equal-contribution note every author line cites; and
    `paper_batches()` sends it in one request with that paragraph, where the
    prompt has it read right after the citing sentence, naming whom or what it
-   is about. The job log counts the rejoined sentences and the moved figures,
+   is about. The prompt describes that naming without a sentence to copy:
+   given "Aidan Gomez did this work while at Google Brain" as its example, the
+   model wrote that sentence in place of Attention's footnotes 4 and 5, with or
+   without the running summaries (B31). The job log counts the rejoined sentences and the moved figures,
    tables, and footnotes; once one note of a paragraph is out of place, the
    notes after it count as moved too. `join_pdf_pages()` also returns the
    page each block of
