@@ -164,8 +164,10 @@ class PaperWorkflowTests(unittest.TestCase):
     def test_audiobook_is_the_default_tab(self):
         self.assertEqual(normalize({})["tab"], "audiobook")
 
-    def test_player_is_a_persisted_tab(self):
-        self.assertEqual(normalize({"tab": "player"})["tab"], "player")
+    def test_listen_and_progress_are_persisted_tabs(self):
+        # A tab the server does not keep would bounce the page back to Create.
+        for tab in ("player", "progress"):
+            self.assertEqual(normalize({"tab": tab})["tab"], tab)
 
     def test_create_step_and_open_book_survive_refresh_when_valid(self):
         restored = normalize({

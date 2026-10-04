@@ -36,11 +36,12 @@ in that voice: no model runs and nothing is written again. A link typed under
 **Add from a link** is the next book whatever the dropdown shows, so that
 notice gives way to **Continue**.
 
-While a book is being made or its result is showing, a large orange **Create
-another book** button sits at the top of **Create**. It opens the first step
-empty, as does **Start listening**: the document just made into a book is no
-longer chosen. You can queue as many books as you like; Hilde starts them in
-the order you add them.
+Once **Create audiobook** has queued a book, the first step is empty again,
+ready for the next one; **Start listening** empties it too. You can queue as
+many books as you like; Hilde starts them in the order you add them. Below the
+steps, **In progress** lists every book in the queue: **View** follows a
+running one on **Progress**, **Stop** ends it, and **Cancel** takes a waiting
+one out of the queue.
 
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:
@@ -61,7 +62,8 @@ or it waits in the shared queue:
 
 Output folders and filenames are derived; the form never asks for either.
 For a remote narration backend, the configured server voice ID is used as the
-voice name. When the job finishes, **Start listening** opens the book in
+voice name. When a job you are watching finishes, **Create** shows its card
+above the steps: **Start listening** opens the book in
 **Listen** and **Download MP3** saves the voice's audio as
 `<document>-<voice>.mp3`. The card also gives the total time, counted from
 when the job left the queue, and each stage's share: for example
@@ -69,7 +71,10 @@ when the job left the queue, and each stage's share: for example
 aligning 21s`. The job log ends with the same line. A run continued after a
 stop counts only its own work.
 
-While a job runs, Create names its stage in plain words: Reading your
+While an audiobook is being made, a **Progress** tab appears after **Create**,
+and it opens when a book you start begins at once. At its top, a large orange
+**Create another book** returns to **Create** with the first step empty. Below
+it, the followed book's stage is named in plain words: Reading your
 document, Preparing the narration, Creating the audio, and Finishing your
 audiobook. Under the bar, a line says what is happening: reading page 3 of
 12, rewriting paragraph 40 of 135, speaking part 900 of 35,226, joining the
@@ -77,9 +82,10 @@ parts into one recording after the last one is spoken, and matching the words
 to the audio for the follow-along view. Each step has its own time left,
 worked out from its average pace so far, so it settles instead of jumping as
 chunks finish in bursts; until a stage is a little way in, the browser counts
-down how long that stage took last time. A reload returns
-to the running job's progress and reconnects to its server-sent event stream
-without duplicating received log lines.
+down how long that stage took last time. **Stop** ends the book, and **Queue**
+lists everything else waiting. The tab goes away once nothing is being made. A
+reload keeps following the running job and reconnects to its server-sent event
+stream without duplicating received log lines.
 
 The queue is global across browsers. Every web submission uses the
 server-owned pool of [narration workers](configuration.md#narration-workers): one job claims

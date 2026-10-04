@@ -641,11 +641,13 @@ one charcoal ground, off-white text, one gray surface family, and one warm
 orange accent reserved for the selected tab or voice, the primary action,
 progress, and playback. Each view shows at most one primary (orange) button.
 
-Three pages form an ARIA tablist of folder tabs on a baseline (Arrow, Home, and
-End keys move between them). Inactive tabs stand slightly raised with a bevel;
+Three pages, and a fourth while an audiobook is being made, form an ARIA
+tablist of folder tabs on a baseline (Arrow, Home, and End keys move between
+the shown ones). Inactive tabs stand slightly raised with a bevel;
 the active tab is flush with an accent top edge and opens into the page below.
-**Advanced** is a separate toggle at the right of the strip, hidden on
-**Listen**, that reads **Simple** while its panels are open. Each page:
+**Advanced** is a separate toggle at the right of the strip, shown on
+**Create** and **Voices**, that reads **Simple** while its panels are open.
+The run log shows below every page but **Listen**. Each page:
 
 - **Create** shows three steps, one open at a time; a finished step collapses
   to a summary with **Change**, and a later step opens only after the earlier
@@ -657,8 +659,8 @@ the active tab is flush with an accent top edge and opens into the page below.
      **Delete** beside the dropdown removes the chosen document. A typed link
      outranks the dropdown: it hides **You already have this one** and shows
      **Continue**. `clearBookChoice()` empties the step (document, link, and
-     save-as name) when **Create another book** or **Start listening** begins
-     the next book.
+     save-as name) once **Create audiobook** has queued a book, and when
+     **Create another book** or **Start listening** begins the next one.
   2. **Choose a voice**: the saved-voice dropdown and a card previewing the
      chosen voice. A narration speech server takes a server voice ID instead.
   3. **Create audiobook**: **Adapt the text for listening** with, while it is
@@ -671,30 +673,34 @@ the active tab is flush with an accent top edge and opens into the page below.
      an Anthropic key saved or removed, **Check again** for Claude Code) syncs
      again to replace it, as choosing another model already did.
 
-  A run this browser starts, reopens after a refresh, or chooses to view
-  replaces the steps with four plain stages: Reading your document (PDF
-  pages), Preparing the narration (adaptation paragraphs or reused text),
-  Creating the audio (narration), and Finishing your audiobook (alignment),
-  with progress, ETA, and **Stop**. A finished run's card and notice show its
-  total time, from leaving the queue (`Run.start()` sets `work_started_at`) to
-  the published book, then each stage it timed (`RUN_STAGES`: reading,
-  adapting, narrating, aligning); `total_time_summary()` writes it, and the
-  log's last line repeats it as `Total time: 6m 03s (363.2 s): …`. A resumed
-  run counts only its own work. Its outcome offers **Start listening**
-  (opens the book on **Listen**) and **Download MP3**, both tied to that
-  result even after the next queued run starts; a stopped run offers
-  **Continue** and a failed one **Try again**, with its last log lines under
-  **Technical details**. Both resubmit the reported job's book and voice,
-  whatever the steps hold by then. While the steps are hidden (progress or
-  result), the top of **Create** shows a large primary **Create another
-  book** (`#create-another`, `createAnother()`) beside a note that books queue
-  without limit and start in the order added (`JobQueue.pending` is first in,
-  first out). It returns to the steps while the run continues behind a banner
-  with **View progress**; a queued run that starts later never replaces steps
-  being filled in, and a background run's outcome appears as a notice. An
-  **In progress** list with View/Stop/Cancel appears whenever it holds a job
-  other than the followed one. Focus moves to the heading of each card that
-  replaces the steps.
+  Below the steps, an **In progress** list shows every job in the queue with
+  **View** (a running job; opens **Progress** following it), **Stop**, or
+  **Cancel**. A finished run that was being watched returns to **Create**
+  with its card above the steps (`resultShown`): its total time, from
+  leaving the queue (`Run.start()` sets `work_started_at`) to the published
+  book, then each stage it timed (`RUN_STAGES`: reading, adapting, narrating,
+  aligning); `total_time_summary()` writes it, and the log's last line
+  repeats it as `Total time: 6m 03s (363.2 s): …`. A resumed run counts only
+  its own work. Its outcome offers **Start listening** (opens the book on
+  **Listen**) and **Download MP3**, both tied to that result even after the
+  next queued run starts; a stopped run offers **Continue** and a failed one
+  **Try again**, with its last log lines under **Technical details**. Both
+  resubmit the reported job's book and voice, whatever the steps hold by
+  then. A run's outcome away from **Progress** is only a notice.
+- **Progress** appears only while an audiobook job is running or getting
+  ready (`render()` hides `#tab-progress` otherwise and returns an open
+  **Progress** to **Create**); the server keeps `progress` as a tab, and
+  starting a job from it is refused. It opens when this browser starts a job
+  that runs at once, or with **View**. At its top, a large primary **Create
+  another book** (`createAnother()`) returns to **Create** with the first
+  step empty, beside a note that books queue without limit and start in the
+  order added (`JobQueue.pending` is first in, first out). Below it the
+  followed run shows four plain stages: Reading your document (PDF pages),
+  Preparing the narration (adaptation paragraphs or reused text), Creating
+  the audio (narration), and Finishing your audiobook (alignment), with
+  progress, ETA, and **Stop**; then **Queue** lists every job like **In
+  progress**, the followed one marked **Viewing**. Focus moves to the
+  followed run's heading.
 - **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
   **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
   prompt is the VoiceDesign description

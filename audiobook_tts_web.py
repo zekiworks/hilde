@@ -6586,7 +6586,7 @@ def normalize(state):
         for name in ("runtime", "voice", "audiobook", "player")
     )
     tab = state.get("tab")
-    if tab not in ("voice", "audiobook", "player"):
+    if tab not in ("voice", "audiobook", "progress", "player"):
         tab = "audiobook"
     step = audiobook.get("step")
     if step not in ("book", "voice", "create"):
@@ -9779,10 +9779,10 @@ class Handler(BaseHTTPRequestHandler):
         storage = self.server.storage
         if book:
             return self.run_book(state, confirmed, state_headers, book, mode, voice)
-        if state["tab"] == "player":
+        if state["tab"] not in ("audiobook", "voice"):
             return self.fail(
                 HTTPStatus.BAD_REQUEST,
-                "The Listen page cannot start a job.",
+                "Start a job from Create or Voices.",
             )
         facts = derived(state, self.server.tts_models, storage)
         if facts["problem"] is not None:
@@ -10281,6 +10281,7 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
 #progress-eta { white-space:nowrap; font-variant-numeric:tabular-nums; }
 #progress-detail { margin-top:6px; }
 #create-progress .actions, #create-result .actions { margin-top:18px; }
+#create-result { margin-bottom:12px; }
 #result-text { margin-top:8px; font-size:17px; }
 .queue-panel { margin-top:12px; padding:16px 22px; background:var(--surface);
                border-radius:var(--radius); }
@@ -10465,6 +10466,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div id="tab-list" class="tab-list" role="tablist" aria-label="Pages">
       <button id="tab-audiobook" type="button" role="tab" aria-controls="page-audiobook"
         onclick="setTab('audiobook')">Create</button>
+      <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
+        onclick="setTab('progress')">Progress</button>
       <button id="tab-voice" type="button" role="tab" aria-controls="page-voice"
         onclick="setTab('voice')">Voices</button>
       <button id="tab-player" type="button" role="tab" aria-controls="page-player"
@@ -10537,15 +10540,19 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
   <section id="page-audiobook" class="page" role="tabpanel" aria-labelledby="tab-audiobook">
     <h2 class="visually-hidden">Create an audiobook</h2>
-    <div id="create-another" class="create-another hidden">
-      <button class="primary large" type="button" onclick="createAnother()">Create another book</button>
-      <p class="note">You can queue as many books as you like. Hilde starts them in the
-        order you add them.</p>
-    </div>
-    <div id="create-banner" class="banner hidden">
-      <span id="create-banner-text" class="clamp"></span>
-      <button class="link" type="button" onclick="viewProgress()">View progress</button>
-    </div>
+    <section id="create-result" class="card hidden" aria-labelledby="result-title">
+      <h3 id="result-title" tabindex="-1"></h3>
+      <p id="result-text" class="clamp"></p>
+      <p id="result-time" class="note"></p>
+      <details id="result-details" class="technical hidden">
+        <summary>Technical details</summary><pre id="result-detail-text"></pre>
+      </details>
+      <div class="actions">
+        <button id="result-primary" class="primary" type="button" onclick="resultAction()"></button>
+        <button id="download" class="hidden" type="button" onclick="downloadArtifact()">Download MP3</button>
+        <button id="airdrop" class="hidden" type="button" onclick="sendAirdrop()">AirDrop…</button>
+      </div>
+    </section>
     <ol id="create-steps" class="steps">
       <li id="step-book" class="step">
         <div class="step-head">
@@ -10657,8 +10664,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
       </li>
     </ol>
+    <section id="queue-panel" class="queue-panel hidden" aria-labelledby="queue-heading">
+      <h3 id="queue-heading">In progress</h3>
+      <div id="job-queue" class="job-queue"></div>
+    </section>
+  </section>
 
-    <section id="create-progress" class="card hidden" aria-labelledby="progress-title">
+  <section id="page-progress" class="page hidden" role="tabpanel" aria-labelledby="tab-progress">
+    <h2 class="visually-hidden">Progress</h2>
+    <div class="create-another">
+      <button class="primary large" type="button" onclick="createAnother()">Create another book</button>
+      <p class="note">You can queue as many books as you like. Hilde starts them in the
+        order you add them.</p>
+    </div>
+    <section id="create-progress" class="card" aria-labelledby="progress-title">
       <h3 id="progress-title" tabindex="-1">Creating your audiobook</h3>
       <p id="progress-subject" class="note clamp"></p>
       <ol id="stages" class="stages">
@@ -10682,23 +10701,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
     </section>
 
-    <section id="create-result" class="card hidden" aria-labelledby="result-title">
-      <h3 id="result-title" tabindex="-1"></h3>
-      <p id="result-text" class="clamp"></p>
-      <p id="result-time" class="note"></p>
-      <details id="result-details" class="technical hidden">
-        <summary>Technical details</summary><pre id="result-detail-text"></pre>
-      </details>
-      <div class="actions">
-        <button id="result-primary" class="primary" type="button" onclick="resultAction()"></button>
-        <button id="download" class="hidden" type="button" onclick="downloadArtifact()">Download MP3</button>
-        <button id="airdrop" class="hidden" type="button" onclick="sendAirdrop()">AirDrop…</button>
-      </div>
-    </section>
-
-    <section id="queue-panel" class="queue-panel hidden" aria-labelledby="queue-heading">
-      <h3 id="queue-heading">In progress</h3>
-      <div id="job-queue" class="job-queue"></div>
+    <section class="queue-panel" aria-labelledby="progress-queue-heading">
+      <h3 id="progress-queue-heading">Queue</h3>
+      <div id="progress-queue" class="job-queue"></div>
     </section>
   </section>
 
@@ -10987,8 +10992,8 @@ let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
 let paperOpenAIConnected = false, paperAnthropicConnected = false;
 let advancedOpen = false, voiceFormOpen = false;
-// Create shows the steps (compose), a followed run (progress), or its outcome (result).
-let submitting = false, createView = "compose", stopping = false, waitingJobId = "";
+// Create shows a run's outcome above its steps while resultShown; Progress follows the run.
+let submitting = false, resultShown = false, stopping = false, waitingJobId = "";
 let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
 // A draft is the clip Listen made; Save stores exactly that clip.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
@@ -11075,8 +11080,6 @@ function load(data) {
   $("link-details").open = !!state.audiobook.source_url;
   populateAssets();
   const activeRun = runs.find((item) => item.active) || null;
-  // A refresh during an audiobook run returns to its progress.
-  if (activeRun && activeRun.kind === "audiobook") createView = "progress";
   if (activeRun) followActive(activeRun, true);
   else render();
   refreshVoices();
@@ -12161,16 +12164,17 @@ function clearBookChoice() {
   $("link-details").open = false;
   populateAssets();
 }
+// From Progress: back to Create, with the first step empty for the next book.
 function createAnother() {
-  createView = "compose";
+  resultShown = false;
   clearBookChoice();
+  state.audiobook.step = "book";
+  setTab("audiobook");
   setStep("book");
 }
 function createFirstAudiobook() {
-  createView = "compose";
   setTab("audiobook"); setStep("book");
 }
-function viewProgress() { createView = "progress"; render(); $("progress-title").focus(); }
 function resultAction() {
   if (!resultInfo) return;
   if (resultInfo.code === 0) return startListening();
@@ -12179,7 +12183,7 @@ function resultAction() {
 function retryResult() {
   // Continue the job this card reports, not whatever the form holds by now.
   const { document: book, voice } = resultInfo;
-  createView = "compose";
+  resultShown = false;
   if (resultInfo.book && resultInfo.mode !== "create") {
     // A new voice or a remake names its book, not a document.
     return requestRun(false, { book:resultInfo.book, mode:resultInfo.mode, voice })
@@ -12196,7 +12200,7 @@ function retryResult() {
 }
 function startListening() {
   const info = resultInfo || {};
-  createView = "compose";
+  resultShown = false;
   state.audiobook.step = "book";
   clearBookChoice();
   if (info.book) openAudiobook(info.book, true, info.voice);
@@ -12232,12 +12236,8 @@ function progressSubject() {
 function renderCreate() {
   const step = currentStep();
   const done = { book:bookReady(), voice:voiceReady(), create:false };
-  const composing = createView === "compose";
-  $("create-steps").classList.toggle("hidden", !composing);
-  $("create-progress").classList.toggle("hidden", createView !== "progress");
-  $("create-result").classList.toggle("hidden", createView !== "result");
-  // Steps already open need no way back to them.
-  $("create-another").classList.toggle("hidden", composing);
+  // A finished run's card sits above the steps, which stay ready for the next book.
+  $("create-result").classList.toggle("hidden", !resultShown || !resultInfo);
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
     const active = name === step, complete = !active && done[name];
@@ -12288,9 +12288,6 @@ function renderCreate() {
   $("run").disabled = submitting || !current || !!facts.problem;
   $("create-note").textContent = voiceOnly
     ? `Reads ${existing.title} in this voice, from the book's own text; no model is used.` : "";
-  const background = running && runKind === "audiobook" && composing;
-  $("create-banner").classList.toggle("hidden", !background);
-  $("create-banner-text").textContent = background ? `Creating ${progressSubject()}…` : "";
   renderSelectedVoice();
 }
 
@@ -12441,7 +12438,7 @@ function jobRow(job) {
   const actions = document.createElement("div");
   actions.className = "job-actions";
   if (job.status === "running") {
-    const viewing = currentJobId === job.id && createView === "progress";
+    const viewing = currentJobId === job.id && state.tab === "progress";
     const view = document.createElement("button");
     view.type = "button";
     view.textContent = viewing ? "Viewing" : "View";
@@ -12462,7 +12459,7 @@ function jobRow(job) {
 function renderQueue() {
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
-  const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, createView]);
+  const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab]);
   if (signature === queueSignature) return;
   queueSignature = signature;
   $("compute-workers").replaceChildren(...consumers.map((consumer) => {
@@ -12489,15 +12486,16 @@ function renderQueue() {
   $("compute-models").textContent = [
     describeModel("clone", "Narration"), describeModel("design", "Voice design"),
   ].join(" · ");
-  // The followed job already has its progress card or banner.
-  $("queue-panel").classList.toggle("hidden", !jobs.some((job) => job.id !== currentJobId));
+  // Create lists every job; Progress lists them under the one it follows.
+  $("queue-panel").classList.toggle("hidden", !jobs.length);
   $("job-queue").replaceChildren(...jobs.map(jobRow));
+  $("progress-queue").replaceChildren(...jobs.map(jobRow));
 }
 
 function viewJob(id) {
-  createView = "progress";
   const active = runs.find((item) => item.active && item.job_id === id);
   if (active) followActive(active, true);
+  setTab("progress");
   render();
   $("progress-title").focus();
 }
@@ -12538,14 +12536,20 @@ async function refreshJobs() {
 
 function render() {
   if (!state) return;
+  // Progress exists only while an audiobook is being made; once none is,
+  // its page gives way to Create.
+  const making = (running && runKind === "audiobook")
+    || jobs.some((job) => job.status === "running" || job.status === "preparing");
+  $("tab-progress").classList.toggle("hidden", !making);
+  if (state.tab === "progress" && !making) state.tab = "audiobook";
   const tab = state.tab;
-  for (const name of ["audiobook", "voice", "player"]) {
+  for (const name of ["audiobook", "progress", "voice", "player"]) {
     const selected = name === tab;
     $(`tab-${name}`).setAttribute("aria-selected", String(selected));
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`page-${name}`).classList.toggle("hidden", !selected);
   }
-  const creating = tab !== "player";
+  const creating = tab === "audiobook" || tab === "voice";
   $("advanced").classList.toggle("hidden", !creating);
   $("advanced").setAttribute("aria-expanded", String(creating && advancedOpen));
   // While the extra settings show, the toggle names the way back.
@@ -12559,7 +12563,8 @@ function render() {
   const activeServer = tab === "voice" ? facts.design_server : facts.clone_server;
   for (const id of ["dtype","attn","language","seed"]) $(id).disabled = activeServer;
   $("batch-size").disabled = facts.clone_server;
-  $("log").classList.toggle("hidden", !creating);
+  // The run log follows the work on every page but Listen.
+  $("log").classList.toggle("hidden", tab === "player");
   const reading = tab === "player" && !!state.player.book;
   $("library-view").classList.toggle("hidden", reading);
   $("book-view").classList.toggle("hidden", !reading);
@@ -12626,15 +12631,21 @@ async function startAudiobook() {
     collect();
     const answer = await requestRun(false);
     if (!answer) return;
+    // The form is free for the next book as soon as this one is queued.
+    resultShown = false;
+    clearBookChoice();
+    state.audiobook.step = "book";
+    queueSync();
     started = showStartedJob(answer);
   } finally {
     submitting = false; render();
     // Disabling the button dropped focus; return it to the view now shown.
-    $(started ? "progress-title" : "run").focus();
+    if (started) $("progress-title").focus();
+    else focusStep();
   }
 }
 
-// Follow a job that started on Create's progress card, or say when it will.
+// Follow a job that started on the Progress tab, or say when it will start.
 function showStartedJob(answer) {
   jobs = answer.queue || jobs; runs = answer.runs || runs;
   consumers = answer.consumers || consumers;
@@ -12642,9 +12653,8 @@ function showStartedJob(answer) {
   const active = job
     ? runs.find((item) => item.active && item.job_id === job.id) : null;
   if (active) {
-    if (state.tab !== "audiobook") setTab("audiobook");
-    createView = "progress";
     followActive(active, false);
+    setTab("progress");
     render();
     return true;
   }
@@ -12713,7 +12723,6 @@ async function confirmRunAfterDisconnect(source) {
     endEta();
     const active = runs.find((item) => item.active);
     if (active) return followActive(active, true);
-    if (createView === "progress") createView = "compose";
     render();
     setStatus("The server restarted, so this work stopped. Start it again to continue where it left off.", true);
   } catch (_) {}
@@ -12761,20 +12770,21 @@ function watch(jobId="") {
     source.close(); if (stream === source) stream = null;
     running = false; currentJobId = ""; followedRunKey = "";
     endEta();
-    let focus = null;
+    let focus = null, toCreate = false;
     // The outcome replaces this browser's "Stopping…" notice.
     if (stopping) { stopping = false; setStatus(""); }
     if (info.kind === "audiobook") {
-      // Show the outcome only where its progress was being watched.
-      if (createView === "progress") {
-        createView = "result";
+      // Show the outcome where its progress was being watched: on Create, above
+      // the steps, since Progress follows only work still going.
+      if (state.tab === "progress") {
+        resultShown = true; toCreate = true;
         // Continue and Try again resubmit this job, whatever the form holds by then.
         resultInfo = {
           ...info, document:job ? job.document : "", voice:job ? job.voice : info.voice,
           book:info.book || (job ? job.book : ""), mode:job ? job.mode : "create",
         };
         resultDetail = info.code !== 0 && info.code !== 130 ? recentLog.join("\n") : "";
-        if (state.tab === "audiobook") focus = "result-title";
+        focus = "result-title";
       } else if (info.code === 0) {
         if (info.title) {
           setStatus(`${info.title} is ready in Listen.`
@@ -12815,6 +12825,7 @@ function watch(jobId="") {
       populateAssets();
     } catch (_) {}
     if (info.kind === "audiobook" && info.code === 0) refreshLibrary();
+    if (toCreate) setTab("audiobook");
     render();
     if (focus) $(focus).focus();
     // The new version plays as soon as it is ready.
@@ -13325,7 +13336,8 @@ previewAudio.addEventListener("pause", syncPreviewButtons);
 previewAudio.addEventListener("ended", () => { previewing = ""; syncPreviewButtons(); });
 $("tab-list").addEventListener("keydown", (event) => {
   // Arrow keys, Home, and End move between tabs, as in native tab strips.
-  const order = ["audiobook", "voice", "player"];
+  const order = ["audiobook", "progress", "voice", "player"]
+    .filter((name) => !$(`tab-${name}`).classList.contains("hidden"));
   const index = order.indexOf(state.tab);
   const next = {
     ArrowRight:order[(index + 1) % order.length],
