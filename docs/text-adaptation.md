@@ -89,7 +89,9 @@ description never comes before the author introduces it or in the middle of
 the argument. A footnote moves to the paragraph that cites it and goes to the
 model with that paragraph, which reads it right after the sentence carrying its
 marker, saying whom or what it is about ("Aidan Gomez did this work while at
-Google Brain"). A note about one author comes before a note every author line
+Google Brain"). A note marked beside one author alone reaches the model with
+that author's name, so it is never read as a bare "Work performed while at
+Google Brain". A note about one author comes before a note every author line
 shares, so "Illia Polosukhin did this work while at Google Research" follows
 his name rather than the whole contribution note. A PDF table goes to the model
 as its picture and the cells read from it; the model says what the table shows,
@@ -143,7 +145,17 @@ heading, so the narration opens with it; the job log says when it did.
 
 The model follows the instructions in `prompts/PAPER-AUDIO-BOOK.md`; each job
 reads them when it starts, so edits apply to the next job, and a job adapted
-under other instructions starts its adaptation over.
+under other instructions starts its adaptation over. Their examples are
+invented rather than taken from a real paper, since a model sometimes copied
+an example into the narration in place of the paper's own text.
+
+When the model leaves out a whole passage of the author's text, Hilde asks
+once more, saying that only what the instructions name may be left out, so a
+sentence the model judged a mere definition is read after all. A passage with
+the paper's author lines, bold names on its first page before the abstract, is
+asked for as the title block, and if the model leaves it out again it is read
+as printed, without marks or email addresses. A stray reference entry is not
+asked for again. The job log notes each step.
 
 When text extraction leaves reference entries outside a standalone References
 section, the model leaves them out one by one. The log shows each as `Paragraph

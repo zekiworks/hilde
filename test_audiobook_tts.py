@@ -5432,6 +5432,69 @@ class GroundingTests(unittest.TestCase):
         self.assertNotIn("The encoder maps", figure)
         self.assertIn("Compacted summaries", requests["paragraphs-4-4"])
 
+    def test_a_note_beside_one_author_carries_that_authors_name(self):
+        paragraphs = [
+            "**Mara Ellison**<sup>_∗_</sup>, Northfield Institute; "
+            "**Tomas Reyes**<sup>_∗†_</sup>, Harbor University",
+            "> _†_ Now at Acme Labs.",
+            "**Priya Anand**<sup>_∗_</sup>, Harbor University",
+            "> _∗_ Equal contribution.",
+            "## Abstract",
+            "We scale the dot products.<sup>4</sup>",
+            "> 4To illustrate why the dot products get large, assume independence.",
+        ]
+        named = web.name_author_notes(paragraphs, web._layout_kinds(paragraphs))
+        self.assertEqual(named[1], "> _†_ Tomas Reyes: Now at Acme Labs.")
+        # A note every author carries, and a note in the body, stay as printed.
+        self.assertEqual(named[3:], paragraphs[3:])
+
+    def test_text_left_out_whole_is_asked_again_and_author_lines_then_read_as_printed(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "We grant permission to reproduce the figures.\n\n"
+            "**Mara Ellison**<sup>_∗†_</sup>, Northfield Institute; "
+            "**Tomas Reyes**<sup>_∗_</sup>, Harbor University `mara@example.org`\n\n"
+            "> _†_ Now at Acme Labs.\n\n"
+            "## Abstract\n\n"
+            "We study how rivers carry silt.\n\n"
+            "- [7] Ofir Press and Lior Wolf. Using the output embedding. 2016.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+
+        def adapt(second_answer):
+            requests = []
+
+            class StubPaperRun(PaperRun):
+                def model_response(self, request_path, system_prompt, attachments=()):
+                    text = request_path.read_text(encoding="utf-8")
+                    requests.append(text)
+                    narration = second_answer if "title block" in text else ""
+                    return f"<NARRATION>{narration}</NARRATION><SUMMARY>Left out.</SUMMARY>"
+
+            output = root / f"prepared-{len(second_answer)}.txt"
+            run = StubPaperRun(source, output, "utf-8", in_flight=1, prompt_path=prompt)
+            run.pump()
+            self.assertEqual(run.code, 0)
+            # Only the batch with author lines is asked again as a title block.
+            self.assertEqual(sum("title block" in text for text in requests), 1)
+            # Prose left out whole is asked again; a stray reference entry is not.
+            again = [text for text in requests if web.LEFT_OUT_NOTES["prose"] in text]
+            self.assertTrue(any("rivers" in text for text in again))
+            self.assertFalse(any("Ofir Press" in text for text in again))
+            return output.read_text(encoding="utf-8")
+
+        self.assertIn("Mara Ellison, now at Acme Labs", adapt("Mara Ellison, now at Acme Labs."))
+        printed = adapt("")
+        self.assertIn("Mara Ellison, Northfield Institute; Tomas Reyes, Harbor University", printed)
+        self.assertIn("Now at Acme Labs.", printed)
+        for left_out in ("mara@example.org", "†", "permission", "rivers"):
+            self.assertNotIn(left_out, printed)
+
     def test_code_names_an_equation_as_the_paper_prints_it(self):
         numbered = (
             "![](images/e.png)",
@@ -5475,6 +5538,15 @@ class GroundingTests(unittest.TestCase):
         )
         self.assertEqual(
             web.equation_label_problems("The equation adds a sine.", unnumbered), [],
+        )
+        # A batch of two equations may name either one.
+        pair = numbered + (
+            "![](images/f.png)",
+            "<!-- Start of picture text -->\nq = p(x) (3)\n<!-- End of picture text -->",
+        )
+        self.assertEqual(
+            web.equation_label_problems("Equations 2 and 3 agree. Equation 3 sums. Equation 5 differs.", pair),
+            ["the description says Equation 5, though it describes Equations 2 and 3"],
         )
 
     def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):

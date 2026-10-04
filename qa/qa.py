@@ -374,8 +374,8 @@ def generic_checks(t: Target):
             hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"equation passage opens with {m.group(0)!r}"))
     results.append(("G11", "B03", "Equation passage opens with a figure or table number", hits))
 
-    # G12: an equation passage names an equation number other than the one printed
-    # beside it, "(2)" at the end of its picture text, or any number when none is.
+    # G12: an equation passage names an equation number other than one printed beside
+    # its equations, "(2)" at the end of the picture text, or any number when none is.
     hits = []
     words = {w: str(n) for n, w in enumerate("one two three four five six seven eight nine ten".split(), 1)}
     number = r"(?:\d+|" + "|".join(words) + r")\b"
@@ -392,7 +392,7 @@ def generic_checks(t: Target):
         for m in re.finditer(rf"\b(?:Equations?|Eq\.)\s*\(?({number}(?:\)?\s*(?:,|and|&|to|–|-)\s*\(?{number})*)",
                              p.get("text", "")):
             said = {words.get(n.lower(), n) for n in re.findall(number, m.group(1), re.I)}
-            if said != printed:
+            if not said or not said <= printed:
                 want = f"Equation {', '.join(sorted(printed))}" if printed else "an unnumbered equation"
                 hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"says {m.group(0)!r}, source prints {want}"))
     results.append(("G12", "B03", "Equation passage names a number other than the one printed beside it", hits))

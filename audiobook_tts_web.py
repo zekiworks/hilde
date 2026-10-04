@@ -5228,6 +5228,33 @@ def footnote_citers(paragraphs, kinds):
     return citers
 
 
+def name_author_notes(paragraphs, kinds):
+    """Put the author's name in a note marked beside one author alone: "> _†_
+    Aidan N. Gomez: Work performed while at Google Brain." The model is to
+    say whom such a note is about; told only in words, it read the bare
+    "Work performed while at Google Brain", and the one example sentence
+    that made it name him was pasted over other footnotes (B31)."""
+    named = list(paragraphs)
+    lines = author_lines(paragraphs)
+    for index, citer in footnote_citers(paragraphs, kinds).items():
+        if citer not in lines:
+            continue
+        marker = _footnote_marker(paragraphs[index])
+        # Across every author line: "∗ Equal contribution" marks them all.
+        authors = [
+            name.strip() for line in sorted(lines) for name, marks in
+            re.findall(r"\*\*([^*\n]+)\*\*\s*<sup>(.*?)</sup>", paragraphs[line])
+            if marker in _cited_markers(f"<sup>{marks}</sup>")
+        ]
+        if len(authors) == 1:
+            named[index] = re.sub(
+                rf"^(\s*>?\s*_?{re.escape(marker)}_?\s*)",
+                lambda match: f"{match.group(1)}{authors[0]}: ",
+                paragraphs[index], count=1,
+            )
+    return named
+
+
 def _place_footnotes(document, kinds, starts):
     """Move each footnote to follow the nearest paragraph before it, on its
     page or the one before, whose superscript carries its marker.
@@ -5556,10 +5583,13 @@ def equation_label_problems(narration, sources):
     problems = []
     for match in EQUATION_NAME_PATTERN.finditer(narration):
         kind, _, numbers = _equation_label(match)
-        if numbers and (not kind.startswith("eq") or numbers != marks):
+        if numbers and (not kind.startswith("eq") or not numbers <= marks):
             label = match.group(0)[len(match.group("det") or ""):]
+            ordered = sorted(marks, key=int)
             own = (
-                f"Equation {', '.join(sorted(marks))}" if marks else "an unnumbered equation"
+                f"Equation {ordered[0]}" if len(ordered) == 1
+                else f"Equations {', '.join(ordered[:-1])} and {ordered[-1]}" if ordered
+                else "an unnumbered equation"
             )
             problems.append(f"the description says {label}, though it describes {own}")
     return problems
@@ -5890,25 +5920,52 @@ def resolve_citations(paragraph, entries):
     return "".join(pieces)
 
 
-def author_surnames(paragraphs):
-    """The surnames of the paper's own authors: bold names of two to four
-    capitalized words on its first page, before the abstract."""
-    surnames = set()
-    for paragraph in paragraphs[:30]:
+def author_lines(paragraphs):
+    """The indices of the paper's author lines: paragraphs on its first page,
+    before the abstract, with a bold name of two to four capitalized words."""
+    lines = {}
+    for index, paragraph in enumerate(paragraphs[:30]):
         if re.match(r"(?i)\W*abstract\b", _layout_text(paragraph)):
             break
         for bold in re.findall(r"\*\*([^*\n]+)\*\*", paragraph):
             for name in re.split(r",\s*|\s+and\s+", bold):
                 words = name.split()
                 if 2 <= len(words) <= 4 and all(re.fullmatch(r"[A-ZŁ][\w.'’-]*", word) for word in words):
-                    surnames.add(words[-1])
-    return surnames
+                    lines.setdefault(index, []).append(words[-1])
+    return lines
 
 
-def paper_request(paragraphs, summaries, start, end, total, attempt=1, acronyms=()):
+def title_block_text(paragraphs):
+    """Author lines and their notes as printed, for reading aloud: without
+    emphasis, superscript marks, a note's own marker, or email addresses."""
+    texts = []
+    for paragraph in paragraphs:
+        text = _layout_text(paragraph).lstrip(">").strip()
+        text = re.sub(rf"^[{FOOTNOTE_SYMBOLS}]+\s*", "", text)
+        text = re.sub(r"`?[\w.+-]+@[\w-]+(?:\.[\w-]+)+`?", "", text)
+        text = re.sub(r"\s+([,;.])", r"\1", re.sub(r"[ \t]+", " ", text)).strip(" ,;")
+        if text:
+            texts.append(text)
+    return "\n\n".join(texts)
+
+# What a second request says when the model left a whole batch out.
+LEFT_OUT_NOTES = {
+    "title_block": """These paragraphs are the paper's title block: its authors, their affiliations,
+and the notes about them. They are not apparatus; read every one of them.""",
+    "prose": """You left all of this out. Leave a paragraph out only when it is something the
+instructions say to leave out, such as a bibliography entry, page furniture,
+publishing boilerplate, or a roadmap; otherwise it is the author's text, and
+you narrate it.""",
+}
+
+
+def paper_request(
+    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), left_out=None,
+):
     """One batch's request. A batch that is only a figure, table, or equation
     has no summaries (None): it goes alone, so its request is the same on
-    every run."""
+    every run. left_out, a key of LEFT_OUT_NOTES, asks again for a batch the
+    model left out whole."""
     source = "\n\n".join(
         f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
         for number, paragraph in enumerate(paragraphs, start)
@@ -5924,6 +5981,8 @@ Transport retry attempt {attempt} of {PAPER_RESPONSE_ATTEMPTS}:
 The prior response could not be parsed. Adapt the same source batch again under
 the same rules, with one NARRATION element followed by one nonempty SUMMARY
 element. Do not discuss the retry or add text outside those elements."""
+    if left_out:
+        retry += f"\n\n{LEFT_OUT_NOTES[left_out]}"
     defined = (
         "Acronyms the author already spelled out in earlier paragraphs; never "
         f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
@@ -7778,6 +7837,7 @@ class PaperRun(Run):
         system_prompt,
         image_paths,
         acronyms=(),
+        left_out=None,
     ):
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
@@ -7806,56 +7866,79 @@ class PaperRun(Run):
             "log",
             f"Processing {batch_label}/{total}{figure_note}…\n",
         )
-        for attempt in range(1, PAPER_RESPONSE_ATTEMPTS + 1):
-            request_path.write_text(
-                paper_request(
-                    paragraphs,
-                    context,
-                    start,
-                    end,
-                    total,
-                    attempt,
-                    acronyms,
-                ),
-                encoding="utf-8",
-            )
-            response = self.model_response(
-                request_path, system_prompt, attachments
-            )
-            try:
-                narration, summary = parse_paper_response(response)
-            except ValueError:
-                if attempt == PAPER_RESPONSE_ATTEMPTS:
-                    preview = " ".join(response.split())
-                    if len(preview) > 240:
-                        preview = preview[:237] + "..."
-                    detail = (
-                        f"; last response began {preview!r}"
-                        if preview else "; last response was empty"
+        def ask(note):
+            for attempt in range(1, PAPER_RESPONSE_ATTEMPTS + 1):
+                request_path.write_text(
+                    paper_request(
+                        paragraphs,
+                        context,
+                        start,
+                        end,
+                        total,
+                        attempt,
+                        acronyms,
+                        note,
+                    ),
+                    encoding="utf-8",
+                )
+                response = self.model_response(
+                    request_path, system_prompt, attachments
+                )
+                try:
+                    narration, summary = parse_paper_response(response)
+                except ValueError:
+                    if attempt == PAPER_RESPONSE_ATTEMPTS:
+                        preview = " ".join(response.split())
+                        if len(preview) > 240:
+                            preview = preview[:237] + "..."
+                        detail = (
+                            f"; last response began {preview!r}"
+                            if preview else "; last response was empty"
+                        )
+                        raise ValueError(
+                            f"{batch_label} returned malformed model transport "
+                            f"after {PAPER_RESPONSE_ATTEMPTS} attempts{detail}"
+                        ) from None
+                    self.publish(
+                        "log",
+                        f"{batch_label.capitalize()}/{total} returned malformed "
+                        "transport; retrying model response "
+                        f"({attempt + 1}/{PAPER_RESPONSE_ATTEMPTS})…\n",
                     )
-                    raise ValueError(
-                        f"{batch_label} returned malformed model transport "
-                        f"after {PAPER_RESPONSE_ATTEMPTS} attempts{detail}"
-                    ) from None
+                    continue
+                narration = _without_invisible_paragraphs(narration)
+                if not narration:
+                    reason = " ".join(summary.split())
+                    if len(reason) > 160:
+                        reason = reason[:157] + "..."
+                    self.publish(
+                        "log",
+                        f"{batch_label.capitalize()}/{total} has nothing to read "
+                        f"aloud: {reason}\n",
+                    )
+                return narration, summary
+            raise AssertionError("unreachable document response loop")
+
+        narration, summary = ask(None)
+        # Author lines and the author's prose were left out whole although
+        # the prompt keeps them: author lines in two of a dozen Attention
+        # runs, the sentence defining W Q, W K, W V and W O in every run once
+        # the prompt stopped quoting Attention. Such a batch is asked once
+        # more; author lines left out again are read as printed.
+        if not narration and left_out:
+            self.publish(
+                "log",
+                f"{batch_label.capitalize()}/{total}: asking again, since "
+                f"{'it holds author lines' if left_out == 'title_block' else 'it may be the author’s text'}.\n",
+            )
+            narration, summary = ask(left_out)
+            if not narration and left_out == "title_block":
+                narration = title_block_text(paragraphs)
                 self.publish(
                     "log",
-                    f"{batch_label.capitalize()}/{total} returned malformed "
-                    "transport; retrying model response "
-                    f"({attempt + 1}/{PAPER_RESPONSE_ATTEMPTS})…\n",
+                    f"{batch_label.capitalize()}/{total}: the author lines are read as printed.\n",
                 )
-                continue
-            narration = _without_invisible_paragraphs(narration)
-            if not narration:
-                reason = " ".join(summary.split())
-                if len(reason) > 160:
-                    reason = reason[:157] + "..."
-                self.publish(
-                    "log",
-                    f"{batch_label.capitalize()}/{total} has nothing to read "
-                    f"aloud: {reason}\n",
-                )
-            return narration, summary
-        raise AssertionError("unreachable document response loop")
+        return narration, summary
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
         total = len(paragraphs)
@@ -7867,7 +7950,7 @@ class PaperRun(Run):
         references = references or {}
         requested = [
             resolve_citations(paragraph, references)
-            for paragraph in model_paragraphs(paragraphs, kinds)
+            for paragraph in name_author_notes(model_paragraphs(paragraphs, kinds), kinds)
         ]
         if references:
             self.publish(
@@ -7877,8 +7960,10 @@ class PaperRun(Run):
                 "passing is left out.\n",
             )
         # The names the log watches for, the equation numbers the paper
-        # prints, and the paragraph whose mark each footnote explains.
-        known_names = author_surnames(paragraphs) | {
+        # prints, the paragraph whose mark each footnote explains, and the
+        # paper's author lines, which are never left out.
+        authors = author_lines(paragraphs)
+        known_names = {surname for surnames in authors.values() for surname in surnames} | {
             surname for surnames in references.values() for surname in surnames
         }
         printed = set(printed_equation_numbers(requested))
@@ -7924,6 +8009,19 @@ class PaperRun(Run):
             thread_name_prefix="document",
         )
 
+        def left_out_note(start, end):
+            """Which second request a batch gets if the model leaves it out
+            whole: author lines, the author's text, or none. A reference
+            entry extraction left in the text is apparatus."""
+            if any(index in authors for index in range(start - 1, end)):
+                return "title_block"
+            if set(kinds[start - 1:end]) <= TEXT_KINDS and not any(
+                REFERENCE_ENTRY_PATTERN.match(_layout_text(paragraph).lstrip("- "))
+                for paragraph in paragraphs[start - 1:end]
+            ):
+                return "prose"
+            return None
+
         def submit(start):
             end = batch_ends[start]
             # A figure, table, or equation goes alone; prose comes with the
@@ -7945,6 +8043,7 @@ class PaperRun(Run):
                 # From the source before this batch, so it does not depend on
                 # which batches happen to finish first.
                 tuple(defined_acronyms(requested[:start - 1])),
+                left_out_note(start, end),
             )
             futures[future] = (start, end)
 
