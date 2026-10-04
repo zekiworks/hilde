@@ -127,28 +127,34 @@ asserts:
     bug: B03
     about: >
       The multi-head and positional-encoding equations are unnumbered in the paper; their descriptions
-      open with no Figure, Table or Equation number and carry no equation number anywhere
-    must_contain: ['averaging inhibits this', 'different frequencies:']
+      open with no Figure, Table or Equation number and carry no equation number anywhere. Each description
+      is found twice, by the prose paragraph before it and by the one after, so a reworded anchor does not
+      fail the check (Can, 952f393 run). On book folders G11 covers openings on every paper.
     must_not_contain:
-      - 'averaging inhibits this\.\s+(?i:description\s+)?(?:Figures?|Tables?|Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'averaging inhibits this\.\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'different frequencies:\s+(?i:description\s+)?(?:Figures?|Tables?|Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'different frequencies:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-
+      - '(?:averaging inhibits this|single attention head)[^\n]*\n\s*(?i:description\s+)?(?:(?:Figures?|Tables?)|(?:Equations?|Eq\.))\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?:averaging inhibits this|single attention head)[^\n]*\n\s*(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?m)^[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:parameter matrices)'
+      - '(?:different frequencies|sine and cosine functions)[^\n]*\n\s*(?i:description\s+)?(?:(?:Figures?|Tables?)|(?:Equations?|Eq\.))\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?:different frequencies|sine and cosine functions)[^\n]*\n\s*(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?m)^[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:i is the dimension)'
   - id: ATT-27
     bug: B03
     about: >
       Equations 1, 2 (FFN) and 3 are named by their printed number: no description opens with "Figure N"
-      or "Table N", and none names another equation number
-    must_contain: ['outputs as:', 'ReLU activation in between', 'according to the formula:']
+      or "Table N", and none names another equation number. Anchored before and after, as ATT-26.
     must_not_contain:
-      - 'outputs as:\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'outputs as:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!1\b|one\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'ReLU activation in between\.\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'ReLU activation in between\.\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!2\b|two\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'according to the formula:\s+(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-      - 'according to the formula:\s+(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!3\b|three\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
-
+      - '(?:outputs as:|matrix of outputs)[^\n]*\n\s*(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?:outputs as:|matrix of outputs)[^\n]*\n\s*(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!1\b|one\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?m)^(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:most commonly used attention functions)'
+      - '(?m)^[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!1\b|one\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:most commonly used attention functions)'
+      - '(?:ReLU activation)[^\n]*\n\s*(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?:ReLU activation)[^\n]*\n\s*(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!2\b|two\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?m)^(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:same across different positions)'
+      - '(?m)^[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!2\b|two\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:same across different positions)'
+      - '(?:according to the formula|learning rate over the course of training)[^\n]*\n\s*(?i:description\s+)?(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?:according to the formula|learning rate over the course of training)[^\n]*\n\s*(?i:description\s+)?[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!3\b|three\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b'
+      - '(?m)^(?:Figures?|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:increasing the learning rate linearly)'
+      - '(?m)^[^\n]*\b(?:Equations?|Eq\.)\s+\(?(?!3\b|three\b)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b[^\n]*\n\s*[^\n]*?(?:increasing the learning rate linearly)'
   - id: ATT-28
     bug: B20
     about: Footnote 4's sum runs from i equals 1, not "from d i"
