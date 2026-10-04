@@ -205,9 +205,14 @@ PAPER_MAX_SUMMARY_CONTEXT_CHARS = 24_000
 PAPER_TOTAL_SUMMARY_CONTEXT_CHARS = 96_000
 PAPER_RESPONSE_PATTERN = re.compile(
     r"<NARRATION>\s*(.*?)\s*</NARRATION>\s*"
-    r"<SUMMARY>\s*(.*?)\s*</SUMMARY>",
+    r"<SUMMARY>\s*(.*?)\s*</SUMMARY>"
+    # Models often end the answer before closing TAGS.
+    r"(?:\s*<TAGS>\s*(.*?)\s*(?:</TAGS>|\Z))?",
     flags=re.DOTALL | re.IGNORECASE,
 )
+# A batch's topic tags, kept with its passage for Chat with Hilde.
+PAPER_MAX_TAGS = 6
+PAPER_MAX_TAG_CHARS = 40
 # Navigation lists a listener never needs; their entries end in page numbers.
 CONTENTS_SECTION_TITLES = frozenset({
     "contents",
@@ -1684,14 +1689,19 @@ def audiobook_title(markdown, fallback):
 # A book is one source document's content, made into narration once. It lives
 # in Audiobooks/<slug>--<first 12 hex of the source's SHA-256>/: book.json, a
 # copy of the source, narration.json (the text read aloud, as passages),
-# reader.md (the follow-along view), and voices/<voice>/ with audio.mp3 and
-# timings.json. Every build is written into a hidden folder and renamed into
-# place, so no half-made book or voice is ever visible.
+# reader.md (the follow-along view), voices/<voice>/ with audio.mp3 and
+# timings.json, and, once Chat with Hilde has been used, files/ (the Markdown
+# files it wrote) and chat.json (the conversation). Every build is written
+# into a hidden folder and renamed into place, so no half-made book or voice
+# is ever visible.
 
 BOOK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*--[0-9a-f]{12}")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 # Passages the model wrote about something the listener cannot see.
 VISUAL_PASSAGE_TYPES = frozenset({"figure", "table", "equation"})
+# The Markdown files Chat with Hilde writes, and its conversation, in a book.
+BOOK_FILES_FOLDER = "files"
+BOOK_CHAT_FILE = "chat.json"
 # Commits of books and voices are serialized, so a recreated book and a voice
 # made at the same time cannot overwrite each other's record.
 _BOOK_LOCK = threading.Lock()
@@ -1915,6 +1925,10 @@ def commit_book(storage, record, narration, reader_markdown, source, voice, audi
                             else "stale"
                         ),
                     })
+                # The files Chat with Hilde wrote are the book's to keep; its
+                # conversation cites the old text's paragraphs and goes.
+                if (old_path / BOOK_FILES_FOLDER).is_dir():
+                    _copy_voice_folder(old_path / BOOK_FILES_FOLDER, build / BOOK_FILES_FOLDER)
                 final = old_path
             else:
                 final = storage.audiobooks / book_id(record["title"], record["source_sha256"])
@@ -2556,7 +2570,13 @@ def _adapted_reader_groups(narration, source_paragraphs, checkpoint_dir):
             or end > len(source_paragraphs)
         ):
             return None
-        groups.append((adapted.strip(), start, source_paragraphs[start - 1:end]))
+        # The batch's summary and tags go with its passage, for Chat with Hilde.
+        summary, tags = data.get("summary"), data.get("tags")
+        outline = {
+            "summary": " ".join(summary.split()),
+            "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        } if isinstance(summary, str) and summary.strip() else None
+        groups.append((adapted.strip(), start, source_paragraphs[start - 1:end], outline))
     # A batch left out entirely, such as a reference entry, adds no text.
     if "\n\n".join(group[0] for group in groups if group[0]) != narration.strip():
         return None
@@ -2807,6 +2827,7 @@ def _reader_blocks(
                 source_paragraphs[index:index + 1]
                 if index < len(source_paragraphs)
                 else (),
+                None,
             )
             for index, paragraph in enumerate(narration_paragraphs)
         ]
@@ -2817,7 +2838,7 @@ def _reader_blocks(
     chunk_blocks = []
     flattened_chunks = []
     leading_visuals = []
-    for adapted, start, source_group in groups:
+    for adapted, start, source_group, outline in groups:
         first_paragraph = paragraphs[-1] + 1 if paragraphs else 0
         group_kinds = kinds[start - 1:start - 1 + len(source_group)]
         original = _original_markdown(source_group, group_kinds) if original_view else ""
@@ -2825,10 +2846,13 @@ def _reader_blocks(
         unchanged = not original_view or (
             bool(adapted) and _spoken_words(original) == _spoken_words(adapted)
         )
-        passages.append(_narration_passage(
-            len(passages) + 1, adapted, start, source_group, group_kinds,
-            source_pages, original, unchanged,
-        ))
+        passages.append({
+            **_narration_passage(
+                len(passages) + 1, adapted, start, source_group, group_kinds,
+                source_pages, original, unchanged,
+            ),
+            **(outline or {}),
+        })
         if not adapted:
             # A batch left out of the narration, such as a figure the model
             # could not describe, keeps its visuals after the text before it.
@@ -3061,7 +3085,8 @@ def build_reader_artifacts(
         for index, block in enumerate(blocks)
     )
     book_narration = {
-        "schema": 1,
+        # 2: a passage made by a model carries its summary and tags.
+        "schema": 2,
         "original_view": original_view,
         "passages": passages,
     }
@@ -4053,8 +4078,9 @@ def _image_data_url(path):
     return f"data:{media_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
-def _openai_text(response):
-    """Collect the answer of one streamed Responses request."""
+def _openai_text(response, on_text=None, calls=None):
+    """Collect the answer of one streamed Responses request: its text, handed
+    to `on_text` as it arrives, and its function calls, added to `calls`."""
     parts = []
     for data in sse_events(response):
         try:
@@ -4063,7 +4089,18 @@ def _openai_text(response):
             continue
         kind = event.get("type") if isinstance(event, dict) else None
         if kind == "response.output_text.delta":
-            parts.append(str(event.get("delta") or ""))
+            delta = str(event.get("delta") or "")
+            parts.append(delta)
+            if on_text:
+                on_text(delta)
+        elif kind == "response.output_item.done" and calls is not None:
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            if item.get("type") == "function_call":
+                calls.append({
+                    "id": str(item.get("call_id") or item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "arguments": _chat_arguments(item.get("arguments")),
+                })
         elif kind == "response.completed":
             return "".join(parts)
         elif kind in ("response.failed", "response.incomplete", "error"):
@@ -4085,13 +4122,20 @@ def openai_response(model, system_prompt, text, images, open_stream, pause):
     """Adapt one batch with a ChatGPT model through the Codex backend."""
     content = [{"type": "input_text", "text": text}]
     content += [{"type": "input_image", "image_url": _image_data_url(path)} for path in images]
-    body = json.dumps({
+    return openai_request({
         "model": model,
         "instructions": system_prompt,
         "input": [{"type": "message", "role": "user", "content": content}],
         "store": False,
         "stream": True,
-    }).encode("utf-8")
+    }, open_stream, pause, _openai_text)
+
+
+def openai_request(payload, open_stream, pause, read):
+    """Send one streamed Responses request through the Codex backend, renewing
+    a refused sign-in once and asking again while OpenAI is busy; `read`
+    takes the stream and returns the answer."""
+    body = json.dumps(payload).encode("utf-8")
     session = uuid.uuid4().hex
     refused = None
     attempt = 0
@@ -4121,7 +4165,7 @@ def openai_response(model, system_prompt, text, images, open_stream, pause):
                 raise _stream_failure(response, "OpenAI")
             else:
                 try:
-                    return _openai_text(response)
+                    return read(response)
                 except ModelBusy:
                     if attempt == MODEL_RETRIES:
                         raise
@@ -4310,9 +4354,11 @@ def connect_anthropic(key):
     _write_private_json(anthropic_key_path(), {"api_key": key})
 
 
-def _anthropic_text(response):
-    """Collect the answer of one streamed Messages response."""
-    parts, stop_reason = [], None
+def _anthropic_text(response, on_text=None, calls=None,
+                    limit="Anthropic stopped at its output limit; lower Paragraphs per worker."):
+    """Collect the answer of one streamed Messages response: its text, handed
+    to `on_text` as it arrives, and its tool uses, added to `calls`."""
+    parts, stop_reason, tools = [], None, {}
     for data in sse_events(response):
         try:
             event = json.loads(data)
@@ -4322,14 +4368,29 @@ def _anthropic_text(response):
             continue
         kind = event.get("type")
         delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
-        if kind == "content_block_delta" and delta.get("type") == "text_delta":
-            parts.append(str(delta.get("text") or ""))
+        if kind == "content_block_start":
+            block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+            if block.get("type") == "tool_use":
+                tools[event.get("index")] = {
+                    "id": str(block.get("id") or ""), "name": str(block.get("name") or ""), "json": "",
+                }
+        elif kind == "content_block_delta" and delta.get("type") == "text_delta":
+            text = str(delta.get("text") or "")
+            parts.append(text)
+            if on_text:
+                on_text(text)
+        elif kind == "content_block_delta" and delta.get("type") == "input_json_delta":
+            if event.get("index") in tools:
+                tools[event["index"]]["json"] += str(delta.get("partial_json") or "")
         elif kind == "message_delta":
             stop_reason = delta.get("stop_reason") or stop_reason
         elif kind == "message_stop":
             if stop_reason == "max_tokens":
-                raise RuntimeError(
-                    "Anthropic stopped at its output limit; lower Paragraphs per worker."
+                raise RuntimeError(limit)
+            if calls is not None:
+                calls.extend(
+                    {"id": tool["id"], "name": tool["name"], "arguments": _chat_arguments(tool["json"] or "{}")}
+                    for _, tool in sorted(tools.items(), key=lambda item: item[0] or 0)
                 )
             return "".join(parts)
         elif kind == "error":
@@ -4351,19 +4412,24 @@ def _claude_content(text, images):
 
 def anthropic_response(model, system_prompt, text, images, open_stream, pause):
     """Adapt one batch with a Claude model through Anthropic's Messages API."""
+    return anthropic_request({
+        "model": model,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": _claude_content(text, images)}],
+        "stream": True,
+    }, open_stream, pause, _anthropic_text)
+
+
+def anthropic_request(payload, open_stream, pause, read):
+    """Send one streamed Messages request, asking again while Anthropic is
+    busy; `read` takes the stream and returns the answer."""
     key = read_anthropic_key()
     if key is None:
         raise RuntimeError(
             "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
         )
-    content = _claude_content(text, images)
-    body = json.dumps({
-        "model": model,
-        "max_tokens": ANTHROPIC_MAX_TOKENS,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": content}],
-        "stream": True,
-    }).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     headers = _anthropic_headers(key, "text/event-stream")
     for attempt in range(MODEL_RETRIES + 1):
         with open_stream(f"{ANTHROPIC_API_URL}/v1/messages", headers, body) as response:
@@ -4372,7 +4438,7 @@ def anthropic_response(model, system_prompt, text, images, open_stream, pause):
             elif response.status != 200:
                 raise _stream_failure(response, "Anthropic")
             else:
-                return _anthropic_text(response)
+                return read(response)
         if pause(delay):
             raise InterruptedError("document processing stopped")
     raise AssertionError("unreachable Anthropic retry loop")
@@ -5716,7 +5782,7 @@ part of the narration and does not violate the task's final-output rules. This
 protocol overrides any conflicting response-format instruction in the task for
 intermediate responses only.
 
-Return exactly these two elements, in this order, without fences or commentary:
+Return exactly these three elements, in this order, without fences or commentary:
 <NARRATION>
 the complete TTS-adapted version of every current included source paragraph,
 preserving their order and paragraph boundaries
@@ -5725,13 +5791,19 @@ preserving their order and paragraph boundaries
 a compact summary of the current source batch, using at most two short sentences
 per source paragraph
 </SUMMARY>
+<TAGS>
+two to five short topic tags for the current source batch, lowercase and
+comma-separated, such as: sediment transport, sampling bias
+</TAGS>
 
 NARRATION is appended to the final file and must remain complete for all included
 source material. When every current source paragraph is material the task leaves
 out, such as reference-list entries or a table of contents, leave NARRATION empty:
 never write a placeholder, a heading, a lone punctuation mark, or a note that
 something was omitted. SUMMARY is internal compacted context and is never empty; it must not
-shorten or replace any narration or recreate an omitted bibliography.
+shorten or replace any narration or recreate an omitted bibliography. TAGS is never
+empty either, and always the third element. SUMMARY and TAGS are kept with the
+book, so a listener's questions can find this batch later.
 Earlier source batches and narration are intentionally absent from later calls:
 use their summaries only for continuity. A batch that is only a figure, table,
 or equation comes without summaries: describe it from what it carries."""
@@ -6047,7 +6119,20 @@ Current source {batch_label} of {total}:
 """
 
 
+def parse_paper_tags(text):
+    """A batch's topic tags: comma- or line-separated, trimmed, without
+    repeats, at most PAPER_MAX_TAGS of at most PAPER_MAX_TAG_CHARS each."""
+    tags = []
+    for piece in re.split(r"[,\n;]", text or ""):
+        tag = " ".join(piece.strip(" -*•#\t").split())[:PAPER_MAX_TAG_CHARS].strip()
+        if tag and tag.casefold() not in (seen.casefold() for seen in tags):
+            tags.append(tag)
+    return tags[:PAPER_MAX_TAGS]
+
+
 def parse_paper_response(response):
+    """A batch's narration, summary, and tags. TAGS may be missing: a model
+    that leaves it out still adapted the batch, so it is not asked again."""
     text = response.strip()
     if text.startswith("```") and text.endswith("```"):
         first_break = text.find("\n")
@@ -6061,10 +6146,11 @@ def parse_paper_response(response):
     if len(matches) != 1:
         raise ValueError(problem)
     # NARRATION is empty when the whole batch is left out, such as a reference entry.
-    narration, summary = (part.strip() for part in matches[0].groups())
+    narration, summary, tags = matches[0].groups()
+    narration, summary = narration.strip(), summary.strip()
     if not summary:
         raise ValueError(problem)
-    return narration, summary
+    return narration, summary, parse_paper_tags(tags)
 
 
 def is_saved_voice(path):
@@ -6644,7 +6730,11 @@ def normalize(state):
             "mp3_level": stored_text(audiobook, "mp3_level", "0.5"),
         },
         # The book open on the Listen page survives a refresh.
-        "player": {"book": stored_text(player, "book"), "voice": stored_text(player, "voice")},
+        "player": {
+            "book": stored_text(player, "book"), "voice": stored_text(player, "voice"),
+            # The model Chat with Hilde answers with, from the adaptation models.
+            "chat_model": stored_text(player, "chat_model"),
+        },
     }
 
 
@@ -6771,6 +6861,696 @@ def derived(state, tts_models, storage):
         "tab": tab,
     }
 
+
+# --- chat ---------------------------------------------------------------------
+#
+# Chat with Hilde answers a listener's questions about one book. The model sees
+# every passage of the book's narration as one line, its number, type,
+# summary, and tags, and reads passages with a tool; it writes Markdown files
+# into the book's files/ folder, which the listener downloads. One
+# conversation per book, shared by every browser, kept in the book's chat.json.
+
+CHAT_MAX_TOOL_CALLS = 20
+CHAT_READ_MAX_CHARS = 24_000
+CHAT_FILE_MAX_BYTES = 1_000_000
+CHAT_MESSAGE_MAX_CHARS = 8_000
+# Tool results and messages leave the model's context, oldest first, once it
+# passes CHAT_TRIM_AT of the model's window, until it is under CHAT_TRIM_TO.
+CHAT_TRIM_AT = 0.8
+CHAT_TRIM_TO = 0.6
+CHAT_CHARS_PER_TOKEN = 4
+CHAT_MAX_OUTPUT_TOKENS = 8_000
+# Windows a server does not report: a local server's, unknown, is taken small.
+CHAT_LOCAL_CONTEXT = 32_768
+CHAT_PROVIDER_CONTEXT = {ANTHROPIC_MODEL_PROVIDER: 200_000, OPENAI_MODEL_PROVIDER: 272_000}
+CHAT_FILE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,79}\.md")
+CHAT_CITATION_PATTERN = re.compile(r"¶(\d+)(?:\s*[–-]\s*¶?(\d+))?")
+CHAT_OLD_BOOK = (
+    "This book was made with an older version of Hilde, without the paragraph "
+    "summaries Chat needs. Recreate it with the latest Hilde to chat about it."
+)
+CHAT_TOOLS = (
+    {
+        "name": "read_paragraphs",
+        "description": (
+            "Read the text of the book's paragraphs from start to end, inclusive, as the "
+            "listener hears it. Read before quoting or answering about details."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "integer", "description": "The first paragraph's number."},
+                "end": {"type": "integer", "description": "The last paragraph's number; omit it to read one."},
+            },
+            "required": ["start"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": (
+            "Write a Markdown file the listener can download. Mode create makes a new file "
+            "and fails if one has that name; append adds to the end of an existing file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "A file name ending in .md, without folders."},
+                "content": {"type": "string", "description": "The Markdown text."},
+                "mode": {"type": "string", "enum": ["create", "append"]},
+            },
+            "required": ["name", "content", "mode"],
+        },
+    },
+    {
+        "name": "list_files",
+        "description": "List the Markdown files written for this book.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "delete_file",
+        "description": "Delete a Markdown file written for this book, when the listener asks.",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "The file's name."}},
+            "required": ["name"],
+        },
+    },
+)
+
+
+class ChatUnavailable(ValueError):
+    """Chat cannot answer about this book; the message says why."""
+
+
+def chat_book(storage, book):
+    """A book's folder, record, and narration passages for Chat. A book made
+    before passages kept their summaries raises ChatUnavailable."""
+    path, record = read_book(storage, book)
+    narration, _ = read_narration(path)
+    passages = narration["passages"] if narration else []
+    if not passages or not all(isinstance(passage.get("summary"), str) for passage in passages):
+        raise ChatUnavailable(CHAT_OLD_BOOK)
+    return path, record, passages
+
+
+def chat_system_prompt(record, passages):
+    """Hilde's instructions, then the book's paragraphs one line each."""
+    lines = []
+    for number, passage in enumerate(passages, 1):
+        tags = ", ".join(passage.get("tags") or ())
+        left_out = "" if passage.get("text") else " (not narrated)"
+        lines.append(
+            f"¶{number} [{passage.get('type') or 'body'}]{left_out} {passage['summary']}"
+            + (f" Tags: {tags}." if tags else "")
+        )
+    return f"""You are Hilde, a reading companion for one audiobook: "{record.get('title') or 'this book'}".
+The listener asks about the book; answer from its text. Below, every paragraph of
+the book's narration is one line: its number, its type, a summary, and its tags.
+Summaries are not the text: before quoting the book, or answering about details,
+read the paragraphs with read_paragraphs. Cite paragraphs as ¶12 or ¶12–14, so the
+listener can jump to them. Results of earlier reads may leave the conversation
+when it grows long; read again when you need them.
+
+You can write Markdown files the listener downloads, such as a summary or the
+conversation, with write_file, see them with list_files, and delete one with
+delete_file when the listener asks. Say that a file was written or deleted only
+when the tool says so. Answer in the language the listener writes in.
+
+Paragraphs:
+{chr(10).join(lines)}"""
+
+
+def chat_file_path(path, name):
+    """A file of a book's files/ folder by its name, adding .md to a name
+    without an extension; any other kind of file, or a path, is refused."""
+    name = " ".join(str(name or "").split())
+    if name and "." not in name:
+        name += ".md"
+    if not name.lower().endswith(".md"):
+        raise ValueError("Only Markdown (.md) files can be written.")
+    name = name[:-3] + ".md"
+    if not CHAT_FILE_NAME_PATTERN.fullmatch(name):
+        raise ValueError(
+            "A file name has letters, digits, spaces, dots, dashes, or parentheses, "
+            "starts with a letter or digit, and ends in .md."
+        )
+    return path / BOOK_FILES_FOLDER / name
+
+
+def chat_files(path):
+    """The Markdown files Chat wrote for a book, by name."""
+    folder = path / BOOK_FILES_FOLDER
+    if not folder.is_dir():
+        return []
+    return [
+        {"name": item.name, "bytes": item.stat().st_size, "modified": utc_timestamp(item.stat().st_mtime)}
+        for item in sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+        if item.is_file() and CHAT_FILE_NAME_PATTERN.fullmatch(item.name)
+    ]
+
+
+def _chat_arguments(raw):
+    """A tool call's arguments as a dict, from the JSON text or dict a model sent."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {"_invalid": str(raw)[:200]}
+    return value if isinstance(value, dict) else {"_invalid": str(raw)[:200]}
+
+
+def chat_read(passages, start, end=None):
+    """The text of paragraphs start to end, each under its number, at most
+    CHAT_READ_MAX_CHARS; and a short label of what was read."""
+    try:
+        start = int(start)
+        end = start if end in (None, "") else int(end)
+    except (TypeError, ValueError):
+        return "start and end must be paragraph numbers.", "Read nothing"
+    if not 1 <= start <= len(passages):
+        return f"The book has paragraphs ¶1 to ¶{len(passages)}.", "Read nothing"
+    end = min(max(end, start), len(passages))
+    pieces, used, last = [], 0, start
+    for number in range(start, end + 1):
+        text = passages[number - 1].get("text") or "(Not narrated: the adaptation left this paragraph out.)"
+        piece = f"¶{number}\n{text}"
+        if pieces and used + len(piece) > CHAT_READ_MAX_CHARS:
+            pieces.append(f"(Stopped before ¶{number} to keep this read short; read on from there.)")
+            break
+        pieces.append(piece[:CHAT_READ_MAX_CHARS])
+        used += len(piece)
+        last = number
+    label = f"Read ¶{start}" if last == start else f"Read ¶{start}–{last}"
+    return "\n\n".join(pieces), label
+
+
+def chat_tool(path, passages, call):
+    """Run one tool call. Return what the model is told, the label the
+    listener sees, and whether the book's files changed."""
+    name, arguments = call.get("name"), call.get("arguments") or {}
+    if "_invalid" in arguments:
+        return "The arguments were not valid JSON.", f"{name}: invalid arguments", False
+    if name == "read_paragraphs":
+        content, label = chat_read(passages, arguments.get("start"), arguments.get("end"))
+        return content, label, False
+    if name == "list_files":
+        files = chat_files(path)
+        listed = "\n".join(f"{item['name']} ({item['bytes']:,} bytes)" for item in files)
+        return listed or "No files yet.", "Listed files", False
+    if name not in ("write_file", "delete_file"):
+        return f"There is no tool named {name}.", f"Unknown tool {name}", False
+    try:
+        target = chat_file_path(path, arguments.get("name"))
+    except ValueError as exc:
+        return str(exc), f"Refused {arguments.get('name') or 'a file'}", False
+    with _BOOK_LOCK:
+        if name == "delete_file":
+            if not target.is_file():
+                return f"There is no file named {target.name}.", f"No {target.name} to delete", False
+            target.unlink()
+            return f"Deleted {target.name}.", f"Deleted {target.name}", True
+        content, mode = str(arguments.get("content") or ""), arguments.get("mode")
+        if mode not in ("create", "append"):
+            return "mode must be create or append.", f"Refused {target.name}", False
+        if mode == "create" and target.exists():
+            return (
+                f"{target.name} already exists: append to it, or delete it first.",
+                f"{target.name} already exists", False,
+            )
+        if mode == "append" and not target.is_file():
+            return f"There is no file named {target.name} to append to.", f"No {target.name}", False
+        size = target.stat().st_size if target.is_file() else 0
+        if size + len(content.encode("utf-8")) > CHAT_FILE_MAX_BYTES:
+            return f"A file holds at most {CHAT_FILE_MAX_BYTES:,} bytes.", f"{target.name} is too long", False
+        target.parent.mkdir(mode=0o750, exist_ok=True)
+        with open(target, "a" if mode == "append" else "x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+        verb = "Appended to" if mode == "append" else "Wrote"
+        return f"{verb} {target.name}.", f"{verb} {target.name}", True
+
+
+def read_chat(path):
+    """A book's conversation, oldest first."""
+    data = read_json_file(path / BOOK_CHAT_FILE)
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def chat_context(entries, fixed_chars, window):
+    """The conversation the model is sent, and how many entries were left out.
+
+    A tool call and its results go together. Once everything passes
+    CHAT_TRIM_AT of the window, the oldest go first until it is under
+    CHAT_TRIM_TO; the listener's latest message and what came after it stay.
+    """
+    units = []
+    for entry in entries:
+        if entry.get("role") == "notice":
+            continue
+        if entry.get("role") == "tool" and units and units[-1][0].get("role") == "assistant":
+            units[-1].append(entry)
+        else:
+            units.append([entry])
+    sizes = [sum(len(json.dumps(entry, ensure_ascii=False)) for entry in unit) for unit in units]
+    limit = window * CHAT_CHARS_PER_TOKEN
+    total = fixed_chars + sum(sizes)
+    keep_from = max((index for index, unit in enumerate(units) if unit[0].get("role") == "user"), default=0)
+    dropped = 0
+    if total > CHAT_TRIM_AT * limit:
+        while dropped < keep_from and total > CHAT_TRIM_TO * limit:
+            total -= sizes[dropped]
+            dropped += 1
+    kept = [entry for unit in units[dropped:] for entry in unit]
+    if dropped and kept and kept[0].get("role") != "user":
+        # Some providers want the conversation to open with the listener.
+        kept.insert(0, {"role": "user", "text": "(The start of this conversation was removed to make room.)"})
+    return kept, sum(len(unit) for unit in units[:dropped])
+
+
+def chat_context_window(selector, local_server):
+    """How many tokens the chosen model takes: what an OpenAI-compatible
+    server reports, else a known provider's, else CHAT_LOCAL_CONTEXT."""
+    provider, _, name = selector.partition("/")
+    if provider not in LOCAL_MODEL_PROVIDERS:
+        return CHAT_PROVIDER_CONTEXT.get(provider, CHAT_LOCAL_CONTEXT)
+    try:
+        rows = local_server_json(local_server, "/v1/models", "OpenAI-compatible").get("data") or ()
+    except (RuntimeError, ValueError, AttributeError):
+        return CHAT_LOCAL_CONTEXT
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == name:
+            for key in ("max_model_len", "context_length", "max_context_length", "context_window"):
+                if isinstance(row.get(key), int) and row[key] > 0:
+                    return row[key]
+    return CHAT_LOCAL_CONTEXT
+
+
+def _chat_openai_messages(system, entries):
+    """The conversation as OpenAI-style chat messages, for a local server."""
+    messages = [{"role": "system", "content": system}]
+    for entry in entries:
+        role = entry.get("role")
+        if role == "user":
+            messages.append({"role": "user", "content": entry["text"]})
+        elif role == "assistant":
+            message = {"role": "assistant", "content": entry.get("text") or ""}
+            if entry.get("calls"):
+                message["tool_calls"] = [
+                    {"id": call["id"], "type": "function",
+                     "function": {"name": call["name"], "arguments": json.dumps(call["arguments"])}}
+                    for call in entry["calls"]
+                ]
+            messages.append(message)
+        elif role == "tool":
+            messages.append({"role": "tool", "tool_call_id": entry["id"], "content": entry["content"]})
+    return messages
+
+
+def _chat_local(server, model, system, entries, tools, on_text, open_stream):
+    body = {
+        "model": model,
+        "messages": _chat_openai_messages(system, entries),
+        "stream": True,
+        "temperature": LOCAL_MODEL_TEMPERATURE,
+        "max_tokens": CHAT_MAX_OUTPUT_TOKENS,
+    }
+    if tools:
+        body["tools"] = [{"type": "function", "function": tool} for tool in tools]
+        body["tool_choice"] = "auto"
+    url = f"{normalize_local_server(server)}/v1/chat/completions"
+    headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+    with open_stream(url, headers, json.dumps(body).encode("utf-8")) as response:
+        if response.status != 200:
+            raise _stream_failure(response, "The local model server")
+        parts, slots, finished, reason = [], {}, False, None
+        for data in sse_events(response):
+            if data.strip() == "[DONE]":
+                finished = True
+                break
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("error") or event.get("object") == "error":
+                raise RuntimeError(f"The local model server stopped the response: {_model_error(event, 'no details')}")
+            for choice in event.get("choices") or ():
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                if isinstance(delta.get("content"), str) and delta["content"]:
+                    parts.append(delta["content"])
+                    on_text(delta["content"])
+                for piece in delta.get("tool_calls") or ():
+                    if not isinstance(piece, dict):
+                        continue
+                    slot = slots.setdefault(piece.get("index", len(slots)), {"id": "", "name": "", "json": ""})
+                    function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
+                    slot["id"] = piece.get("id") or slot["id"]
+                    slot["name"] += function.get("name") or ""
+                    slot["json"] += function.get("arguments") or ""
+                if choice.get("finish_reason"):
+                    finished, reason = True, choice["finish_reason"]
+        if not finished:
+            raise RuntimeError("The local model server ended the response early.")
+        if reason == "length":
+            raise RuntimeError(
+                f"The model was still writing at {CHAT_MAX_OUTPUT_TOKENS:,} tokens, most likely repeating itself."
+            )
+    calls = [
+        {"id": slot["id"] or f"call-{index}", "name": slot["name"], "arguments": _chat_arguments(slot["json"] or "{}")}
+        for index, slot in sorted(slots.items())
+    ]
+    return "".join(parts), calls
+
+
+def _chat_anthropic_messages(entries):
+    """The conversation as Messages content: tool results ride in the
+    listener's turn, and one role never follows itself."""
+    messages = []
+
+    def add(role, block):
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"].append(block)
+        else:
+            messages.append({"role": role, "content": [block]})
+
+    for entry in entries:
+        role = entry.get("role")
+        if role == "user":
+            add("user", {"type": "text", "text": entry["text"]})
+        elif role == "assistant":
+            if entry.get("text") or not entry.get("calls"):
+                add("assistant", {"type": "text", "text": entry.get("text") or "…"})
+            for call in entry.get("calls") or ():
+                add("assistant", {"type": "tool_use", "id": call["id"], "name": call["name"], "input": call["arguments"]})
+        elif role == "tool":
+            add("user", {"type": "tool_result", "tool_use_id": entry["id"], "content": entry["content"]})
+    return messages
+
+
+def _chat_openai_input(entries):
+    """The conversation as Responses input items."""
+    items = []
+    for entry in entries:
+        role = entry.get("role")
+        if role == "user":
+            items.append({"type": "message", "role": "user", "content": [{"type": "input_text", "text": entry["text"]}]})
+        elif role == "assistant":
+            if entry.get("text"):
+                items.append({"type": "message", "role": "assistant",
+                              "content": [{"type": "output_text", "text": entry["text"]}]})
+            for call in entry.get("calls") or ():
+                items.append({"type": "function_call", "call_id": call["id"], "name": call["name"],
+                              "arguments": json.dumps(call["arguments"])})
+        elif role == "tool":
+            items.append({"type": "function_call_output", "call_id": entry["id"], "output": entry["content"]})
+    return items
+
+
+def chat_model_reply(selector, local_server, system, entries, tools, on_text, open_stream, pause):
+    """Ask the chosen model for its next message. Return its text and tool
+    calls ({"id", "name", "arguments"}); a provider that cannot take tools
+    raises with what to choose instead."""
+    provider, _, model = selector.partition("/")
+    if not model:
+        raise RuntimeError("Choose a model for Chat.")
+    if provider in LOCAL_MODEL_PROVIDERS:
+        if not local_server:
+            raise RuntimeError("Add your local server under Add local first.")
+        return _chat_local(local_server, model, system, entries, tools, on_text, open_stream)
+    calls = []
+
+    def read(stream_reader):
+        def run(response):
+            calls.clear()
+            on_text(None)  # a retried request starts its text over
+            return stream_reader(response)
+        return run
+
+    if provider == ANTHROPIC_MODEL_PROVIDER:
+        payload = {
+            "model": model, "max_tokens": CHAT_MAX_OUTPUT_TOKENS, "system": system,
+            "messages": _chat_anthropic_messages(entries), "stream": True,
+        }
+        if tools:
+            payload["tools"] = [
+                {"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]}
+                for tool in tools
+            ]
+        text = anthropic_request(payload, open_stream, pause, read(
+            lambda response: _anthropic_text(
+                response, on_text, calls, limit="Anthropic stopped at its output limit."
+            )
+        ))
+        return text, list(calls)
+    if provider == OPENAI_MODEL_PROVIDER:
+        payload = {
+            "model": model, "instructions": system, "input": _chat_openai_input(entries),
+            "store": False, "stream": True,
+        }
+        if tools:
+            payload["tools"] = [{"type": "function", "strict": False, **tool} for tool in tools]
+            payload["tool_choice"] = "auto"
+        text = openai_request(payload, open_stream, pause, read(
+            lambda response: _openai_text(response, on_text, calls)
+        ))
+        return text, list(calls)
+    if provider == CLAUDE_CODE_MODEL_PROVIDER:
+        raise RuntimeError(
+            "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
+        )
+    raise RuntimeError(f"{selector} can't be used for Chat; choose another model.")
+
+
+class ChatTurn:
+    """One answer to a listener's message: model replies and tool calls,
+    published as events while they happen, until the model answers without
+    a tool, CHAT_MAX_TOOL_CALLS is reached, or the listener stops it."""
+
+    def __init__(self, storage, book, text, selector, local_server):
+        self.storage = storage
+        self.book = book
+        self.text = text
+        self.selector = selector
+        self.local_server = local_server
+        self.events = []
+        self.partial = ""
+        self.done = False
+        self.condition = threading.Condition()
+        self.stop_requested = threading.Event()
+        self.streams = set()
+
+    def publish(self, event):
+        with self.condition:
+            self.events.append(event)
+            self.condition.notify_all()
+
+    def events_from(self, index, timeout):
+        """The events after `index`, waiting up to `timeout` seconds for one."""
+        with self.condition:
+            if index >= len(self.events) and not self.done:
+                self.condition.wait(timeout)
+            return self.events[index:], self.done
+
+    def stop(self):
+        self.stop_requested.set()
+        for stream in list(self.streams):
+            stream.abort()
+
+    @contextlib.contextmanager
+    def model_stream(self, url, headers, body):
+        stream = ModelStream(url, headers, body)
+        if self.stop_requested.is_set():
+            raise InterruptedError("chat stopped")
+        self.streams.add(stream)
+        try:
+            yield stream.open()
+        except Exception as exc:
+            if self.stop_requested.is_set():
+                raise InterruptedError("chat stopped") from exc
+            if isinstance(exc, (OSError, http.client.HTTPException)):
+                raise RuntimeError(f"The model request failed: {exc}") from exc
+            raise
+        finally:
+            self.streams.discard(stream)
+            stream.close()
+
+    def on_text(self, delta):
+        with self.condition:
+            if delta is None:
+                self.partial = ""
+                self.publish({"type": "reset"})
+                return
+            self.partial += delta
+            self.publish({"type": "text", "delta": delta})
+
+    def save(self, path, entries):
+        write_json_atomic(path / BOOK_CHAT_FILE, {"schema": 1, "book": self.book, "entries": entries})
+
+    def keep(self, path, entries, entry):
+        """Save an entry and publish it in one step under the lock that
+        `chat_payload()` reads under, so a page sees it once: in the
+        conversation it loads or in the events after it."""
+        with self.condition:
+            entries.append(entry)
+            self.save(path, entries)
+            self.partial = ""
+            self.publish({"type": "message", "entry": chat_display_entry(entry)})
+
+    def begin(self):
+        """Load the book and keep the listener's message, before the turn
+        runs, so the conversation shows it at once. ChatUnavailable says why
+        Chat cannot answer about this book."""
+        self.path, self.record, self.passages = chat_book(self.storage, self.book)
+        self.entries = read_chat(self.path)
+        self.entries.append({"role": "user", "text": self.text, "at": utc_timestamp()})
+        self.save(self.path, self.entries)
+
+    def run(self):
+        try:
+            path, record, passages, entries = self.path, self.record, self.passages, self.entries
+            system = chat_system_prompt(record, passages)
+            window = chat_context_window(self.selector, self.local_server)
+            budget = max(1_000, window - min(CHAT_MAX_OUTPUT_TOKENS, window // 4))
+            calls_made, trimmed_told = 0, 0
+            while True:
+                if self.stop_requested.is_set():
+                    raise InterruptedError("chat stopped")
+                context, trimmed = chat_context(entries, len(system), budget)
+                if trimmed > trimmed_told:
+                    trimmed_told = trimmed
+                    self.publish({"type": "trimmed", "count": trimmed})
+                tools = CHAT_TOOLS if calls_made < CHAT_MAX_TOOL_CALLS else ()
+                self.partial = ""
+                text, calls = chat_model_reply(
+                    self.selector, self.local_server, system, context, tools,
+                    self.on_text, self.model_stream, self.stop_requested.wait,
+                )
+                entry = {"role": "assistant", "text": text.strip(), "at": utc_timestamp()}
+                if calls:
+                    entry["calls"] = calls
+                self.keep(path, entries, entry)
+                if not calls:
+                    return
+                for call in calls:
+                    calls_made += 1
+                    if calls_made > CHAT_MAX_TOOL_CALLS:
+                        content, label, changed = (
+                            f"The limit of {CHAT_MAX_TOOL_CALLS} tool calls for one answer is reached; "
+                            "answer with what you have.", "Tool limit reached", False,
+                        )
+                    else:
+                        content, label, changed = chat_tool(path, passages, call)
+                    self.keep(path, entries, {
+                        "role": "tool", "id": call["id"], "name": call["name"],
+                        "content": content, "label": label,
+                    })
+                    if changed:
+                        self.publish({"type": "files", "files": chat_files(path)})
+        except InterruptedError:
+            self.notice("Stopped.")
+        except Exception as exc:  # the listener sees why; the server goes on
+            self.notice(f"Hilde couldn't answer: {exc}")
+        finally:
+            with self.condition:
+                self.done = True
+                self.events.append({"type": "done"})
+                self.condition.notify_all()
+
+    def notice(self, text):
+        """Tell the listener what ended the turn; kept, never sent to a model."""
+        entry = {"role": "notice", "text": text, "at": utc_timestamp()}
+        with self.condition:
+            try:
+                path, _ = read_book(self.storage, self.book)
+                self.save(path, read_chat(path) + [entry])
+            except (OSError, ValueError):
+                pass
+            self.partial = ""
+            self.publish({"type": "message", "entry": chat_display_entry(entry)})
+
+
+def chat_display_entry(entry):
+    """One conversation entry as the page shows it: what the listener wrote,
+    Hilde's answer as HTML with ¶ citations as links, a tool's label, or a notice."""
+    role = entry.get("role")
+    if role == "user":
+        return {"role": "user", "text": entry.get("text", "")}
+    if role == "assistant":
+        html = READER_MARKDOWN.render(entry.get("text") or "")
+        html = CHAT_CITATION_PATTERN.sub(
+            lambda match: f'<a href="#" class="chat-cite" data-passage="{match.group(1)}">{match.group(0)}</a>',
+            html,
+        )
+        return {"role": "assistant", "html": html, "text": entry.get("text") or ""}
+    if role == "tool":
+        return {"role": "tool", "text": entry.get("label") or entry.get("name") or "Tool"}
+    return {"role": "notice", "text": entry.get("text", "")}
+
+
+class ChatRegistry:
+    """The turn each book is answering, if any: one at a time per book."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.turns = {}
+
+    def current(self, book):
+        with self.lock:
+            return self.turns.get(book)
+
+    def start(self, turn):
+        """Begin the turn and run it on its own thread; False while the book
+        is still answering another."""
+        with self.lock:
+            running = self.turns.get(turn.book)
+            if running is not None and not running.done:
+                return False
+            turn.begin()
+            self.turns[turn.book] = turn
+        threading.Thread(target=turn.run, name=f"chat-{turn.book}", daemon=True).start()
+        return True
+
+    def stop(self, book):
+        turn = self.current(book)
+        if turn is not None and not turn.done:
+            turn.stop()
+            return True
+        return False
+
+
+def chat_payload(storage, chats, book):
+    """What the page shows for a book's chat."""
+    path, record = read_book(storage, book)
+    try:
+        _, _, passages = chat_book(storage, book)
+        problem = ""
+    except ChatUnavailable as exc:
+        passages, problem = [], str(exc)
+    turn = chats.current(book)
+    # Read together with the turn's events, so no message falls between them.
+    with turn.condition if turn is not None else contextlib.nullcontext():
+        running = turn is not None and not turn.done
+        conversation = [chat_display_entry(entry) for entry in read_chat(path)]
+        partial = turn.partial if running else ""
+        event_index = len(turn.events) if running else 0
+    return {
+        "book": book,
+        "problem": problem,
+        "conversation": conversation,
+        "running": running,
+        "partial": partial,
+        "event_index": event_index,
+        "files": chat_files(path),
+        # Where each paragraph starts in the reader, for ¶ links.
+        "passages": {
+            str(number): passage["paragraphs"][0]
+            for number, passage in enumerate(passages, 1) if passage.get("paragraphs")
+        },
+    }
 
 
 
@@ -7942,7 +8722,7 @@ class PaperRun(Run):
                     )
                     continue
                 try:
-                    narration, summary = parse_paper_response(response)
+                    narration, summary, tags = parse_paper_response(response)
                 except ValueError:
                     if attempt == PAPER_RESPONSE_ATTEMPTS:
                         preview = " ".join(response.split())
@@ -7973,10 +8753,10 @@ class PaperRun(Run):
                         f"{batch_label.capitalize()}/{total} has nothing to read "
                         f"aloud: {reason}\n",
                     )
-                return narration, summary
+                return narration, summary, tags
             raise AssertionError("unreachable document response loop")
 
-        narration, summary = ask(None)
+        narration, summary, tags = ask(None)
         # Author lines and the author's prose were left out whole although
         # the prompt keeps them: author lines in two of a dozen Attention
         # runs, the sentence defining W Q, W K, W V and W O in every run once
@@ -7988,7 +8768,7 @@ class PaperRun(Run):
                 f"{batch_label.capitalize()}/{total}: asking again, since "
                 f"{'it holds author lines' if left_out == 'title_block' else 'it may be the author’s text'}.\n",
             )
-            narration, summary = ask(LEFT_OUT_NOTES[left_out])
+            narration, summary, tags = ask(LEFT_OUT_NOTES[left_out])
             if not narration and left_out == "title_block":
                 narration = title_block_text(paragraphs)
                 self.publish(
@@ -8009,11 +8789,11 @@ class PaperRun(Run):
                     f"words; asking again with the {len(sentences)} sentence"
                     f"{'s' if len(sentences) != 1 else ''} it left out or reworded.\n",
                 )
-                second, second_summary = ask(condensed_note(sentences))
+                second, second_summary, second_tags = ask(condensed_note(sentences))
                 second_share, _ = prose_kept("\n\n".join(paragraphs), second)
                 if second and second_share is not None and second_share > share:
-                    narration, summary = second, second_summary
-        return narration, summary
+                    narration, summary, tags = second, second_summary, second_tags
+        return narration, summary, tags
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
         total = len(paragraphs)
@@ -8068,7 +8848,7 @@ class PaperRun(Run):
                 continue
             write_json_atomic(
                 checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                {"end": end, "narration": text, "summary": text},
+                {"end": end, "narration": text, "summary": text, "tags": []},
             )
             results[start] = (end, text, text)
             completed_count += 1
@@ -8173,7 +8953,7 @@ class PaperRun(Run):
                         completed, key=lambda item: futures[item][0]
                     ):
                         start, end = futures.pop(future)
-                        narration, summary = future.result()
+                        narration, summary, tags = future.result()
                         batch_kinds = set(kinds[start - 1:end])
                         describes = _describes_visual(batch_kinds)
                         # Code, not the model, names an equation.
@@ -8190,6 +8970,7 @@ class PaperRun(Run):
                                 "end": end,
                                 "narration": narration,
                                 "summary": summary,
+                                "tags": tags,
                             },
                         )
                         results[start] = (end, narration, summary)
@@ -9187,6 +9968,17 @@ class Handler(BaseHTTPRequestHandler):
                 {"books": library_catalog(self.server.storage)},
                 extra=(("Cache-Control", "no-store"),),
             )
+        if route == "/api/chat":
+            return self.reply_chat(query.get("book", [""])[0])
+        if route == "/api/chat/events":
+            return self.chat_events(query.get("book", [""])[0], query.get("from", ["0"])[0])
+        if route == "/api/chat/file":
+            try:
+                path, _ = read_book(self.server.storage, query.get("book", [""])[0])
+                target = chat_file_path(path, query.get("name", [""])[0])
+            except (ValueError, FileNotFoundError):
+                return self.fail(HTTPStatus.NOT_FOUND, "no such file")
+            return self.send_file(str(target), True, target.name)
         if route == "/api/paper/models":
             return self.reply_paper_catalog()
         if route == "/api/paper/openai/status":
@@ -9362,6 +10154,13 @@ class Handler(BaseHTTPRequestHandler):
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                 },
             )
+        if route == "/api/chat/send":
+            return self.chat_send(body)
+        if route == "/api/chat/stop":
+            self.server.chats.stop(str(body.get("book") or ""))
+            return self.reply_chat(str(body.get("book") or ""))
+        if route == "/api/chat/new":
+            return self.chat_new(str(body.get("book") or ""))
         if route == "/api/airdrop":
             return self.airdrop(body.get("path", ""))
         if route in (
@@ -9684,6 +10483,90 @@ class Handler(BaseHTTPRequestHandler):
                 "assets": asset_catalog(self.server.storage),
             },
         )
+
+    def reply_chat(self, book):
+        """Answer with a book's conversation, files, and whether Hilde is answering."""
+        try:
+            payload = chat_payload(self.server.storage, self.server.chats, book)
+        except (ValueError, FileNotFoundError):
+            return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        return self.reply(HTTPStatus.OK, payload, extra=(("Cache-Control", "no-store"),))
+
+    def chat_send(self, body):
+        """Start Hilde's answer to a listener's message about a book."""
+        book = str(body.get("book") or "")
+        text = str(body.get("text") or "").strip()
+        model = str(body.get("model") or "").strip()
+        if not text:
+            return self.fail(HTTPStatus.BAD_REQUEST, "Write a message first.")
+        if len(text) > CHAT_MESSAGE_MAX_CHARS:
+            return self.fail(
+                HTTPStatus.BAD_REQUEST, f"A message holds at most {CHAT_MESSAGE_MAX_CHARS:,} characters."
+            )
+        if not model:
+            return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
+        state = normalize(read_state_cookie(self.headers.get("Cookie")))
+        try:
+            local_server = normalize_local_server(state["audiobook"]["local_server"])
+        except ValueError:
+            local_server = ""
+        turn = ChatTurn(self.server.storage, book, text, model, local_server)
+        try:
+            started = self.server.chats.start(turn)
+        except ChatUnavailable as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
+        except (ValueError, FileNotFoundError):
+            return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        if not started:
+            return self.fail(HTTPStatus.CONFLICT, "Hilde is still answering; wait for the answer or stop it.")
+        return self.reply_chat(book)
+
+    def chat_new(self, book):
+        """Clear a book's conversation; its files stay."""
+        turn = self.server.chats.current(book)
+        if turn is not None and not turn.done:
+            return self.fail(HTTPStatus.CONFLICT, "Hilde is still answering; stop it first.")
+        try:
+            path, _ = read_book(self.server.storage, book)
+        except (ValueError, FileNotFoundError):
+            return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        (path / BOOK_CHAT_FILE).unlink(missing_ok=True)
+        return self.reply_chat(book)
+
+    def chat_events(self, book, start):
+        """Stream what Hilde writes and does while answering, from event `start`."""
+        turn = self.server.chats.current(book)
+        if turn is None:
+            return self.fail(HTTPStatus.NOT_FOUND, "Hilde is not answering.")
+        try:
+            index = max(0, int(start or 0))
+        except ValueError:
+            index = 0
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            while True:
+                events, done = turn.events_from(index, 10)
+                if not events:
+                    if done:
+                        return
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    continue
+                for event in events:
+                    index += 1
+                    self.wfile.write(f"id: {index}\ndata: {json.dumps(event)}\n\n".encode("utf-8"))
+                    if event.get("type") == "done":
+                        self.wfile.flush()
+                        return
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def reply_paper_catalog(self):
         """Answer with the adaptation models this browser can choose from."""
@@ -10366,6 +11249,37 @@ audio { height:36px; }
 .reader-panel { margin-top:12px; padding:10px 6px; background:var(--surface);
                 border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
+/* Files Hilde wrote for the book, at the top left of its view. */
+.book-files { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin:0 0 10px; }
+.book-file-links { display:flex; flex-wrap:wrap; gap:4px 14px; }
+.book-file-links a { color:var(--text); text-decoration-color:var(--dim); text-underline-offset:3px; }
+/* Chatting, the book scrolls in the top half and the chat fills the bottom. */
+#book-view.chatting { display:flex; flex-direction:column; gap:10px; }
+#book-view.chatting .book-pane { flex:1 1 50%; min-height:0; overflow:auto; }
+.chat-pane { display:flex; flex:1 1 50%; flex-direction:column; min-height:0;
+             background:var(--surface); border-radius:var(--radius); }
+.chat-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 14px;
+             border-bottom:1px solid var(--line); }
+.chat-head h3 { flex:1; min-width:max-content; font-size:15px; }
+.chat-head select { max-width:min(320px,100%); }
+.chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
+.chat-problem p { margin:0; }
+.chat-log { display:grid; flex:1; align-content:start; gap:10px; min-height:0; overflow:auto;
+            padding:12px 14px; }
+.chat-user { justify-self:end; max-width:85%; margin:0; padding:8px 12px; border-radius:12px;
+             background:var(--raised); white-space:pre-wrap; overflow-wrap:anywhere; }
+.chat-assistant { line-height:1.55; overflow-wrap:anywhere; }
+.chat-assistant.live { white-space:pre-wrap; }
+.chat-assistant > * { margin:0; }
+.chat-assistant > * + * { margin-top:.6em; }
+.chat-assistant table { border-collapse:collapse; }
+.chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
+.chat-cite { color:var(--accent); }
+.chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
+.chat-notice { font-style:italic; }
+.chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
+                border-top:1px solid var(--line); }
+.chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; }
 .reader-paragraph { padding:6px 12px; border-left:3px solid transparent;
                     border-radius:6px; line-height:1.6; transition:border-color .15s; }
 .reader-paragraph.active { border-left-color:var(--accent); }
@@ -10816,7 +11730,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
     </div>
     <div id="book-view" class="hidden">
+      <div id="book-pane" class="book-pane">
       <button class="link back" type="button" onclick="closeBook()">← All audiobooks</button>
+      <nav id="book-files" class="book-files hidden" aria-label="Files Hilde wrote">
+        <span class="note">Files</span>
+        <span id="book-file-links" class="book-file-links"></span>
+      </nav>
       <section class="player-panel" aria-labelledby="reader-title">
         <div class="player-heading">
           <div class="player-title">
@@ -10837,6 +11756,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <button id="reader-change-voice" type="button" class="hidden"
               onclick="openChangeVoice()">Change voice</button>
             <button type="button" onclick="downloadBook()">Download MP3</button>
+            <button id="chat-toggle" type="button" aria-controls="chat-pane" aria-expanded="false"
+              onclick="toggleChat()">Chat with Hilde</button>
           </div>
         </div>
         <div id="change-voice" class="change-voice hidden">
@@ -10861,6 +11782,31 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <p id="reader-unavailable" class="notice hidden"></p>
       <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
         <article id="reader-content" class="reader-content"></article>
+      </section>
+      </div>
+      <section id="chat-pane" class="chat-pane hidden" aria-labelledby="chat-title">
+        <div class="chat-head">
+          <h3 id="chat-title">Chat with Hilde</h3>
+          <label for="chat-model" class="visually-hidden">Chat model</label>
+          <select id="chat-model"></select>
+          <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
+          <button class="link" type="button" onclick="closeChat()">Close</button>
+        </div>
+        <div id="chat-problem" class="chat-problem hidden" role="status">
+          <p id="chat-problem-text"></p>
+          <div id="chat-add-model" class="line hidden">
+            <button type="button" onclick="openPaperProviders()">Providers</button>
+            <button type="button" onclick="openPaperLocal()">Add local</button>
+          </div>
+        </div>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
+          <label for="chat-input" class="visually-hidden">Message</label>
+          <textarea id="chat-input" rows="2" maxlength="8000"
+            placeholder="Ask about this book, or ask Hilde to write a summary file"></textarea>
+          <button id="chat-send" class="primary" type="submit">Send</button>
+          <button id="chat-stop" class="hidden" type="button" onclick="stopChat()">Stop</button>
+        </form>
       </section>
     </div>
   </section>
@@ -11678,6 +12624,7 @@ async function openAudiobook(id, focus, voiceName) {
   state.player.book = id; state.player.voice = voice;
   state.tab = "player";
   render(); queueSync();
+  resetChatFor(id);
   const heard = book ? book.voices.find((item) => item.name === voice) : null;
   const details = book
     ? [voice && `Read by ${voice}`, formatDuration(heard ? heard.duration : book.duration), book.source]
@@ -11805,6 +12752,7 @@ async function startBookJob(mode, voice) {
 function closeBook() {
   clearReader();
   state.player.book = ""; state.player.voice = "";
+  resetChatFor("");
   render(); queueSync();
   $("book-search").focus();
 }
@@ -11813,6 +12761,205 @@ function downloadBook() {
   if (state.player.book)
     location.href = "/api/download?book=" + encodeURIComponent(state.player.book)
       + "&voice=" + encodeURIComponent(state.player.voice);
+}
+
+// Chat with Hilde: the open book's conversation, below its text. One
+// conversation per book, shared by every browser; Hilde's answer streams in.
+let chatOpen = false, chatData = null, chatStream = null, chatLive = null;
+let chatHasModels = false, chatModelsError = "";
+
+// Opening another book closes the chat and shows that book's files.
+function resetChatFor(book) {
+  if (chatData && chatData.book === book) return;
+  stopChatStream();
+  chatOpen = false; chatData = null; chatLive = null;
+  $("chat-log").replaceChildren();
+  renderChatFiles([]);
+  renderChatLayout();
+  if (book) loadChat();
+}
+function toggleChat() { if (chatOpen) closeChat(); else openChat(); }
+async function openChat() {
+  if (!state.player.book) return;
+  chatOpen = true;
+  renderChatLayout();
+  $("book-view").scrollIntoView({ block:"start" });
+  sizeChat();
+  $("chat-input").focus();
+  await Promise.all([loadChat(), refreshChatModels()]);
+}
+function closeChat() {
+  chatOpen = false;
+  renderChatLayout();
+  $("chat-toggle").focus();
+}
+function renderChatLayout() {
+  $("book-view").classList.toggle("chatting", chatOpen);
+  $("chat-pane").classList.toggle("hidden", !chatOpen);
+  $("chat-toggle").setAttribute("aria-expanded", String(chatOpen));
+  sizeChat();
+}
+// The book and the chat share one screen's height, each scrolling on its own.
+function sizeChat() {
+  $("book-view").style.height = chatOpen ? `${Math.max(420, window.innerHeight - 24)}px` : "";
+}
+window.addEventListener("resize", sizeChat);
+
+async function loadChat() {
+  const book = state.player.book;
+  try {
+    const data = await jsonRequest("/api/chat?book=" + encodeURIComponent(book));
+    if (state.player.book !== book) return;
+    applyChat(data);
+    if (data.running && !chatStream) connectChat(data.event_index);
+  } catch (_) {}
+}
+function applyChat(data) {
+  chatData = data;
+  renderChatFiles(data.files || []);
+  const log = $("chat-log");
+  log.replaceChildren(...data.conversation.map(chatEntryElement).filter(Boolean));
+  chatLive = null;
+  if (data.partial) chatLiveElement().textContent = data.partial;
+  scrollChat();
+  renderChatControls();
+}
+function chatEntryElement(entry) {
+  if (entry.role === "assistant" && !entry.text) return null;
+  const node = document.createElement(entry.role === "assistant" ? "div" : "p");
+  node.className = `chat-${entry.role}`;
+  // The server renders answers from Markdown with raw HTML turned off.
+  if (entry.role === "assistant") node.innerHTML = entry.html;
+  else node.textContent = entry.text;
+  return node;
+}
+function chatLiveElement() {
+  if (!chatLive) {
+    chatLive = document.createElement("div");
+    chatLive.className = "chat-assistant live";
+    $("chat-log").append(chatLive);
+  }
+  return chatLive;
+}
+function scrollChat() { const log = $("chat-log"); log.scrollTop = log.scrollHeight; }
+function renderChatFiles(files) {
+  const book = state.player.book;
+  $("book-file-links").replaceChildren(...files.map((file) => {
+    const link = document.createElement("a");
+    link.href = "/api/chat/file?book=" + encodeURIComponent(book) + "&name=" + encodeURIComponent(file.name);
+    link.textContent = file.name;
+    link.title = `${file.name} · ${Number(file.bytes).toLocaleString()} bytes · Download`;
+    link.setAttribute("download", file.name);
+    return link;
+  }));
+  $("book-files").classList.toggle("hidden", !files.length);
+}
+function renderChatControls() {
+  const running = !!(chatData && chatData.running);
+  const problem = chatData && chatData.problem ? chatData.problem
+    : !chatHasModels ? (chatModelsError || "Add a model first: connect a provider, or add your local server.")
+    : "";
+  $("chat-problem").classList.toggle("hidden", !problem);
+  $("chat-problem-text").textContent = problem;
+  $("chat-add-model").classList.toggle("hidden", !problem || !!(chatData && chatData.problem));
+  $("chat-send").classList.toggle("hidden", running);
+  $("chat-stop").classList.toggle("hidden", !running);
+  $("chat-send").disabled = !!problem;
+  $("chat-input").disabled = !!(chatData && chatData.problem);
+  $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
+}
+
+function fillChatModels(catalog) {
+  const select = $("chat-model");
+  const models = catalog.models || [];
+  select.replaceChildren(...models.map((model) => new Option(model.selector, model.selector)));
+  const wanted = [state.player.chat_model, state.audiobook.model, catalog.default_model]
+    .find((selector) => selector && models.some((model) => model.selector === selector));
+  if (wanted) select.value = wanted;
+  chatHasModels = models.length > 0;
+  chatModelsError = catalog.local_error || "";
+  renderChatControls();
+}
+async function refreshChatModels() {
+  try { fillChatModels(await jsonRequest("/api/paper/models")); }
+  catch (error) { chatHasModels = false; chatModelsError = error.message; renderChatControls(); }
+}
+
+async function sendChat(event) {
+  if (event) event.preventDefault();
+  const text = $("chat-input").value.trim();
+  const model = $("chat-model").value;
+  if (!text || !model || (chatData && chatData.running)) return;
+  $("chat-send").disabled = true;
+  try {
+    const data = await jsonRequest("/api/chat/send", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ book:state.player.book, text, model }),
+    });
+    $("chat-input").value = "";
+    applyChat(data);
+    connectChat(data.event_index);
+  } catch (error) {
+    setStatus(error.message, true);
+    renderChatControls();
+  }
+}
+function connectChat(from) {
+  stopChatStream();
+  const book = state.player.book;
+  const source = new EventSource(
+    "/api/chat/events?book=" + encodeURIComponent(book) + "&from=" + encodeURIComponent(from)
+  );
+  chatStream = source;
+  source.onmessage = (message) => {
+    if (chatStream !== source) return;
+    const event = JSON.parse(message.data);
+    if (event.type === "text") chatLiveElement().textContent += event.delta;
+    else if (event.type === "reset") { if (chatLive) chatLive.textContent = ""; }
+    else if (event.type === "message") {
+      if (chatLive) { chatLive.remove(); chatLive = null; }
+      const node = chatEntryElement(event.entry);
+      if (node) $("chat-log").append(node);
+    } else if (event.type === "files") renderChatFiles(event.files);
+    else if (event.type === "trimmed") {
+      const note = document.createElement("p");
+      note.className = "chat-notice";
+      note.textContent = "Earlier messages left Hilde's memory to make room.";
+      $("chat-log").append(note);
+    } else if (event.type === "done") { stopChatStream(); loadChat(); return; }
+    scrollChat();
+  };
+  // A dropped stream is picked up again from the server's own record.
+  source.onerror = () => { if (chatStream === source) { stopChatStream(); loadChat(); } };
+}
+function stopChatStream() {
+  if (chatStream) chatStream.close();
+  chatStream = null;
+}
+async function stopChat() {
+  try {
+    await jsonRequest("/api/chat/stop", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ book:state.player.book }),
+    });
+  } catch (error) { setStatus(error.message, true); }
+}
+async function newChat() {
+  if (!window.confirm("Start a new conversation? Hilde's files stay.")) return;
+  try {
+    applyChat(await jsonRequest("/api/chat/new", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ book:state.player.book }),
+    }));
+    $("chat-input").focus();
+  } catch (error) { setStatus(error.message, true); }
+}
+function jumpToPassage(number) {
+  const paragraph = chatData ? chatData.passages[String(number)] : undefined;
+  if (paragraph === undefined) return;
+  const section = $("reader-content")
+    .querySelector(`.reader-paragraph[data-paragraph="${paragraph}"]`);
+  if (section) section.scrollIntoView({ block:"start", behavior:"smooth" });
 }
 
 async function refreshLibrary(restore) {
@@ -12953,6 +14100,7 @@ function applyPaperCatalog(catalog) {
   $("paper-model-status").textContent = problem ||
     `${(catalog.models || []).length} models`;
   $("paper-model-status").classList.toggle("bad", !!problem);
+  fillChatModels(catalog);
 }
 async function refreshPaperModels() {
   $("paper-model-status").textContent = "Loading models…";
@@ -13393,6 +14541,21 @@ $("add-tabs").addEventListener("keydown", (event) => {
   $(`add-tab-${next}`).focus();
 });
 
+$("chat-model").addEventListener("change", (event) => {
+  state.player.chat_model = event.target.value;
+  queueSync();
+});
+$("chat-input").addEventListener("keydown", (event) => {
+  // Enter sends; Shift+Enter starts a new line.
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) sendChat(event);
+});
+$("chat-log").addEventListener("click", (event) => {
+  const cite = event.target.closest(".chat-cite");
+  if (!cite) return;
+  event.preventDefault();
+  jumpToPassage(Number(cite.dataset.passage));
+});
+
 fetch("/api/state").then((response) => response.json()).then((data) => {
   load(data);
   if (!caps.airdrop) $("airdrop").title = "AirDrop requires a macOS server";
@@ -13512,6 +14675,7 @@ def main():
     server.workers_lock = threading.Lock()
     server.worker_setup = None
     server.openai_login = OpenAIOAuthLogin()
+    server.chats = ChatRegistry()
     server.tts_models = tts_models
     server.storage = storage
     server.verbose = args.verbose

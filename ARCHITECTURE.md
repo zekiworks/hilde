@@ -175,6 +175,8 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │       ├── source.<ext>
 │       ├── narration.json
 │       ├── reader.md
+│       ├── chat.json
+│       ├── files/<name>.md
 │       └── voices/<voice>/
 │           ├── audio.mp3
 │           └── timings.json
@@ -220,7 +222,7 @@ and the full hash in `book.json`.
   `audio_sha256`, `duration`, and its `seconds` for narrating and aligning.
   A migrated book also has `migrated_from`, `legacy_names` (its earlier MP3
   names), and, until it first plays, `migration_backup`.
-- `narration.json` (`schema` 1): `original_view` (whether passages map onto
+- `narration.json` (`schema` 2): `original_view` (whether passages map onto
   the reader's paragraphs) and `passages`, one per adaptation batch, or per
   paragraph without adaptation: `id`, `type` (`body`, `heading`, `figure`,
   `table`, `equation`, or `footnote` or `caption` for a passage of only those),
@@ -232,6 +234,9 @@ and the full hash in `book.json`.
   caption inside the passage that cites or carries it, so they are typed as
   sources. `_visual_type()` names a picture from its caption, a PDF table's
   image name, or panel titles; an uncaptioned picture is an equation.
+  Schema 2 adds `summary` and `tags`, the batch's SUMMARY and TAGS (a
+  heading batch, which never reaches a model, has its own text as summary
+  and no tags); Chat with Hilde needs them, so a schema 1 book cannot chat.
   `narration_text()` joins the passages' text: exactly what the first voice
   read and every later voice reads.
 - `reader.md` is the follow-along view: block-marked Markdown with pictures
@@ -240,6 +245,14 @@ and the full hash in `book.json`.
 - `voices/<voice>/audio.mp3` and `timings.json` (the reader sync of schema
   1–3: sample rate, duration, block paragraphs, sentence cues, word cues).
   A voice's timings are never paired with another voice's audio.
+- `chat.json` (`schema` 1): the book's one conversation, `entries` oldest
+  first: `user` (`text`), `assistant` (`text`, and `calls`, each `{id, name,
+  arguments}`), `tool` (`id`, `name`, `content` the model was given, `label`
+  the page shows), and `notice` (why a turn ended; never sent to a model).
+  Rebuilding the book (`commit_book()` for the same content) drops it, since
+  it cites the old text's paragraph numbers.
+- `files/`: the Markdown files Chat wrote. `commit_book()` copies them into a
+  rebuilt book; only Chat's `delete_file` removes one.
 
 `commit_book()` publishes a book with one voice: it writes everything into a
 hidden `Audiobooks/.build-<random>` folder, `book.json` last, and
@@ -303,7 +316,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, local model server, its type: `ollama`, `lm-studio`, or empty, and `local_vision`, whether its model sees images, true only when stored as `true`), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen and the voice playing, so a refresh reopens them. A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
+- `player`: the book open on Listen, the voice playing, so a refresh reopens them, and `chat_model`, the model chosen for Chat with Hilde. A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies. TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -488,7 +501,7 @@ When adaptation is enabled:
 - a batch that is entirely excluded material, such as reference entries that
   extraction did not place under a standalone heading, a contents list the
   filter did not catch, or a bare image the model cannot describe, returns an
-  empty NARRATION with a nonempty SUMMARY;
+  empty NARRATION with a nonempty SUMMARY (and its TAGS);
   it adds no text, the log names it with that summary, and the reader shows
   its visuals after the text before it;
 - format-control-only narration paragraphs are removed;
@@ -496,6 +509,7 @@ When adaptation is enabled:
 - a batch of the author's prose (`TEXT_KINDS`) is scored by `prose_kept()`: the share of its words of four letters or more (`CONTENT_WORD_PATTERN`, any script) its narration still contains, after citation marks, superscripts, links, and email addresses are set aside; counted as lost, emails were named in the second request and read aloud. Passages under `PROSE_KEPT_MIN_WORDS` are not judged; one under `PROSE_KEPT_LOW` (80%) is named in the log with its missing words, and the job goes on. A passage the model left out whole is not scored: the log already names it with the model's reason, and it is usually apparatus, such as a reference entry extraction glued to the text. The score catches dropped wording, not changed meaning or added claims. Once adaptation ends, or when a finished adaptation is reused, `adaptation_fidelity()` summarizes the saved checkpoints (narrated passages judged, how many kept at least 95%, how many fell under 80%, the lowest, and how many were left out whole) into the log and the audiobook's record;
 - an equation's description is named in code before its checkpoint is written, when its picture text is math (holds "="): `label_equation()` replaces the two names certain to be wrong with the paper's, "Equation 3" for one printed with "(3)" (`printed_equation_numbers()`), "Equations 4 and 5" for two, "the equation" for one printed without: whatever opens the description ("Figure 4", "Equation 6", "This Equation 2", "The figure"), and an equation number the paper prints nowhere ("Equation 6", "Eq. 6", "Equation six"), with the word before it. Any other name may be a real reference or plain wording, "like Equation 1", "as in Figure 2", "shown in the figure", and stays; `equation_label_problems()` names in the log each numbered one that is not this equation's, since the prompt leaves out references to other equations and no figure or table shares an equation's batch. The model, told the number, still wrote "Equation 6" for an unnumbered equation, and going alone it called four of five equations "Figure N"; rewriting every later name too turned "This Equation 2" into "This the equation" and "Table 1 lists the costs" into "Equation 2 lists the costs";
 - `grounding_problems()` names in the log what a batch's narration states that its source does not. A name its own request never mentions: any surname of a reference-list author or of the paper's own authors (`author_lines()`: paragraphs with bold names on the first page, before the abstract), however the narration puts it ("Vaswani et al.", "used by Vaswani"), and any name it credits work to ("Press and Wolf", "Vaswani and others": `ATTRIBUTION_PATTERN`), case aside, so "Encoder and Decoder" passes beside "encoder"; a name the paper prints elsewhere, as "Vaswani" in the author block, does not excuse it. A footnote's request counts with the paragraph its mark sits in (`footnote_citers()`), so "Aidan Gomez did this work while at Google Brain" passes for "† Work performed while at Google Brain", while the same sentence in place of footnote 4, which the model wrote on Attention, is named. In a description, a number of two or more digits or a decimal that its source does not print, a printed number rounded allowed (a whole number opening a printed whole number counts, for powers extraction runs together, but "41.8" never vouches for "41"). It only points at a passage worth a look: the narration is kept as written, and nothing in it mentions the check;
+- each response ends with TAGS, at most `PAPER_MAX_TAGS` comma-separated topics of at most `PAPER_MAX_TAG_CHARS` (`parse_paper_tags()`); the prompt asks for it every time, and `PAPER_RESPONSE_PATTERN` accepts a TAGS the model left unclosed at the very end, as Mistral did in about half of a short paper's batches. A response without TAGS still parses, with none. Checkpoints store `tags`;
 - each successful batch is atomically stored in `paragraph-checkpoints/<start>-<end>.json`;
 - completed batches may finish out of order, but narration and summaries commit in source order.
 
@@ -728,11 +742,11 @@ The run log shows below every page but **Listen**. Each page:
   current text. **Listen** opens the book view: title, narrator, duration,
   source, **Follow along**, **Original** (adapted books), a voice picker (more
   than one ready voice), **Change voice** (books with their own text), **Download MP3**,
-  **Recreate with the latest Hilde**, a notice offering **Make <voice> again**
-  for each stale voice, the player, and the synchronized reader; **All
-  audiobooks** returns to the table. **Change voice** lists the saved voices
-  the book does not have yet. **Recreate** asks first. Both start a job whose
-  progress shows on **Create**.
+  **Chat with Hilde**, **Recreate with the latest Hilde**, a notice offering
+  **Make <voice> again** for each stale voice, the player, and the
+  synchronized reader; **All audiobooks** returns to the table. **Change
+  voice** lists the saved voices the book does not have yet. **Recreate** asks
+  first. Both start a job whose progress shows on **Progress**.
 - On **Create**, a document whose content is already a book shows **You
   already have this one** with **Open** and **Change voice** in step 1. For a
   book with its own text, step 3 hides adaptation and offers **Add this
@@ -926,6 +940,63 @@ while its description is read. Paragraph-era sidecars retain estimated sentence 
 word alignment is unavailable. Older MP3s without reader metadata remain
 playable but have no synchronized text.
 
+### Chat with Hilde
+
+**Chat with Hilde** on an open book adds `.chatting` to `#book-view`: the
+view takes one screen's height (`sizeChat()`), and `#book-pane` (the book view
+as before) and `#chat-pane` share it as two halves of a column, each
+scrolling on its own, on a phone too. Above the book, `#book-files` lists the
+book's `files/` as download links whether or not the chat is open. The chat
+pane holds the model picker (the adaptation catalog, `fillChatModels()`, kept
+as `player.chat_model`), **New conversation**, **Close**, the problem line
+(an old book's `CHAT_OLD_BOOK`, or no models, offering **Providers** and
+**Add local**), the conversation, and the compose box: Enter sends,
+Shift+Enter breaks the line, **Stop** replaces **Send** while Hilde answers.
+Opening another book closes the chat.
+
+One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
+time, on its own thread). `begin()` loads the book through `chat_book()` and
+saves the listener's message; `run()` asks the model and runs its tool calls
+until it answers without one. The system prompt (`chat_system_prompt()`)
+lists every passage as `¶N [type] summary Tags: …`, where N is the passage's
+1-based position in `narration.json`. Tools (`CHAT_TOOLS`, run by
+`chat_tool()`):
+
+- `read_paragraphs(start, end)`: the passages' text under their numbers, at
+  most `CHAT_READ_MAX_CHARS`, saying where to read on when cut (`chat_read()`);
+- `write_file(name, content, mode)`: `create` refuses an existing file,
+  `append` a missing one; at most `CHAT_FILE_MAX_BYTES` a file;
+- `list_files()`;
+- `delete_file(name)`.
+
+`chat_file_path()` takes one name of letters, digits, spaces, dots, dashes,
+and parentheses ending in `.md` (adding it to a bare name), so a tool reaches
+nothing outside the book's `files/`. After `CHAT_MAX_TOOL_CALLS` calls the
+model is sent no tools and further calls are answered with the limit.
+`chat_context()` sends the conversation whole until it passes `CHAT_TRIM_AT`
+(80%) of the model's window less its reply, counted at
+`CHAT_CHARS_PER_TOKEN`; then the oldest entries go first, a tool call with its
+results, until it is under `CHAT_TRIM_TO`, never the latest message of the
+listener or what followed it, and the page hears `trimmed`. The window is a
+local server's `/v1/models` `max_model_len` (or a like field), else
+`CHAT_PROVIDER_CONTEXT`, else `CHAT_LOCAL_CONTEXT`. Local servers are called
+through `/v1/chat/completions` with OpenAI tools, the ChatGPT account through
+Responses `function_call`s (`openai_request()`), the Anthropic key through
+Messages `tool_use` (`anthropic_request()`); Claude Code, which runs with its
+tools off, refuses chat with a message. Each reply allows
+`CHAT_MAX_OUTPUT_TOKENS`; a local reply still writing at it fails the turn.
+
+Events (`text` deltas, `reset`, `message` with a display entry, `trimmed`,
+`files`, `done`) stream over SSE; the page reconnects from `event_index` and,
+when a stream drops, reloads the conversation. `ChatTurn.keep()` saves an
+entry to `chat.json` and publishes it under the turn's lock, which
+`chat_payload()` reads the conversation, the partial answer, and
+`event_index` under, so a page sees each message once. `chat_display_entry()` renders
+an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
+`.chat-cite` links; `chat_payload()` maps each passage number to its first
+reader paragraph, which a click scrolls to. Stop aborts the model stream; an
+error or a stop ends the turn with a `notice`.
+
 ## HTTP routes
 
 | Route | Behavior |
@@ -956,6 +1027,11 @@ playable but have no synchronized text.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
+| `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
+| `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), and `model` from the catalog; the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model. |
+| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
@@ -1025,7 +1101,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 137 tests. It covers voice persistence
+The regression suite currently has 144 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1083,7 +1159,13 @@ reader, Original view, and text, idempotently, keeping a backup until they
 play, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
 audio in the `.mp3` sample entry Safari plays, with keep-alive byte ranges, safe
-book downloads,
+book downloads, Chat with Hilde (Markdown file names only inside the book's
+`files/`, create refusing an existing file and append a missing one, delete,
+reads cut at their cap, trimming past 80% that keeps a tool call with its
+result and the latest message, a book without summaries refused, a rebuilt
+book keeping its files and dropping its conversation, and a turn against a
+fake local server running streamed tool calls until the model answers),
+passage summaries and tags kept in `narration.json`, an unclosed TAGS parsed,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried
 one chunk at a time after running out of memory, the batch-size default for

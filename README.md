@@ -201,7 +201,8 @@ rejection is CSRF hardening, not access control.
 ## Web UI
 
 **Create** turns a document into an audiobook, **Listen** plays it with its
-synchronized text, and **Voices** designs narrators: see [Web UI](docs/web-ui.md).
+synchronized text, **Chat with Hilde** answers questions about it and writes
+Markdown notes, and **Voices** designs narrators: see [Web UI](docs/web-ui.md).
 
 ## Command line
 

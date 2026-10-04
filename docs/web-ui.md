@@ -151,6 +151,26 @@ Clicking a word seeks to that word (just before its aligned onset); clicking
 elsewhere in a sentence, or on its attached figure or table, seeks to the
 start of the sentence.
 
+**Chat with Hilde** splits an open book's view: the book stays on top, still
+playing and scrolling, and a conversation about it fills the bottom half. Ask
+about the book, or ask Hilde to write a Markdown file, such as a summary or
+notes on a section. Hilde sees a one-line summary of every paragraph and reads
+the paragraphs it needs before answering; a paragraph it cites, such as ¶12,
+is a link that scrolls the book to it. Its answer streams in as it writes;
+**Stop** ends it. The model is one of yours: pick it in the chat, from the
+models you connected under **Providers** or **Add local** on **Create**. With
+none, the chat asks you to add one first. Claude Code models cannot chat:
+Hilde says so when you send with one. The conversation is kept with the book,
+one per book, for everyone using this server, and survives a refresh. **New
+conversation** starts over. When a conversation grows long, its oldest
+messages and reads leave what Hilde remembers, and the chat says so.
+
+The files Hilde writes are listed as download links at the top left of the
+book, and stay until you ask Hilde to delete one. **Recreate with the latest
+Hilde** keeps them and starts a new conversation, since paragraph numbers
+change. Books made before this version of Hilde have no paragraph summaries:
+the chat says to recreate the book first.
+
 The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute

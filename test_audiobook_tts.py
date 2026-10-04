@@ -3051,7 +3051,8 @@ class ReaderArtifactTests(unittest.TestCase):
         for (start, end), narration in batches.items():
             web.write_json_atomic(
                 adaptation / f"{start:06d}-{end:06d}.json",
-                {"end": end, "narration": narration, "summary": "S."},
+                {"end": end, "narration": narration, "summary": "S.",
+                 **({"tags": ["attention", "parallelism"]} if start == 3 else {})},
             )
         narration = "\n\n".join(text for text in batches.values() if text)
         chunks = web.split_text(narration, 500, sentence_chunks=True)
@@ -3077,6 +3078,13 @@ class ReaderArtifactTests(unittest.TestCase):
         passages = narration_record["passages"]
         # What a new voice reads is exactly what this one read.
         self.assertEqual(web.narration_text(narration_record), narration)
+        # Each passage keeps its batch's summary and tags, for Chat with Hilde;
+        # a checkpoint made before tags has none.
+        self.assertEqual(narration_record["schema"], 2)
+        self.assertEqual(
+            [(passage["summary"], passage["tags"]) for passage in passages[1:3]],
+            [("S.", []), ("S.", ["attention", "parallelism"])],
+        )
         # Each passage is typed, and so is each author's paragraph it came
         # from, so a caption read inside a figure's passage stays one.
         self.assertEqual(
@@ -4962,7 +4970,22 @@ class PaperResponseTests(unittest.TestCase):
                 "<SUMMARY>Short context.</SUMMARY>\n"
                 "End of payload."
             ),
-            ("Spoken paragraph.", "Short context."),
+            ("Spoken paragraph.", "Short context.", []),
+        )
+        # Tags are trimmed and kept once each, in order.
+        self.assertEqual(
+            parse_paper_response(
+                "<NARRATION>Spoken.</NARRATION><SUMMARY>Context.</SUMMARY>"
+                "<TAGS>\n- Sediment transport, sampling bias,\nsediment TRANSPORT\n</TAGS>"
+            )[2],
+            ["Sediment transport", "sampling bias"],
+        )
+        # A model that ends before closing TAGS still gave its tags.
+        self.assertEqual(
+            parse_paper_response(
+                "<NARRATION>Spoken.</NARRATION><SUMMARY>Context.</SUMMARY><TAGS>\nstorm events, silt"
+            )[2],
+            ["storm events", "silt"],
         )
 
     def test_paper_run_retries_a_malformed_response_without_losing_progress(self):
@@ -5753,6 +5776,189 @@ class GroundingTests(unittest.TestCase):
                 with run.model_stream("http://127.0.0.1:9/v1", {}, b"{}"):
                     pass
             self.assertEqual(isinstance(raised.exception, web.ModelConnectionError), retried)
+
+
+def chat_narration(*summaries):
+    """A narration whose passages kept their batches' summaries, one per text."""
+    return {"schema": 2, "original_view": False, "passages": [
+        {"type": "body", "text": f"Paragraph {number} text.", "paragraphs": [number - 1],
+         "summary": summary, "tags": ["tag"]}
+        for number, summary in enumerate(summaries, 1)
+    ]}
+
+
+class FakeChatModel(BaseHTTPRequestHandler):
+    """An OpenAI-compatible server that streams the next scripted reply and
+    keeps every request body."""
+
+    replies = []
+    requests = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps({"data": [{"id": "fake", "max_model_len": 100_000}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        type(self).requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for delta, finish in type(self).replies.pop(0):
+            event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+class ChatTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+
+    def book(self, narration):
+        book = store_book(self.storage, narration=narration)
+        return book, web.read_book(self.storage, book)[0]
+
+    def test_a_book_without_passage_summaries_cannot_chat(self):
+        book, _ = self.book({"schema": 1, "original_view": False, "passages": [
+            {"type": "body", "text": "Body text.", "paragraphs": [0]},
+        ]})
+        with self.assertRaisesRegex(web.ChatUnavailable, "older version of Hilde"):
+            web.chat_book(self.storage, book)
+        self.assertEqual(
+            web.chat_payload(self.storage, web.ChatRegistry(), book)["problem"], web.CHAT_OLD_BOOK
+        )
+
+    def test_files_are_markdown_in_the_books_files_folder_only(self):
+        _, path = self.book(chat_narration("S."))
+        self.assertEqual(web.chat_file_path(path, "notes"), path / "files" / "notes.md")
+        self.assertEqual(web.chat_file_path(path, "Notes.MD"), path / "files" / "Notes.md")
+        for name in ("notes.txt", "../book.json", "../escape.md", "sub/notes.md", ".hidden.md", "", None):
+            with self.subTest(name), self.assertRaises(ValueError):
+                web.chat_file_path(path, name)
+
+    def test_write_append_list_and_delete_a_file(self):
+        book, path = self.book(chat_narration("S."))
+        passages = web.chat_book(self.storage, book)[2]
+
+        def call(tool, **arguments):
+            return web.chat_tool(path, passages, {"name": tool, "arguments": arguments})
+
+        self.assertEqual(call("write_file", name="notes", mode="append", content="x")[2], False)
+        self.assertEqual(call("write_file", name="notes", mode="create", content="# A\n")[2], True)
+        # Creating over a file would lose it; the model is told to append.
+        content, _, changed = call("write_file", name="notes.md", mode="create", content="# B\n")
+        self.assertIn("already exists", content)
+        self.assertFalse(changed)
+        self.assertEqual(call("write_file", name="notes.md", mode="append", content="more\n")[2], True)
+        self.assertEqual((path / "files" / "notes.md").read_text(), "# A\nmore\n")
+        self.assertIn("notes.md (9 bytes)", call("list_files")[0])
+        # The book's own files are out of reach.
+        self.assertEqual(call("delete_file", name="../book.json")[2], False)
+        self.assertTrue((path / "book.json").is_file())
+        self.assertEqual(call("delete_file", name="notes.md")[2], True)
+        self.assertEqual(web.chat_files(path), [])
+        self.assertEqual(call("delete_file", name="notes.md")[2], False)
+
+    def test_reads_stop_at_the_cap_and_say_where_to_read_on(self):
+        passages = [{"text": "w" * 15_000}, {"text": "x" * 15_000}, {"text": ""}]
+        content, label = web.chat_read(passages, 1, 3)
+        self.assertEqual(label, "Read ¶1")
+        self.assertIn("Stopped before ¶2", content)
+        content, label = web.chat_read(passages, 3, 99)
+        self.assertEqual(label, "Read ¶3")
+        self.assertIn("Not narrated", content)
+        self.assertEqual(web.chat_read(passages, 4)[1], "Read nothing")
+
+    def test_past_80_percent_the_oldest_go_first_with_their_tool_results(self):
+        entries = [
+            {"role": "user", "text": "a" * 300},
+            {"role": "assistant", "text": "", "calls": [{"id": "1", "name": "read_paragraphs", "arguments": {}}]},
+            {"role": "tool", "id": "1", "name": "read_paragraphs", "content": "r" * 300},
+            {"role": "notice", "text": "Stopped."},
+            {"role": "assistant", "text": "b" * 300},
+            {"role": "user", "text": "latest"},
+        ]
+        # Under 80% of the window, everything stays.
+        self.assertEqual(web.chat_context(entries, 0, 1_000), (
+            [entry for entry in entries if entry["role"] != "notice"], 0
+        ))
+        kept, dropped = web.chat_context(entries, 0, 300)
+        # The call goes with its result, and the oldest go only until the
+        # context is under 60%; it still opens with the listener.
+        self.assertEqual(dropped, 3)
+        self.assertEqual([entry["role"] for entry in kept], ["user", "assistant", "user"])
+        self.assertIn("removed", kept[0]["text"])
+        self.assertEqual(kept[2]["text"], "latest")
+        # The latest message stays even when it alone is too long.
+        self.assertEqual(web.chat_context(entries, 10_000, 300)[0][-1]["text"], "latest")
+
+    def test_recreating_a_book_keeps_its_files_and_drops_its_conversation(self):
+        book, path = self.book(chat_narration("S."))
+        (path / "files").mkdir()
+        (path / "files" / "notes.md").write_text("# Notes\n")
+        web.write_json_atomic(path / "chat.json", {"schema": 1, "entries": [{"role": "user", "text": "hi"}]})
+        self.assertEqual(store_book(self.storage, narration=chat_narration("New.")), book)
+        self.assertEqual((path / "files" / "notes.md").read_text(), "# Notes\n")
+        self.assertEqual(web.read_chat(path), [])
+
+    def test_a_turn_runs_the_models_tool_calls_until_it_answers(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        FakeChatModel.requests = []
+        FakeChatModel.replies = [
+            [({"content": "Reading."}, None),
+             ({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "read_paragraphs", "arguments": '{"start": 2'}}]}, None),
+             ({"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}, None),
+             ({"tool_calls": [{"index": 1, "id": "b", "function": {
+                 "name": "write_file",
+                 "arguments": json.dumps({"name": "dams", "mode": "create", "content": "# Dams\n"})}}]},
+              "tool_calls")],
+            [({"content": "Dams are in ¶2."}, "stop")],
+        ]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        chats = web.ChatRegistry()
+        turn = web.ChatTurn(self.storage, book, "Where are dams?", "lm-studio/fake",
+                            f"http://127.0.0.1:{server.server_port}")
+        self.assertTrue(chats.start(turn))
+        events, index = [], 0
+        while not (events and events[-1]["type"] == "done"):
+            new, _ = turn.events_from(index, 10)
+            self.assertTrue(new, "the turn stalled")
+            events += new
+            index += len(new)
+
+        # The model saw its paragraph lines, then the text it asked to read.
+        first, second = FakeChatModel.requests
+        self.assertIn("¶2 [body] Dams. Tags: tag.", first["messages"][0]["content"])
+        self.assertEqual({tool["function"]["name"] for tool in first["tools"]},
+                         {"read_paragraphs", "write_file", "list_files", "delete_file"})
+        results = [message for message in second["messages"] if message["role"] == "tool"]
+        self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
+        self.assertEqual(results[0]["content"], "¶2\nParagraph 2 text.")
+        self.assertEqual((path / "files" / "dams.md").read_text(), "# Dams\n")
+        # The page heard each step, and the conversation survives a reload.
+        self.assertIn({"type": "files", "files": web.chat_files(path)}, events)
+        payload = web.chat_payload(self.storage, chats, book)
+        self.assertFalse(payload["running"])
+        self.assertEqual(
+            [(entry["role"], entry["text"]) for entry in payload["conversation"]],
+            [("user", "Where are dams?"), ("assistant", "Reading."),
+             ("tool", "Read ¶2"), ("tool", "Wrote dams.md"), ("assistant", "Dams are in ¶2.")],
+        )
+        self.assertIn('<a href="#" class="chat-cite" data-passage="2">¶2</a>',
+                      payload["conversation"][-1]["html"])
+        self.assertEqual(payload["passages"], {"1": 0, "2": 1})
 
 
 class WorkerNodeTests(unittest.TestCase):

@@ -74,6 +74,10 @@ labels or cells, and picture, and without the model's running summary of the
 paper so far. That summary differs from run to run, so with it the same figure
 was described differently every time.
 
+With each passage the model also writes a one-line summary and up to six tags,
+which Hilde keeps with the book. They are not read aloud: **Chat with Hilde**
+uses them to find the paragraphs a question is about.
+
 In a PDF, a sentence that a page break, a figure, or a footnote splits is
 joined back together before the model sees it; what split it then follows the
 sentence. An equation printed as a picture stays inside its sentence and goes
