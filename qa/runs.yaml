@@ -112,3 +112,15 @@ runs:
       Two runs made and checked by Can (fixer); this record was written by Claude from Can's report.
       Golden 25/38 and 27/38. Across Can's 14 Attention runs since 853dbf4, footnote 5 survives in 1
       and footnote 4 is lost in 4, including both R9 runs.
+
+  - id: R10
+    date: 2026-10-04
+    papers: [attention]
+    hilde_commit: f8e8495
+    model: Mistral Small 4, local server on spark (exact model id not reported)
+    voice: null
+    output_file: null   # on Can's machine; not shared with the reviewer
+    reviewers: [can]
+    notes: >
+      Two runs made and checked by Can after the B31 prompt fix; record written by Claude from Can's
+      report. Golden 31/39 and 32/39. No footnote replaced; footnote 4 read in both, footnote 5 dropped in one.

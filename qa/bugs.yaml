@@ -328,13 +328,17 @@ bugs:
     test: HZ-10.
 
   - id: B31
-    slug: summary-leaks-into-narration
-    title: A running summary leaks into a batch's narration and replaces its own content
+    slug: prompt-example-copied
+    title: An example sentence in Hilde's prompt is copied into the narration in place of the source's own text
     priority: P1
     layer: adapt
     status: proposed
     fix: >
-      Proposed. A batch that carries a footnote gets no running summary, the way figures, tables and
-      equations already go alone; or summaries leave out footnotes and affiliations. Log a footnote whose
-      words are missing from its batch's narration.
+      Prompt rules describe what to do in words, with no sentence the model can paste. f8e8495 removed the
+      Gomez footnote example that replaced footnotes 4 and 5. The prompt still quotes Attention elsewhere
+      (the roadmap sentence, the Vaswani/Shazeer author pairing, "Equal contribution. Listing order is
+      random.", "> 4To illustrate…", the base/big table values): replace those with invented examples,
+      since they can be copied the same way and they lift Attention's golden scores (ATT-01, -05, -07,
+      -11, -15) above what unseen papers get. (Reviewer's first guess, the running summary, was wrong:
+      a request with no summary and no "Gomez" still got the pasted note.)
     test: ATT-01, ATT-02, ATT-34.

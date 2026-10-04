@@ -18,8 +18,8 @@ asserts:
 
   - id: ATT-03
     bug: B18
-    about: Gomez's affiliation note names him
-    must_contain: '(?i)Gomez[^.\n]{0,40}(performed|did) (this|the) work while at Google Brain'
+    about: Gomez's affiliation note names him, in any word order ("Work performed while Aidan N. Gomez was at Google Brain" passes)
+    must_contain: '(?i)(?:Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain)'
 
   - id: ATT-04
     bug: B18
@@ -207,7 +207,7 @@ asserts:
     about: >
       Gomez's affiliation note (the † footnote) is read once. A second one means a running summary
       replaced another footnote with it (R9-01, R9-02)
-    must_not_contain: '(?s)Gomez[^.\n]{0,60}\b(?:performed|did|carried out)\b[^.\n]{0,20}\bwork\b.*Gomez[^.\n]{0,60}\b(?:performed|did|carried out)\b[^.\n]{0,20}\bwork\b'
+    must_not_contain: '(?si)(?:Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain).*(?:Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,60}\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain|\bwork\w*\b(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Gomez(?:[^.\n]|(?<=\b[A-Z])\.){0,40}Google Brain)'
 
 manual:
   - bug: B15
