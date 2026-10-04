@@ -5364,7 +5364,7 @@ class GroundingTests(unittest.TestCase):
         "- [2] Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio. Neural machine "
         "translation. CoRR, abs/1409.0473, 2014.",
         "- [3] Francois Chollet. Xception. arXiv preprint arXiv:1610.02357, 2016.",
-        "- [4] Quoc V. Le and Tomas Mikolov. Distributed representations. In ICML, 2014.",
+        "- [4] Quoc V. Le & Tomas Mikolov. Distributed representations. In ICML, 2014.",
     ]
 
     def test_a_needed_citation_names_its_authors_and_a_parenthetical_one_goes(self):
@@ -5389,6 +5389,14 @@ class GroundingTests(unittest.TestCase):
         )
         self.assertEqual(
             web.resolve_citations("as in [1, 2, 3].", entries), "as in Ba, Bahdanau, and Chollet.",
+        )
+        # A citation that is the subject of the next clause is a chain of its own.
+        self.assertEqual(
+            web.resolve_citations("as shown in [3], and [4] later extended it.", entries),
+            "as shown in Chollet, and Le and Mikolov later extended it.",
+        )
+        self.assertEqual(
+            web.resolve_citations("[3] and [4] showed it.", entries), "Chollet and Le showed it.",
         )
         # Two bracketed numbers are no reference list, and nothing changes.
         self.assertEqual(web.reference_entries(self.REFERENCES[1:3]), {})
@@ -5435,7 +5443,6 @@ class GroundingTests(unittest.TestCase):
             "<!-- Start of picture text -->\nPE(pos,2i) = sin(pos/10000)\n"
             "<!-- End of picture text -->",
         )
-        printed = {"1", "2", "3"}
         for narration, source, expected in (
             ("Equation 5 says two layers apply in turn.", numbered,
              "Equation 2 says two layers apply in turn."),
@@ -5444,17 +5451,21 @@ class GroundingTests(unittest.TestCase):
             ("Figure 4 shows two layers; the figure's formula adds b2.", numbered,
              "Equation 2 shows two layers; the equation's formula adds b2."),
             ("This is what Equation 6 says.", unnumbered, "This is what the equation says."),
+            # Every wrong name is replaced, not only the opening one; the
+            # prompt leaves out numbered references to other equations.
+            ("Equation 1 projects. Figure 4 also shows heads, as Table 2 does.", unnumbered,
+             "The equation projects. The equation also shows heads, as Table 2 does."),
             ("Equations 4 and 5 encode position.", unnumbered, "The equations encode position."),
             ("Equation six adds a sine. Eq. 6 adds a cosine.", unnumbered,
              "The equation adds a sine. The equation adds a cosine."),
-            # A real reference further on stays.
-            ("The equation, as in Figure 2, adds a sine, like Equation 1.", unnumbered,
-             "The equation, as in Figure 2, adds a sine, like Equation 1."),
+            # A figure named mid-sentence is a real reference and stays.
+            ("Equation 2, as in Figure 2, adds a sine, like Equation 2.", numbered,
+             "Equation 2, as in Figure 2, adds a sine, like Equation 2."),
             # A picture without math is no equation, whatever extraction calls it.
             ("Figure one shows the logo.", ("![](images/l.png)",), "Figure one shows the logo."),
         ):
             with self.subTest(narration):
-                self.assertEqual(web.label_equation(narration, source, printed), expected)
+                self.assertEqual(web.label_equation(narration, source), expected)
 
     def test_the_log_names_what_a_narration_states_that_its_source_does_not(self):
         source = (

@@ -8,7 +8,7 @@
 
 TARGET is a book folder (Audiobooks/<slug>--<hash12>/), its narration.json, or a plain text file.
 For a book, the checked text is exactly what every voice reads: the non-empty passage texts joined by
-blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10), and the
+blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10, G11), and the
 paper is inferred from book.json's source_sha256 (papers.yaml `sha256`).
 
 Add --json to check, report or next for machine-readable output. `check` exits 1 when anything fails.
@@ -361,6 +361,18 @@ def generic_checks(t: Target):
                 hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
                              f"{kept:.0%} of the footnote's words kept: {note[:60]}"))
     results.append(("G09", "B13", "Footnote dropped from the passage that carries it (word-overlap heuristic)", hits))
+
+    # G11: an equation passage opens with a figure or table number. Hilde names an
+    # equation from the number printed beside it; "Figure 4 shows…" is the model's.
+    hits = []
+    for p in t.passages:
+        if p.get("type") != "equation":
+            continue
+        m = re.match(r"(?:Figures?|Figs?\.|Tables?)\s+\(?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+                     p.get("text", "").strip())
+        if m:
+            hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"equation passage opens with {m.group(0)!r}"))
+    results.append(("G11", "B03", "Equation passage opens with a figure or table number", hits))
 
     # G10: book folder integrity (only for book folders)
     if t.book is not None:
