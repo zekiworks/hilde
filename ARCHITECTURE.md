@@ -660,7 +660,9 @@ tablist of folder tabs on a baseline (Arrow, Home, and End keys move between
 the shown ones). Inactive tabs stand slightly raised with a bevel;
 the active tab is flush with an accent top edge and opens into the page below.
 **Advanced** is a separate toggle at the right of the strip, shown on
-**Create** and **Voices**, that reads **Simple** while its panels are open.
+**Create**, **Progress**, and **Voices**, that reads **Simple** while its
+panels are open. On **Progress** it opens only **This server**: the other
+panels set up the next book, not the one being made.
 The run log shows below every page but **Listen**. Each page:
 
 - **Create** shows three steps, one open at a time; a finished step collapses

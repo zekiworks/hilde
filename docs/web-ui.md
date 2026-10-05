@@ -273,7 +273,8 @@ folder's `description.txt` to make one searchable.
 
 **Advanced**, beside the tabs and hidden on **Listen**, shows the server's
 narration workers and the settings a browser may change; while they show, the
-button reads **Simple** and hides them again:
+button reads **Simple** and hides them again. On **Progress** it shows only
+**This server**, to watch the workers while a book is made:
 
 - **This server** shows the narration workers as live chips, for example
   `GPU 0 idle` through `GPU 3 running`, followed by the device model and

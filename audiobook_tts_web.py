@@ -11721,7 +11721,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div class="row"><span class="row-label">Models</span>
         <span id="compute-models"></span></div>
     </fieldset>
-    <fieldset>
+    <fieldset id="speech-advanced">
       <legend>Speech tuning</legend>
       <div class="row"><label for="dtype">Inference tuning</label><div class="line">
         <select id="dtype"><option>auto</option><option>float32</option>
@@ -14137,12 +14137,16 @@ function render() {
     $(`tab-${name}`).tabIndex = selected ? 0 : -1;
     $(`page-${name}`).classList.toggle("hidden", !selected);
   }
-  const creating = tab === "audiobook" || tab === "voice";
-  $("advanced").classList.toggle("hidden", !creating);
-  $("advanced").setAttribute("aria-expanded", String(creating && advancedOpen));
+  // On Progress, Advanced shows only This server: the other settings are
+  // for the next book, not the one being made.
+  const settings = tab === "audiobook" || tab === "voice";
+  const withAdvanced = settings || tab === "progress";
+  $("advanced").classList.toggle("hidden", !withAdvanced);
+  $("advanced").setAttribute("aria-expanded", String(withAdvanced && advancedOpen));
   // While the extra settings show, the toggle names the way back.
-  $("advanced").textContent = creating && advancedOpen ? "Simple" : "Advanced";
-  $("advanced-panels").classList.toggle("hidden", !creating || !advancedOpen);
+  $("advanced").textContent = withAdvanced && advancedOpen ? "Simple" : "Advanced";
+  $("advanced-panels").classList.toggle("hidden", !withAdvanced || !advancedOpen);
+  $("speech-advanced").classList.toggle("hidden", !settings);
   $("narration-advanced").classList.toggle("hidden", tab !== "audiobook");
   $("adaptation-advanced").classList.toggle(
     "hidden", tab !== "audiobook" || !state.audiobook.adapt
