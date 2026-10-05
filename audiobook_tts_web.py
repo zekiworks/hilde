@@ -11527,7 +11527,7 @@ legend + * { clear:both; }
 #log { height:240px; margin-top:16px; padding:10px; overflow:auto; background:var(--field);
        border:1px solid var(--line); border-radius:8px; color:var(--dim);
        font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
-.back { margin:0 0 12px -8px; }
+.back { margin:0 0 12px; }
 audio { height:36px; }
 .player-panel { background:var(--surface); border-radius:var(--radius) var(--radius) 0 0; }
 .player-heading { display:flex; align-items:center; gap:16px; padding:16px 18px 6px; }
@@ -12031,7 +12031,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div>
     <div id="book-view" class="hidden">
       <div id="book-pane" class="book-pane">
-      <button class="link back" type="button" onclick="closeBook()">← All audiobooks</button>
+      <button class="primary back" type="button" onclick="closeBook()">← All audiobooks</button>
       <nav id="book-files" class="book-files hidden" aria-label="Files Hilde wrote">
         <span class="note">Files</span>
         <span id="book-file-links" class="book-file-links"></span>
