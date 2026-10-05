@@ -5960,6 +5960,34 @@ class ChatTests(unittest.TestCase):
                       payload["conversation"][-1]["html"])
         self.assertEqual(payload["passages"], {"1": 0, "2": 1})
 
+    def test_a_question_from_the_player_comes_with_the_paragraphs_being_played(self):
+        book, _ = self.book(chat_narration("Storms.", "Dams.", "Silt."))
+        FakeChatModel.requests = []
+        FakeChatModel.replies = [[({"content": "Dams hold coarse sediment back."}, "stop")]]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        turn = web.ChatTurn(self.storage, book, 'What does it mean by "trapped"?', "lm-studio/fake",
+                            f"http://127.0.0.1:{server.server_port}", (2, 3))
+        self.assertTrue(web.ChatRegistry().start(turn))
+        index = 0
+        while not turn.events_from(index, 10)[1]:
+            index = len(turn.events)
+
+        # The model is asked once, already holding the text she was at,
+        # read right after her question as if it had asked.
+        (request,) = FakeChatModel.requests
+        messages = request["messages"][1:]
+        self.assertEqual([message["role"] for message in messages], ["user", "assistant", "tool"])
+        self.assertEqual(json.loads(messages[1]["tool_calls"][0]["function"]["arguments"]),
+                         {"start": 2, "end": 3})
+        self.assertEqual(messages[2]["content"], "¶2\nParagraph 2 text.\n\n¶3\nParagraph 3 text.")
+        self.assertEqual(
+            [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]],
+            ['What does it mean by "trapped"?', "", "Read ¶2–3", "Dams hold coarse sediment back."],
+        )
+
 
 class WorkerNodeTests(unittest.TestCase):
     NODE = {

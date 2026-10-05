@@ -952,11 +952,27 @@ as `player.chat_model`), **New conversation**, **Close**, the problem line
 (an old book's `CHAT_OLD_BOOK`, or no models, offering **Providers** and
 **Add local**), the conversation, and the compose box: Enter sends,
 Shift+Enter breaks the line, **Stop** replaces **Send** while Hilde answers.
-Opening another book closes the chat.
+Opening another book closes the chat. Opening or closing it moves the text
+into another scroller; `keepReaderPlace()` keeps the playing paragraph, or
+the first one visible, just below the pinned player.
+
+**Ask Hilde** sits in the pinned player (`askHildeButton()`). `askHilde()`
+pauses the audio, opens the chat, and writes a question into the compose box
+without sending it: about the text selected in `#reader-content` (taken on
+`pointerdown`, before the press can clear it) or else the playing sentence,
+`What does it mean by "…"?` up to ten words and `Explain this part: "…"`
+beyond, quoted up to 300 characters. Its reader paragraphs (an Original
+aside counts as the paragraph above it; nothing playing means the first one
+visible) map to passage numbers through `chat_payload()`'s `passages`, at
+most `CHAT_CONTEXT_MAX_PASSAGES`, shown above the compose box with
+**Remove** and sent as `context`.
 
 One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
 time, on its own thread). `begin()` loads the book through `chat_book()` and
-saves the listener's message; `run()` asks the model and runs its tool calls
+saves the listener's message, followed, with a `context`, by a
+`read_paragraphs` call and its result recorded as if the model had made it,
+so the model starts from that text and trimming treats it as any read;
+`run()` asks the model and runs its tool calls
 until it answers without one. The system prompt (`chat_system_prompt()`)
 lists every passage as `¶N [type] summary Tags: …`, where N is the passage's
 1-based position in `narration.json`. Tools (`CHAT_TOOLS`, run by
@@ -1030,7 +1046,7 @@ error or a stop ends the turn with a `notice`.
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
-| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), and `model` from the catalog; the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model. |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `context` `{start, end}` (passage numbers, at most `CHAT_CONTEXT_MAX_PASSAGES`, read before the model answers); the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `context`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
@@ -1101,7 +1117,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 144 tests. It covers voice persistence
+The regression suite currently has 145 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1163,8 +1179,9 @@ book downloads, Chat with Hilde (Markdown file names only inside the book's
 `files/`, create refusing an existing file and append a missing one, delete,
 reads cut at their cap, trimming past 80% that keeps a tool call with its
 result and the latest message, a book without summaries refused, a rebuilt
-book keeping its files and dropping its conversation, and a turn against a
-fake local server running streamed tool calls until the model answers),
+book keeping its files and dropping its conversation, a turn against a
+fake local server running streamed tool calls until the model answers, and a
+question from the player reaching the model with its paragraphs already read),
 passage summaries and tags kept in `narration.json`, an unclosed TAGS parsed,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried

@@ -165,6 +165,15 @@ one per book, for everyone using this server, and survives a refresh. **New
 conversation** starts over. When a conversation grows long, its oldest
 messages and reads leave what Hilde remembers, and the chat says so.
 
+**Ask Hilde**, beside the player, is for the moment something is unclear while
+you listen. It pauses the book, opens the chat, and writes a question about
+the sentence being read, `What does it mean by "…"?` for a short one and
+`Explain this part: "…"` for a longer one, without sending it: change it or
+press Enter. Select words in the text first to ask about them instead. The
+paragraphs you were at go with the question, so Hilde answers from their full
+text; the line above the message box names them, and **Remove** sends the
+question without them. Play continues from the same word.
+
 The files Hilde writes are listed as download links at the top left of the
 book, and stay until you ask Hilde to delete one. **Recreate with the latest
 Hilde** keeps them and starts a new conversation, since paragraph numbers

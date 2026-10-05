@@ -6874,6 +6874,8 @@ CHAT_MAX_TOOL_CALLS = 20
 CHAT_READ_MAX_CHARS = 24_000
 CHAT_FILE_MAX_BYTES = 1_000_000
 CHAT_MESSAGE_MAX_CHARS = 8_000
+# A question asked from the player brings at most this many paragraphs.
+CHAT_CONTEXT_MAX_PASSAGES = 6
 # Tool results and messages leave the model's context, oldest first, once it
 # passes CHAT_TRIM_AT of the model's window, until it is under CHAT_TRIM_TO.
 CHAT_TRIM_AT = 0.8
@@ -6969,7 +6971,9 @@ the book's narration is one line: its number, its type, a summary, and its tags.
 Summaries are not the text: before quoting the book, or answering about details,
 read the paragraphs with read_paragraphs. Cite paragraphs as ¶12 or ¶12–14, so the
 listener can jump to them. Results of earlier reads may leave the conversation
-when it grows long; read again when you need them.
+when it grows long; read again when you need them. A read that follows the
+listener's message before you answer is the part of the book they were
+listening to when they asked: "this" and quoted words refer to it.
 
 You can write Markdown files the listener downloads, such as a summary or the
 conversation, with write_file, see them with list_files, and delete one with
@@ -7330,12 +7334,14 @@ class ChatTurn:
     published as events while they happen, until the model answers without
     a tool, CHAT_MAX_TOOL_CALLS is reached, or the listener stops it."""
 
-    def __init__(self, storage, book, text, selector, local_server):
+    def __init__(self, storage, book, text, selector, local_server, context=None):
         self.storage = storage
         self.book = book
         self.text = text
         self.selector = selector
         self.local_server = local_server
+        # The paragraphs the listener was at when asking: (start, end) or None.
+        self.context = context
         self.events = []
         self.partial = ""
         self.done = False
@@ -7402,11 +7408,24 @@ class ChatTurn:
 
     def begin(self):
         """Load the book and keep the listener's message, before the turn
-        runs, so the conversation shows it at once. ChatUnavailable says why
-        Chat cannot answer about this book."""
+        runs, so the conversation shows it at once. A message asked from
+        the player comes with the paragraphs being played, read for the
+        model as if it had asked. ChatUnavailable says why Chat cannot
+        answer about this book."""
         self.path, self.record, self.passages = chat_book(self.storage, self.book)
         self.entries = read_chat(self.path)
         self.entries.append({"role": "user", "text": self.text, "at": utc_timestamp()})
+        if self.context:
+            start, end = self.context
+            call = {
+                "id": f"listener-{os.urandom(6).hex()}", "name": "read_paragraphs",
+                "arguments": {"start": start, "end": end},
+            }
+            content, label = chat_read(self.passages, start, end)
+            self.entries.append({"role": "assistant", "text": "", "calls": [call], "at": utc_timestamp()})
+            self.entries.append({
+                "role": "tool", "id": call["id"], "name": call["name"], "content": content, "label": label,
+            })
         self.save(self.path, self.entries)
 
     def run(self):
@@ -10505,12 +10524,25 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not model:
             return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
+        context = body.get("context")
+        if context is not None:
+            start = context.get("start") if isinstance(context, dict) else None
+            end = context.get("end") if isinstance(context, dict) else None
+            if not (
+                type(start) is int and type(end) is int
+                and 1 <= start <= end < start + CHAT_CONTEXT_MAX_PASSAGES
+            ):
+                return self.fail(
+                    HTTPStatus.BAD_REQUEST,
+                    f"context is {{start, end}}: at most {CHAT_CONTEXT_MAX_PASSAGES} paragraph numbers.",
+                )
+            context = (start, end)
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         try:
             local_server = normalize_local_server(state["audiobook"]["local_server"])
         except ValueError:
             local_server = ""
-        turn = ChatTurn(self.server.storage, book, text, model, local_server)
+        turn = ChatTurn(self.server.storage, book, text, model, local_server, context)
         try:
             started = self.server.chats.start(turn)
         except ChatUnavailable as exc:
@@ -11242,10 +11274,13 @@ audio { height:36px; }
                    white-space:nowrap; }
 .player-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 /* Only the controls stay on screen while the text scrolls beneath them. */
-.player-controls { position:sticky; top:0; z-index:3; padding:8px 18px 14px;
-                   background:var(--surface); border-radius:0 0 var(--radius) var(--radius);
+.player-controls { position:sticky; top:0; z-index:3; display:flex; flex-wrap:wrap; align-items:center;
+                   gap:8px 10px; padding:8px 18px 14px; background:var(--surface);
+                   border-radius:0 0 var(--radius) var(--radius);
                    box-shadow:0 8px 24px rgba(0,0,0,.3); }
-.player-controls audio { display:block; width:100%; }
+/* The seek bar keeps its width; on a phone the button goes beneath it. */
+.player-controls audio { display:block; flex:1 1 280px; min-width:0; }
+.player-controls .ask-hilde { flex:none; margin-left:auto; white-space:nowrap; }
 .reader-panel { margin-top:12px; padding:10px 6px; background:var(--surface);
                 border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
@@ -11279,6 +11314,9 @@ audio { height:36px; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
+.chat-about { display:flex; align-items:baseline; gap:10px; margin:0; padding:8px 14px 0;
+              border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
+.chat-about + .chat-compose { border-top:0; }
 .chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; }
 .reader-paragraph { padding:6px 12px; border-left:3px solid transparent;
                     border-radius:6px; line-height:1.6; transition:border-color .15s; }
@@ -11800,6 +11838,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
         </div>
         <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <p id="chat-about" class="chat-about hidden">
+          <span id="chat-about-text"></span>
+          <button class="link" type="button" onclick="setChatAbout(null)">Remove</button>
+        </p>
         <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
           <label for="chat-input" class="visually-hidden">Message</label>
           <textarea id="chat-input" rows="2" maxlength="8000"
@@ -12633,7 +12675,7 @@ async function openAudiobook(id, focus, voiceName) {
   $("reader-meta").textContent = details.filter(Boolean).join(" · ");
   if (focus) $("reader-title").focus();
   const audio = readerPlayer(id, voice);
-  $("artifact-player").replaceChildren(audio);
+  $("artifact-player").replaceChildren(audio, askHildeButton());
   readerAudio = audio;
   audio.addEventListener("timeupdate", updateReaderHighlight);
   audio.addEventListener("seeking", updateReaderHighlight);
@@ -12773,6 +12815,7 @@ function resetChatFor(book) {
   if (chatData && chatData.book === book) return;
   stopChatStream();
   chatOpen = false; chatData = null; chatLive = null;
+  setChatAbout(null);
   $("chat-log").replaceChildren();
   renderChatFiles([]);
   renderChatLayout();
@@ -12781,17 +12824,26 @@ function resetChatFor(book) {
 function toggleChat() { if (chatOpen) closeChat(); else openChat(); }
 async function openChat() {
   if (!state.player.book) return;
-  chatOpen = true;
-  renderChatLayout();
-  $("book-view").scrollIntoView({ block:"start" });
-  sizeChat();
+  keepReaderPlace(() => { chatOpen = true; renderChatLayout(); });
   $("chat-input").focus();
   await Promise.all([loadChat(), refreshChatModels()]);
 }
 function closeChat() {
-  chatOpen = false;
-  renderChatLayout();
+  keepReaderPlace(() => { chatOpen = false; renderChatLayout(); });
   $("chat-toggle").focus();
+}
+// Splitting or joining the view moves the text into another scroller; the
+// paragraph the listener was at stays at the top of the text.
+function keepReaderPlace(change) {
+  const section = (readerBlocks[activeReaderBlock] || [])[0]?.closest(".reader-paragraph")
+    || visibleReaderParagraph();
+  change();
+  if (chatOpen) $("book-view").scrollIntoView({ block:"start" });
+  if (!section) return;
+  const scroller = chatOpen ? $("book-pane") : document.scrollingElement;
+  const top = chatOpen ? $("book-pane").getBoundingClientRect().top : 0;
+  scroller.scrollTop += section.getBoundingClientRect().top - top
+    - $("artifact-player").getBoundingClientRect().height - 12;
 }
 function renderChatLayout() {
   $("book-view").classList.toggle("chatting", chatOpen);
@@ -12894,9 +12946,10 @@ async function sendChat(event) {
   try {
     const data = await jsonRequest("/api/chat/send", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book, text, model }),
+      body:JSON.stringify({ book:state.player.book, text, model, ...(chatAbout ? { context:chatAbout } : {}) }),
     });
     $("chat-input").value = "";
+    setChatAbout(null);
     applyChat(data);
     connectChat(data.event_index);
   } catch (error) {
@@ -12960,6 +13013,88 @@ function jumpToPassage(number) {
   const section = $("reader-content")
     .querySelector(`.reader-paragraph[data-paragraph="${paragraph}"]`);
   if (section) section.scrollIntoView({ block:"start", behavior:"smooth" });
+}
+
+// Ask Hilde, on the player: pause, open the chat, and ask about the part
+// playing (or the text selected in the reader). The paragraphs go with the
+// question; the question is only written, never sent.
+let chatAbout = null, askSelection = null;
+function setChatAbout(about) {
+  chatAbout = about;
+  $("chat-about").classList.toggle("hidden", !about);
+  $("chat-about-text").textContent = !about ? ""
+    : `Hilde reads ${about.start === about.end ? `¶${about.start}` : `¶${about.start}–${about.end}`} with your question.`;
+}
+// The reader paragraph a node is in; an Original shown beneath a paragraph
+// belongs to it.
+function readerParagraphOf(node) {
+  let element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+  const section = element && element.closest(".reader-paragraph");
+  if (section) return Number(section.dataset.paragraph);
+  element = element && element.closest(".reader-original");
+  while (element && !element.matches(".reader-paragraph")) element = element.previousElementSibling;
+  return element ? Number(element.dataset.paragraph) : null;
+}
+// The ¶ number of the passage a reader paragraph was read from.
+function passageOfParagraph(paragraph) {
+  if (paragraph === null || !chatData) return 0;
+  let found = 0;
+  for (const [number, first] of Object.entries(chatData.passages))
+    if (first <= paragraph && Number(number) > found) found = Number(number);
+  return found;
+}
+function readerSelection() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!$("reader-content").contains(range.commonAncestorContainer)) return null;
+  const text = selection.toString().replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return { text, first: readerParagraphOf(range.startContainer), last: readerParagraphOf(range.endContainer) };
+}
+// The first paragraph not hidden under the pinned player.
+function visibleReaderParagraph() {
+  const top = $("artifact-player").getBoundingClientRect().bottom;
+  return [...$("reader-content").querySelectorAll(".reader-paragraph")]
+    .find((section) => section.getBoundingClientRect().bottom > top + 4) || null;
+}
+function askHildeButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ask-hilde";
+  button.textContent = "Ask Hilde";
+  button.title = "Pause and ask Hilde about this part";
+  // Taken before the press can clear the selection.
+  button.addEventListener("pointerdown", () => { askSelection = readerSelection(); });
+  button.addEventListener("click", askHilde);
+  return button;
+}
+async function askHilde() {
+  const picked = askSelection || readerSelection();
+  askSelection = null;
+  if (readerAudio && !readerAudio.paused) readerAudio.pause();
+  let quote = "", first = null, last = null;
+  if (picked) {
+    ({ text: quote, first, last } = picked);
+  } else {
+    const sentence = (readerBlocks[activeReaderBlock] || [])[0];
+    const section = sentence || visibleReaderParagraph();
+    if (sentence) quote = sentence.textContent.replace(/\s+/g, " ").trim();
+    first = last = section ? readerParagraphOf(section) : null;
+  }
+  if (!chatOpen) await openChat();
+  else if (!chatData) await loadChat();
+  const start = passageOfParagraph(first);
+  const end = Math.max(start, passageOfParagraph(last));
+  setChatAbout(start ? { start, end: Math.min(end, start + 5) } : null);
+  const input = $("chat-input");
+  if (quote) {
+    const clipped = quote.length > 300 ? quote.slice(0, 300).replace(/\s+\S*$/, "") + "…" : quote;
+    input.value = quote.split(" ").length <= 10
+      ? `What does it mean by "${clipped}"?` : `Explain this part: "${clipped}"`;
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 async function refreshLibrary(restore) {
