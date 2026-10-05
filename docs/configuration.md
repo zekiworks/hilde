@@ -28,12 +28,41 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `User/` in the project folder; see [Storage](#storage). |
+| `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Chat with Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-clone-server`, `--voice-clone-server-model` | A speech server for narration instead of the model; the server model defaults to `tts-1`. |
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](web-ui.md#voices). |
+
+## Web search for Chat
+
+Chat with Hilde can search the web and read pages when the server knows a
+[SearXNG](https://docs.searxng.org/) instance with its JSON format turned on.
+One runs in Docker on the same machine:
+
+```bash
+mkdir -p ~/.hilde/searxng
+cat > ~/.hilde/searxng/settings.yml <<EOF
+use_default_settings: true
+server:
+  secret_key: "$(openssl rand -hex 32)"
+  limiter: false
+  image_proxy: false
+search:
+  formats: [html, json]
+EOF
+docker run -d --name hilde-searxng --restart unless-stopped \
+  -p 127.0.0.1:8890:8080 -v ~/.hilde/searxng:/etc/searxng searxng/searxng
+```
+
+Then start Hilde with `--search-server http://127.0.0.1:8890`; the startup
+lines say `Web search for Chat:` and the address. SearXNG sends each search,
+with words from the conversation, to public engines such as Google and Bing;
+one engine that is rate-limited or asks for a CAPTCHA is left out of that
+search. Hilde reads only pages at public addresses: never this machine or the
+local network, also when a page redirects there.
 
 ## Storage
 

@@ -983,12 +983,33 @@ lists every passage as `¶N [type] summary Tags: …`, where N is the passage's
 - `write_file(name, content, mode)`: `create` refuses an existing file,
   `append` a missing one; at most `CHAT_FILE_MAX_BYTES` a file;
 - `list_files()`;
-- `delete_file(name)`.
+- `delete_file(name)`;
+- with `--search-server` only (`CHAT_WEB_TOOLS`, and `WEB_PROMPT` in the
+  system prompt): `web_search(query)`, the first `CHAT_SEARCH_RESULTS` results
+  of the SearXNG instance's JSON API as title, link, and snippet; and
+  `read_web_page(url, start)`, a page's text from character `start`, at most
+  `CHAT_READ_MAX_CHARS`, saying where to read on.
 
 `chat_file_path()` takes one name of letters, digits, spaces, dots, dashes,
 and parentheses ending in `.md` (adding it to a bare name), so a tool reaches
 nothing outside the book's `files/`. After `CHAT_MAX_TOOL_CALLS` calls the
-model is sent no tools and further calls are answered with the limit.
+model is sent no tools and further calls are answered with the limit; Stop
+takes effect between tool calls too.
+
+`fetch_web_page()` takes only an http(s) link without credentials
+(`normalize_paper_url()`), connects through `_public_connection()`, which
+refuses after connecting when the peer address is not global (loopback,
+private, link-local, shared, reserved; an IPv4-mapped IPv6 address by its IPv4
+form), so no name, numeric form, DNS answer, or redirect reaches this machine
+or the local network; follows at most `CHAT_PAGE_REDIRECTS` redirects, each
+checked the same way; and reads at most `CHAT_PAGE_MAX_BYTES` within
+`CHAT_WEB_TIMEOUT` per socket operation, without proxies or compression.
+`web_page_text()` reads a PDF with PyMuPDF, an HTML page through
+`_PageText` (no script, style, navigation, forms, or footer; the `<main>` or
+`<article>` text alone when it has at least 500 characters), and plain text
+as is. A failure is told to the model as the tool's result. The prompt names
+web text as others' writing whose instructions are never followed.
+
 `chat_context()` sends the conversation whole until it passes `CHAT_TRIM_AT`
 (80%) of the model's window less its reply, counted at
 `CHAT_CHARS_PER_TOKEN`; then the oldest entries go first, a tool call with its
@@ -1054,6 +1075,7 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 ## Core invariants
 
 - The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`, whose nodes and local devices turned off only a browser on the server's own machine (a loopback address) may change, because the server has no sign-in.
+- Chat's web tools exist only when the operator passes `--search-server`; the page a model asks to read is fetched only from a public address, checked on the connection itself at every redirect.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
 - **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
@@ -1117,7 +1139,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 145 tests. It covers voice persistence
+The regression suite currently has 150 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1180,8 +1202,11 @@ book downloads, Chat with Hilde (Markdown file names only inside the book's
 reads cut at their cap, trimming past 80% that keeps a tool call with its
 result and the latest message, a book without summaries refused, a rebuilt
 book keeping its files and dropping its conversation, a turn against a
-fake local server running streamed tool calls until the model answers, and a
-question from the player reaching the model with its paragraphs already read),
+fake local server running streamed tool calls until the model answers, a
+question from the player reaching the model with its paragraphs already read,
+web pages on this machine or the local network never fetched, directly or by
+redirect, a page read as its main content in pieces, SearXNG results listed
+with their links, and no web tools without a search server),
 passage summaries and tags kept in `narration.json`, an unclosed TAGS parsed,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried

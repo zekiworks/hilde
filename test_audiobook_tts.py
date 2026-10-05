@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import stat
 import struct
 import subprocess
@@ -5987,6 +5988,104 @@ class ChatTests(unittest.TestCase):
             [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]],
             ['What does it mean by "trapped"?', "", "Read ¶2–3", "Dams hold coarse sediment back."],
         )
+
+
+class FakeWeb(BaseHTTPRequestHandler):
+    """Pages by path: (status, headers, body); every path asked is kept."""
+
+    pages = {}
+    asked = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        type(self).asked.append(self.path)
+        status, headers, body = type(self).pages.get(self.path.split("?")[0], (404, {}, b""))
+        self.send_response(status)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class WebToolTests(unittest.TestCase):
+    def serve(self):
+        FakeWeb.pages, FakeWeb.asked = {}, []
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeWeb)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}", server.server_port
+
+    def allowing(self, port):
+        """Connect to the test server's port as if it were public; anything
+        else gets the real check."""
+        def connect(address, *args, **kwargs):
+            if address[1] == port:
+                return socket.create_connection(address, *args, **kwargs)
+            return web._public_connection(address, *args, **kwargs)
+        return connect
+
+    def test_pages_on_this_machine_or_the_local_network_are_never_fetched(self):
+        origin, _ = self.serve()
+        FakeWeb.pages["/"] = (200, {"Content-Type": "text/plain"}, b"secret")
+        for url in (f"{origin}/", origin.replace("127.0.0.1", "localhost") + "/"):
+            content, label = web.read_web_page(url)
+            self.assertIn("is not a public address", content)
+            self.assertTrue(label.startswith("Could not read"))
+        self.assertEqual(FakeWeb.asked, [])
+        self.assertIn("HTTP or HTTPS", web.read_web_page("file:///etc/passwd")[0])
+
+    def test_a_redirect_to_a_local_address_is_refused(self):
+        public, public_port = self.serve()
+        local = ThreadingHTTPServer(("127.0.0.1", 0), FakeWeb)
+        threading.Thread(target=local.serve_forever, daemon=True).start()
+        self.addCleanup(local.server_close)
+        self.addCleanup(local.shutdown)
+        FakeWeb.pages["/moved"] = (302, {"Location": f"http://127.0.0.1:{local.server_port}/admin"}, b"")
+        FakeWeb.pages["/admin"] = (200, {"Content-Type": "text/plain"}, b"secret")
+        content, _ = web.read_web_page(f"{public}/moved", connect=self.allowing(public_port))
+        self.assertIn("127.0.0.1 is not a public address", content)
+        self.assertEqual(FakeWeb.asked, ["/moved"])
+
+    def test_a_page_is_read_as_its_content_in_pieces(self):
+        origin, port = self.serve()
+        article = "".join(f"<p>Sentence {number} about sediment.</p>" for number in range(1500))
+        FakeWeb.pages["/a"] = (301, {"Location": "/article"}, b"")
+        FakeWeb.pages["/article"] = (200, {"Content-Type": "text/html; charset=utf-8"}, (
+            "<html><head><title>Ebro &amp; silt</title><style>p{}</style></head><body>"
+            "<nav><a href='/'>Home</a> Menu</nav><script>track()</script>"
+            f"<main><h1>Delta</h1>{article}</main><footer>Cookie notice</footer></body></html>"
+        ).encode())
+        first, label = web.read_web_page(f"{origin}/a", connect=self.allowing(port))
+        self.assertEqual(label, "Read 127.0.0.1/article")
+        self.assertTrue(first.startswith(f"Ebro & silt\n{origin}/article\n\nDelta\nSentence 0 about sediment."))
+        for chrome in ("Menu", "track()", "Cookie notice", "p{}"):
+            self.assertNotIn(chrome, first)
+        resume = int(re.search(r"read on with start=(\d+)\.\)$", first).group(1))
+        rest, _ = web.read_web_page(f"{origin}/article", resume, connect=self.allowing(port))
+        self.assertTrue(rest.endswith("Sentence 1499 about sediment."))
+        self.assertNotIn("read on", rest)
+
+    def test_search_lists_searxng_results_with_their_links(self):
+        origin, _ = self.serve()
+        results = [{"title": f"Result  {number}", "url": f"https://example.org/{number}",
+                    "content": "A  snippet."} for number in range(12)]
+        FakeWeb.pages["/search"] = (200, {"Content-Type": "application/json"},
+                                    json.dumps({"results": results}).encode())
+        content, label = web.web_search(origin, "  storm   sediment ")
+        self.assertEqual(label, 'Searched the web for "storm sediment"')
+        self.assertEqual(FakeWeb.asked, ["/search?q=storm+sediment&format=json"])
+        self.assertTrue(content.startswith("1. Result 0\nhttps://example.org/0\nA snippet."))
+        self.assertIn("8. Result 7", content)
+        self.assertNotIn("9. Result 8", content)
+
+    def test_without_a_search_server_the_web_tools_do_not_exist(self):
+        call = {"name": "web_search", "arguments": {"query": "sediment"}}
+        self.assertEqual(web.chat_tool(Path("."), [], call)[0], "There is no tool named web_search.")
+
 
 
 class WorkerNodeTests(unittest.TestCase):

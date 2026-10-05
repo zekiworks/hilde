@@ -156,7 +156,10 @@ playing and scrolling, and a conversation about it fills the bottom half. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
 the paragraphs it needs before answering; a paragraph it cites, such as ¶12,
-is a link that scrolls the book to it. Its answer streams in as it writes;
+is a link that scrolls the book to it. When the server has web search (see
+[Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
+search the web and read pages, for background or later work, and links what
+it used; those links open in a new tab. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it in the chat, from the
 models you connected under **Providers** or **Add local** on **Create**. With
 none, the chat asks you to add one first. Claude Code models cannot chat:
