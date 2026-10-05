@@ -116,7 +116,9 @@ fills what a worker leaves out from `--ssh-device`, `--ssh-python`, and
 `--ssh-model-path` (then `--clone-model-path`) and refuses a target and device
 given twice. `narration_worker()` implements a private
 newline-delimited JSON protocol. A worker emits readiness, accepts indexed
-chunk batches, and returns base64-encoded FLOAT WAV data or a fatal error.
+chunk batches, and returns base64-encoded FLOAT WAV data or a fatal error. A
+batch may carry `max_new_tokens`, a cap on each clip's length that
+`generate_clone_batch()` passes to the model; narration sends none.
 
 `_narrate_distributed()` starts SSH workers at once. A local CUDA worker starts
 only when its GPU has at least `NARRATION_MIN_FREE_MIB` (6 GiB: the 4 GiB model
@@ -316,7 +318,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, local model server, its type: `ollama`, `lm-studio`, or empty, and `local_vision`, whether its model sees images, true only when stored as `true`), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen, the voice playing, so a refresh reopens them, and `chat_model`, the model chosen for Chat with Hilde. A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
+- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Chat with Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies. TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -1039,6 +1041,41 @@ an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
 error or a stop ends the turn with a `notice`.
 
+### Reading answers aloud
+
+With a local narration model (`--voice-clone-model`), each answer has
+**Listen**, and the chat header **Read answers aloud**
+(`player.chat_speak`); `/api/chat`'s `speech` is empty, or
+`CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is the one the book is
+playing in, read from its saved voice in `Voices/`.
+`chat_speech_text()` turns the answer's Markdown into words: the text of each
+paragraph, heading, list item, and table cell, without code blocks or web
+addresses, a `¶N` citation as "paragraph N". `chat_speech_chunks()` makes the
+first clip the first sentence, cut at its last clause break within
+`CHAT_SPEECH_FIRST_CHARS` when longer, so speech starts soon; the rest go up
+to `CHAT_SPEECH_CHUNK_CHARS`.
+
+`ChatSpeaker` keeps one `_worker` process (the narration worker protocol)
+loaded with one voice, started on first use on `roomiest_cuda_device()` and
+stopped after `CHAT_SPEECH_IDLE` seconds unused, or when another voice is
+asked for; requests to it take turns. Each clip is capped at
+`CHAT_SPEECH_TOKENS_PER_CHAR` codec tokens per character: the model can miss
+its end and run on to its 2048-token limit, minutes of speech. A
+`ChatReading` (one text in one voice, kept for the last
+`CHAT_SPEECH_READINGS`) makes its clips in order, at most
+`CHAT_SPEECH_AHEAD` past the last one fetched, so a reading no one plays
+stops; starting another reading pauses the rest after the clip they are on.
+The server logs each load, clip (characters, seconds of speech, seconds
+taken), and unload as `Chat speech:` lines. Measured on an RTX PRO 6000: the
+model loads in about 5 s and speaks about 1.5 times faster than real time.
+
+The page plays clips through one `Audio` element, fetching the next while
+one plays (7 to 9 ms between clips). A tap starts it: **Listen**, or **Send**
+with Read answers aloud on, which plays a silent clip so a phone allows the
+answer that finishes later to play. Playing an answer pauses the book; Stop,
+Close, and another book stop it. With Read answers aloud on, the last answer
+of a finished turn is read.
+
 ## HTTP routes
 
 | Route | Behavior |
@@ -1072,6 +1109,8 @@ error or a stop ends the turn with a `notice`.
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
+| `POST /api/chat/speak` | JSON `text` (an answer's Markdown) and `voice` (a saved voice); returns `{id, clips}` for its reading. HTTP 409 without a local narration model, 400 when it has no words, 404 for a voice not in Voices. |
+| `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `context` `{start, end}` (passage numbers, at most `CHAT_CONTEXT_MAX_PASSAGES`, read before the model answers); the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `context`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
@@ -1144,7 +1183,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 150 tests. It covers voice persistence
+The regression suite currently has 153 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1211,7 +1250,10 @@ fake local server running streamed tool calls until the model answers, a
 question from the player reaching the model with its paragraphs already read,
 web pages on this machine or the local network never fetched, directly or by
 redirect, a page read as its main content in pieces, SearXNG results listed
-with their links, and no web tools without a search server),
+with their links, no web tools without a search server, an answer read
+aloud as its words without Markdown, code, or addresses, clips made only as far
+ahead as they are played and a failed clip reported, and reading aloud off
+until a browser turns it on),
 passage summaries and tags kept in `narration.json`, an unclosed TAGS parsed,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried

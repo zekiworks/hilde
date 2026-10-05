@@ -222,13 +222,15 @@ def ssh_worker(value):
     return worker
 
 
-def generate_clone_batch(model, texts, language, prompt):
-    """Clone one batch; if CUDA memory runs out, retry its chunks one at a time."""
+def generate_clone_batch(model, texts, language, prompt, max_new_tokens=None):
+    """Clone one batch; if CUDA memory runs out, retry its chunks one at a time.
+    `max_new_tokens` caps each clip's length; None keeps the model's limit."""
     import torch
 
+    limit = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
     try:
         return model.generate_voice_clone(
-            text=texts, language=[language] * len(texts), voice_clone_prompt=prompt,
+            text=texts, language=[language] * len(texts), voice_clone_prompt=prompt, **limit,
         )
     except torch.cuda.OutOfMemoryError:
         if len(texts) == 1:
@@ -242,7 +244,7 @@ def generate_clone_batch(model, texts, language, prompt):
     waveforms = []
     for text in texts:
         generated, sample_rate = model.generate_voice_clone(
-            text=[text], language=[language], voice_clone_prompt=prompt,
+            text=[text], language=[language], voice_clone_prompt=prompt, **limit,
         )
         waveforms.extend(generated)
     return waveforms, sample_rate
@@ -1095,9 +1097,13 @@ def narration_worker(args, parser):
                 or not all(isinstance(text, str) and text for text in texts)
             ):
                 raise ValueError("worker received an invalid chunk batch")
+            # A caller may cap how long each clip can run; narration does not.
+            limit = request.get("max_new_tokens")
+            if limit is not None and (type(limit) is not int or limit <= 0):
+                raise ValueError("worker received an invalid max_new_tokens")
             with redirect_stdout(sys.stderr):
                 waveforms, sample_rate = generate_clone_batch(
-                    model, texts, args.language, voice_clone_prompt
+                    model, texts, args.language, voice_clone_prompt, limit
                 )
             encoded = []
             for waveform in waveforms:

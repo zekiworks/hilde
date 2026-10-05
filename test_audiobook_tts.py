@@ -6088,6 +6088,53 @@ class WebToolTests(unittest.TestCase):
 
 
 
+class ChatSpeechTests(unittest.TestCase):
+    def test_an_answer_is_read_as_its_words(self):
+        self.assertEqual(
+            web.chat_speech_text(
+                "## Storms\n\nStorms carry **71%** of the load (¶4), see ¶12–14 and "
+                "[the survey](https://example.org/a) or https://example.org/b.\n\n"
+                "```python\nprint('no')\n```\n\n| Station | Load |\n| --- | --- |\n| Ebro | 71% |\n\n- One `item`"
+            ),
+            "Storms\n\nStorms carry 71% of the load (paragraph 4), see paragraphs 12 to 14 and "
+            "the survey or.\n\nStation\n\nLoad\n\nEbro\n\n71%\n\nOne item",
+        )
+        self.assertEqual(web.chat_speech_text("```\ncode only\n```"), "")
+
+    def test_a_reading_is_made_only_as_far_ahead_as_it_is_played(self):
+        class Speaker:
+            def __init__(self):
+                self.spoken = []
+
+            def speak(self, voice_dir, text):
+                self.spoken.append(text)
+                if text == "broken":
+                    raise RuntimeError("out of memory")
+                return text.encode()
+
+        speaker = Speaker()
+        reading = web.ChatReading(speaker, "k", Path("."), [f"part {number}" for number in range(1, 9)])
+        self.assertEqual(reading.clip(1, 5), b"part 1")
+        # The maker stops once it is CHAT_SPEECH_AHEAD past the last clip asked for.
+        deadline = time.monotonic() + 5
+        while len(speaker.spoken) < 1 + web.CHAT_SPEECH_AHEAD and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.2)
+        self.assertEqual(speaker.spoken, ["part 1", "part 2", "part 3"])
+        self.assertEqual(reading.clip(5, 5), b"part 5")
+        time.sleep(0.2)
+        self.assertEqual(len(speaker.spoken), 7)
+
+        failing = web.ChatReading(speaker, "f", Path("."), ["broken"])
+        with self.assertRaisesRegex(RuntimeError, "couldn't read this aloud: out of memory"):
+            failing.clip(1, 5)
+
+    def test_reading_aloud_is_off_unless_a_browser_chose_it(self):
+        self.assertIs(normalize({})["player"]["chat_speak"], False)
+        self.assertIs(normalize({"player": {"chat_speak": "yes"}})["player"]["chat_speak"], False)
+        self.assertIs(normalize({"player": {"chat_speak": True}})["player"]["chat_speak"], True)
+
+
 class WorkerNodeTests(unittest.TestCase):
     NODE = {
         "host": "narrator@10.0.0.5",

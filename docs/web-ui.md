@@ -177,6 +177,17 @@ paragraphs you were at go with the question, so Hilde answers from their full
 text; the line above the message box names them, and **Remove** sends the
 question without them. Play continues from the same word.
 
+**Listen**, under each of Hilde's answers, reads it aloud in the voice the book
+is playing in; press it again to stop. **Read answers aloud**, in the chat's
+header, reads each answer as soon as it is finished, so you can ask with Ask
+Hilde, hear the answer, and press Play to go on with the book. Reading pauses
+the book. The first answer after a while takes a few seconds longer while the
+narration model loads; it stays loaded for five minutes after the last answer
+read, then frees its GPU. Code, web addresses, and Markdown are not read; a
+citation such as ¶12 is read as "paragraph 12". Reading aloud needs the
+server's own narration model (`--voice-clone-model`); without it, neither
+shows.
+
 The files Hilde writes are listed as download links at the top left of the
 book, and stay until you ask Hilde to delete one. **Recreate with the latest
 Hilde** keeps them and starts a new conversation, since paragraph numbers

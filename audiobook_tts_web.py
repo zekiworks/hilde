@@ -30,6 +30,7 @@ import base64
 import collections
 import concurrent.futures
 import contextlib
+import io
 import json
 import hashlib
 import html
@@ -71,6 +72,7 @@ from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
     VOICE_VERSIONS_DIR,
+    NarrationWorkerProcess,
     gpu_free_mebibytes,
     read_voice,
     save_voice,
@@ -6746,6 +6748,8 @@ def normalize(state):
             "book": stored_text(player, "book"), "voice": stored_text(player, "voice"),
             # The model Chat with Hilde answers with, from the adaptation models.
             "chat_model": stored_text(player, "chat_model"),
+            # Whether each answer is read aloud as it finishes; off unless chosen.
+            "chat_speak": player.get("chat_speak") is True,
         },
     }
 
@@ -7831,6 +7835,260 @@ def chat_payload(storage, chats, book):
         },
     }
 
+
+# --- chat speech ----------------------------------------------------------------
+
+# Hilde's answers read aloud in the book's narrator voice, a few sentences at
+# a time, by one model process kept loaded only while it is used.
+CHAT_SPEECH_CHUNK_CHARS = 300
+# Speech is made at about 1.4 times real time, so the first clip is kept short.
+CHAT_SPEECH_FIRST_CHARS = 160
+# Speech runs about 0.07 s a character at 12 codec tokens a second, under one
+# token a character; a clip may use 2.5, about three times its usual length.
+CHAT_SPEECH_TOKENS_PER_CHAR = 2.5
+CHAT_SPEECH_MAX_CHARS = 12_000
+# Seconds the model stays loaded after it last spoke.
+CHAT_SPEECH_IDLE = 300
+# Chunks made ahead of the one playing; a reading no one plays stops there.
+CHAT_SPEECH_AHEAD = 2
+CHAT_SPEECH_READINGS = 16
+CHAT_SPEECH_LOAD_TIMEOUT = 600
+CHAT_SPEECH_CHUNK_TIMEOUT = 300
+CHAT_SPEECH_UNAVAILABLE = "Reading answers aloud needs a local narration model (--voice-clone-model)."
+
+
+def chat_speech_text(markdown):
+    """What reading an answer aloud says: its words without Markdown, code
+    blocks, or web addresses, a ¶ citation as "paragraph 12"."""
+    blocks = []
+    for token in READER_MARKDOWN.parse(str(markdown or "")):
+        if token.type != "inline":
+            continue
+        words = "".join(
+            child.content if child.type in ("text", "code_inline") else " "
+            for child in token.children or ()
+            if child.type in ("text", "code_inline", "softbreak", "hardbreak")
+        )
+        # An address goes, the punctuation after it stays.
+        words = re.sub(r"\s*https?://\S*[^\s.,;:!?)]", "", words)
+        words = CHAT_CITATION_PATTERN.sub(
+            lambda match: f"paragraphs {match[1]} to {match[2]}" if match[2] else f"paragraph {match[1]}",
+            words,
+        )
+        words = " ".join(words.split())
+        if any(character.isalnum() for character in words):
+            blocks.append(words)
+    return "\n\n".join(blocks)[:CHAT_SPEECH_MAX_CHARS]
+
+
+def chat_speech_chunks(text):
+    """The clips an answer is read in. The first is its first sentence, or
+    that sentence up to its last clause break within CHAT_SPEECH_FIRST_CHARS,
+    so speech starts soon; the rest go up to CHAT_SPEECH_CHUNK_CHARS at a time."""
+    chunks = split_text(text, CHAT_SPEECH_CHUNK_CHARS)
+    if not chunks:
+        return []
+    first, *rest = split_text(chunks[0], CHAT_SPEECH_CHUNK_CHARS, sentence_chunks=True)
+    if len(first) > CHAT_SPEECH_FIRST_CHARS:
+        breaks = [match.end() for match in re.finditer(r"[,;:](?=\s)", first[:CHAT_SPEECH_FIRST_CHARS])]
+        if breaks and breaks[-1] >= 40:
+            first, rest = first[:breaks[-1]], [first[breaks[-1]:].strip(), *rest]
+    return [first] + ([" ".join(rest)] if rest else []) + chunks[1:]
+
+
+class ChatSpeaker:
+    """One narration model process for reading answers aloud. It loads on
+    first use with a voice, on the GPU with the most free memory, reloads for
+    another voice, and stops after CHAT_SPEECH_IDLE seconds unused."""
+
+    def __init__(self, clone_model):
+        self.clone_model = clone_model
+        self.lock = threading.Lock()  # one request to the model at a time
+        self.worker = self.voice = self.events = None
+        self.used = 0.0
+        self.readings = collections.OrderedDict()
+        self.readings_lock = threading.Lock()
+        threading.Thread(target=self._unload_when_idle, name="chat-speech-idle", daemon=True).start()
+
+    def command(self, voice_dir, device):
+        # Answers are read with the runtime a fresh browser starts with.
+        runtime = normalize({})["runtime"]
+        return [
+            sys.executable, "-u", str(SCRIPT), "_worker",
+            *model_arguments(self.clone_model, "--clone-model-path"),
+            "--voice-dir", str(voice_dir),
+            *shared_arguments({**runtime, "device": device}),
+        ]
+
+    def _await(self, wanted, timeout):
+        deadline, last_log = time.monotonic() + timeout, ""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("the narrator's voice did not answer in time")
+            try:
+                source, event = self.events.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if source is not self.worker:
+                continue
+            kind = event.get("type")
+            if kind == wanted:
+                return event
+            if kind == "log":
+                last_log = event.get("message") or last_log
+            elif kind == "error":
+                raise RuntimeError(event.get("message") or "the speech model failed")
+            elif kind == "exit":
+                raise RuntimeError(last_log or f"the speech model stopped (exit {event.get('code')})")
+
+    def _stop(self, why=""):
+        if self.worker is not None:
+            if why:
+                print(f"Chat speech: unloading the model ({why})", flush=True)
+            self.worker.finish(graceful=True)
+        self.worker = self.voice = self.events = None
+
+    def _ensure(self, voice_dir):
+        """Have the model loaded with this voice; the caller holds the lock."""
+        voice = (str(voice_dir), saved_voice_version(voice_dir))
+        if self.worker is not None and self.voice == voice and self.worker.process.poll() is None:
+            return
+        self._stop()
+        device = roomiest_cuda_device() or resolve_device("auto")
+        self.events = queue.Queue()
+        self.worker = NarrationWorkerProcess(
+            "Chat speech", self.command(voice_dir, device), self.events, device=device
+        )
+        self.voice = voice
+        started = time.monotonic()
+        self.worker.start()
+        try:
+            self._await("ready", CHAT_SPEECH_LOAD_TIMEOUT)
+        except BaseException:
+            self._stop()
+            raise
+        print(
+            f"Chat speech: loaded {Path(voice_dir).name} on {public_device_label(device)} "
+            f"in {time.monotonic() - started:.1f} s",
+            flush=True,
+        )
+
+    def speak(self, voice_dir, text):
+        """One chunk of text in the voice, as 16-bit WAV bytes."""
+        import soundfile as sf
+
+        with self.lock:
+            self._ensure(voice_dir)
+            started = time.monotonic()
+            try:
+                # The model can miss its end and talk on to its 2048-token
+                # limit, minutes of speech; a clip gets about three times its
+                # usual length.
+                self.worker.send({
+                    "type": "generate", "indexes": [1], "texts": [text],
+                    "max_new_tokens": int(len(text) * CHAT_SPEECH_TOKENS_PER_CHAR) + 24,
+                })
+                event = self._await("result", CHAT_SPEECH_CHUNK_TIMEOUT)
+            except BaseException as exc:
+                print(f"Chat speech: a clip of {len(text)} characters failed: {exc}", flush=True)
+                self._stop()
+                raise
+            self.used = time.monotonic()
+            made = self.used - started
+        waveform, rate = sf.read(io.BytesIO(base64.b64decode(event["waves"][0])), dtype="float32")
+        print(
+            f"Chat speech: {len(text)} characters, {len(waveform) / rate:.1f} s of speech in {made:.1f} s",
+            flush=True,
+        )
+        clip = io.BytesIO()
+        sf.write(clip, waveform, rate, format="WAV", subtype="PCM_16")
+        return clip.getvalue()
+
+    def _unload_when_idle(self):
+        while True:
+            time.sleep(30)
+            with self.lock:
+                if self.worker is not None and time.monotonic() - self.used > CHAT_SPEECH_IDLE:
+                    self._stop(f"unused for {CHAT_SPEECH_IDLE // 60} minutes")
+
+    def reading(self, voice_dir, text):
+        """The reading of a text in a voice, made again only when it is new.
+        The model makes one clip at a time, so every other reading stops
+        after the clip it is on, until someone plays it again."""
+        key = hashlib.sha256(
+            json.dumps([str(voice_dir), saved_voice_version(voice_dir), text]).encode("utf-8")
+        ).hexdigest()[:24]
+        with self.readings_lock:
+            reading = self.readings.get(key)
+            if reading is None:
+                reading = self.readings[key] = ChatReading(
+                    self, key, voice_dir, chat_speech_chunks(text)
+                )
+                while len(self.readings) > CHAT_SPEECH_READINGS:
+                    self.readings.popitem(last=False)
+            self.readings.move_to_end(key)
+            others = [other for other in self.readings.values() if other is not reading]
+        for other in others:
+            other.pause()
+        return reading
+
+    def find(self, key):
+        with self.readings_lock:
+            return self.readings.get(key)
+
+
+class ChatReading:
+    """One answer's chunks, made in order on demand: at most
+    CHAT_SPEECH_AHEAD past the last one asked for."""
+
+    def __init__(self, speaker, key, voice_dir, chunks):
+        self.speaker, self.key, self.voice_dir, self.chunks = speaker, key, voice_dir, chunks
+        self.clips, self.error, self.wanted = {}, "", 0
+        self.making = False
+        self.condition = threading.Condition()
+
+    def pause(self):
+        """Make no clip past the one being made, until one is asked for."""
+        with self.condition:
+            self.wanted = 0
+            self.condition.notify_all()
+
+    def clip(self, number, timeout):
+        """Chunk `number` (from 1) as WAV bytes, waiting for it to be made."""
+        with self.condition:
+            self.wanted = max(self.wanted, number + CHAT_SPEECH_AHEAD)
+            if not self.making and number not in self.clips:
+                self.error = ""
+                self.making = True
+                threading.Thread(target=self._make, name=f"chat-reading-{self.key}", daemon=True).start()
+            self.condition.notify_all()
+            self.condition.wait_for(lambda: number in self.clips or bool(self.error), timeout)
+            if number in self.clips:
+                return self.clips[number]
+            raise RuntimeError(self.error or "the narrator's voice is still busy")
+
+    def _make(self):
+        try:
+            for number, text in enumerate(self.chunks, 1):
+                with self.condition:
+                    if number in self.clips:
+                        continue
+                    # Nobody listening this far: stop until someone asks.
+                    if not self.condition.wait_for(lambda: number <= self.wanted, CHAT_SPEECH_CHUNK_TIMEOUT):
+                        return
+                clip = self.speaker.speak(self.voice_dir, text)
+                with self.condition:
+                    self.clips[number] = clip
+                    self.condition.notify_all()
+        except Exception as exc:  # the page shows why
+            with self.condition:
+                self.error = f"Hilde couldn't read this aloud: {exc}"
+                self.condition.notify_all()
+        finally:
+            with self.condition:
+                self.making = False
+                self.condition.notify_all()
 
 
 # --- runs ---------------------------------------------------------------------
@@ -10258,6 +10516,8 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, FileNotFoundError):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such file")
             return self.send_file(str(target), True, target.name)
+        if route == "/api/chat/speech":
+            return self.chat_speech(query.get("id", [""])[0], query.get("n", ["1"])[0])
         if route == "/api/paper/models":
             return self.reply_paper_catalog()
         if route == "/api/paper/openai/status":
@@ -10433,6 +10693,8 @@ class Handler(BaseHTTPRequestHandler):
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                 },
             )
+        if route == "/api/chat/speak":
+            return self.chat_speak(body)
         if route == "/api/chat/send":
             return self.chat_send(body)
         if route == "/api/chat/stop":
@@ -10769,7 +11031,46 @@ class Handler(BaseHTTPRequestHandler):
             payload = chat_payload(self.server.storage, self.server.chats, book)
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE
         return self.reply(HTTPStatus.OK, payload, extra=(("Cache-Control", "no-store"),))
+
+    def chat_speak(self, body):
+        """Begin reading an answer aloud in a saved voice: its reading's id
+        and how many clips it has."""
+        speaker = self.server.chat_speaker
+        if speaker is None:
+            return self.fail(HTTPStatus.CONFLICT, CHAT_SPEECH_UNAVAILABLE)
+        text = chat_speech_text(body.get("text"))
+        if not text:
+            return self.fail(HTTPStatus.BAD_REQUEST, "There are no words to read aloud.")
+        name = str(body.get("voice") or "")
+        try:
+            voice_dir = resolve_asset(self.server.storage.voices, name)
+        except ValueError:
+            voice_dir = None
+        if voice_dir is None or not is_saved_voice(voice_dir):
+            return self.fail(
+                HTTPStatus.NOT_FOUND,
+                f"The voice {name or '(none)'} is no longer in Voices; play the book in another voice.",
+            )
+        reading = speaker.reading(voice_dir, text)
+        return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks)})
+
+    def chat_speech(self, key, number):
+        """One clip of a reading, as WAV, once it is made."""
+        speaker = self.server.chat_speaker
+        reading = speaker.find(key) if speaker else None
+        try:
+            number = int(number)
+        except ValueError:
+            number = 0
+        if reading is None or not 1 <= number <= len(reading.chunks):
+            return self.fail(HTTPStatus.NOT_FOUND, "no such clip")
+        try:
+            clip = reading.clip(number, CHAT_SPEECH_LOAD_TIMEOUT + CHAT_SPEECH_CHUNK_TIMEOUT)
+        except RuntimeError as exc:
+            return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+        return self.reply(HTTPStatus.OK, clip, "audio/wav", extra=(("Cache-Control", "no-store"),))
 
     def chat_send(self, body):
         """Start Hilde's answer to a listener's message about a book."""
@@ -11575,6 +11876,8 @@ audio { height:36px; }
 .chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
 .chat-cite { color:var(--accent); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
+.chat-listen { margin-top:.4em; padding:0; min-height:0; color:var(--dim); font-size:13px; }
+.chat-assistant > .chat-listen { display:block; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
@@ -12093,6 +12396,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <h3 id="chat-title">Chat with Hilde</h3>
           <label for="chat-model" class="visually-hidden">Chat model</label>
           <select id="chat-model"></select>
+          <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak" type="checkbox">
+            Read answers aloud</label>
           <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
           <button class="link" type="button" onclick="closeChat()">Close</button>
         </div>
@@ -13080,6 +13385,7 @@ let chatHasModels = false, chatModelsError = "";
 function resetChatFor(book) {
   if (chatData && chatData.book === book) return;
   stopChatStream();
+  stopSpeaking();
   chatOpen = false; chatData = null; chatLive = null;
   setChatAbout(null);
   $("chat-log").replaceChildren();
@@ -13096,6 +13402,7 @@ async function openChat() {
 }
 function closeChat() {
   keepReaderPlace(() => { chatOpen = false; renderChatLayout(); });
+  stopSpeaking();
   $("chat-toggle").focus();
 }
 // Splitting or joining the view moves the text into another scroller; the
@@ -13154,6 +13461,15 @@ function chatEntryElement(entry) {
       link.target = "_blank"; link.rel = "noopener noreferrer";
     }
   } else node.textContent = entry.text;
+  // Answers can be read aloud in the voice the book is playing in.
+  if (entry.role === "assistant" && chatData && chatData.speech === "") {
+    node.chatText = entry.text;
+    const listen = document.createElement("button");
+    listen.type = "button";
+    listen.className = "link chat-listen";
+    listen.textContent = "Listen";
+    node.append(listen);
+  }
   return node;
 }
 function chatLiveElement() {
@@ -13190,6 +13506,82 @@ function renderChatControls() {
   $("chat-send").disabled = !!problem;
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
+  $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
+  $("chat-speak").checked = state.player.chat_speak;
+}
+
+// Reading answers aloud: one audio element plays an answer's clips in turn,
+// fetching the next while one plays. A tap (Listen, or Send with Read answers
+// aloud on) starts it, so a phone lets an answer finished later play too.
+const chatVoice = new Audio();
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+let chatSpeaking = null;  // { button, next, url }
+function unlockChatVoice() {
+  if (chatSpeaking) return;
+  chatVoice.src = SILENT_WAV;
+  chatVoice.play().catch(() => {});
+}
+async function chatClip(id, number) {
+  const response = await fetch(`/api/chat/speech?id=${encodeURIComponent(id)}&n=${number}`);
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try { message = (await response.json()).error || message; } catch (_) {}
+    throw new Error(message);
+  }
+  return URL.createObjectURL(await response.blob());
+}
+function stopSpeaking() {
+  const speaking = chatSpeaking;
+  chatSpeaking = null;
+  chatVoice.pause();
+  if (!speaking) return;
+  speaking.button.textContent = "Listen";
+  if (speaking.url) URL.revokeObjectURL(speaking.url);
+  speaking.next?.then((url) => URL.revokeObjectURL(url), () => {});
+}
+async function speakAnswer(button) {
+  const answer = button.closest(".chat-assistant");
+  if (chatSpeaking && chatSpeaking.button === button) { stopSpeaking(); return; }
+  stopSpeaking();
+  if (readerAudio && !readerAudio.paused) readerAudio.pause();
+  const speaking = chatSpeaking = { button, next: null, url: "" };
+  button.textContent = "Starting…";
+  try {
+    const reading = await jsonRequest("/api/chat/speak", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ voice:state.player.voice || bookById(state.player.book)?.voice || "",
+                            text:answer.chatText }),
+    });
+    for (let number = 1; number <= reading.clips && chatSpeaking === speaking; number++) {
+      const url = await (speaking.next || chatClip(reading.id, number));
+      if (chatSpeaking !== speaking) { URL.revokeObjectURL(url); return; }
+      speaking.next = number < reading.clips ? chatClip(reading.id, number + 1) : null;
+      speaking.next?.catch(() => {});
+      speaking.url = url;
+      chatVoice.src = url;
+      button.textContent = "Stop";
+      await new Promise((resolve, reject) => {
+        chatVoice.onended = resolve;
+        chatVoice.onerror = () => reject(new Error("This browser could not play the clip."));
+        chatVoice.onpause = () => { if (chatSpeaking !== speaking) resolve(); };
+        chatVoice.play().catch(reject);
+      });
+      URL.revokeObjectURL(url);
+      speaking.url = "";
+    }
+  } catch (error) {
+    if (chatSpeaking === speaking) setStatus(error.message, true);
+  }
+  if (chatSpeaking === speaking) stopSpeaking();
+}
+// With Read answers aloud on, the answer that ends a turn is read.
+function speakLatestAnswer() {
+  if (!state.player.chat_speak || !chatData || chatData.speech !== "") return;
+  const nodes = [...$("chat-log").children];
+  const asked = nodes.findLastIndex((node) => node.classList.contains("chat-user"));
+  const answer = nodes.slice(asked + 1).reverse().find((node) => node.classList.contains("chat-assistant"));
+  const button = answer && answer.querySelector(".chat-listen");
+  if (button) speakAnswer(button);
 }
 
 function fillChatModels(catalog) {
@@ -13213,6 +13605,7 @@ async function sendChat(event) {
   const text = $("chat-input").value.trim();
   const model = $("chat-model").value;
   if (!text || !model || (chatData && chatData.running)) return;
+  if (state.player.chat_speak) unlockChatVoice();
   $("chat-send").disabled = true;
   try {
     const data = await jsonRequest("/api/chat/send", {
@@ -13250,7 +13643,11 @@ function connectChat(from) {
       note.className = "chat-notice";
       note.textContent = "Earlier messages left Hilde's memory to make room.";
       $("chat-log").append(note);
-    } else if (event.type === "done") { stopChatStream(); loadChat(); return; }
+    } else if (event.type === "done") {
+      stopChatStream();
+      loadChat().then(speakLatestAnswer);
+      return;
+    }
     scrollChat();
   };
   // A dropped stream is picked up again from the server's own record.
@@ -14960,10 +15357,17 @@ $("chat-input").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) sendChat(event);
 });
 $("chat-log").addEventListener("click", (event) => {
+  const listen = event.target.closest(".chat-listen");
+  if (listen) { speakAnswer(listen); return; }
   const cite = event.target.closest(".chat-cite");
   if (!cite) return;
   event.preventDefault();
   jumpToPassage(Number(cite.dataset.passage));
+});
+$("chat-speak").addEventListener("change", (event) => {
+  state.player.chat_speak = event.target.checked;
+  queueSync();
+  if (!event.target.checked) stopSpeaking();
 });
 
 fetch("/api/state").then((response) => response.json()).then((data) => {
@@ -15097,6 +15501,9 @@ def main():
     server.openai_login = OpenAIOAuthLogin()
     server.chats = ChatRegistry()
     server.search_server = args.search_server
+    server.chat_speaker = (
+        ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
+    )
     server.tts_models = tts_models
     server.storage = storage
     server.verbose = args.verbose
