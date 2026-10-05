@@ -11530,10 +11530,12 @@ legend + * { clear:both; }
 .back { margin:0 0 12px; }
 audio { height:36px; }
 .player-panel { background:var(--surface); border-radius:var(--radius) var(--radius) 0 0; }
-.player-heading { display:flex; align-items:center; gap:16px; padding:16px 18px 6px; }
-.player-title { display:grid; flex:1; gap:2px; min-width:0; }
-.player-title h2 { overflow:hidden; font-size:18px; text-overflow:ellipsis;
-                   white-space:nowrap; }
+/* The actions go beneath the title when both do not fit, never squeezing it. */
+.player-heading { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px;
+                  padding:16px 18px 6px; }
+.player-title { display:grid; flex:1 1 320px; gap:2px; min-width:0; }
+.player-title h2 { font-size:18px; }
+.player-title .note { overflow-wrap:anywhere; }
 .player-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
 /* Only the controls stay on screen while the text scrolls beneath them. */
 .player-controls { position:sticky; top:0; z-index:3; display:flex; flex-wrap:wrap; align-items:center;
@@ -11642,6 +11644,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .job-row { grid-template-columns:1fr; }
   .player-heading { flex-direction:column; align-items:stretch; }
+  /* In a column the 320px basis would be the title's height. */
+  .player-title { flex-basis:auto; }
   /* Table rows become compact list items; cells keep their order. */
   .data-table thead { display:none; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
@@ -12039,7 +12043,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <section class="player-panel" aria-labelledby="reader-title">
         <div class="player-heading">
           <div class="player-title">
-            <h2 id="reader-title" tabindex="-1">Audiobook</h2>
+            <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
             <span id="reader-meta" class="note"></span>
             <span id="reader-download" class="note" aria-live="polite"></span>
           </div>

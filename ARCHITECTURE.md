@@ -755,10 +755,13 @@ The run log shows below every page but **Listen**. Each page:
 Document names and book titles wrap to at most two lines, the second ending in
 an ellipsis when cut (the `.clamp` class, which also breaks a name with no
 spaces): the step summaries, the progress subject and banner, the **In
-progress** list, the result card, and the **Listen** table. Step 1's summary,
+progress** list, the result card, the **Listen** table, and an open book's
+title. Step 1's summary,
 the **In progress** list, and **Listen** rows show the full name as a tooltip.
 The document dropdown is a native `<select>`, which shows one line and clips
-it at its width.
+it at its width. An open book's actions go beneath its title and source line
+whenever both do not fit beside a title at least 320px wide, so a long title
+or file name never runs into them.
 
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
 while its request runs. Deleting the selected voice or document clears that
