@@ -1046,8 +1046,9 @@ error or a stop ends the turn with a `notice`.
 With a local narration model (`--voice-clone-model`), each answer has
 **Listen**, and the chat header **Read answers aloud**
 (`player.chat_speak`); `/api/chat`'s `speech` is empty, or
-`CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is the one the book is
-playing in, read from its saved voice in `Voices/`.
+`CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is Hilde's
+(`chat_speech_voice()`: the saved voice `CHAT_SPEECH_VOICE`, else the first
+saved voice by name), whatever voice the book plays in.
 `chat_speech_text()` turns the answer's Markdown into words: the text of each
 paragraph, heading, list item, and table cell, without code blocks or web
 addresses, a `¶N` citation as "paragraph N". `chat_speech_chunks()` makes the
@@ -1109,7 +1110,7 @@ of a finished turn is read.
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
-| `POST /api/chat/speak` | JSON `text` (an answer's Markdown) and `voice` (a saved voice); returns `{id, clips}` for its reading. HTTP 409 without a local narration model, 400 when it has no words, 404 for a voice not in Voices. |
+| `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips}` for its reading in Hilde's voice (`chat_speech_voice()`). HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `context` `{start, end}` (passage numbers, at most `CHAT_CONTEXT_MAX_PASSAGES`, read before the model answers); the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `context`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |

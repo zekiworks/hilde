@@ -7855,6 +7855,25 @@ CHAT_SPEECH_READINGS = 16
 CHAT_SPEECH_LOAD_TIMEOUT = 600
 CHAT_SPEECH_CHUNK_TIMEOUT = 300
 CHAT_SPEECH_UNAVAILABLE = "Reading answers aloud needs a local narration model (--voice-clone-model)."
+# Answers are read in Hilde's own voice, or the first saved voice by name.
+CHAT_SPEECH_VOICE = "Hilde"
+
+
+def chat_speech_voice(storage):
+    """The saved voice answers are read in: CHAT_SPEECH_VOICE, else the first
+    saved voice by name, else None. A hidden folder is a voice being staged or
+    deleted."""
+    preferred = storage.voices / CHAT_SPEECH_VOICE
+    if is_saved_voice(preferred):
+        return preferred
+    voices = sorted(
+        (
+            path for path in storage.voices.iterdir()
+            if not path.name.startswith(".") and path.is_dir() and is_saved_voice(path)
+        ),
+        key=lambda path: path.name.casefold(),
+    ) if storage.voices.is_dir() else []
+    return voices[0] if voices else None
 
 
 def chat_speech_text(markdown):
@@ -11035,7 +11054,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.OK, payload, extra=(("Cache-Control", "no-store"),))
 
     def chat_speak(self, body):
-        """Begin reading an answer aloud in a saved voice: its reading's id
+        """Begin reading an answer aloud in Hilde's voice: its reading's id
         and how many clips it has."""
         speaker = self.server.chat_speaker
         if speaker is None:
@@ -11043,16 +11062,9 @@ class Handler(BaseHTTPRequestHandler):
         text = chat_speech_text(body.get("text"))
         if not text:
             return self.fail(HTTPStatus.BAD_REQUEST, "There are no words to read aloud.")
-        name = str(body.get("voice") or "")
-        try:
-            voice_dir = resolve_asset(self.server.storage.voices, name)
-        except ValueError:
-            voice_dir = None
-        if voice_dir is None or not is_saved_voice(voice_dir):
-            return self.fail(
-                HTTPStatus.NOT_FOUND,
-                f"The voice {name or '(none)'} is no longer in Voices; play the book in another voice.",
-            )
+        voice_dir = chat_speech_voice(self.server.storage)
+        if voice_dir is None:
+            return self.fail(HTTPStatus.NOT_FOUND, "There is no saved voice to read with; add one under Voices.")
         reading = speaker.reading(voice_dir, text)
         return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks)})
 
@@ -13461,7 +13473,7 @@ function chatEntryElement(entry) {
       link.target = "_blank"; link.rel = "noopener noreferrer";
     }
   } else node.textContent = entry.text;
-  // Answers can be read aloud in the voice the book is playing in.
+  // Answers can be read aloud in Hilde's voice.
   if (entry.role === "assistant" && chatData && chatData.speech === "") {
     node.chatText = entry.text;
     const listen = document.createElement("button");
@@ -13549,8 +13561,7 @@ async function speakAnswer(button) {
   try {
     const reading = await jsonRequest("/api/chat/speak", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ voice:state.player.voice || bookById(state.player.book)?.voice || "",
-                            text:answer.chatText }),
+      body:JSON.stringify({ text:answer.chatText }),
     });
     for (let number = 1; number <= reading.clips && chatSpeaking === speaking; number++) {
       const url = await (speaking.next || chatClip(reading.id, number));

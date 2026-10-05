@@ -177,8 +177,9 @@ paragraphs you were at go with the question, so Hilde answers from their full
 text; the line above the message box names them, and **Remove** sends the
 question without them. Play continues from the same word.
 
-**Listen**, under each of Hilde's answers, reads it aloud in the voice the book
-is playing in; press it again to stop. **Read answers aloud**, in the chat's
+**Listen**, under each of Hilde's answers, reads it aloud in Hilde's own voice
+(or, when the Hilde voice is gone from **Voices**, the first voice there by
+name); press it again to stop. **Read answers aloud**, in the chat's
 header, reads each answer as soon as it is finished, so you can ask with Ask
 Hilde, hear the answer, and press Play to go on with the book. Reading pauses
 the book. The first answer after a while takes a few seconds longer while the

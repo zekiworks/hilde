@@ -6134,6 +6134,20 @@ class ChatSpeechTests(unittest.TestCase):
         self.assertIs(normalize({"player": {"chat_speak": "yes"}})["player"]["chat_speak"], False)
         self.assertIs(normalize({"player": {"chat_speak": True}})["player"]["chat_speak"], True)
 
+    def test_answers_are_read_by_hilde_or_else_the_first_voice_by_name(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        self.assertIsNone(web.chat_speech_voice(storage))
+        for name in ("eir", "Balder", "Hilde", ".staged"):
+            save_voice(storage.voices / name, np.zeros(2400, dtype=np.float32), 24000, "A reference.", "FLOAT")
+        (storage.voices / "Aaron").mkdir()  # not a saved voice: no sample
+        self.assertEqual(web.chat_speech_voice(storage).name, "Hilde")
+        (storage.voices / "Hilde").rename(storage.voices / ".Hilde-deleted")
+        # A hidden folder is a voice being staged or deleted, never a choice.
+        self.assertEqual(web.chat_speech_voice(storage).name, "Balder")
+
 
 class WorkerNodeTests(unittest.TestCase):
     NODE = {
