@@ -1089,12 +1089,14 @@ With a local narration model (`--voice-clone-model`), each answer has
 `CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is Hilde's
 (`chat_speech_voice()`: the saved voice `CHAT_SPEECH_VOICE`, else the first
 saved voice by name), whatever voice the book plays in.
-`chat_speech_text()` turns the answer's Markdown into words: the text of each
-paragraph, heading, list item, and table cell, without code blocks or web
-addresses, a `¶N` citation as "paragraph N". `chat_speech_chunks()` makes the
-first clip the first sentence, cut at its last clause break within
-`CHAT_SPEECH_FIRST_CHARS` when longer, so speech starts soon; the rest go up
-to `CHAT_SPEECH_CHUNK_CHARS`.
+`chat_speech_blocks()` turns the answer's Markdown into words block by block:
+`(block, words)` for each paragraph, heading, list item, and table cell with
+words, where `block` counts every such inline block in order (one without
+words keeps its number), without code blocks or web addresses, a `¶N`
+citation as "paragraph N". `chat_speech_chunks()` cuts each block into clips
+of up to `CHAT_SPEECH_CHUNK_CHARS`, so no clip crosses a block; the first clip
+is the first sentence, cut at its last clause break within
+`CHAT_SPEECH_FIRST_CHARS` when longer, so speech starts soon.
 
 `ChatSpeaker` keeps one `_worker` process (the narration worker protocol)
 loaded with one voice, started on first use on `roomiest_cuda_device()` and
@@ -1110,11 +1112,18 @@ taken), and unload as `Chat speech:` lines. Measured on an RTX PRO 6000: the
 model loads in about 5 s and speaks about 1.5 times faster than real time.
 
 The page plays clips through one `Audio` element, fetching the next while
-one plays (7 to 9 ms between clips). A tap starts it: **Listen**, or **Send**
-with Read answers aloud on, which plays a silent clip so a phone allows the
-answer that finishes later to play. Playing an answer pauses the book; Stop,
-Close, and another book stop it. With Read answers aloud on, the last answer
-of a finished turn is read.
+one plays (7 to 9 ms between clips). `/api/chat/speak` returns each clip's
+block; `chatBlocks()` finds the page's blocks in the same order (`p`,
+`h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and the playing one
+takes the book's spoken-word colors (`.chat-speaking`) and scrolls into view.
+The orange button under an answer reads **▶ Listen**, **❚❚ Pause** while it
+plays, and **▶ Resume** once paused: a pause, or another answer starting,
+keeps the answer's place (`chatPlace`: clip and time) and **Start over**
+shows; Resume asks the server for that clip, which it kept, and seeks to the
+time. A tap starts it: **Listen**, or **Send** with Read answers aloud on,
+which plays a silent clip so a phone allows the answer that finishes later to
+play. Playing an answer pauses the book; Close and another book stop it. With
+Read answers aloud on, the last answer of a finished turn is read.
 
 ## HTTP routes
 
@@ -1149,7 +1158,7 @@ of a finished turn is read.
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
-| `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips}` for its reading in Hilde's voice (`chat_speech_voice()`). HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
+| `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `context` `{start, end}` (passage numbers, at most `CHAT_CONTEXT_MAX_PASSAGES`, read before the model answers); the local server is the browser's own `audiobook.local_server`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `context`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
@@ -1223,7 +1232,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 162 tests. It covers voice persistence
+The regression suite currently has 163 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1291,7 +1300,7 @@ question from the player reaching the model with its paragraphs already read,
 web pages on this machine or the local network never fetched, directly or by
 redirect, a page read as its main content in pieces, SearXNG results listed
 with their links, no web tools without a search server, an answer read
-aloud as its words without Markdown, code, or addresses, clips made only as far
+aloud block by block with no clip crossing a block, clips made only as far
 ahead as they are played and a failed clip reported, and reading aloud off
 until a browser turns it on, a 3,000-passage book sending a sections outline
 that fits a 32,768-token model, a request refused as too long sent once more

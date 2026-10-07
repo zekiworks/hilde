@@ -6323,17 +6323,31 @@ class WebToolTests(unittest.TestCase):
 
 
 class ChatSpeechTests(unittest.TestCase):
-    def test_an_answer_is_read_as_its_words(self):
+    def test_an_answer_is_read_as_its_words_block_by_block(self):
         self.assertEqual(
-            web.chat_speech_text(
+            web.chat_speech_blocks(
                 "## Storms\n\nStorms carry **71%** of the load (¶4), see ¶12–14 and "
                 "[the survey](https://example.org/a) or https://example.org/b.\n\n"
-                "```python\nprint('no')\n```\n\n| Station | Load |\n| --- | --- |\n| Ebro | 71% |\n\n- One `item`"
+                "```python\nprint('no')\n```\n\n| Station | Load |\n| --- | --- |\n| Ebro | — |\n\n- One `item`"
             ),
-            "Storms\n\nStorms carry 71% of the load (paragraph 4), see paragraphs 12 to 14 and "
-            "the survey or.\n\nStation\n\nLoad\n\nEbro\n\n71%\n\nOne item",
+            # A cell without words is not read but keeps its number, as on the page.
+            [(0, "Storms"),
+             (1, "Storms carry 71% of the load (paragraph 4), see paragraphs 12 to 14 and the survey or."),
+             (2, "Station"), (3, "Load"), (4, "Ebro"), (6, "One item")],
         )
-        self.assertEqual(web.chat_speech_text("```\ncode only\n```"), "")
+        self.assertEqual(web.chat_speech_blocks("```\ncode only\n```"), [])
+
+    def test_no_clip_crosses_a_block_and_the_first_is_short(self):
+        opening = ("The base model uses eight attention heads, each of 64 dimensions, so the total "
+                   "computational cost is similar to that of single-head attention with full "
+                   "dimensionality across all layers. It works.")
+        clips = web.chat_speech_chunks([(0, opening), (2, "Second block.")])
+        self.assertEqual(clips, [
+            (0, "The base model uses eight attention heads, each of 64 dimensions,"),
+            (0, "so the total computational cost is similar to that of single-head attention with "
+                "full dimensionality across all layers. It works."),
+            (2, "Second block."),
+        ])
 
     def test_a_reading_is_made_only_as_far_ahead_as_it_is_played(self):
         class Speaker:

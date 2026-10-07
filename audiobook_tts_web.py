@@ -8063,13 +8063,17 @@ def chat_speech_voice(storage):
     return voices[0] if voices else None
 
 
-def chat_speech_text(markdown):
-    """What reading an answer aloud says: its words without Markdown, code
-    blocks, or web addresses, a ¶ citation as "paragraph 12"."""
-    blocks = []
+def chat_speech_blocks(markdown):
+    """What reading an answer aloud says, block by block: (block, words) for
+    each paragraph, heading, list item, or table cell with words, where block
+    counts every such block in order, as the page's p, h1-h6, li, th, and td
+    elements do. Words come without Markdown, code blocks, or web addresses;
+    a ¶ citation is "paragraph 12". At most CHAT_SPEECH_MAX_CHARS in all."""
+    blocks, used, ordinal = [], 0, -1
     for token in READER_MARKDOWN.parse(str(markdown or "")):
         if token.type != "inline":
             continue
+        ordinal += 1
         words = "".join(
             child.content if child.type in ("text", "code_inline") else " "
             for child in token.children or ()
@@ -8081,25 +8085,30 @@ def chat_speech_text(markdown):
             lambda match: f"paragraphs {match[1]} to {match[2]}" if match[2] else f"paragraph {match[1]}",
             words,
         )
-        words = " ".join(words.split())
+        words = " ".join(words.split())[:CHAT_SPEECH_MAX_CHARS - used]
         if any(character.isalnum() for character in words):
-            blocks.append(words)
-    return "\n\n".join(blocks)[:CHAT_SPEECH_MAX_CHARS]
+            blocks.append((ordinal, words))
+            used += len(words)
+    return blocks
 
 
-def chat_speech_chunks(text):
-    """The clips an answer is read in. The first is its first sentence, or
-    that sentence up to its last clause break within CHAT_SPEECH_FIRST_CHARS,
-    so speech starts soon; the rest go up to CHAT_SPEECH_CHUNK_CHARS at a time."""
-    chunks = split_text(text, CHAT_SPEECH_CHUNK_CHARS)
-    if not chunks:
-        return []
-    first, *rest = split_text(chunks[0], CHAT_SPEECH_CHUNK_CHARS, sentence_chunks=True)
-    if len(first) > CHAT_SPEECH_FIRST_CHARS:
-        breaks = [match.end() for match in re.finditer(r"[,;:](?=\s)", first[:CHAT_SPEECH_FIRST_CHARS])]
-        if breaks and breaks[-1] >= 40:
-            first, rest = first[:breaks[-1]], [first[breaks[-1]:].strip(), *rest]
-    return [first] + ([" ".join(rest)] if rest else []) + chunks[1:]
+def chat_speech_chunks(blocks):
+    """The clips an answer is read in, (block, text), none crossing a block.
+    The first is its first sentence, or that sentence up to its last clause
+    break within CHAT_SPEECH_FIRST_CHARS, so speech starts soon; the rest go
+    up to CHAT_SPEECH_CHUNK_CHARS at a time."""
+    clips = []
+    for block, words in blocks:
+        chunks = split_text(words, CHAT_SPEECH_CHUNK_CHARS)
+        if not clips and chunks:
+            first, *rest = split_text(chunks[0], CHAT_SPEECH_CHUNK_CHARS, sentence_chunks=True)
+            if len(first) > CHAT_SPEECH_FIRST_CHARS:
+                breaks = [match.end() for match in re.finditer(r"[,;:](?=\s)", first[:CHAT_SPEECH_FIRST_CHARS])]
+                if breaks and breaks[-1] >= 40:
+                    first, rest = first[:breaks[-1]], [first[breaks[-1]:].strip(), *rest]
+            chunks = [first] + ([" ".join(rest)] if rest else []) + chunks[1:]
+        clips.extend((block, chunk) for chunk in chunks)
+    return clips
 
 
 class ChatSpeaker:
@@ -8216,18 +8225,19 @@ class ChatSpeaker:
                 if self.worker is not None and time.monotonic() - self.used > CHAT_SPEECH_IDLE:
                     self._stop(f"unused for {CHAT_SPEECH_IDLE // 60} minutes")
 
-    def reading(self, voice_dir, text):
-        """The reading of a text in a voice, made again only when it is new.
-        The model makes one clip at a time, so every other reading stops
-        after the clip it is on, until someone plays it again."""
+    def reading(self, voice_dir, blocks):
+        """The reading of an answer's blocks in a voice, made again only when
+        it is new. The model makes one clip at a time, so every other reading
+        stops after the clip it is on, until someone plays it again."""
         key = hashlib.sha256(
-            json.dumps([str(voice_dir), saved_voice_version(voice_dir), text]).encode("utf-8")
+            json.dumps([str(voice_dir), saved_voice_version(voice_dir), blocks]).encode("utf-8")
         ).hexdigest()[:24]
         with self.readings_lock:
             reading = self.readings.get(key)
             if reading is None:
+                clips = chat_speech_chunks(blocks)
                 reading = self.readings[key] = ChatReading(
-                    self, key, voice_dir, chat_speech_chunks(text)
+                    self, key, voice_dir, [text for _, text in clips], [block for block, _ in clips]
                 )
                 while len(self.readings) > CHAT_SPEECH_READINGS:
                     self.readings.popitem(last=False)
@@ -8246,8 +8256,10 @@ class ChatReading:
     """One answer's chunks, made in order on demand: at most
     CHAT_SPEECH_AHEAD past the last one asked for."""
 
-    def __init__(self, speaker, key, voice_dir, chunks):
+    def __init__(self, speaker, key, voice_dir, chunks, blocks=None):
         self.speaker, self.key, self.voice_dir, self.chunks = speaker, key, voice_dir, chunks
+        # The answer block each clip reads, for the page to mark.
+        self.blocks = blocks or [0] * len(chunks)
         self.clips, self.error, self.wanted = {}, "", 0
         self.making = False
         self.condition = threading.Condition()
@@ -11244,14 +11256,14 @@ class Handler(BaseHTTPRequestHandler):
         speaker = self.server.chat_speaker
         if speaker is None:
             return self.fail(HTTPStatus.CONFLICT, CHAT_SPEECH_UNAVAILABLE)
-        text = chat_speech_text(body.get("text"))
-        if not text:
+        blocks = chat_speech_blocks(body.get("text"))
+        if not blocks:
             return self.fail(HTTPStatus.BAD_REQUEST, "There are no words to read aloud.")
         voice_dir = chat_speech_voice(self.server.storage)
         if voice_dir is None:
             return self.fail(HTTPStatus.NOT_FOUND, "There is no saved voice to read with; add one under Voices.")
-        reading = speaker.reading(voice_dir, text)
-        return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks)})
+        reading = speaker.reading(voice_dir, blocks)
+        return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks), "blocks": reading.blocks})
 
     def chat_speech(self, key, number):
         """One clip of a reading, as WAV, once it is made."""
@@ -12073,8 +12085,13 @@ audio { height:36px; }
 .chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
 .chat-cite { color:var(--accent); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
-.chat-listen { margin-top:.4em; padding:0; min-height:0; color:var(--dim); font-size:13px; }
-.chat-assistant > .chat-listen { display:block; }
+/* Read aloud: an orange button under each answer, Start over beside it while a place is kept. */
+.chat-voice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:.7em; }
+button.chat-listen { min-height:40px; padding:0 16px; font-size:15px; }
+.chat-restart { font-size:14px; }
+/* The block being read, in the book's spoken-word colors. */
+.chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent-light);
+                                 box-shadow:0 0 0 3px var(--accent-light); border-radius:3px; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
@@ -13661,11 +13678,18 @@ function chatEntryElement(entry) {
   // Answers can be read aloud in Hilde's voice.
   if (entry.role === "assistant" && chatData && chatData.speech === "") {
     node.chatText = entry.text;
+    const controls = document.createElement("div");
+    controls.className = "chat-voice";
     const listen = document.createElement("button");
     listen.type = "button";
-    listen.className = "link chat-listen";
-    listen.textContent = "Listen";
-    node.append(listen);
+    listen.className = "primary chat-listen";
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.className = "link chat-restart hidden";
+    restart.textContent = "Start over";
+    controls.append(listen, restart);
+    node.append(controls);
+    setVoiceButton(node, "listen");
   }
   return node;
 }
@@ -13708,11 +13732,18 @@ function renderChatControls() {
 }
 
 // Reading answers aloud: one audio element plays an answer's clips in turn,
-// fetching the next while one plays. A tap (Listen, or Send with Read answers
-// aloud on) starts it, so a phone lets an answer finished later play too.
+// fetching the next while one plays, and marks the block each clip reads.
+// Pause keeps the answer's place (clip and time); Resume goes on from it.
+// A tap (Listen, or Send with Read answers aloud on) starts it, so a phone
+// lets an answer finished later play too.
 const chatVoice = new Audio();
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
-let chatSpeaking = null;  // { button, next, url }
+let chatSpeaking = null;  // { node, button, number, next, url }
+const VOICE_LABELS = { listen:"▶ Listen", starting:"Starting…", pause:"❚❚ Pause", resume:"▶ Resume" };
+function setVoiceButton(node, mode) {
+  node.querySelector(".chat-listen").textContent = VOICE_LABELS[mode];
+  node.querySelector(".chat-restart").classList.toggle("hidden", mode === "listen" || mode === "starting");
+}
 function unlockChatVoice() {
   if (chatSpeaking) return;
   chatVoice.src = SILENT_WAV;
@@ -13727,48 +13758,80 @@ async function chatClip(id, number) {
   }
   return URL.createObjectURL(await response.blob());
 }
-function stopSpeaking() {
+// An answer's blocks in the order the server numbers them: the elements
+// that hold a paragraph, heading, list item, or table cell's words.
+function chatBlocks(node) {
+  return [...node.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, th, td")]
+    .filter((element) => !(element.tagName === "LI" && element.querySelector(":scope > p")));
+}
+function markChatBlock(node, block) {
+  for (const element of node.querySelectorAll(".chat-speaking")) element.classList.remove("chat-speaking");
+  const element = block === null ? null : chatBlocks(node)[block];
+  if (!element) return;
+  element.classList.add("chat-speaking");
+  element.scrollIntoView({ block:"nearest", behavior:"smooth" });
+}
+// Stop reading. A pause keeps the answer's place; finishing clears it.
+function stopSpeaking(finished = false) {
   const speaking = chatSpeaking;
   chatSpeaking = null;
+  if (!speaking) { chatVoice.pause(); return; }
+  if (!finished && speaking.number) {
+    speaking.node.chatPlace = { number:speaking.number, time:chatVoice.currentTime };
+  }
+  if (finished) speaking.node.chatPlace = null;
   chatVoice.pause();
-  if (!speaking) return;
-  speaking.button.textContent = "Listen";
+  markChatBlock(speaking.node, null);
+  setVoiceButton(speaking.node, speaking.node.chatPlace ? "resume" : "listen");
   if (speaking.url) URL.revokeObjectURL(speaking.url);
   speaking.next?.then((url) => URL.revokeObjectURL(url), () => {});
 }
-async function speakAnswer(button) {
-  const answer = button.closest(".chat-assistant");
-  if (chatSpeaking && chatSpeaking.button === button) { stopSpeaking(); return; }
-  stopSpeaking();
+async function speakAnswer(button, { restart = false } = {}) {
+  const node = button.closest(".chat-assistant");
+  if (chatSpeaking && chatSpeaking.node === node) {
+    stopSpeaking();
+    if (!restart) return;
+  }
+  stopSpeaking();  // another answer keeps its place
+  if (restart) node.chatPlace = null;
   if (readerAudio && !readerAudio.paused) readerAudio.pause();
-  const speaking = chatSpeaking = { button, next: null, url: "" };
-  button.textContent = "Starting…";
+  const place = node.chatPlace || { number:1, time:0 };
+  const speaking = chatSpeaking = { node, button, number:0, next:null, url:"" };
+  setVoiceButton(node, "starting");
   try {
     const reading = await jsonRequest("/api/chat/speak", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ text:answer.chatText }),
+      body:JSON.stringify({ text:node.chatText }),
     });
-    for (let number = 1; number <= reading.clips && chatSpeaking === speaking; number++) {
+    for (let number = place.number; number <= reading.clips && chatSpeaking === speaking; number++) {
       const url = await (speaking.next || chatClip(reading.id, number));
       if (chatSpeaking !== speaking) { URL.revokeObjectURL(url); return; }
       speaking.next = number < reading.clips ? chatClip(reading.id, number + 1) : null;
       speaking.next?.catch(() => {});
       speaking.url = url;
+      speaking.number = number;
       chatVoice.src = url;
-      button.textContent = "Stop";
+      if (number === place.number && place.time > 0) {
+        await new Promise((resolve) => { chatVoice.onloadedmetadata = resolve; });
+        chatVoice.currentTime = place.time;
+      }
+      if (chatSpeaking !== speaking) return;
+      markChatBlock(node, reading.blocks[number - 1]);
+      setVoiceButton(node, "pause");
       await new Promise((resolve, reject) => {
         chatVoice.onended = resolve;
         chatVoice.onerror = () => reject(new Error("This browser could not play the clip."));
         chatVoice.onpause = () => { if (chatSpeaking !== speaking) resolve(); };
         chatVoice.play().catch(reject);
       });
+      if (chatSpeaking !== speaking) return;
       URL.revokeObjectURL(url);
       speaking.url = "";
     }
   } catch (error) {
     if (chatSpeaking === speaking) setStatus(error.message, true);
   }
-  if (chatSpeaking === speaking) stopSpeaking();
+  if (chatSpeaking === speaking) stopSpeaking(true);
 }
 // With Read answers aloud on, the answer that ends a turn is read.
 function speakLatestAnswer() {
@@ -15555,6 +15618,11 @@ $("chat-input").addEventListener("keydown", (event) => {
 $("chat-log").addEventListener("click", (event) => {
   const listen = event.target.closest(".chat-listen");
   if (listen) { speakAnswer(listen); return; }
+  const restart = event.target.closest(".chat-restart");
+  if (restart) {
+    speakAnswer(restart.closest(".chat-assistant").querySelector(".chat-listen"), { restart:true });
+    return;
+  }
   const cite = event.target.closest(".chat-cite");
   if (!cite) return;
   event.preventDefault();
