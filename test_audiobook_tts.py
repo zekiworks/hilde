@@ -913,7 +913,8 @@ class PaperWorkflowTests(unittest.TestCase):
         root = Path(temporary.name)
         source = root / "table.pdf"
         rows = [("Model", "BLEU EN-DE", "Training Cost (FLOPs)"), ("ByteNet", "23.75", ""),
-                ("GNMT + RL", "24.6", "2.3 · 10^19"), ("Transformer (big)", "28.4", "2.3 · 10^19")]
+                ("GNMT + RL", "24.6", "2.3 · 10^19"), ("Transformer (big)", "28.4", "2.3 · 10^19"),
+                ("READY_FOR_NEXT_OP", "29.1", "")]
         with pymupdf.open() as pdf:
             page = pdf.new_page()
             # Attention Is All You Need prints Table 3's caption on three lines,
@@ -959,6 +960,8 @@ class PaperWorkflowTests(unittest.TestCase):
         with pymupdf.open(stage / image.group(2)) as picture:
             self.assertGreater(picture[0].rect.width, 300)
         self.assertIn("|ByteNet|23.75|", paragraphs[2].replace(" ", ""))
+        # An underscore inside a name is the name's own, not emphasis.
+        self.assertIn("READY_FOR_NEXT_OP", paragraphs[2])
         # The caption, picture, and cells reach the model in one request.
         self.assertEqual(web.paper_batches(paragraphs, 1)[0], (1, 3))
 
@@ -5458,9 +5461,13 @@ class PaperConcurrencyTests(unittest.TestCase):
         self.assertEqual(run.code, 0)
         self.assertEqual(activity["maximum"], 2)
         self.assertEqual(set(requests), {1, 4, 7})
-        self.assertIn('<SOURCE_PARAGRAPH number="1">', requests[1])
-        self.assertIn('<SOURCE_PARAGRAPH number="3">', requests[1])
-        self.assertNotIn('<SOURCE_PARAGRAPH number="4">', requests[1])
+        self.assertIn("Source 1.", requests[1])
+        self.assertIn("Source 3.", requests[1])
+        self.assertNotIn("Source 4.", requests[1])
+        # The batch's place in the book is not shown: a model borrows it as a label.
+        self.assertNotIn("number=", requests[1])
+        self.assertIn("Current source, 3 paragraphs:", requests[4])
+        self.assertNotIn("of 7", requests[4])
         self.assertEqual(
             output.read_text(encoding="utf-8"),
             "Narration 1-3.\n\nNarration 4-6.\n\nNarration 7-7.",
@@ -5846,8 +5853,19 @@ class GroundingTests(unittest.TestCase):
             "The Encoder and Decoder share it, similar to Press and Wolf.", section,
             known_names={"Vaswani", "Press"},
         ), [])
-        # In prose, numbers are not checked.
-        self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.3.",)), [])
+        # Prose numbers are checked too: Halley's total of 34,000 read as 3,400
+        # went unnoticed when only descriptions were.
+        self.assertEqual(web.grounding_problems("We reach 28.4.", ("We reach 28.3.",)),
+                         ["the narration says 28.4, which its source does not print"])
+        self.assertEqual(
+            web.grounding_problems("Halley counted 3,400 people.", ("Halley counted a total of 34,000 people.",)),
+            ["the narration says 3400, which its source does not print"],
+        )
+        # Only a number run into letters, a power extraction ran into its base, opens to a prefix.
+        self.assertEqual(web.grounding_problems("Equation 26 holds.", ("See Equation 2615.",)),
+                         ["the narration says 26, which its source does not print"])
+        self.assertEqual(web.grounding_problems("The base is 10000.", ("The term 100002i grows.",)), [])
+        self.assertEqual(web._numbers("from 16.0K to 30.9K, and 100K steps"), ["16000", "30900", "100000"])
 
     def test_a_footnote_is_grounded_by_the_paragraph_its_mark_sits_in(self):
         paragraphs = [
@@ -5909,6 +5927,115 @@ class GroundingTests(unittest.TestCase):
                 with run.model_stream("http://127.0.0.1:9/v1", {}, b"{}"):
                     pass
             self.assertEqual(isinstance(raised.exception, web.ModelConnectionError), retried)
+
+    def test_code_names_a_figure_by_its_caption_and_leaves_real_references(self):
+        paper = ["**Figure 3:** One.", "**Figure 6:** Accuracy against compute.", "As Tables 1–4 show."]
+        names = web.paper_visual_names(paper)
+        self.assertLessEqual({"figure 3", "figure 6", "table 1", "table 4"}, names)
+        # The opening name is the caption's; a name the paper never has goes too.
+        self.assertEqual(web.label_visual("Figure 81 and 82 compares accuracy.", "Figure 6", names),
+                         "Figure 6 compares accuracy.")
+        self.assertEqual(web.label_visual("The equation shows accuracy rising.", "Figure 6", names),
+                         "Figure 6 shows accuracy rising.")
+        self.assertEqual(web.label_visual("It shows the trend of Figure 213.", "Figure 6", names),
+                         "It shows the trend of Figure 6.")
+        # A name the paper has may be a real reference: kept, and logged.
+        kept = web.label_visual("Figure 6 shows the trend of Figure 3.", "Figure 6", names)
+        self.assertEqual(kept, "Figure 6 shows the trend of Figure 3.")
+        self.assertEqual(web.visual_label_problems(kept, "Figure 6"),
+                         ["the description says Figure 3, though it describes Figure 6"])
+
+    def test_a_changed_word_symbol_or_not_is_named_where_the_kept_share_sees_nothing(self):
+        source = "On the hand, the risk of a predictor _Ŷ_ is the loss. Readers familiar with it know."
+        narration = "On the other hand, the risk of a predictor Y is the loss. Listeners familiar with it know."
+        # Kept above the bar the share logs at, so only the word comparison sees it.
+        self.assertGreater(web.prose_kept(source, narration)[0], web.PROSE_KEPT_LOW)
+        self.assertEqual(web.prose_changes(source, narration), ["ŷ → y", "readers → listeners"])
+        self.assertEqual(web.prose_changes("This does not improve accuracy.", "This does improve accuracy."),
+                         ["dropped “not”"])
+        # Math read aloud is not a change.
+        for source, narration in (
+            ("where _f_(_X_) ≠ _Y_ across the population", "where f of X does not equal Y across the population"),
+            ("the set of _x_ with _x_ > 0", "the set of all x such that x is greater than zero"),
+            ("the weights w<sub>t</sub> at step 1", "the weights w t at step one"),
+            ("the loss ℓ of each", "the loss l of each"),
+        ):
+            with self.subTest(narration):
+                self.assertEqual(web.prose_changes(source, narration), [])
+
+    def test_a_picture_is_an_equation_only_when_its_text_is_math(self):
+        chart = ["![](images/chart.png)", "<!-- Start of picture text -->0 10 20 accuracy<!-- End of picture text -->"]
+        bound = ["![](images/eq.png)", "<!-- Start of picture text -->e ≤ y + z<!-- End of picture text -->"]
+        self.assertEqual(web._visual_type(chart, ["image", "labels"]), "figure")
+        self.assertEqual(web._visual_type(bound, ["image", "labels"]), "equation")
+        # An inequality printed without a number is "the equation", not a made-up one.
+        self.assertEqual(web.label_equation("Equation 999 bounds e.", bound), "The equation bounds e.")
+
+    def test_names_are_fixed_in_new_and_saved_batches_and_an_equation_inside_prose(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        (root / "images").mkdir()
+        for name in ("chart", "eq"):
+            pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 8, 8), False).save(str(root / "images" / f"{name}.png"))
+        source = root / "paper.md"
+        source.write_text(
+            "Compute grows with the model.\n\n![](images/chart.png)\n\n"
+            "<!-- Start of picture text -->accuracy 44.6 179 PF<!-- End of picture text -->\n\n"
+            "Figure 6: Accuracy against compute.\n\nWe bound the error\n\n![](images/eq.png)\n\n"
+            "<!-- Start of picture text -->e ≤ y + z<!-- End of picture text -->\n\nwhere e is the error.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        answers = {
+            "Figure 6:": "Figure 81 and 82 compares accuracy and compute.",
+            "We bound": "We bound the error. Equation 673 says e is at most y plus z, where e is the error.",
+        }
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                text = request_path.read_text(encoding="utf-8")
+                narration = next((answer for key, answer in answers.items() if key in text),
+                                 "Compute always grows with the model.")
+                return f"<NARRATION>{narration}</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        def adapt():
+            run = StubPaperRun(source, root / "out.txt", "utf-8", in_flight=1,
+                               paragraphs_per_worker=4, prompt_path=prompt, scratch_path=root / "stage")
+            logs = []
+            run.publish = lambda event, data: logs.append(data) if event == "log" else None
+            run.pump()
+            self.assertEqual(run.code, 0)
+            checkpoints = root / "stage" / "paragraph-checkpoints"
+            return {path.stem: json.loads(path.read_text())["narration"]
+                    for path in sorted(checkpoints.glob("*.json"))}, "".join(logs)
+
+        narrations, log = adapt()
+        # A word the author never wrote, which the kept-words share cannot see, is named.
+        self.assertIn("Paragraph 1/8 changed the author's words: added “always”.", log)
+        self.assertEqual(narrations["000002-000004"], "Figure 6 compares accuracy and compute.")
+        self.assertEqual(narrations["000005-000008"],
+                         "We bound the error. The equation says e is at most y plus z, where e is the error.")
+
+        # A batch saved before these fixes gets them, and the checks, when reused.
+        checkpoints = root / "stage" / "paragraph-checkpoints"
+        saved = {
+            "000002-000004": "Figure 81 and 82 compares accuracy of 99.9 and compute.",
+            "000005-000008": answers["We bound"],
+        }
+        for stem, wrong in saved.items():
+            path = checkpoints / f"{stem}.json"
+            path.write_text(json.dumps({**json.loads(path.read_text()), "narration": wrong}))
+        (root / "out.txt").unlink()
+        answers.clear()  # the model is not asked again
+        narrations, log = adapt()
+        self.assertEqual(narrations["000002-000004"], "Figure 6 compares accuracy of 99.9 and compute.")
+        self.assertIn("The equation says", narrations["000005-000008"])
+        self.assertIn("Paragraphs 2-4/8 (saved): the description says 99.9, which its source does not print.",
+                      log)
 
 
 def chat_narration(*summaries):

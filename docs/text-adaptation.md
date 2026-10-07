@@ -61,9 +61,14 @@ goes along with its printed text, so even a model that reads no images knows
 what it says. Its description opens with the number printed beside it,
 "Equation 3" for one printed with "(3)", and "the equation" for one the paper
 does not number; Hilde sets that name itself, whatever the model called it,
-including "Figure 4", and replaces an equation number the paper never prints.
-The job log names any other figure, table, or equation number in the
-description, which may be a slip or a real reference.
+including "Figure 4", and replaces an equation number the paper never prints,
+also when the equation is read inside a sentence. A figure or table described
+on its own is named by its caption the same way: "Figure 6 shows…", whatever
+name the model opened with, and a figure or table number the paper never
+prints is replaced too. The job log names any other figure, table, or equation
+number in a description, which may be a slip or a real reference. A picture
+without a caption is an equation only when its printed text is math; a chart
+stays a figure.
 
 Each description of a figure, a table, or an equation opens with a spoken cue
 such as "Figure 2 shows…" or "The equation says…", so a listener hears where
@@ -125,9 +130,13 @@ their first authors, "such as Kalchbrenner and Gehring", and one the list lacks
 becomes "earlier work". A citation in passing, as in "networks [13]", is left
 out. Afterwards the job log names what a passage states that its source does
 not: an author of the paper or of its references, or a name it credits work
-to, that its own text never mentions, and, in a description, a number the
-source does not print (a rounded one is fine). These lines only point at
-passages worth a look; the narration stays as written.
+to, that its own text never mentions, and a number the source does not print
+(a rounded one is fine), in a description or in the author's prose. For prose
+it also names each word the narration changed, such as "readers → listeners",
+a symbol that lost its mark ("ŷ → y"), and a "not" or "all" dropped or added,
+leaving out math read aloud ("does not equal"). These lines only point at
+passages worth a look; the narration stays as written. When a stopped job
+resumes, the batches already done get the same naming and checks.
 
 A local model server is asked at temperature 0.2. Left at a model's default,
 often 1.0, the same paper read noticeably differently on every run; at 0.2 its

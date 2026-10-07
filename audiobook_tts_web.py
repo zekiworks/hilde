@@ -30,6 +30,7 @@ import base64
 import collections
 import concurrent.futures
 import contextlib
+import difflib
 import io
 import json
 import hashlib
@@ -545,9 +546,11 @@ LISTING_CLASSES = {"text", "list-item", "section-header", "code"}
 
 def plain(text):
     text = text.replace("<br>", " ").replace("<sup>", "^").replace("</sup>", "")
-    for mark in ("<sub>", "</sub>", "**", "__", "_", "`"):
+    for mark in ("<sub>", "</sub>", "**", "__", "`"):
         text = text.replace(mark, "")
-    return text
+    # Emphasis marks sit at a word's edge; an underscore inside a name,
+    # READY_FOR_NEXT_OP or manage_context, is the name's own.
+    return re.sub(r"(?<!\\w)_|_(?!\\w)", "", text)
 
 
 def box_text(position):
@@ -2754,7 +2757,8 @@ def _visual_type(paragraphs, kinds):
 
     The caption names a figure or a table; a PDF table is cut from its page
     as page-NNNN-table-K.png. A picture without a caption is an equation
-    printed as an image unless panel titles make it a figure.
+    printed as an image when its printed text is math (_equation_math()), and
+    otherwise a figure.
     """
     for paragraph, kind in zip(paragraphs, kinds):
         if kind == "caption":
@@ -2763,7 +2767,10 @@ def _visual_type(paragraphs, kinds):
                 return "table" if match.group(1).casefold() == "table" else "figure"
     if any(kind == "image" and "-table-" in paragraph for paragraph, kind in zip(paragraphs, kinds)):
         return "table"
-    return "figure" if "panel" in kinds or "caption" in kinds else "equation"
+    if "panel" in kinds or "caption" in kinds:
+        return "figure"
+    # A chart without a caption stays a figure; a picture of math is an equation.
+    return "equation" if _equation_math(paragraphs) else "figure"
 
 
 # What each layout kind is in a book's narration.json; a figure's parts take
@@ -5550,6 +5557,78 @@ def prose_kept(source, narration):
     return 1 - len(lost) / len(words), sorted(lost)
 
 
+# A narration of the author's prose may only make math speakable; any other
+# changed word is named. These say the opposite when they come or go.
+NEGATION_WORDS = frozenset({"not", "no", "nor", "never", "none", "nothing", "neither", "cannot"})
+QUANTIFIER_WORDS = frozenset({"all", "every", "each", "any", "only", "always", "some"})
+# How a narration reads math aloud: "=" is "equals", "ŷ" may be "y hat".
+SPOKEN_MATH_WORDS = frozenset("""
+equals equal plus minus times over divided squared cubed hat bar tilde dot prime sub subscript
+superscript power root sum product integral greater less infinity norm alpha beta gamma delta
+epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi
+omega transpose inverse bracket parenthesis absolute multiplied such supremum infimum maximum
+minimum element
+""".split())
+# The small words reading math aloud adds: "f(x)" is "f of x".
+SPOKEN_MATH_JOINERS = frozenset("of to the a an is at most least than given by in for with and value".split())
+NUMBER_READINGS = frozenset("""
+zero one two three four five six seven eight nine ten first second third fourth fifth sixth
+seventh eighth ninth tenth eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen
+nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion
+trillion half halves quarter quarters percent
+""".split())
+PROSE_CHANGE_MAX_WORDS = 2
+
+
+def _plain_words(text):
+    return re.findall(r"\w+", re.sub(r"<[^>]+>|[*_`]", " ", text).lower())
+
+
+def prose_changes(source, narration):
+    """The author's words a narration of prose changed, compared word by
+    word (difflib), where prose_kept() sees only a share: a swapped word or
+    two ("readers → listeners"), a symbol that lost its mark ("ŷ → y"), and
+    any negation or quantifier dropped or added ("dropped “not”"). Math read
+    aloud is no change: a word split in two ("wt" as "w t"), a number read
+    as a word, a letter in another form ("ℓ" as "l"), or words added next to
+    spoken math ("does not equal", "all divided by")."""
+    old_words, new_words = _plain_words(source), _plain_words(narration)
+    quantifiers = QUANTIFIER_WORDS if not re.search(r"[∀∃]", source) else frozenset()
+    changes = []
+    matcher = difflib.SequenceMatcher(a=old_words, b=new_words, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        old, new = old_words[i1:i2], new_words[j1:j2]
+        found = [f"dropped “{word}”" for word in old if word in NEGATION_WORDS | quantifiers]
+        for offset, word in enumerate(new):
+            position = j1 + offset
+            following = new_words[position + 1] if position + 1 < len(new_words) else ""
+            # "does not equal" is "≠" read aloud; "all x such that" and "all
+            # multiplied by" are math too: a quantifier beside spoken math.
+            nearby = set(new_words[max(0, position - 2):position + 3]) - {word}
+            if word in NEGATION_WORDS and following not in SPOKEN_MATH_WORDS or (
+                word in quantifiers and not nearby & SPOKEN_MATH_WORDS
+            ):
+                found.append(f"added “{word}”")
+        if (
+            not found and tag == "replace"
+            and len(old) <= PROSE_CHANGE_MAX_WORDS and len(new) <= PROSE_CHANGE_MAX_WORDS
+            and not set(new) & (SPOKEN_MATH_WORDS | SPOKEN_MATH_JOINERS)
+            and "".join(old) != "".join(new)
+            # "N = 6" read "six", "40K" "forty thousand", "36M" "36 million".
+            and not (
+                any(character.isdigit() for character in "".join(old))
+                and all(word in NUMBER_READINGS or word.isdigit() for word in new)
+            )
+            and unicodedata.normalize("NFKC", " ".join(old)) != unicodedata.normalize("NFKC", " ".join(new))
+            and unicodedata.normalize("NFKC", "".join(old)) != unicodedata.normalize("NFKC", "".join(new))
+        ):
+            found.append(f"{' '.join(old)} → {' '.join(new)}")
+        changes += found
+    return changes
+
+
 def missing_sentences(paragraphs, narration, limit=6):
     """The author's sentences a narration left out, cut short, or reworded:
     those with at least four content words, under PROSE_KEPT_LOW of which the
@@ -5588,7 +5667,7 @@ EQUATION_NAME_PATTERN = re.compile(
     r"\b(?P<kind>[Ee]quations?|[Ee]qs?\.|[Ff]igures?|[Ff]igs?\.|[Tt]ables?|[Ff]ormulas?)\s*\(?"
     rf"(?P<numbers>{_EQUATION_NUMBER}(?:\)?\s*(?:,|and|&|–|-|to)\s*\(?{_EQUATION_NUMBER})*)\)?"
     r"(?![\w.]\d)"
-    r"|\b(?P<the>[Tt]he) (?:figure|formula)(?P<plural>s?)\b"
+    r"|\b(?P<the>[Tt]he) (?:figure|formula|equation|table|chart|diagram|graph|plot|image)(?P<plural>s?)\b"
 )
 # The number printed beside an equation ends its picture text: "(3)".
 PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
@@ -5597,23 +5676,38 @@ PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
 def _numbers(text):
     """The numbers a text prints, as written once thousands separators, the
     emphasis extraction leaves inside a decimal ("3 _._ 5"), and a thousands
-    suffix ("100K" steps, said "100,000") are gone."""
+    suffix ("100K" steps, said "100,000"; "30.9K", 30,900) are gone."""
     text = re.sub(r"(?<=\d)[\s_*]*\.[\s_*]*(?=\d)", ".", text)
-    text = re.sub(r"\b(\d+)K\b", lambda match: str(int(match.group(1)) * 1000), text)
-    return NUMBER_PATTERN.findall(re.sub(r"(?<=\d),(?=\d{3}\b)", "", text))
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    text = re.sub(
+        r"(?<![\d.])(\d+(?:\.\d+)?)K\b",
+        lambda match: f"{float(match.group(1)) * 1000:g}" if "." in match.group(1)
+        else str(int(match.group(1)) * 1000),
+        text,
+    )
+    return NUMBER_PATTERN.findall(text)
 
 
-def _printed(number, numbers):
+def _run_in_numbers(text):
+    """Whole numbers a text prints run into letters, "100002i": where
+    extraction ran a power into its base, "10000<sup>2i</sup>"."""
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    return set(re.findall(r"(?<![\d.])(\d+)(?=[A-Za-z])", text))
+
+
+def _printed(number, numbers, run_in=()):
     """Whether a narrated number is printed, or is a printed one rounded.
 
-    Extraction runs a power into its base, "10000<sup>2i</sup>" into
-    "100002i", so a whole number counts when it opens a printed whole number;
-    a printed decimal, "41.8", never vouches for "41".
+    A whole number also counts when it opens a printed whole number that
+    runs into letters (`run_in`): extraction runs a power into its base,
+    "10000<sup>2i</sup>" into "100002i". Elsewhere whole numbers are compared
+    whole, so "34,000" never vouches for "3,400"; a printed decimal, "41.8",
+    never vouches for "41".
     """
     if number in numbers:
         return True
     if "." not in number and any(
-        "." not in printed and printed.startswith(number) for printed in numbers
+        printed != number and printed.startswith(number) for printed in run_in
     ):
         return True
     places = len(number.partition(".")[2])
@@ -5642,13 +5736,21 @@ def _equation_label(match):
     return kind, kind.endswith("s"), numbers
 
 
+# Math an equation's printed text holds: a relation or an operator a sentence
+# never has. "=" alone missed "≤" inequalities.
+MATH_PATTERN = re.compile(r"[=≤≥≠≈≃≅∝∈∉⊂⊆⊇∑∏∫√→↦∀∃]|<=|>=")
+
+
 def _equation_math(sources):
     # Only an equation's printed text is math; an uncaptioned picture of
-    # something else, a logo or a photograph, keeps whatever it was called.
-    return any("=" in text for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources)))
+    # something else, a chart, a logo, or a photograph, keeps its name.
+    return any(
+        MATH_PATTERN.search(re.sub(r"<!--.*?-->|<[^>]+>", "", text))
+        for text in PICTURE_TEXT_PATTERN.findall("\n\n".join(sources))
+    )
 
 
-def label_equation(narration, sources, printed=()):
+def label_equation(narration, sources, printed=(), opening=True):
     """Name an equation in its description as the paper does, in code.
 
     The model is shown the printed number and still writes its own, "Equation
@@ -5656,11 +5758,13 @@ def label_equation(narration, sources, printed=()):
     "Figure 4". Two names are certain to be wrong and become the paper's,
     "Equation 3" when "(3)" is printed beside it, "Equations 4 and 5" for
     two, "the equation" for one printed without: whatever opens the
-    description, and an equation number the paper prints nowhere (printed
-    holds the whole paper's), with the word before it ("This Equation 6").
-    Any other name may be a real reference or plain wording ("as in Figure
-    2", "shown in the figure") and stays; `equation_label_problems()` puts
-    a doubtful one in the log.
+    description (unless `opening` is false, for an equation read inside
+    prose), and an equation number the paper prints nowhere (printed holds
+    the whole paper's), with the word before it ("This Equation 6", or
+    "Equation 673", a paragraph number of the request). Any other name may
+    be a real reference or plain wording ("as in Figure 2", "shown in the
+    figure") and stays; `equation_label_problems()` puts a doubtful one in
+    the log.
     """
     if not _equation_math(sources):
         return narration
@@ -5677,12 +5781,66 @@ def label_equation(narration, sources, printed=()):
     def named(match):
         before = narration[:match.start()]
         kind, plural, numbers = _equation_label(match)
-        if not before.strip():
+        if opening and not before.strip():
             return name(True, plural)
-        if not kind.startswith("eq") or numbers <= set(printed) | set(marks):
+        if not kind.startswith("eq") or not numbers or numbers <= set(printed) | set(marks):
             return match.group(0)
-        return name(bool(re.search(r"[.!?]\s*$", before)), plural)
+        return name(not before.strip() or bool(re.search(r"[.!?]\s*$", before)), plural)
     return EQUATION_NAME_PATTERN.sub(named, narration)
+
+
+def paper_visual_names(paragraphs):
+    """The figures, tables, and equations a paper names anywhere, as
+    "figure 3", "table 1", "equation 2": from captions and mentions
+    ("Figs. 2 and 3", "Tables 1–4"), and equation numbers printed beside
+    pictures."""
+    names = {f"equation {number}" for number in printed_equation_numbers(paragraphs)}
+    for paragraph in paragraphs:
+        for match in VISUAL_MENTION_PATTERN.finditer(_layout_text(paragraph)):
+            kind = "table" if match.group(1).lower().startswith("table") else "figure"
+            numbers = [int(number) for number in re.findall(r"\d+", match.group(2))]
+            if re.search(r"\d\s*(?:to|–|-)\s*\d", match.group(2)) and len(numbers) == 2:
+                numbers = range(numbers[0], numbers[1] + 1)
+            names.update(f"{kind} {number}" for number in numbers)
+    return names
+
+
+def _visual_names(match):
+    """The names an EQUATION_NAME_PATTERN match gives, as paper_visual_names() writes them."""
+    kind, _, numbers = _equation_label(match)
+    word = "table" if kind.startswith("t") and kind != "the" else "equation" if kind.startswith("eq") else "figure"
+    return {f"{word} {int(number)}" for number in numbers}
+
+
+def label_visual(narration, label, paper_names):
+    """Name a captioned figure or table in its description by its caption
+    (`label`, from visual_label()), in code. Whatever name opens the
+    description, "Figure 81 and 82" (the request's paragraph numbers), "The
+    equation shows", or "Figure 3" for Figure 7, becomes the label, and so
+    does a numbered figure, table, or equation the paper never names
+    (`paper_names`, from paper_visual_names()), "Figure 213". A name the
+    paper has may be a real reference and stays; visual_label_problems()
+    puts it in the log."""
+    def named(match):
+        if not narration[:match.start()].strip():
+            return label
+        names = _visual_names(match)
+        if not names or names <= paper_names:
+            return match.group(0)
+        return (match.group("det") or "") + label
+    return EQUATION_NAME_PATTERN.sub(named, narration)
+
+
+def visual_label_problems(narration, label):
+    """Numbered names in a figure's or table's description other than its
+    own, which label_visual() left as possible references: worth a look,
+    since the batch holds only that visual and its caption."""
+    own = label.lower()
+    return [
+        f"the description says {match.group(0)[len(match.group('det') or ''):]}, though it describes {label}"
+        for match in EQUATION_NAME_PATTERN.finditer(narration)
+        if (names := _visual_names(match)) and names != {own}
+    ]
 
 
 def equation_label_problems(narration, sources):
@@ -5716,10 +5874,11 @@ def grounding_problems(narration, sources, describes=False, known_names=()):
     elsewhere: any surname of a reference-list author or of the paper's own
     authors (known_names), as "Vaswani" in the author block, and any name the
     narration credits work to ("Press and Wolf", "Vaswani et al."), case
-    aside, so "Encoder and Decoder" passes beside "encoder". In a description
-    of a figure, table, or equation, also a number with two or more digits,
-    or a decimal, that its source does not print, rounding allowed. These only
-    point at a passage worth a look: the narration is kept as written.
+    aside, so "Encoder and Decoder" passes beside "encoder". Also a number
+    with two or more digits, or a decimal, that its source does not print,
+    rounding allowed, in a description of a figure, table, or equation and in
+    prose alike. These only point at a passage worth a look: the narration is
+    kept as written.
     """
     source = "\n\n".join(sources)
     problems = []
@@ -5731,15 +5890,14 @@ def grounding_problems(narration, sources, describes=False, known_names=()):
     for name in dict.fromkeys(credited + named):
         if not re.search(rf"\b{re.escape(name)}\b", source, flags=re.IGNORECASE):
             problems.append(f"the narration names {name}, whom its source never names")
-    if not describes:
-        return problems
-    printed = set(_numbers(source))
+    printed, run_in = set(_numbers(source)), _run_in_numbers(source)
     unprinted = dict.fromkeys(
         number for number in _numbers(narration)
-        if (len(number) > 1 or "." in number) and not _printed(number, printed)
+        if (len(number) > 1 or "." in number) and not _printed(number, printed, run_in)
     )
+    kind = "description" if describes else "narration"
     for number in unprinted:
-        problems.append(f"the description says {number}, which its source does not print")
+        problems.append(f"the {kind} says {number}, which its source does not print")
     return problems
 
 
@@ -6096,14 +6254,15 @@ def paper_request(
     """One batch's request. A batch that is only a figure, table, or equation
     has no summaries (None): it goes alone, so its request is the same on
     every run. A note asks again for a batch the model left out whole
-    (LEFT_OUT_NOTES) or narrated with sentences missing (condensed_note())."""
+    (LEFT_OUT_NOTES) or narrated with sentences missing (condensed_note()).
+
+    The batch's place in the book (start, end, total) is not shown: given
+    "paragraphs 81-82", a model labeled a figure without a caption "Figure 81
+    and 82", and a heading "827 Gradient Descent"."""
     source = "\n\n".join(
-        f'<SOURCE_PARAGRAPH number="{number}">\n{paragraph}\n</SOURCE_PARAGRAPH>'
-        for number, paragraph in enumerate(paragraphs, start)
+        f"<SOURCE_PARAGRAPH>\n{paragraph}\n</SOURCE_PARAGRAPH>" for paragraph in paragraphs
     )
-    batch_label = (
-        f"paragraph {start}" if start == end else f"paragraphs {start}-{end}"
-    )
+    batch_label = "paragraph" if len(paragraphs) == 1 else f"{len(paragraphs)} paragraphs"
     retry = ""
     if attempt > 1:
         retry = f"""
@@ -6129,7 +6288,7 @@ from this snapshot. Adapt the current source independently rather than inventing
 missing material."""
     return f"""{defined}{background}
 
-Current source {batch_label} of {total}:
+Current source, {batch_label}:
 {source}{retry}
 """
 
@@ -9576,6 +9735,58 @@ class PaperRun(Run):
         }
         printed = set(printed_equation_numbers(requested))
         citers = footnote_citers(paragraphs, kinds)
+        paper_names = paper_visual_names(requested)
+
+        def finish(start, end, narration, saved=False):
+            """Name a batch's figure, table, or equation in code, then run the
+            checks on it; for a saved batch too, so a fix to either reaches a
+            resumed book. Return the narration and the log lines: the checks
+            only point at a passage, and the narration is kept as written."""
+            batch_paragraphs, batch_kinds = paragraphs[start - 1:end], kinds[start - 1:end]
+            sources = requested[start - 1:end]
+            describes = _describes_visual(set(batch_kinds))
+            visual = _visual_type(batch_paragraphs, batch_kinds) if describes else None
+            label = visual_label(batch_paragraphs, batch_kinds)
+            if label:
+                narration = label_visual(narration, label, paper_names)
+            elif visual == "equation":
+                narration = label_equation(narration, sources, printed)
+            else:
+                # An equation read inside prose keeps its sentence; only a
+                # number the paper prints nowhere ("Equation 673") is renamed.
+                narration = label_equation(narration, sources, printed, opening=False)
+            named = (
+                f"Paragraphs {start}-{end}/{total}" if end > start else f"Paragraph {start}/{total}"
+            ) + (" (saved)" if saved else "")
+            lines = []
+            # A listener hears no border between the author's text and a
+            # description of a figure, table, or equation, so the
+            # description must name what it is.
+            if narration and describes and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12])):
+                opening = " ".join(narration.split()[:8])
+                lines.append(f"{named}: the description does not open by naming what it describes: \"{opening}…\"")
+            # The author's prose should come through word for word; one that
+            # lost much of its wording is worth a look.
+            if narration and set(batch_kinds) <= TEXT_KINDS:
+                share, lost = prose_kept("\n\n".join(batch_paragraphs), narration)
+                if share is not None and share < PROSE_KEPT_LOW:
+                    lines.append(f"{named} kept {share:.0%} of the author's words; missing: {', '.join(lost[:8])}.")
+                # The share cannot see a swapped word, a lost hat, or a lost "not".
+                changed = prose_changes("\n\n".join(sources), narration)
+                if changed:
+                    lines.append(f"{named} changed the author's words: {', '.join(changed[:8])}.")
+            # What a narration states that its source does not. A footnote's
+            # source includes the paragraph its mark sits in, as "†" beside
+            # an author's name.
+            grounded = sources + [requested[citers[index]] for index in range(start - 1, end) if index in citers]
+            problems = grounding_problems(narration, grounded, describes, known_names)
+            if visual == "equation":
+                problems += equation_label_problems(narration, sources)
+            if label:
+                problems += visual_label_problems(narration, label)
+            lines += [f"{named}: {problem}." for problem in problems]
+            return narration, lines
+
         summaries = []
         results = {}
         completed_count = 0
@@ -9591,7 +9802,14 @@ class PaperRun(Run):
                 continue
             if not isinstance(summary, str) or not summary.strip():
                 continue
-            results[start] = (end, narration.strip(), summary.strip())
+            narration, lines = finish(start, end, narration.strip(), saved=True)
+            if narration != checkpoint["narration"].strip():
+                write_json_atomic(
+                    checkpoint_dir / f"{start:06d}-{end:06d}.json", {**checkpoint, "narration": narration}
+                )
+            for line in lines:
+                self.publish("log", line + "\n")
+            results[start] = (end, narration, summary.strip())
             completed_count += end - start + 1
         # A heading the paper numbers is read as printed, so every heading of
         # the book follows the same rule; the model is not asked.
@@ -9707,16 +9925,7 @@ class PaperRun(Run):
                     ):
                         start, end = futures.pop(future)
                         narration, summary, tags = future.result()
-                        batch_kinds = set(kinds[start - 1:end])
-                        describes = _describes_visual(batch_kinds)
-                        # Code, not the model, names an equation.
-                        equation = describes and _visual_type(
-                            paragraphs[start - 1:end], kinds[start - 1:end]
-                        ) == "equation"
-                        if equation:
-                            narration = label_equation(
-                                narration, requested[start - 1:end], printed
-                            )
+                        narration, lines = finish(start, end, narration)
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -9727,53 +9936,8 @@ class PaperRun(Run):
                             },
                         )
                         results[start] = (end, narration, summary)
-                        named = (
-                            f"Paragraphs {start}-{end}/{total}" if end > start
-                            else f"Paragraph {start}/{total}"
-                        )
-                        # A listener hears no border between the author's
-                        # text and a description of a figure, table, or
-                        # equation, so the description must name what it is.
-                        if (
-                            narration
-                            and describes
-                            and not VISUAL_CUE_PATTERN.search(" ".join(narration.split()[:12]))
-                        ):
-                            opening = " ".join(narration.split()[:8])
-                            self.publish(
-                                "log",
-                                f"{named}: the description does not open by naming "
-                                f"what it describes: \"{opening}…\"\n",
-                            )
-                        # The author's prose should come through word for word;
-                        # one that lost much of its wording is worth a look.
-                        if narration and batch_kinds <= TEXT_KINDS:
-                            share, lost = prose_kept(
-                                "\n\n".join(paragraphs[start - 1:end]), narration
-                            )
-                            if share is not None and share < PROSE_KEPT_LOW:
-                                self.publish(
-                                    "log",
-                                    f"{named} kept {share:.0%} of the author's words; "
-                                    f"missing: {', '.join(lost[:8])}.\n",
-                                )
-                        # What a narration states that its source does not is
-                        # named in the log; the narration is kept as written.
-                        # A footnote's source includes the paragraph its mark
-                        # sits in, as "†" beside an author's name.
-                        grounded = requested[start - 1:end] + [
-                            requested[citers[index]]
-                            for index in range(start - 1, end) if index in citers
-                        ]
-                        problems = grounding_problems(
-                            narration, grounded, describes, known_names,
-                        )
-                        if equation:
-                            problems += equation_label_problems(
-                                narration, requested[start - 1:end]
-                            )
-                        for problem in problems:
-                            self.publish("log", f"{named}: {problem}.\n")
+                        for line in lines:
+                            self.publish("log", line + "\n")
                         completed_count += end - start + 1
                     commit_ready()
                     committed = next_commit - 1
