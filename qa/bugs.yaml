@@ -40,6 +40,11 @@ bugs:
       Post-check each description against them: every symbol and number must appear in the source,
       and no claim may contradict the nearby body text.
     test: Golden must_not_contain assertions (ATT-09, RRSI-01..05, CLM-03..10, BERT-02, PG-01..02).
+    notes: >
+      Review of 6b4102b (2026-10-07): the first half of the fix is not done. submit() sends a figure, table or
+      equation batch with context=None, and its request holds only the batch itself, so the describer never
+      sees the body text or the symbols' definitions (R20-05, R20-06: s, A_i^eff, w_eff). The phrase-specific
+      golden bans (CLM-03, -04, -06) pass while the same errors come back in new words (R20-01, -03, -07).
 
   - id: B03
     slug: wrong-figure-table-identity
@@ -49,6 +54,12 @@ bugs:
     status: open
     fix: Code writes "Figure N" / "Table N" from the caption; the model writes only the rest. Pair description and caption by number.
     test: Generic check G07 (description label equals its caption's label); no caption read twice.
+    notes: >
+      Review of 6b4102b (2026-10-07): label_equation() is the only code that writes a name; figure and table
+      names stay as the model wrote them, and grounding_problems() skips one-digit numbers, so "Figure 3" for
+      Figure 7 passes. With no caption in the batch the model takes the request's paragraph numbers ("Figure
+      81 and 82", "Figure 213"; R20-08), and _visual_type() calls the batch an equation, so label_equation()
+      turns "Figure 1" into "The equation" when its picture text has "=" (R20-09).
 
   - id: B04
     slug: caption-truncated
@@ -356,3 +367,45 @@ bugs:
       already were.
     notes: Closed under the per-class rule (qa-close-rule); DDPM-01 fails on both R14 runs and passes before and after.
     test: DDPM-01.
+
+  - id: B37
+    slug: number-check-gaps
+    title: The number check passes wrong numbers
+    priority: P1
+    layer: pipeline
+    status: proposed
+    fix: >
+      Proposed. Holes in grounding_problems(), each reproduced on 6b4102b: (1) _printed() accepts a prefix,
+      so "3400" passes for a printed "34000"; keep the prefix rule only for a power run into its base (text
+      with <sup>). (2) _numbers() applies the K rule to "30.9K" as "9K", giving "30.9000". (3) One-digit
+      numbers and number words ("three million") are never checked. (4) Prose batches are never checked
+      (describes=False returns first), and an equation read inside its sentence goes with the prose.
+      (5) A batch's numbers are pooled, so a value from another panel or series, or a version string, passes
+      (R20-01..R20-03); check a number together with the label or series it sits beside in the source.
+    test: Unit tests for each repro above.
+
+  - id: B38
+    slug: checkpoint-skips-new-checks
+    title: Saved batches skip code fixes made after them
+    priority: P2
+    layer: pipeline
+    status: proposed
+    fix: >
+      Proposed. Checkpoints are reused when model, prompt and converter match; the identity in
+      extraction.json has no version for the code that post-processes a response, and a loaded checkpoint goes
+      to the book without label_equation() or the checks. Add a post-processing version to the identity, or
+      run the post-processing on loaded batches too.
+    test: Resume a run after changing label_equation(); the loaded batch is relabeled.
+
+  - id: B39
+    slug: kept-words-blind-to-negation
+    title: The kept-words measure cannot see a dropped "not"
+    priority: P2
+    layer: adapt
+    status: proposed
+    fix: >
+      Proposed. _content_words() counts words of four letters or more, so "not", "no", "nor", "all", "any"
+      and "few" never count: prose_kept() returns 100% when "does not improve" becomes "does improve", and the
+      ask-again for short narration never fires. Compare negations, quantifiers, numbers and symbols between
+      source and narration separately and flag any change.
+    test: prose_kept() of a sentence and its copy without "not" is below 1.0, or a separate check names it.

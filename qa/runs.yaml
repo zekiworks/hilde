@@ -208,6 +208,22 @@ runs:
       checked there; §4.2-§10 checked for structure only (labels, broken sentences, footers). Astra checked
       the whole PDF, including figure images. Merged review: R16-01..R16-12.
 
+  - id: R20
+    date: 2026-10-07
+    papers: [clm]
+    hilde_commit: null   # not in the follow-along text; in the book's book.json (git_commit)
+    model: null          # in the book's book.json
+    voice: Eir
+    output_file: null    # follow-along text pasted into the review chat
+    reviewers: [claude]
+    notes: >
+      2 h 8 min book. Text only, no listening pass. Claude compared it with arXiv 2609.37725 (fetched excerpts
+      and the paper's own text) and traced root causes in 6b4102b. A second, relayed review agreed on
+      R20-01..R20-03, R20-05, R20-06 and R20-08, and added R20-07. qa.py check on the text: 16/21 (G01, G05, G06, G07, CLM-09
+      fail). Code-level classes: B37..B39, plus B34 (a failed check does not block the passage) from the
+      Chollet patch (R17, B33, B34), which is not in main yet. R18 is the Attention patch after renumbering,
+      R19 is kept for Procedural Graphs, and B35/B36 are proposed in hilde-bugs-2026-10-07.md.
+
   - id: R21
     date: 2026-10-08
     papers: [attention]

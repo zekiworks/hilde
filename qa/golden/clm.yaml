@@ -72,6 +72,36 @@ asserts:
     about: Held numbers stay (accuracy before and after RL, BrowseComp-Plus score)
     must_contain: ['28\.8', '42\.5', '59\.4']
 
+  - id: CLM-21
+    bug: B02
+    about: Figure 6b's package versions are not speedups
+    must_not_contain: '(?i)speedup[^.\n]{0,40}\b\d+\.\d+\.\d+'
+
+  - id: CLM-22
+    bug: B02
+    about: CLM's BrowseComp-Plus accuracy is 59.4%, not 30.9% (30.9k is a context size in Fig. 7)
+    must_not_contain: '(?i)30\.9 ?(percent|%)'
+
+  - id: CLM-23
+    bug: B02
+    about: Equations 1, 2 and 4 are not a Recursive Language Model's architecture
+    must_not_contain: '(?i)Equation \d+ (shows|illustrates|describes)[^.\n]{0,40}Recursive Language Model'
+
+  - id: CLM-24
+    bug: B02
+    about: A_i^eff in Equation 6 is the efficiency advantage
+    must_not_contain: '(?i)effective area'
+
+  - id: CLM-25
+    bug: B02
+    about: In Figure 6a, 44.6 is CLM's score, not CLM with subagents
+    must_not_contain: '(?i)subagents?[^.\n]{0,60}\b44\.6\b'
+
+  - id: CLM-26
+    bug: null
+    about: Source quirks stay as printed (five vs six subagents, 64 turns vs 100-turn cap, 39.9% vs 28.8%)
+    must_contain: ['(?i)five concurrent subagents', '(?i)six concurrent subagents', '(?i)64 turns', '(?i)100-turn cap', '39\.9']
+
 manual:
   - bug: B03
     check: Figure 5 and Table 1 (same page) each get one description and one caption, in order.
