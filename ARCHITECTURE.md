@@ -137,7 +137,8 @@ given twice. `narration_worker()` implements a private
 newline-delimited JSON protocol. A worker emits readiness, accepts indexed
 chunk batches, and returns base64-encoded FLOAT WAV data or a fatal error. A
 batch may carry `max_new_tokens`, a cap on each clip's length that
-`generate_clone_batch()` passes to the model; narration sends none.
+`generate_clone_batch()` passes to the model; the coordinator sends
+`clip_token_limit()` of the batch, and a worker given none uses the same.
 
 `_narrate_distributed()` starts SSH workers at once. A local CUDA worker starts
 only when its GPU has at least `NARRATION_MIN_FREE_MIB` (6 GiB: the 4 GiB model
