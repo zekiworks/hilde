@@ -136,6 +136,16 @@ ONE_BLOCK_TIMINGS = {
 }
 
 
+def speech_wav(text, seconds_per_char=0.07):
+    """WAV bytes as long as `text` takes to say, the way a speech model answers."""
+    buffer = io.BytesIO()
+    samples = max(1, int(len(text) * seconds_per_char * 24000))
+    sf.write(buffer, np.linspace(-0.2, 0.2, samples, dtype=np.float32), 24000,
+             format="WAV", subtype="PCM_16")
+    return buffer.getvalue()
+
+
+
 def store_book(storage, title="A Paper", source_sha256="a" * 64, voice="Narrator", *,
                markdown="<!-- audiobook-tts:block=0 -->\n\nBody text.",
                timings=ONE_BLOCK_TIMINGS, narration=None, audio=None, voice_fields=None):
@@ -2073,6 +2083,133 @@ class NarrationResumeTests(unittest.TestCase):
         self.assertEqual(requests["count"], first_request_count)
         self.assertGreater(sf.info(args.output).frames, 0)
 
+
+HEADING = "Pattern classification"
+SENTENCE = (
+    "Around the mid 1950s, it seemed that progress on connectionism had started to slow and "
+    "would have perhaps tapered off had psychologist Frank Rosenblatt not made a striking discovery."
+)
+
+
+class ClipLengthTests(unittest.TestCase):
+    """A narration clip that runs on (the model missing its end) is made again alone."""
+
+    def test_a_clip_from_the_speech_server_that_runs_on_is_asked_for_again(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        inputs = []
+
+        class SpeechHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                text = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["input"]
+                inputs.append(text)
+                # The heading's first clip runs on for 170 s.
+                speech = speech_wav(text, 170 / len(text) if inputs.count(text) == 1 and text.startswith("Pattern") else 0.07)
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(speech)))
+                self.end_headers()
+                self.wfile.write(speech)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SpeechHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        args = argparse.Namespace(
+            output=root / "book.wav", wav_subtype=None, mp3_compression_level=None,
+            input=None, overwrite=True, resume_dir=root / "resume", chunk_max_chars=500, sentence_chunks=True,
+            server=f"http://127.0.0.1:{server.server_port}/v1", server_model="tts-1",
+            server_voice="alloy", language="Auto", api_key=None, server_timeout=5.0,
+        )
+        text = f"{HEADING}\n\n{SENTENCE}"
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            cli.narrate_server(args, argparse.ArgumentParser(), text)
+        # The heading went to the model with a period, and once more alone.
+        self.assertEqual(inputs, [f"{HEADING}.", f"{HEADING}.", SENTENCE])
+        self.assertIn("Chunk 1 ran on: 170.0 s for 22 characters", log.getvalue())
+        self.assertAlmostEqual(sf.info(cli._checkpoint_path(args.resume_dir, 1)).duration, 1.61, places=1)
+
+        # A run on from before this check, left in a resumed stage, is made again.
+        sf.write(cli._checkpoint_path(args.resume_dir, 2), np.zeros(24000 * 300, dtype=np.float32), 24000)
+        inputs.clear()
+        with mock.patch("sys.stdout", io.StringIO()):
+            cli.narrate_server(args, argparse.ArgumentParser(), text)
+        self.assertEqual(inputs, [SENTENCE])
+        self.assertLess(sf.info(args.output).duration, 20)
+
+    def test_a_worker_clip_that_runs_on_is_made_again_alone_with_its_own_cap(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        record = root / "requests.jsonl"
+        (root / "worker.py").write_text(f"""\
+import base64, io, json, sys
+import numpy, soundfile
+protocol, record = sys.argv[1:3]
+print(protocol + json.dumps({{"type": "ready"}}), flush=True)
+seen = set()
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["type"] == "stop":
+        break
+    with open(record, "a") as stream:
+        stream.write(json.dumps([request["texts"], request["max_new_tokens"]]) + "\\n")
+    waves = []
+    for text in request["texts"]:
+        seconds = 170 if text == {HEADING!r} and text not in seen else len(text) * 0.07
+        seen.add(text)
+        buffer = io.BytesIO()
+        soundfile.write(buffer, numpy.zeros(int(seconds * 8000), dtype="int16"), 8000, format="WAV", subtype="PCM_16")
+        waves.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    print(protocol + json.dumps({{"type": "result", "indexes": request["indexes"], "waves": waves}}), flush=True)
+""", encoding="utf-8")
+        checkpoints = root / "checkpoints"
+        checkpoints.mkdir()
+        command = [sys.executable, "-u", str(root / "worker.py"), cli.WORKER_PROTOCOL, str(record)]
+
+        class Parser:
+            @staticmethod
+            def error(message):
+                raise AssertionError(message)
+
+        completed = set()
+        with (
+            mock.patch.object(cli, "_narration_worker_specifications", return_value=[("Node", command, None, None)]),
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertTrue(cli._narrate_distributed(
+                argparse.Namespace(batch_size=2), Parser, [HEADING, SENTENCE], root, checkpoints,
+                completed, [1, 2], sf,
+            ))
+        requests = [json.loads(line) for line in record.read_text().splitlines()]
+        # The batch was capped for its longest text; the heading, alone, for its own.
+        self.assertEqual(requests, [[[HEADING, SENTENCE], 479], [[HEADING], 79]])
+        self.assertEqual(completed, {1, 2})
+        self.assertAlmostEqual(sf.info(cli._checkpoint_path(checkpoints, 1)).duration, 1.54, places=2)
+
+    def test_a_clip_that_keeps_running_on_keeps_the_try_nearest_its_length(self):
+        lengths = iter([200.0, 9.0])
+        made = []
+
+        def remake(text):
+            made.append(text)
+            return np.zeros(int(next(lengths) * 100)), 100
+
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            waveform, rate = cli.checked_clip(7, HEADING, np.zeros(100 * 655), 100, remake)
+        self.assertEqual(made, [HEADING, HEADING])
+        self.assertEqual(len(waveform) / rate, 9.0)
+        self.assertIn("Chunk 7 ran on: 9.0 s for 22 characters, about 1.5 s expected after 2 more tries; "
+                      "keeping the one nearest its length (9.0 s)", log.getvalue())
+        # A clip of the right length, or a short sentence, is not made again.
+        self.assertIsNone(cli.clip_problem(SENTENCE, 12.0))
+        self.assertIsNone(cli.clip_problem("Yes.", 0.1))
+        self.assertIn("ended early", cli.clip_problem(SENTENCE, 1.1))
+
 class UnifiedWorkflowTests(unittest.TestCase):
     def test_pdf_extraction_flows_directly_into_shared_audiobook(self):
         import pymupdf
@@ -2092,22 +2229,13 @@ class UnifiedWorkflowTests(unittest.TestCase):
             )
             pdf.save(document)
 
-        buffer = io.BytesIO()
-        sf.write(
-            buffer,
-            np.linspace(-0.2, 0.2, 1200, dtype=np.float32),
-            24000,
-            format="WAV",
-            subtype="PCM_16",
-        )
-        speech = buffer.getvalue()
         requests = {"count": 0}
 
         class SpeechHandler(BaseHTTPRequestHandler):
             def do_POST(self):
                 requests["count"] += 1
                 length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
+                speech = speech_wav(json.loads(self.rfile.read(length))["input"])
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
                 self.send_header("Content-Length", str(len(speech)))
@@ -3148,10 +3276,10 @@ class BatchingTests(unittest.TestCase):
             self.capacity = capacity
             self.calls = []
 
-        def generate_voice_clone(self, text, language, voice_clone_prompt):
+        def generate_voice_clone(self, text, language, voice_clone_prompt, max_new_tokens=None):
             import torch
 
-            self.calls.append(list(text))
+            self.calls.append((list(text), max_new_tokens))
             if len(text) > self.capacity:
                 raise torch.cuda.OutOfMemoryError("CUDA out of memory")
             return [np.zeros(len(item), dtype=np.float32) for item in text], 24000
@@ -3163,12 +3291,16 @@ class BatchingTests(unittest.TestCase):
         return model.calls, [len(waveform) for waveform in waveforms], rate
 
     def test_only_a_batch_that_runs_out_of_memory_is_retried_one_chunk_at_a_time(self):
-        calls, lengths, _ = self.generate(3, ["a", "bb", "ccc"])
-        self.assertEqual((calls, lengths), ([["a", "bb", "ccc"]], [1, 2, 3]))
+        long = "x" * 100
+        calls, lengths, _ = self.generate(3, ["a", "bb", long])
+        # A batch's cap fits its longest text; a short text is spoken with a period.
+        self.assertEqual(calls, [(["a.", "bb.", long], 274)])
+        self.assertEqual(lengths, [2, 3, 100])
 
-        calls, lengths, rate = self.generate(1, ["a", "bb", "ccc"])
-        self.assertEqual(calls, [["a", "bb", "ccc"], ["a"], ["bb"], ["ccc"]])
-        self.assertEqual((lengths, rate), ([1, 2, 3], 24000))
+        calls, lengths, rate = self.generate(1, ["a", "bb", long])
+        # Alone, each chunk gets its own cap.
+        self.assertEqual(calls, [(["a.", "bb.", long], 274), (["a."], 29), (["bb."], 31), ([long], 274)])
+        self.assertEqual((lengths, rate), ([2, 3, 100], 24000))
 
     def test_a_single_chunk_that_runs_out_of_memory_still_fails(self):
         import torch
@@ -5790,28 +5922,42 @@ def chat_narration(*summaries):
 
 class FakeChatModel(BaseHTTPRequestHandler):
     """An OpenAI-compatible server that streams the next scripted reply and
-    keeps every request body."""
+    keeps every request body. A reply that is a (status, message) pair is a
+    refusal; /tokenize answers `tokenize` as the count, or 404 when None."""
 
     replies = []
     requests = []
+    window = 100_000
+    tokenize = None
 
     def log_message(self, *args):
         pass
 
-    def do_GET(self):
-        body = json.dumps({"data": [{"id": "fake", "max_model_len": 100_000}]}).encode()
-        self.send_response(200)
+    def answer(self, status, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        self.answer(200, {"data": [{"id": "fake", "max_model_len": type(self).window}]})
+
     def do_POST(self):
-        type(self).requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/tokenize":
+            if type(self).tokenize is None:
+                return self.answer(404, {"detail": "Not Found"})
+            return self.answer(200, {"count": type(self).tokenize, "max_model_len": type(self).window})
+        type(self).requests.append(body)
+        reply = type(self).replies.pop(0)
+        if isinstance(reply, tuple):
+            return self.answer(reply[0], {"error": {"message": reply[1], "type": "BadRequestError"}})
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for delta, finish in type(self).replies.pop(0):
+        for delta, finish in reply:
             event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
             self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
@@ -5943,7 +6089,7 @@ class ChatTests(unittest.TestCase):
         first, second = FakeChatModel.requests
         self.assertIn("¶2 [body] Dams. Tags: tag.", first["messages"][0]["content"])
         self.assertEqual({tool["function"]["name"] for tool in first["tools"]},
-                         {"read_paragraphs", "write_file", "list_files", "delete_file"})
+                         {"read_paragraphs", "search_book", "write_file", "list_files", "delete_file"})
         results = [message for message in second["messages"] if message["role"] == "tool"]
         self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
         self.assertEqual(results[0]["content"], "¶2\nParagraph 2 text.")
@@ -5988,6 +6134,94 @@ class ChatTests(unittest.TestCase):
             [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]],
             ['What does it mean by "trapped"?', "", "Read ¶2–3", "Dams hold coarse sediment back."],
         )
+
+    def long_book(self, count=3000):
+        """A book of `count` passages: a heading, then 29 paragraphs, over and over."""
+        passages = []
+        for number in range(1, count + 1):
+            heading = number % 30 == 1
+            passages.append({
+                "type": "heading" if heading else "body",
+                "text": f"Section {number // 30}" if heading else f"Paragraph {number} text about topic {number}.",
+                "paragraphs": [number - 1],
+                "summary": f"Paragraph {number} explains topic {number} with several more words of summary here.",
+                "tags": ["topic", f"item {number}"],
+            })
+        passages[1554]["text"] = "If we denote the optimal threshold value as eta, we can rewrite the rule."
+        return self.book({"schema": 2, "original_view": False, "passages": passages})[0]
+
+    def ask(self, book, question="Explain this part."):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        turn = web.ChatTurn(self.storage, book, question, "lm-studio/fake", f"http://127.0.0.1:{server.server_port}")
+        self.assertTrue(web.ChatRegistry().start(turn))
+        index = 0
+        while not turn.events_from(index, 10)[1]:
+            index = len(turn.events)
+        return [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]]
+
+    def reset_fake(self, window, replies, tokenize=None):
+        previous = (FakeChatModel.window, FakeChatModel.tokenize)
+        self.addCleanup(lambda: (setattr(FakeChatModel, "window", previous[0]),
+                                 setattr(FakeChatModel, "tokenize", previous[1])))
+        FakeChatModel.window, FakeChatModel.tokenize = window, tokenize
+        FakeChatModel.requests, FakeChatModel.replies = [], replies
+
+    def test_a_long_book_sends_a_section_outline_that_fits_a_32k_model(self):
+        book = self.long_book()
+        self.reset_fake(32_768, [[({"content": "It is a threshold."}, "stop")]])
+        conversation = self.ask(book)
+        self.assertEqual(conversation[-1], "It is a threshold.")
+        (request,) = FakeChatModel.requests
+        system = request["messages"][0]["content"]
+        self.assertIn("each section is one line", system)
+        self.assertIn("¶1531–1560 Section 51:", system)
+        counted = (len(json.dumps(request["messages"])) + len(json.dumps(request["tools"]))) // 3
+        self.assertLessEqual(counted + request["max_tokens"], 32_768)
+
+    def test_a_request_the_server_refuses_as_too_long_is_sent_once_more_with_the_shortest_outline(self):
+        book, _ = self.book(chat_narration("Storms.", "Dams."))
+        refusal = (400, "This model's maximum context length is 32768 tokens. However, you requested "
+                        "8000 output tokens and your prompt contains at least 24769 input tokens.")
+        self.reset_fake(100_000, [refusal, [({"content": "Dams trap silt."}, "stop")]])
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(self.ask(book)[-1], "Dams trap silt.")
+        first, second = FakeChatModel.requests
+        self.assertIn("¶2 [body] Dams. Tags: tag.", first["messages"][0]["content"])
+        self.assertIn("each section is one line", second["messages"][0]["content"])
+
+        # Refused again: the listener reads why in plain words, once.
+        self.reset_fake(100_000, [refusal, refusal])
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            self.assertEqual(self.ask(book)[-1], web.CHAT_TOO_LONG)
+        self.assertEqual(len(FakeChatModel.requests), 2)
+        self.assertIn("maximum context length is 32768", log.getvalue())
+
+    def test_the_servers_own_count_sets_how_long_the_answer_may_be(self):
+        book, _ = self.book(chat_narration("Storms.", "Dams."))
+        self.reset_fake(32_768, [[({"content": "Short."}, "stop")]], tokenize=31_000)
+        self.ask(book)
+        (request,) = FakeChatModel.requests
+        self.assertEqual(request["max_tokens"], 32_768 - 31_000 - web.CHAT_TOKEN_MARGIN)
+
+    def test_tool_schemas_count_as_input(self):
+        without = web.chat_input_tokens("anthropic/x", "", "System.", [], ())
+        with_tools = web.chat_input_tokens("anthropic/x", "", "System.", [], web.CHAT_TOOLS)
+        self.assertAlmostEqual(with_tools - without, (len(json.dumps(web.CHAT_TOOLS)) - 2) / 3, delta=1)
+
+    def test_search_book_puts_paragraphs_holding_the_words_together_first(self):
+        passages = [
+            {"type": "body", "text": "The threshold moves.", "summary": "Optimal choices.", "tags": []},
+            {"type": "body", "text": "If we denote the optimal threshold value, the rule is simple.",
+             "summary": "Bayes rule.", "tags": []},
+            {"type": "body", "text": "Nothing here.", "summary": "Unrelated.", "tags": []},
+        ]
+        content, label = web.search_book(passages, "optimal threshold")
+        self.assertEqual(label, 'Searched the book for "optimal threshold"')
+        self.assertEqual([line.split()[0] for line in content.splitlines()], ["¶2", "¶1"])
+        self.assertIn("denote the optimal threshold value", content)
 
 
 class FakeWeb(BaseHTTPRequestHandler):

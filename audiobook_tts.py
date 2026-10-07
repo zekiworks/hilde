@@ -222,12 +222,90 @@ def ssh_worker(value):
     return worker
 
 
+# Speech runs about 0.07 s a character. The model can miss its end and talk
+# on, up to its 8192-token limit (655 s of noise), or end early and drop the
+# words: both happened in a 16-hour book. A clip more than twice its expected
+# length plus 2 s ran on (normal clips stay under 2x: 99% of 7,300 sentences
+# measured); one under a third of it, for 20 characters or more, ended early.
+SPEECH_SECONDS_PER_CHAR = 0.07
+CLIP_LONG_FACTOR = 2.0
+CLIP_LONG_SLACK_SECONDS = 2.0
+CLIP_SHORT_FACTOR = 1 / 3
+CLIP_SHORT_MIN_CHARS = 20
+# A clip may use about three times its usual length in codec tokens (12.5 a
+# second, under one a character), so a runaway stops past the length check.
+CLIP_TOKENS_PER_CHAR = 2.5
+CLIP_TOKEN_SLACK = 24
+# A clip that runs on or ends early is made again alone, at most this often.
+CLIP_RETRIES = 2
+# A heading or label without end punctuation is spoken with a period.
+SPOKEN_PERIOD_MAX_CHARS = 80
+
+
+def clip_token_limit(texts):
+    """The codec tokens a batch's clips may use: enough for its longest text."""
+    return int(max(len(text) for text in texts) * CLIP_TOKENS_PER_CHAR) + CLIP_TOKEN_SLACK
+
+
+def spoken(text):
+    """What the model is given for a chunk: a short one without end
+    punctuation, such as a heading, ends with a period, which helps the
+    model end the clip. The reader's text is unchanged."""
+    stripped = text.rstrip()
+    if len(stripped) <= SPOKEN_PERIOD_MAX_CHARS and stripped and stripped[-1].isalnum():
+        return stripped + "."
+    return text
+
+
+def clip_problem(text, seconds):
+    """Why a clip of `seconds` cannot be `text` spoken, or None."""
+    expected = len(text) * SPEECH_SECONDS_PER_CHAR
+    if seconds > expected * CLIP_LONG_FACTOR + CLIP_LONG_SLACK_SECONDS:
+        return f"ran on: {seconds:.1f} s for {len(text)} characters, about {expected:.1f} s expected"
+    if len(text) >= CLIP_SHORT_MIN_CHARS and seconds < expected * CLIP_SHORT_FACTOR:
+        return f"ended early: {seconds:.1f} s for {len(text)} characters, about {expected:.1f} s expected"
+    return None
+
+
+def checked_clip(index, text, waveform, sample_rate, remake):
+    """The clip to keep for chunk `index`. One that runs on or ends early is
+    made again alone by `remake(text)` -> (waveform, sample_rate), up to
+    CLIP_RETRIES times; if every try fails, the one nearest its expected
+    length is kept and the log says so."""
+    attempts = [(waveform, sample_rate)]
+    problem = clip_problem(text, len(waveform) / sample_rate)
+    while problem and len(attempts) <= CLIP_RETRIES:
+        print(f"Chunk {index} {problem}; making it again alone", flush=True)
+        attempts.append(remake(text))
+        problem = clip_problem(text, len(attempts[-1][0]) / attempts[-1][1])
+    if not problem:
+        return attempts[-1]
+    expected = max(len(text) * SPEECH_SECONDS_PER_CHAR, 0.1)
+    kept = min(attempts, key=lambda attempt: abs(math.log(max(len(attempt[0]) / attempt[1], 0.01) / expected)))
+    print(
+        f"Chunk {index} {problem} after {CLIP_RETRIES} more tries; keeping the one "
+        f"nearest its length ({len(kept[0]) / kept[1]:.1f} s)",
+        flush=True,
+    )
+    return kept
+
+
+def _local_remake(model, language, prompt):
+    """Make one chunk again alone, with its own length cap."""
+    def remake(text):
+        waveforms, sample_rate = generate_clone_batch(model, [text], language, prompt)
+        return waveforms[0], sample_rate
+    return remake
+
+
 def generate_clone_batch(model, texts, language, prompt, max_new_tokens=None):
     """Clone one batch; if CUDA memory runs out, retry its chunks one at a time.
-    `max_new_tokens` caps each clip's length; None keeps the model's limit."""
+    `max_new_tokens` caps each clip's length; None caps it for the batch's
+    longest text (clip_token_limit())."""
     import torch
 
-    limit = {"max_new_tokens": max_new_tokens} if max_new_tokens else {}
+    texts = [spoken(text) for text in texts]
+    limit = {"max_new_tokens": max_new_tokens or clip_token_limit(texts)}
     try:
         return model.generate_voice_clone(
             text=texts, language=[language] * len(texts), voice_clone_prompt=prompt, **limit,
@@ -244,7 +322,8 @@ def generate_clone_batch(model, texts, language, prompt, max_new_tokens=None):
     waveforms = []
     for text in texts:
         generated, sample_rate = model.generate_voice_clone(
-            text=[text], language=[language], voice_clone_prompt=prompt, **limit,
+            text=[text], language=[language], voice_clone_prompt=prompt,
+            max_new_tokens=max_new_tokens or clip_token_limit([text]),
         )
         waveforms.extend(generated)
     return waveforms, sample_rate
@@ -781,10 +860,17 @@ def prepare_resume(args, text, chunks, voice_version, sf):
         except sf.LibsndfileError:
             checkpoint.unlink(missing_ok=True)
             continue
-        if info.frames > 0 and info.samplerate > 0 and info.channels > 0:
-            completed.add(index)
-        else:
+        if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
             checkpoint.unlink(missing_ok=True)
+            continue
+        # A clip saved before lengths were checked may have run on or ended
+        # early; it is made again (one kept after its tries is tried again).
+        problem = clip_problem(chunks[index - 1], info.frames / info.samplerate)
+        if problem:
+            print(f"Saved chunk {index} {problem}; making it again", flush=True)
+            checkpoint.unlink(missing_ok=True)
+            continue
+        completed.add(index)
     if completed:
         print(
             f"Resuming narration with {len(completed)}/{len(chunks)} completed chunks",
@@ -949,6 +1035,16 @@ def narrate_server(args, parser, text):
         f"Server: {args.server} (model {args.server_model}, voice {args.server_voice})",
         flush=True,
     )
+
+    def server_clip(index, chunk):
+        """Chunk `index` from the server, asked again when it runs on or ends early."""
+        def ask(text):
+            try:
+                return sf.read(io.BytesIO(request_speech(args, parser, spoken(text))), dtype="float32")
+            except (sf.LibsndfileError, RuntimeError) as exc:
+                parser.error(f"Server response for chunk {index} is not readable audio: {exc}")
+        return checked_clip(index, chunk, *ask(chunk), ask)
+
     if args.resume_dir is not None:
         voice_version = hashlib.sha256(json.dumps(
             {
@@ -975,15 +1071,7 @@ def narrate_server(args, parser, text):
                     f"Requesting chunk {index}/{len(chunks)} from the server",
                     flush=True,
                 )
-                try:
-                    waveform, sample_rate = sf.read(
-                        io.BytesIO(request_speech(args, parser, chunk)),
-                        dtype="float32",
-                    )
-                except (sf.LibsndfileError, RuntimeError) as exc:
-                    parser.error(
-                        f"Server response for chunk {index} is not readable audio: {exc}"
-                    )
+                waveform, sample_rate = server_clip(index, chunk)
                 save_checkpoint(
                     checkpoint_dir, index, waveform, sample_rate, sf
                 )
@@ -1018,15 +1106,7 @@ def narrate_server(args, parser, text):
                 f"Requesting chunk {index}/{len(chunks)} from the server",
                 flush=True,
             )
-            try:
-                waveform, chunk_rate = sf.read(
-                    io.BytesIO(request_speech(args, parser, chunk)),
-                    dtype="float32",
-                )
-            except (sf.LibsndfileError, RuntimeError) as exc:
-                parser.error(
-                    f"Server response for chunk {index} is not readable audio: {exc}"
-                )
+            waveform, chunk_rate = server_clip(index, chunk)
             channels = 1 if waveform.ndim == 1 else waveform.shape[1]
             if audio is None:
                 sample_rate = chunk_rate
@@ -1097,7 +1177,7 @@ def narration_worker(args, parser):
                 or not all(isinstance(text, str) and text for text in texts)
             ):
                 raise ValueError("worker received an invalid chunk batch")
-            # A caller may cap how long each clip can run; narration does not.
+            # The caller's cap on each clip; without one, the batch's longest text sets it.
             limit = request.get("max_new_tokens")
             if limit is not None and (type(limit) is not int or limit <= 0):
                 raise ValueError("worker received an invalid max_new_tokens")
@@ -1403,7 +1483,8 @@ def _narration_worker_specifications(args, voice_dir):
     return specifications
 
 
-def _save_worker_checkpoint(directory, index, encoded, sf):
+def _worker_audio(index, encoded, sf):
+    """A worker's clip for chunk `index`: its WAV bytes and seconds."""
     try:
         payload = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError) as exc:
@@ -1412,13 +1493,17 @@ def _save_worker_checkpoint(directory, index, encoded, sf):
         raise ValueError(
             f"worker returned an invalid audio size for chunk {index}"
         )
+    info = sf.info(io.BytesIO(payload))
+    if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
+        raise ValueError(f"worker returned empty audio for chunk {index}")
+    return payload, info.frames / info.samplerate
+
+
+def _save_worker_checkpoint(directory, index, payload):
     target = _checkpoint_path(directory, index)
     temporary = target.with_name(f".{target.name}.worker")
     try:
         temporary.write_bytes(payload)
-        info = sf.info(temporary)
-        if info.frames <= 0 or info.samplerate <= 0 or info.channels <= 0:
-            raise ValueError(f"worker returned empty audio for chunk {index}")
         temporary.replace(target)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -1553,6 +1638,8 @@ def _narrate_distributed(
         memory = GpuMemory([spec[3] for spec in specifications if spec[3]])
         local = {spec[3]: spec for spec in specifications if spec[3]}
         alive, ready, idle, inflight, waiting = set(), set(), set(), {}, set()
+        # Each chunk's clips so far, (seconds, WAV bytes), while it is made again.
+        tries = {}
 
         def launch(specification):
             label, command, cleanup, device = specification
@@ -1584,11 +1671,13 @@ def _narrate_distributed(
             idle.discard(worker)
             indexes = batches.popleft()
             inflight[worker] = indexes
+            texts = [chunks[index - 1] for index in indexes]
             worker.send(
                 {
                     "type": "generate",
                     "indexes": indexes,
-                    "texts": [chunks[index - 1] for index in indexes],
+                    "texts": texts,
+                    "max_new_tokens": clip_token_limit(texts),
                 }
             )
             print(
@@ -1682,9 +1771,27 @@ def _narrate_distributed(
                         f"{worker.label} returned the wrong chunk batch"
                     )
                 for index, encoded in zip(indexes, waves, strict=True):
-                    _save_worker_checkpoint(
-                        checkpoint_dir, index, encoded, sf
-                    )
+                    payload, seconds = _worker_audio(index, encoded, sf)
+                    text = chunks[index - 1]
+                    tries.setdefault(index, []).append((seconds, payload))
+                    problem = clip_problem(text, seconds)
+                    if problem and len(tries[index]) <= CLIP_RETRIES:
+                        # Alone, so its length cap is its own.
+                        print(f"Chunk {index} {problem}; making it again alone", flush=True)
+                        batches.appendleft([index])
+                        continue
+                    if problem:
+                        expected = max(len(text) * SPEECH_SECONDS_PER_CHAR, 0.1)
+                        seconds, payload = min(
+                            tries[index], key=lambda attempt: abs(math.log(max(attempt[0], 0.01) / expected))
+                        )
+                        print(
+                            f"Chunk {index} {problem} after {CLIP_RETRIES} more tries; keeping the one "
+                            f"nearest its length ({seconds:.1f} s)",
+                            flush=True,
+                        )
+                    del tries[index]
+                    _save_worker_checkpoint(checkpoint_dir, index, payload)
                     completed.add(index)
                     print(
                         f"Checkpointed chunk {len(completed)}/{len(chunks)}",
@@ -1791,10 +1898,14 @@ def _narrate_resumable_local(
             waveforms, sample_rate = generate_clone_batch(
                 model, batch, args.language, voice_clone_prompt
             )
+            remake = _local_remake(model, args.language, voice_clone_prompt)
             try:
                 for index, waveform in zip(indexes, waveforms, strict=True):
+                    waveform, rate = checked_clip(
+                        index, chunks[index - 1], waveform, sample_rate, remake
+                    )
                     save_checkpoint(
-                        checkpoint_dir, index, waveform, sample_rate, sf
+                        checkpoint_dir, index, waveform, rate, sf
                     )
                     completed.add(index)
                     print(
@@ -1883,6 +1994,11 @@ def narrate(args, parser, text):
             waveforms, sample_rate = generate_clone_batch(
                 model, batch, args.language, voice_clone_prompt
             )
+            remake = _local_remake(model, args.language, voice_clone_prompt)
+            waveforms = [
+                checked_clip(start + offset + 1, text, waveform, sample_rate, remake)[0]
+                for offset, (text, waveform) in enumerate(zip(batch, waveforms, strict=True))
+            ]
             if audio is None:
                 destination = stack.enter_context(
                     output_path.open("wb" if args.overwrite else "xb")

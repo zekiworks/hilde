@@ -155,7 +155,10 @@ start of the sentence.
 playing and scrolling, and a conversation about it fills the bottom half. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
-the paragraphs it needs before answering; a paragraph it cites, such as ¶12,
+the paragraphs it needs before answering. For a long book on a model with a
+small memory, it sees one line per section instead and searches the book for
+the paragraphs it needs; a question that still doesn't fit says so plainly. A
+paragraph it cites, such as ¶12,
 is a link that scrolls the book to it. When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what

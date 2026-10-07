@@ -92,13 +92,32 @@ Without `--resume-dir`, single-device local narration uses whole-book or fixed-s
 
 `load_model()` imports Qwen through `import_qwen_tts()`, which captures file descriptors 1 and 2 during the import and replays them only if it fails. `qwen_tts` warns on import that flash-attn and the SoX executable are missing; Hilde needs neither (SoX serves only Qwen's 25 Hz tokenizer), and without the capture every worker would repeat both warnings in each job log.
 
+Every clip is length-checked, on all four paths (local, resumable local,
+distributed workers, speech server). The model can miss its end and talk on
+to its 8192-token limit, 655 s of noise, or end early and drop the words: a
+16-hour book had 23 such clips, at least 12 of them 655 s long, and the
+highlight waited on each. `generate_clone_batch()` caps every batch at
+`clip_token_limit()` (`CLIP_TOKENS_PER_CHAR` per character of its longest text,
+plus `CLIP_TOKEN_SLACK`, about three times a clip's usual length) and gives the
+model `spoken()` text: a chunk of at most `SPOKEN_PERIOD_MAX_CHARS` ending in a
+letter or digit, such as a heading, gets a period; the reader's text is
+unchanged. `clip_problem()` calls a clip run on above `CLIP_LONG_FACTOR` times
+its expected length (`SPEECH_SECONDS_PER_CHAR`) plus `CLIP_LONG_SLACK_SECONDS`,
+below the cap so a capped runaway is caught, and ended early under
+`CLIP_SHORT_FACTOR` of it for `CLIP_SHORT_MIN_CHARS` characters or more; 99%
+of 7,300 measured sentences ran under 2 times. `checked_clip()` makes such a
+chunk again alone, with its own cap, up to `CLIP_RETRIES` times, then keeps
+the try nearest its expected length; the log names the chunk and both
+lengths. The distributed coordinator does the same through its batch queue,
+keeping each chunk's tries until one passes.
+
 ### Durable narration resume
 
 `--resume-dir` enables a checkpointed publication path:
 
 1. `prepare_resume()` writes a manifest describing the text, chunk sequence, language, and voice/inference identity.
 2. A changed identity removes incompatible `chunk-*.wav` files.
-3. Existing checkpoints are accepted only when SoundFile can read them and they contain frames, a sample rate, and channels.
+3. Existing checkpoints are accepted only when SoundFile can read them and they contain frames, a sample rate, and channels, and when `clip_problem()` finds nothing: a clip saved before the length check that ran on or ended early is made again.
 4. Each newly generated chunk is written to a temporary WAV and atomically renamed.
 5. `assemble_checkpoints()` validates format consistency, encodes every checkpoint in order to a temporary final container, and atomically replaces the requested output. Joining tens of thousands of chunks takes minutes, so it prints `Joined chunk N/T` from 0, about 200 times over the book.
 
@@ -981,12 +1000,22 @@ saves the listener's message, followed, with a `context`, by a
 so the model starts from that text and trimming treats it as any read;
 `run()` asks the model and runs its tool calls
 until it answers without one. The system prompt (`chat_system_prompt()`)
-lists every passage as `¶N [type] summary Tags: …`, where N is the passage's
-1-based position in `narration.json`. Tools (`CHAT_TOOLS`, run by
-`chat_tool()`):
+holds the book's outline (`chat_outline()`), where N is a passage's 1-based
+position in `narration.json`: `full`, every passage as `¶N [type] summary
+Tags: …`; `brief`, every passage with the first `CHAT_BRIEF_WORDS` words of its
+summary; `sections`, one line per heading's passages (at most
+`CHAT_SECTION_MAX_PASSAGES`) with its range, heading, and opening summary. A
+turn takes the most detailed outline whose prompt and tools come to at most
+`CHAT_OUTLINE_SHARE` of the window: on a 2,445-passage book these are about
+184,000, 71,000, and 11,000 tokens, so a 32,768-token model gets sections.
+Tools (`CHAT_TOOLS`, run by `chat_tool()`):
 
 - `read_paragraphs(start, end)`: the passages' text under their numbers, at
   most `CHAT_READ_MAX_CHARS`, saying where to read on when cut (`chat_read()`);
+- `search_book(query)`: `search_book()` ranks passages by how many of the
+  query's words (whole words, three letters or more, or numbers) their text,
+  summary, and tags hold, the words together first, and returns the first
+  `CHAT_BOOK_SEARCH_RESULTS` with an excerpt each;
 - `write_file(name, content, mode)`: `create` refuses an existing file,
   `append` a missing one; at most `CHAT_FILE_MAX_BYTES` a file;
 - `list_files()`;
@@ -1019,16 +1048,26 @@ web text as others' writing whose instructions are never followed.
 
 `chat_context()` sends the conversation whole until it passes `CHAT_TRIM_AT`
 (80%) of the model's window less its reply, counted at
-`CHAT_CHARS_PER_TOKEN`; then the oldest entries go first, a tool call with its
-results, until it is under `CHAT_TRIM_TO`, never the latest message of the
-listener or what followed it, and the page hears `trimmed`. The window is a
-local server's `/v1/models` `max_model_len` (or a like field), else
-`CHAT_PROVIDER_CONTEXT`, else `CHAT_LOCAL_CONTEXT`. Local servers are called
+`CHAT_CHARS_PER_TOKEN`, the prompt and tool schemas fixed; then the oldest
+entries go first, a tool call with its results, until it is under
+`CHAT_TRIM_TO`, never the latest message of the listener or what followed it,
+and the page hears `trimmed`. The window is a local server's `/v1/models`
+`max_model_len` (or a like field), else `CHAT_PROVIDER_CONTEXT`, else
+`CHAT_LOCAL_CONTEXT`. Before each request `chat_input_tokens()` counts its
+input, tool schemas included, with the local server's `POST /tokenize` (vLLM;
+a server whose endpoint is missing is remembered in `_NO_TOKENIZE`), else at
+`CHAT_CHARS_PER_TOKEN` (3). The reply may take `min(CHAT_MAX_OUTPUT_TOKENS,
+window − input − CHAT_TOKEN_MARGIN)`; under `CHAT_MIN_OUTPUT_TOKENS` the
+outline shrinks a level, and with none left the turn ends with
+`CHAT_TOO_LONG`. A request the server refuses as too long
+(`CHAT_CONTEXT_ERROR`; vLLM's count there is only a lower bound) is sent once
+more with the `sections` outline, then ends the same way; the raw error goes
+to the server log, prefixed `Chat:`. Local servers are called
 through `/v1/chat/completions` with OpenAI tools, the ChatGPT account through
 Responses `function_call`s (`openai_request()`), the Anthropic key through
 Messages `tool_use` (`anthropic_request()`); Claude Code, which runs with its
-tools off, refuses chat with a message. Each reply allows
-`CHAT_MAX_OUTPUT_TOKENS`; a local reply still writing at it fails the turn.
+tools off, refuses chat with a message. A local reply still writing at its
+`max_tokens` fails the turn.
 
 Events (`text` deltas, `reset`, `message` with a display entry, `trimmed`,
 `files`, `done`) stream over SSE; the page reconnects from `event_index` and,
@@ -1059,9 +1098,8 @@ to `CHAT_SPEECH_CHUNK_CHARS`.
 `ChatSpeaker` keeps one `_worker` process (the narration worker protocol)
 loaded with one voice, started on first use on `roomiest_cuda_device()` and
 stopped after `CHAT_SPEECH_IDLE` seconds unused, or when another voice is
-asked for; requests to it take turns. Each clip is capped at
-`CHAT_SPEECH_TOKENS_PER_CHAR` codec tokens per character: the model can miss
-its end and run on to its 2048-token limit, minutes of speech. A
+asked for; requests to it take turns. Each clip is capped like a narration
+clip (`clip_token_limit()`, under Narration and output). A
 `ChatReading` (one text in one voice, kept for the last
 `CHAT_SPEECH_READINGS`) makes its clips in order, at most
 `CHAT_SPEECH_AHEAD` past the last one fetched, so a reading no one plays
@@ -1184,7 +1222,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 153 tests. It covers voice persistence
+The regression suite currently has 162 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1254,7 +1292,14 @@ redirect, a page read as its main content in pieces, SearXNG results listed
 with their links, no web tools without a search server, an answer read
 aloud as its words without Markdown, code, or addresses, clips made only as far
 ahead as they are played and a failed clip reported, and reading aloud off
-until a browser turns it on),
+until a browser turns it on, a 3,000-passage book sending a sections outline
+that fits a 32,768-token model, a request refused as too long sent once more
+with the shortest outline and then the plain message, the server's own token
+count setting the reply's length, tool schemas counted, and book search
+putting passages with the words together first), narration clips that run on
+made again alone with their own cap (speech server, distributed workers, and
+a saved checkpoint from before the check), and the try nearest its length kept
+when every try runs on,
 passage summaries and tags kept in `narration.json`, an unclosed TAGS parsed,
 job-specific SSE replay, cookie isolation, model configuration ownership,
 endpoint normalization, local model servers of the chosen type, batches retried

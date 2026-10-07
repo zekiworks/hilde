@@ -73,6 +73,7 @@ from audiobook_tts import (
     VOICE_PREVIEW_FILE,
     VOICE_VERSIONS_DIR,
     NarrationWorkerProcess,
+    clip_token_limit,
     gpu_free_mebibytes,
     read_voice,
     save_voice,
@@ -6896,8 +6897,29 @@ CHAT_CONTEXT_MAX_PASSAGES = 6
 # passes CHAT_TRIM_AT of the model's window, until it is under CHAT_TRIM_TO.
 CHAT_TRIM_AT = 0.8
 CHAT_TRIM_TO = 0.6
-CHAT_CHARS_PER_TOKEN = 4
+# Requests are counted by the server's /tokenize when it has one; otherwise
+# estimated at 3 characters a token, which numbers and symbols come close to.
+CHAT_CHARS_PER_TOKEN = 3
 CHAT_MAX_OUTPUT_TOKENS = 8_000
+# An answer gets what the window leaves, less a margin, at most
+# CHAT_MAX_OUTPUT_TOKENS; with under CHAT_MIN_OUTPUT_TOKENS the outline shrinks.
+CHAT_MIN_OUTPUT_TOKENS = 1_000
+CHAT_TOKEN_MARGIN = 256
+# The book's outline may take this share of the window; a long book's full
+# paragraph list (2,445 lines, about 140,000 tokens) gives way to a shorter one.
+CHAT_OUTLINE_SHARE = 0.4
+CHAT_OUTLINES = ("full", "brief", "sections")
+CHAT_BRIEF_WORDS = 12
+CHAT_SECTION_MAX_PASSAGES = 40
+CHAT_BOOK_SEARCH_RESULTS = 12
+CHAT_TOO_LONG = (
+    "This question didn't fit the model's memory. Choose a model with a larger "
+    "context, or start a new conversation."
+)
+CHAT_CONTEXT_ERROR = re.compile(
+    r"maximum context length|context length|context window|too many tokens|prompt is too long",
+    re.IGNORECASE,
+)
 # Windows a server does not report: a local server's, unknown, is taken small.
 CHAT_LOCAL_CONTEXT = 32_768
 CHAT_PROVIDER_CONTEXT = {ANTHROPIC_MODEL_PROVIDER: 200_000, OPENAI_MODEL_PROVIDER: 272_000}
@@ -6921,6 +6943,18 @@ CHAT_TOOLS = (
                 "end": {"type": "integer", "description": "The last paragraph's number; omit it to read one."},
             },
             "required": ["start"],
+        },
+    },
+    {
+        "name": "search_book",
+        "description": (
+            "Find the book's paragraphs about something: give words from it; the "
+            "paragraphs that hold them most come back with a short excerpt each."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Words to look for."}},
+            "required": ["query"],
         },
     },
     {
@@ -7003,6 +7037,10 @@ class ChatUnavailable(ValueError):
     """Chat cannot answer about this book; the message says why."""
 
 
+class ChatTooLong(RuntimeError):
+    """A question and the book's outline do not fit the model's window."""
+
+
 def chat_book(storage, book):
     """A book's folder, record, and narration passages for Chat. A book made
     before passages kept their summaries raises ChatUnavailable."""
@@ -7014,20 +7052,69 @@ def chat_book(storage, book):
     return path, record, passages
 
 
-def chat_system_prompt(record, passages, web=False):
-    """Hilde's instructions, then the book's paragraphs one line each. With
-    `web`, the model may also search the web and read pages."""
+def _first_words(text, count):
+    words = str(text or "").split()
+    return " ".join(words[:count]) + ("…" if len(words) > count else "")
+
+
+def chat_outline(passages, detail):
+    """The book as the model sees it: `full`, a line per paragraph with its
+    type, summary, and tags; `brief`, a line per paragraph with the start of
+    its summary; `sections`, a line per section (a heading's paragraphs, at
+    most CHAT_SECTION_MAX_PASSAGES) with its range and opening summary."""
+    if detail == "full":
+        lines = []
+        for number, passage in enumerate(passages, 1):
+            tags = ", ".join(passage.get("tags") or ())
+            left_out = "" if passage.get("text") else " (not narrated)"
+            lines.append(
+                f"¶{number} [{passage.get('type') or 'body'}]{left_out} {passage['summary']}"
+                + (f" Tags: {tags}." if tags else "")
+            )
+        return lines
+    if detail == "brief":
+        return [
+            f"¶{number}{' [heading]' if passage.get('type') == 'heading' else ''} "
+            f"{_first_words(passage['summary'], CHAT_BRIEF_WORDS)}"
+            for number, passage in enumerate(passages, 1)
+        ]
+    sections, start = [], 1
+    for number in range(2, len(passages) + 2):
+        if (
+            number > len(passages)
+            or passages[number - 1].get("type") == "heading"
+            or number - start >= CHAT_SECTION_MAX_PASSAGES
+        ):
+            sections.append((start, number - 1))
+            start = number
     lines = []
-    for number, passage in enumerate(passages, 1):
-        tags = ", ".join(passage.get("tags") or ())
-        left_out = "" if passage.get("text") else " (not narrated)"
-        lines.append(
-            f"¶{number} [{passage.get('type') or 'body'}]{left_out} {passage['summary']}"
-            + (f" Tags: {tags}." if tags else "")
+    for first, last in sections:
+        opening = passages[first - 1]
+        name = (opening.get("text") or opening["summary"]) if opening.get("type") == "heading" else ""
+        body = next(
+            (passage["summary"] for passage in passages[first - 1:last] if passage.get("type") != "heading"),
+            "",
         )
+        span = f"¶{first}" if first == last else f"¶{first}–{last}"
+        lines.append(f"{span} {_first_words(name, 10) + ': ' if name else ''}{_first_words(body, CHAT_BRIEF_WORDS)}")
+    return lines
+
+
+CHAT_OUTLINE_INTROS = {
+    "full": "Below, every paragraph of the book's narration is one line: its number, its type, "
+            "a summary, and its tags.",
+    "brief": "The book is long, so below every paragraph of its narration is one line with only "
+             "the start of its summary. Find paragraphs about something with search_book.",
+    "sections": "The book is long, so below each section is one line: its paragraphs and how it "
+                "opens. Find paragraphs about something with search_book.",
+}
+
+
+def chat_system_prompt(record, passages, web=False, detail="full"):
+    """Hilde's instructions, then the book's outline at `detail`
+    (chat_outline()). With `web`, the model may also search the web."""
     return f"""You are Hilde, a reading companion for one audiobook: "{record.get('title') or 'this book'}".
-The listener asks about the book; answer from its text. Below, every paragraph of
-the book's narration is one line: its number, its type, a summary, and its tags.
+The listener asks about the book; answer from its text. {CHAT_OUTLINE_INTROS[detail]}
 Summaries are not the text: before quoting the book, or answering about details,
 read the paragraphs with read_paragraphs. Cite paragraphs as ¶12 or ¶12–14, so the
 listener can jump to them. Results of earlier reads may leave the conversation
@@ -7041,7 +7128,41 @@ delete_file when the listener asks. Say that a file was written or deleted only
 when the tool says so. Answer in the language the listener writes in.
 {WEB_PROMPT if web else ""}
 Paragraphs:
-{chr(10).join(lines)}"""
+{chr(10).join(chat_outline(passages, detail))}"""
+
+
+def search_book(passages, query):
+    """The paragraphs whose text, summary, and tags hold most of the query's
+    words (whole words, any case; the words together count most), at most
+    CHAT_BOOK_SEARCH_RESULTS, each with an excerpt; and a label."""
+    query = " ".join(str(query or "").split())[:200]
+    words = list(dict.fromkeys(word for word in re.findall(r"\w+", query.lower()) if len(word) > 2 or word.isdigit()))
+    label = f'Searched the book for "{query}"'
+    if not words:
+        return "Give words to look for.", "Searched nothing"
+    patterns = [re.compile(rf"\b{re.escape(word)}", re.IGNORECASE) for word in words]
+    phrase = re.compile(r"\W+".join(re.escape(word) for word in words), re.IGNORECASE)
+    found = []
+    for number, passage in enumerate(passages, 1):
+        text = passage.get("text") or ""
+        haystack = " ".join((text, passage.get("summary") or "", " ".join(passage.get("tags") or ())))
+        hits = sum(1 for pattern in patterns if pattern.search(haystack))
+        if not hits:
+            continue
+        score = hits * 10 + (25 if len(words) > 1 and phrase.search(haystack) else 0) + min(
+            sum(len(pattern.findall(haystack)) for pattern in patterns), 9
+        )
+        found.append((-score, number, passage, text))
+    if not found:
+        return f"No paragraph holds {', '.join(words)}.", label
+    lines = []
+    for _, number, passage, text in sorted(found)[:CHAT_BOOK_SEARCH_RESULTS]:
+        source = text or passage.get("summary") or ""
+        match = phrase.search(source) or next(filter(None, (pattern.search(source) for pattern in patterns)), None)
+        at = match.start() if match else 0
+        excerpt = " ".join(source[max(0, at - 80):at + 160].split())
+        lines.append(f"¶{number} [{passage.get('type') or 'body'}] …{excerpt}…")
+    return "\n".join(lines), label
 
 
 WEB_PROMPT = """
@@ -7311,6 +7432,8 @@ def chat_tool(path, passages, call, search_server=""):
     if name == "read_paragraphs":
         content, label = chat_read(passages, arguments.get("start"), arguments.get("end"))
         return content, label, False
+    if name == "search_book":
+        return (*search_book(passages, arguments.get("query")), False)
     if search_server and name == "web_search":
         return (*web_search(search_server, arguments.get("query")), False)
     if search_server and name == "read_web_page":
@@ -7407,6 +7530,42 @@ def chat_context_window(selector, local_server):
     return CHAT_LOCAL_CONTEXT
 
 
+# Local servers found without a /tokenize endpoint; estimated from then on.
+_NO_TOKENIZE = set()
+
+
+def chat_input_tokens(selector, local_server, system, entries, tools):
+    """How many tokens a request's input takes, tool schemas included: what a
+    local server's /tokenize (vLLM) counts, else CHAT_CHARS_PER_TOKEN."""
+    provider, _, model = selector.partition("/")
+    if provider in LOCAL_MODEL_PROVIDERS and local_server:
+        server = normalize_local_server(local_server)
+        if server not in _NO_TOKENIZE:
+            body = {
+                "model": model, "messages": _chat_openai_messages(system, entries),
+                "add_generation_prompt": True,
+            }
+            if tools:
+                body["tools"] = [{"type": "function", "function": tool} for tool in tools]
+            request = urllib.request.Request(
+                f"{server}/tokenize", data=json.dumps(body).encode("utf-8"), method="POST",
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=LOCAL_SERVER_TIMEOUT) as response:
+                    count = json.load(response).get("count")
+                if isinstance(count, int) and count > 0:
+                    return count
+            except urllib.error.HTTPError as exc:
+                # vLLM answers 404 for an unknown model too; only a missing endpoint counts.
+                if exc.code in (405, 501) or (exc.code == 404 and b"does not exist" not in exc.read(4096)):
+                    _NO_TOKENIZE.add(server)
+            except (OSError, ValueError, AttributeError):
+                pass
+    characters = len(system) + len(json.dumps(entries, ensure_ascii=False)) + len(json.dumps(tools or ()))
+    return characters // CHAT_CHARS_PER_TOKEN + 4 * (len(entries) + 1)
+
+
 def _chat_openai_messages(system, entries):
     """The conversation as OpenAI-style chat messages, for a local server."""
     messages = [{"role": "system", "content": system}]
@@ -7428,13 +7587,13 @@ def _chat_openai_messages(system, entries):
     return messages
 
 
-def _chat_local(server, model, system, entries, tools, on_text, open_stream):
+def _chat_local(server, model, system, entries, tools, on_text, open_stream, max_tokens):
     body = {
         "model": model,
         "messages": _chat_openai_messages(system, entries),
         "stream": True,
         "temperature": LOCAL_MODEL_TEMPERATURE,
-        "max_tokens": CHAT_MAX_OUTPUT_TOKENS,
+        "max_tokens": max_tokens,
     }
     if tools:
         body["tools"] = [{"type": "function", "function": tool} for tool in tools]
@@ -7478,7 +7637,7 @@ def _chat_local(server, model, system, entries, tools, on_text, open_stream):
             raise RuntimeError("The local model server ended the response early.")
         if reason == "length":
             raise RuntimeError(
-                f"The model was still writing at {CHAT_MAX_OUTPUT_TOKENS:,} tokens, most likely repeating itself."
+                f"The model was still writing at {max_tokens:,} tokens, most likely repeating itself."
             )
     calls = [
         {"id": slot["id"] or f"call-{index}", "name": slot["name"], "arguments": _chat_arguments(slot["json"] or "{}")}
@@ -7531,17 +7690,18 @@ def _chat_openai_input(entries):
     return items
 
 
-def chat_model_reply(selector, local_server, system, entries, tools, on_text, open_stream, pause):
-    """Ask the chosen model for its next message. Return its text and tool
-    calls ({"id", "name", "arguments"}); a provider that cannot take tools
-    raises with what to choose instead."""
+def chat_model_reply(selector, local_server, system, entries, tools, on_text, open_stream, pause,
+                     max_tokens=CHAT_MAX_OUTPUT_TOKENS):
+    """Ask the chosen model for its next message, of at most `max_tokens`.
+    Return its text and tool calls ({"id", "name", "arguments"}); a provider
+    that cannot take tools raises with what to choose instead."""
     provider, _, model = selector.partition("/")
     if not model:
         raise RuntimeError("Choose a model for Chat.")
     if provider in LOCAL_MODEL_PROVIDERS:
         if not local_server:
             raise RuntimeError("Add your local server under Add local first.")
-        return _chat_local(local_server, model, system, entries, tools, on_text, open_stream)
+        return _chat_local(local_server, model, system, entries, tools, on_text, open_stream, max_tokens)
     calls = []
 
     def read(stream_reader):
@@ -7553,7 +7713,7 @@ def chat_model_reply(selector, local_server, system, entries, tools, on_text, op
 
     if provider == ANTHROPIC_MODEL_PROVIDER:
         payload = {
-            "model": model, "max_tokens": CHAT_MAX_OUTPUT_TOKENS, "system": system,
+            "model": model, "max_tokens": max_tokens, "system": system,
             "messages": _chat_anthropic_messages(entries), "stream": True,
         }
         if tools:
@@ -7690,26 +7850,53 @@ class ChatTurn:
     def run(self):
         try:
             path, record, passages, entries = self.path, self.record, self.passages, self.entries
-            system = chat_system_prompt(record, passages, web=bool(self.search_server))
+            web = bool(self.search_server)
+            all_tools = CHAT_TOOLS + CHAT_WEB_TOOLS if web else CHAT_TOOLS
             window = chat_context_window(self.selector, self.local_server)
             budget = max(1_000, window - min(CHAT_MAX_OUTPUT_TOKENS, window // 4))
-            calls_made, trimmed_told = 0, 0
+            # The most detailed outline whose prompt and tools take at most
+            # CHAT_OUTLINE_SHARE of the window.
+            details = list(CHAT_OUTLINES)
+            system = chat_system_prompt(record, passages, web, details[0])
+            while len(details) > 1 and chat_input_tokens(
+                self.selector, self.local_server, system, [], all_tools
+            ) > CHAT_OUTLINE_SHARE * window:
+                details.pop(0)
+                system = chat_system_prompt(record, passages, web, details[0])
+            calls_made, trimmed_told, retried = 0, 0, False
             while True:
                 if self.stop_requested.is_set():
                     raise InterruptedError("chat stopped")
-                context, trimmed = chat_context(entries, len(system), budget)
+                tools = all_tools if calls_made < CHAT_MAX_TOOL_CALLS else ()
+                context, trimmed = chat_context(entries, len(system) + len(json.dumps(tools)), budget)
                 if trimmed > trimmed_told:
                     trimmed_told = trimmed
                     self.publish({"type": "trimmed", "count": trimmed})
-                tools = (
-                    (CHAT_TOOLS + CHAT_WEB_TOOLS if self.search_server else CHAT_TOOLS)
-                    if calls_made < CHAT_MAX_TOOL_CALLS else ()
-                )
+                counted = chat_input_tokens(self.selector, self.local_server, system, context, tools)
+                max_tokens = min(CHAT_MAX_OUTPUT_TOKENS, window - counted - CHAT_TOKEN_MARGIN)
+                if max_tokens < CHAT_MIN_OUTPUT_TOKENS:
+                    if len(details) > 1:
+                        details.pop(0)
+                        system = chat_system_prompt(record, passages, web, details[0])
+                        continue
+                    raise ChatTooLong(f"{counted:,} input tokens leave no room to answer in a {window:,}-token window")
                 self.partial = ""
-                text, calls = chat_model_reply(
-                    self.selector, self.local_server, system, context, tools,
-                    self.on_text, self.model_stream, self.stop_requested.wait,
-                )
+                try:
+                    text, calls = chat_model_reply(
+                        self.selector, self.local_server, system, context, tools,
+                        self.on_text, self.model_stream, self.stop_requested.wait, max_tokens,
+                    )
+                except RuntimeError as exc:
+                    if not CHAT_CONTEXT_ERROR.search(str(exc)):
+                        raise
+                    # The server's count is a lower bound; ask once more with the shortest outline.
+                    print(f"Chat: the model refused a request as too long: {exc}", flush=True)
+                    if retried or len(details) == 1:
+                        raise ChatTooLong(str(exc)) from exc
+                    retried = True
+                    details = details[-1:]
+                    system = chat_system_prompt(record, passages, web, details[0])
+                    continue
                 entry = {"role": "assistant", "text": text.strip(), "at": utc_timestamp()}
                 if calls:
                     entry["calls"] = calls
@@ -7735,6 +7922,9 @@ class ChatTurn:
                         self.publish({"type": "files", "files": chat_files(path)})
         except InterruptedError:
             self.notice("Stopped.")
+        except ChatTooLong as exc:
+            print(f"Chat: a question didn't fit {self.selector}: {exc}", flush=True)
+            self.notice(CHAT_TOO_LONG)
         except Exception as exc:  # the listener sees why; the server goes on
             self.notice(f"Hilde couldn't answer: {exc}")
         finally:
@@ -7843,9 +8033,6 @@ def chat_payload(storage, chats, book):
 CHAT_SPEECH_CHUNK_CHARS = 300
 # Speech is made at about 1.4 times real time, so the first clip is kept short.
 CHAT_SPEECH_FIRST_CHARS = 160
-# Speech runs about 0.07 s a character at 12 codec tokens a second, under one
-# token a character; a clip may use 2.5, about three times its usual length.
-CHAT_SPEECH_TOKENS_PER_CHAR = 2.5
 CHAT_SPEECH_MAX_CHARS = 12_000
 # Seconds the model stays loaded after it last spoke.
 CHAT_SPEECH_IDLE = 300
@@ -8001,12 +8188,10 @@ class ChatSpeaker:
             self._ensure(voice_dir)
             started = time.monotonic()
             try:
-                # The model can miss its end and talk on to its 2048-token
-                # limit, minutes of speech; a clip gets about three times its
-                # usual length.
+                # Capped like narration's clips (clip_token_limit()).
                 self.worker.send({
                     "type": "generate", "indexes": [1], "texts": [text],
-                    "max_new_tokens": int(len(text) * CHAT_SPEECH_TOKENS_PER_CHAR) + 24,
+                    "max_new_tokens": clip_token_limit([text]),
                 })
                 event = self._await("result", CHAT_SPEECH_CHUNK_TIMEOUT)
             except BaseException as exc:
