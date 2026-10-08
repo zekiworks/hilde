@@ -1,0 +1,12 @@
+{
+  "descriptions_only": true,
+  "source_sha256": "5692a5514787a8c6727b4ff3b726a3385798bc68e12138d1d4af83947e2acf6e",
+  "source_file": "source.pdf",
+  "git_commit": "f0c29d9b498614251783c32ee43f186b05860288",
+  "model": "lm-studio/gemma-4-31B-it",
+  "local_vision": true,
+  "prompt_hash": "10998b32cd0217a873aa28cf022b90b50df52926c631b4734f6c995b31575064",
+  "narration_sha256": "41a87818d5d3075160e84ec38dfb36d1efce7b4108eb922861dede916626f7f5",
+  "created_at": "2026-10-08T18:08:28Z",
+  "seconds": 103
+}
