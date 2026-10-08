@@ -1127,6 +1127,11 @@ class PaperWorkflowTests(unittest.TestCase):
                    "![](images/eq.png)", "<!-- Start of picture text -->\nΔC = (C(H′) − C(H))/(C(H)) . (6)\n<!-- End of picture text -->"]
         self.assertEqual(web.visual_context(lead_in, ["prose", "image", "labels"], 2, 3, None, ["6"]),
                          ("For a candidate H′, let",))
+        # A figure whose caption extraction missed gets no neighbors: beside
+        # CLM's Figure 6, half a sentence of another section swapped two scores.
+        figure = ["Previous section, half a sentence which", "![](images/fig.png)",
+                  "<!-- Start of picture text -->\n44.6 | 179 PF\n<!-- End of picture text -->"]
+        self.assertEqual(web.visual_context(figure, ["prose", "image", "labels"], 2, 3), ())
 
     def test_captions_printed_below_their_tables_name_their_own_table(self):
         temporary = tempfile.TemporaryDirectory()

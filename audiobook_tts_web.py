@@ -5488,14 +5488,16 @@ RUN_IN_HEADING_PATTERN = re.compile(r"^\s*\*\*.{0,200}?\.\*\*\s*", re.S)
 EQUATION_MENTION_PATTERN = re.compile(r"\b(?:equations?|eqs?\.)\s*\(?(\d+)\)?", re.IGNORECASE)
 
 
-def visual_context(paragraphs, kinds, start, end, label=None, equation_numbers=()):
+def visual_context(paragraphs, kinds, start, end, label=None, equation_numbers=(), equation=False):
     """The author's paragraphs about a figure, table, or equation batch
     (start, end, 1-based): those that mention it by its caption's `label`
     ("Table 3") or its printed `equation_numbers` ("Equation 3"), and for an
-    equation or a picture without a caption, the prose just before and just
-    after it, where an equation's sentence and its "where" clause are. A
-    captioned figure no paragraph mentions gets none: the prose beside
-    Attention's appendix figures is its Acknowledgements.
+    equation (`equation`, or printed `equation_numbers`), the prose just before
+    and just after it, where its sentence and its "where" clause are. A figure
+    or table gets only paragraphs that name it: the prose beside Attention's
+    appendix figures is its Acknowledgements, and beside CLM's Figure 6, whose
+    caption extraction missed, half a sentence of the previous section, with
+    which Gemma swapped two models' scores in 1 of 3 tries and never without.
     The nearest come first, in book order, at most VISUAL_CONTEXT_PARAGRAPHS
     and VISUAL_CONTEXT_CHARS. A table's request held the right cells and
     still swapped d k for d v, because §6.2, which names d k, never reached
@@ -5512,7 +5514,7 @@ def visual_context(paragraphs, kinds, start, end, label=None, equation_numbers=(
         or (numbers and {int(number) for number in EQUATION_MENTION_PATTERN.findall(paragraphs[index])} & numbers)
     ]
     neighbors = []
-    if numbers or not label:
+    if numbers or equation:
         before = [index for index in prose if index < start - 1]
         after = [index for index in prose if index >= end]
         neighbors = before[-1:] + after[:1]
@@ -10170,6 +10172,7 @@ class PaperRun(Run):
             cited[start] = visual_context(
                 requested, kinds, start, end, label,
                 printed_equation_numbers(requested[start - 1:end]),
+                equation=_visual_type(paragraphs[start - 1:end], batch_kinds) == "equation",
             )
 
         def finish(start, end, narration, saved=False):
