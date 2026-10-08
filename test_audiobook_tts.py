@@ -1093,6 +1093,17 @@ class PaperWorkflowTests(unittest.TestCase):
         # Only warmup_steps is raised to −1.5, and d_model to −0.5.
         self.assertEqual(formula, "lrate = d<sub>model</sub><sup>-0.5</sup> * step_num * warmup_steps<sup>-1.5</sup>")
         self.assertEqual(prose, "keys of dimension _d<sub>k</sub>_ .")
+        # A numerator as long as its line is still a numerator (RRSI's Equation 6);
+        # a second line further down is a line.
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 100), "dS = s1 - s0, dC =", fontsize=10)
+            page.insert_text((180, 93), "cost1 - cost0", fontsize=10)
+            page.insert_text((190, 107), "cost0", fontsize=10)
+            page.insert_text((260, 100), ". (6)", fontsize=10)
+            page.insert_text((72, 117), "y = x + 1", fontsize=10)
+            formula = functions["formula_text"](page, pymupdf.Rect(60, 80, 400, 122))
+        self.assertEqual(formula, "dS = s1 - s0, dC = (cost1 - cost0)/(cost0) . (6) y = x + 1")
 
     def test_a_table_is_told_the_paragraphs_that_discuss_it(self):
         paragraphs = [
@@ -1110,6 +1121,12 @@ class PaperWorkflowTests(unittest.TestCase):
         # An equation is told the sentence around it and what names it.
         self.assertEqual(web.visual_context(paragraphs, kinds, 4, 6, None, ["3"]),
                          (paragraphs[2], paragraphs[6], paragraphs[7]))
+        # A run-in heading is a section's name, not what a symbol means: with it,
+        # RRSI's cost became "complexity" (Equation 6).
+        lead_in = ["**Ridge/** _L_ 2 **-Style Complexity-Aware Acceptance.** For a candidate H′, let",
+                   "![](images/eq.png)", "<!-- Start of picture text -->\nΔC = (C(H′) − C(H))/(C(H)) . (6)\n<!-- End of picture text -->"]
+        self.assertEqual(web.visual_context(lead_in, ["prose", "image", "labels"], 2, 3, None, ["6"]),
+                         ("For a candidate H′, let",))
 
     def test_captions_printed_below_their_tables_name_their_own_table(self):
         temporary = tempfile.TemporaryDirectory()

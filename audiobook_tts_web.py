@@ -834,8 +834,18 @@ def formula_text(sheet, rect):
     def weight(band):
         return sum(len(span["text"]) for span in band["spans"])
 
+    # Heaviest first, a band is a line of the formula unless it sits within
+    # 1.2 text heights of a heavier line: a numerator or denominator sits
+    # 0.66 to 0.83 from its line (RRSI's Equation 6, Attention's Equation 1),
+    # the positional encoding's second line 1.69 below its first. Taken by
+    # weight alone, RRSI's numerator "Ĉ(H′) − Ĉ(H_t)" became a line of its own.
+    # A band of a few marks, an accent above a letter, is never a line.
     heaviest = max(weight(band) for band in bands)
-    lines = [band for band in bands if weight(band) >= 0.4 * heaviest]
+    lines = []
+    for band in sorted(bands, key=weight, reverse=True):
+        if weight(band) >= 0.25 * heaviest and all(abs(band["y"] - line["y"]) >= 1.2 * base for line in lines):
+            lines.append(band)
+    lines.sort(key=lambda band: band["y"])
     rendered = []
     for line in lines:
         parts = [
@@ -845,7 +855,9 @@ def formula_text(sheet, rect):
         fractions = []
         for band in parts:
             place = "num" if band["y"] < line["y"] else "den"
-            for span in band["spans"]:
+            # Left to right, so an accent first in the band ("ˆ" over a later
+            # C) does not open a fraction of its own before the text joining it.
+            for span in sorted(band["spans"], key=lambda span: span["x0"]):
                 for fraction in fractions:
                     if span["x0"] < fraction["x1"] + 0.6 * base and span["x1"] > fraction["x0"] - 0.6 * base:
                         fraction[place].append(span)
@@ -5470,6 +5482,9 @@ def _mentioned_visuals(text):
 # it: at most this many paragraphs and characters, the nearest first.
 VISUAL_CONTEXT_PARAGRAPHS = 3
 VISUAL_CONTEXT_CHARS = 2_400
+# A bold heading that opens a paragraph and ends with its period: "**Ridge/**
+# _L_ 2 **-Style Complexity-Aware Acceptance.** For a candidate…".
+RUN_IN_HEADING_PATTERN = re.compile(r"^\s*\*\*.{0,200}?\.\*\*\s*", re.S)
 EQUATION_MENTION_PATTERN = re.compile(r"\b(?:equations?|eqs?\.)\s*\(?(\d+)\)?", re.IGNORECASE)
 
 
@@ -5511,7 +5526,10 @@ def visual_context(paragraphs, kinds, start, end, label=None, equation_numbers=(
             continue
         picked.append(index)
         used += len(text)
-    return tuple(paragraphs[index] for index in sorted(picked))
+    # A bold run-in heading names a section, not what a symbol means: told
+    # "Complexity-Aware Acceptance. For a candidate H′ … let", Gemma called
+    # RRSI's cost Ĉ "complexity" in 3 of 3 runs, and "cost" without it.
+    return tuple(RUN_IN_HEADING_PATTERN.sub("", paragraphs[index], count=1) for index in sorted(picked))
 
 
 def _place_after_mentions(document, kinds, starts):
