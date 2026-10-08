@@ -56,5 +56,8 @@ questions:
     question: >
       Should instructions a paper prints as a listing, such as Harness-Zero's Prompt 1, be read word for word
       (markup, paths and placeholders said in words), while code is still described? R8-12 assumes yes.
-    status: open
+    status: answered
+    answer: >
+      Yes for prompts and command names (Ümit, 2026-10-08; D16): a printed prompt is read word for word, a
+      command with its exact name and option names; code is still described.
 

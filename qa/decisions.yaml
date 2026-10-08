@@ -105,3 +105,14 @@ decisions:
       key values, and summarizes the rest; each comparison names its metric and which direction is better.
       Tables are still shown as printed (D01), and are never read cell by cell.
     why: Someone listening without a screen should hear the values the paper's argument rests on (R21-09).
+
+  - id: D16
+    date: 2026-10-08
+    by: [umit]
+    decision: >
+      Answers Q07. A prompt a paper prints (instructions written for a model) is read word for word. A command
+      is read with its exact name and the exact names of its options and arguments, as words without dashes or
+      brackets. Program code and algorithms are still described in plain language, not read.
+    why: >
+      A listener who hears the wrong command name gets the method wrong: DeLM's note command was read as
+      "reserve" (R22-05). The reviewer recommended this split.

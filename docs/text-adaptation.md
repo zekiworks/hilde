@@ -108,8 +108,11 @@ model with that paragraph, its mark moved to the end of the sentence carrying
 it, so the note is read after that sentence rather than splitting it, saying
 whom or what it is about ("Aidan Gomez did this work while at Google Brain").
 A note under a table, marked with a letter ("a"), moves with its table. A
-command or file name in a description is the one the paper prints on that
-line, never one borrowed from the text around it. A note marked beside one author alone reaches the model with
+prompt the paper prints, such as instructions written for a model, is read
+word for word. A command is read with its exact name and the names of its
+options, without dashes or brackets ("sync, with the options source and
+target"), and never with a name borrowed from the text around it. Program code
+is still described rather than read. A note marked beside one author alone reaches the model with
 that author's name, so it is never read as a bare "Work performed while at
 Google Brain". A note about one author comes before a note every author line
 shares, so "Illia Polosukhin did this work while at Google Research" follows
