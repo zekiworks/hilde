@@ -462,18 +462,26 @@ PDF work is page-addressable:
    2 and 3", "Tables 1–4"), on its own page or the next, to follow that
    paragraph, so a description never comes before the author introduces its
    figure; one already after its first mention, or mentioned only pages away,
-   stays. `_place_footnotes()`, which runs first, moves each footnote
+   stays, and a footnote right after it whose marker its cells or caption
+   carry goes with it (DeLM's cache note under Table 5 was left before §3.3,
+   R22-05). `_place_footnotes()`, which runs first, moves each footnote
    (`_footnote_marker()`: a number glued to its first word, "4To
-   illustrate", or a symbol, "_†_ Work performed") to follow the nearest
-   earlier paragraph on its page or the one before whose superscripts carry
+   illustrate", a symbol, "_†_ Work performed", or a letter before the
+   note's first word, "a The Claude Code CLI") to follow the nearest
+   earlier paragraph on its page or the one before whose marks carry
    that marker (`_cited_markers()`: "<sup>4</sup>", "<sup>_∗†_</sup>" as ∗
-   and †), so it is no longer read where the page printed it. A note cited by
+   and †, "<sup>a</sup>", and a table cell's "^a", where only a letter or
+   symbol counts since "10^20" is a power; `FOOTNOTE_CITING_KINDS`: prose,
+   a caption, or a table's cells), so it is no longer read where the page printed it. A note cited by
    that paragraph alone comes first and one it shares with earlier paragraphs
    after, so the last author's affiliation note follows the name before the
    equal-contribution note every author line cites; and
    `paper_batches()` sends it in one request with that paragraph, where the
    prompt has it read right after the citing sentence, naming whom or what it
-   is about. A note marked beside one author alone gets that author's name in
+   is about. The request carries the note's mark at the end of its sentence
+   (`marks_after_sentences()`): read at the mark, Gemma split DeLM's sentence
+   on Claude Code's idle limit around the note (R22-04). A mark beside an
+   author's name stays where it is. A note marked beside one author alone gets that author's name in
    code (`name_author_notes()`, counted across every author line, so the
    equal-contribution note stays as printed): "> † Aidan N. Gomez: Work
    performed while at Google Brain". The prompt's examples are invented, never quoted from a paper:

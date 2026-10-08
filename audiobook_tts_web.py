@@ -310,6 +310,9 @@ LIST_ITEM_PATTERN = re.compile(r"^(?:[-*+•]|\d{1,3}[.)])[ \t]")
 FIGURE_PART_KINDS = frozenset({"image", "labels", "table", "panel"})
 # What may sit between the halves of a sentence a page break split.
 PAGE_BREAK_SKIPPED_KINDS = FIGURE_PART_KINDS | {"caption", "footnote", "furniture"}
+# What may carry a footnote's mark: the author's prose, and a table's cells
+# or caption ("$1.00 ^a").
+FOOTNOTE_CITING_KINDS = frozenset({"prose", "caption"}) | FIGURE_PART_KINDS
 # Words that tell a listener a description of a visual begins, looked for in
 # the first twelve words of one.
 VISUAL_CUE_PATTERN = re.compile(
@@ -5108,6 +5111,38 @@ def numbered_heading(paragraph, kind):
     return text if NUMBERED_HEADING_PATTERN.match(text) else None
 
 
+# Where a sentence stops: not after an initial ("A. Gomez"), "e.g", "i.e", or "et al".
+SENTENCE_STOP_PATTERN = re.compile(r"(?<!\b[A-Z])(?<!\be\.g)(?<!\bi\.e)(?<!\bal)[.!?][\"'”’)\]]*(?=\s|$)")
+
+
+def marks_after_sentences(paragraphs, kinds):
+    """Move each footnote's mark in the prose that cites it to the end of its
+    sentence, as the model gets it. The prompt says to read a note after the
+    sentence carrying its mark; Gemma read DeLM's note on Claude Code's idle
+    limit at the mark, mid-sentence, and the sentence ended broken (R22-04).
+    A mark beside an author's name stays, since it says whom a note is about."""
+    moved = list(paragraphs)
+    lines = author_lines(paragraphs)
+    for index, citer in footnote_citers(paragraphs, kinds).items():
+        if citer in lines or kinds[citer] != "prose":
+            continue
+        marker = _footnote_marker(paragraphs[index])
+        text = moved[citer]
+        mark = next(
+            (match for match in re.finditer(r"<sup>(.*?)</sup>", text)
+             if marker in _cited_markers(match.group(0))),
+            None,
+        )
+        if mark is None:
+            continue
+        stop = SENTENCE_STOP_PATTERN.search(text, mark.end())
+        end = stop.end() if stop else len(text.rstrip())
+        if not re.search(r"\w", text[mark.end():end]):
+            continue  # already at its sentence's end
+        moved[citer] = text[:mark.start()] + text[mark.end():end] + mark.group(0) + text[end:]
+    return moved
+
+
 def model_paragraphs(paragraphs, kinds):
     """Return the paragraphs as the model gets them.
 
@@ -5512,6 +5547,14 @@ def _place_after_mentions(document, kinds, starts):
             index for index, mentioned in enumerate(mentions)
             if label in mentioned and abs(starts[index] - starts[start]) <= 1
         ), None)
+        # A table's own notes ("a" under its cells) go where the table goes;
+        # left behind, DeLM's cache note was read before the wrong section.
+        marks = set().union(*(_cited_markers(paragraph) for paragraph in document[start:end + 1]))
+        while (
+            end + 1 < len(document) and kinds[end + 1] == "footnote"
+            and _footnote_marker(document[end + 1]) in marks
+        ):
+            end += 1
         if first is not None and first > end:
             following.setdefault(first, []).extend(range(start, end + 1))
             moved += 1
@@ -5534,26 +5577,35 @@ def _reorder(document, kinds, starts, following):
 
 
 # A footnote's marker as extracted: a number glued to its first word
-# ("4To illustrate"), or a symbol ("_†_ Work performed").
+# ("4To illustrate"), a symbol ("_†_ Work performed"), or, under a table, a
+# letter before the note's first word ("a The Claude Code CLI…").
 FOOTNOTE_SYMBOLS = "∗†‡§¶‖"
-FOOTNOTE_MARK_PATTERN = re.compile(rf"(\d{{1,2}})(?![\d.,])|([{FOOTNOTE_SYMBOLS}])")
+FOOTNOTE_MARK_PATTERN = re.compile(
+    rf"(\d{{1,2}})(?![\d.,])|([{FOOTNOTE_SYMBOLS}])|([a-z])_?\s+(?=[A-Z])"
+)
 
 
 def _footnote_marker(paragraph):
-    """The marker a footnote starts with, such as "4" or "†", or None."""
+    """The marker a footnote starts with, such as "4", "†", or "a", or None."""
     text = paragraph.strip().lstrip(">").strip().lstrip("_").strip()
     match = FOOTNOTE_MARK_PATTERN.match(text)
-    return (match.group(1) or match.group(2)) if match else None
+    return (match.group(1) or match.group(2) or match.group(3)) if match else None
 
 
 def _cited_markers(paragraph):
     """The footnote markers a passage's superscripts carry: numbers whole,
-    symbols one by one, as in "<sup>_∗†_</sup>"."""
+    symbols one by one, as in "<sup>_∗†_</sup>", and a lone letter, "<sup>a</sup>".
+    A table's cells write a superscript "^a"; there only a letter or symbol
+    counts, since "10^20" is a power."""
     marks = set()
     for superscript in re.findall(r"<sup>(.*?)</sup>", paragraph):
         text = re.sub(r"[_*\s,]", "", superscript)
         marks.update(re.findall(r"\d{1,2}", text))
         marks.update(symbol for symbol in text if symbol in FOOTNOTE_SYMBOLS)
+        if re.fullmatch(r"[a-z]", text):
+            marks.add(text)
+    for mark in re.findall(rf"\^\s?([a-z{FOOTNOTE_SYMBOLS}])(?![A-Za-z0-9])", paragraph):
+        marks.add(mark)
     return marks
 
 
@@ -5618,13 +5670,13 @@ def _place_footnotes(document, kinds, starts):
             continue
         citing = index - 1
         while citing >= 0 and starts[citing] >= starts[index] - 1:
-            if kinds[citing] == "prose" and marker in _cited_markers(document[citing]):
+            if kinds[citing] in FOOTNOTE_CITING_KINDS and marker in _cited_markers(document[citing]):
                 following.setdefault(citing, []).append(index)
                 # How many paragraphs cite it: "∗ Equal contribution" marks
                 # every author, "‡" one of them.
                 citers[index] = sum(
                     1 for other in range(citing + 1)
-                    if starts[other] >= starts[index] - 1 and kinds[other] == "prose"
+                    if starts[other] >= starts[index] - 1 and kinds[other] in FOOTNOTE_CITING_KINDS
                     and marker in _cited_markers(document[other])
                 )
                 break
@@ -10071,7 +10123,7 @@ class PaperRun(Run):
         references = references or {}
         requested = [
             resolve_citations(paragraph, references)
-            for paragraph in name_author_notes(model_paragraphs(paragraphs, kinds), kinds)
+            for paragraph in marks_after_sentences(name_author_notes(model_paragraphs(paragraphs, kinds), kinds), kinds)
         ]
         if references:
             self.publish(

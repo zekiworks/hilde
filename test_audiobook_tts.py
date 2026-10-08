@@ -5944,6 +5944,36 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(web._numbers("600 800 1 , 000"), ["600", "800", "1000"])
         self.assertEqual(web._numbers("batches of 16, 32, 128"), ["16", "32", "128"])
 
+    def test_a_footnote_mark_reaches_the_model_at_the_end_of_its_sentence(self):
+        paragraphs = [
+            "Runs stalled on subagents cut off by the CLI’s idle limit<sup>1</sup> or by extra review "
+            "rounds. By comparison, DELM wins.",
+            "> 1Claude Code defaults to a 600-second idle limit.",
+        ]
+        moved = web.marks_after_sentences(paragraphs, web._layout_kinds(paragraphs))
+        # Read at the mark, the note split the sentence (R22-04); at its end it cannot.
+        self.assertEqual(moved[0], "Runs stalled on subagents cut off by the CLI’s idle limit or by extra review "
+                                   "rounds.<sup>1</sup> By comparison, DELM wins.")
+        self.assertEqual(moved[1], paragraphs[1])
+
+    def test_a_tables_lettered_note_moves_with_the_table(self):
+        page = (
+            "Table 5: Comparison on SWE-bench Verified.\n\n"
+            "![Table 5: Comparison on SWE-bench Verified.](images/t.png)\n\n"
+            "<!-- Start of picture text -->\n|Method|Cost|\n|---|---|\n|Claude Code|$1.00 ^a|\n"
+            "<!-- End of picture text -->\n\n"
+            "> a The Claude Code CLI sends cache_control blocks.\n\n"
+            "# 3.3 SWE-bench Verified\n\n"
+            "Table 5 shows that DELM is cheapest, at a cost of 10^2 cents."
+        )
+        joined = web.split_paper_paragraphs(web.join_pdf_pages([page])[0])
+        # The table moves after the text that introduces it, and its note, read
+        # by page position before the heading in DeLM (R22-05), goes with it.
+        self.assertEqual([paragraph.split("\n")[0][:20] for paragraph in joined], [
+            "# 3.3 SWE-bench Veri", "Table 5 shows that D", "Table 5: Comparison ", "![Table 5: Compariso",
+            "<!-- Start of pictur", "> a The Claude Code ",
+        ])
+
     def test_a_footnote_is_grounded_by_the_paragraph_its_mark_sits_in(self):
         paragraphs = [
             "**Aidan N. Gomez**<sup>_∗†_</sup>, University of Toronto; "
