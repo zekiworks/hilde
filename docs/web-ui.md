@@ -171,8 +171,10 @@ models you connected under **Providers** or **Add local** on **Create**. With
 none, the chat asks you to add one first. Claude Code models cannot chat:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
-conversation** starts over. When a conversation grows long, its oldest
-messages and reads leave what Hilde remembers, and the chat says so.
+conversation** starts over, and **× Close** closes the chat. A question Ask
+Hilde wrote and you didn't send is gone when you next press **Chat with
+Hilde**, which always opens with an empty box. When a conversation grows long,
+its oldest messages and reads leave what Hilde remembers, and the chat says so.
 
 **Ask Hilde**, beside the player, is for the moment something is unclear while
 you listen. It pauses the book, opens the chat, and writes a question about
@@ -233,7 +235,10 @@ figure, table, or equation carries a **Description** label. **Original**
 shows the author's text muted beneath the passage made from it, headed with the
 PDF page it starts on, and shows passages the model left out, such as a
 copyright notice, as **Not narrated**. Books narrated without adaptation, or
-adapted before Hilde recorded the original text, have no **Original**.
+adapted before Hilde recorded the original text, have no **Original**. A
+passage Hilde asked the model about again and still found stating a number or
+name the source doesn't print, or a lost "not", shows "Check: …" under its
+original, so you know what to listen for.
 A PDF table's picture carries its whole caption for screen readers. If
 forced alignment is partially or fully unavailable, exact sentence timing
 remains usable. Existing paragraph-era reader sidecars receive estimated

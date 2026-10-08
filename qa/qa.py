@@ -8,7 +8,7 @@
 
 TARGET is a book folder (Audiobooks/<slug>--<hash12>/), its narration.json, or a plain text file.
 For a book, the checked text is exactly what every voice reads: the non-empty passage texts joined by
-blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10, G11, G12), and the
+blank lines. Passage types and sources then enable typed checks (G06-G07 typed, G09, G10, G11, G12, G13), and the
 paper is inferred from book.json's source_sha256 (papers.yaml `sha256`).
 
 Add --json to check, report or next for machine-readable output. `check` exits 1 when anything fails.
@@ -270,7 +270,7 @@ def generic_checks(t: Target):
     regex_check("G02", "B05", 'Caption in "Table N |" format leaked as text', r"^(Table|Figure) \d+ \|.*$")
     regex_check("G03", "B17", 'Heading with a "Part" prefix',
                 r"^Part (One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|[A-H])\b.*$")
-    regex_check("G04", "B23", "Markup leaked into text", r"<sup>|</sup>|<br>|\*\*", 0)
+    regex_check("G04", "B23", "Markup leaked into text", r"<sup>|</sup>|<sub>|</sub>|<br>|\*\*", 0)
     regex_check("G05", "B20", "Ligature character (needs NFKC)", "[ﬀ-ﬆĲĳ]", 0)
 
     # G06: passage or paragraph (12+ words) that ends without final punctuation
@@ -396,6 +396,15 @@ def generic_checks(t: Target):
                 want = f"Equation {', '.join(sorted(printed))}" if printed else "an unnumbered equation"
                 hits.append((f"passage {p.get('id')} (p. {p.get('page')})", f"says {m.group(0)!r}, source prints {want}"))
     results.append(("G12", "B03", "Equation passage names a number other than the one printed beside it", hits))
+
+    # G13: a passage Hilde kept and marked: a check found it stating what its source
+    # does not (an unprinted number or name, a dropped or added "not" or "all"), and
+    # asked once more, the model said it again. Start the review here.
+    hits = [
+        (f"passage {p.get('id')} (p. {p.get('page')})", "; ".join(p["flags"]))
+        for p in t.passages if p.get("flags")
+    ]
+    results.append(("G13", "B02", "Passage kept and marked after asking the model again", hits))
 
     # G10: book folder integrity (only for book folders)
     if t.book is not None:

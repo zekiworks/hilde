@@ -83,3 +83,25 @@ decisions:
       code, without the model; nothing adds "Part" or "Section". Speaking headings without
       their numbers was a misunderstanding.
     why: The paper's numbers tell a listener where they are; one rule in code cannot vary between requests (B17).
+
+  - id: D14
+    date: 2026-10-08
+    by: [umit]
+    decision: >
+      A narration a check finds stating what its source does not (a number or name the source never
+      prints, "orders of magnitude" the source never states, or a dropped or added "not", "no", "all" or
+      "only"), or saying math in an order that can be heard two ways, is asked about once more, naming what
+      the check found. The answer with fewer such findings is kept; what remains is marked on the
+      passage (narration.json "flags") and shown in the Original view. Other checks only log.
+    why: >
+      Logging alone shipped errors the checks had found (O2, L-c in the 7 October report). One more
+      request costs little; failing the batch would stop a whole book for one sentence.
+
+  - id: D15
+    date: 2026-10-08
+    by: [umit]
+    decision: >
+      Answers Q06. A table's description names every row or model the author's text discusses, with its
+      key values, and summarizes the rest; each comparison names its metric and which direction is better.
+      Tables are still shown as printed (D01), and are never read cell by cell.
+    why: Someone listening without a screen should hear the values the paper's argument rests on (R21-09).

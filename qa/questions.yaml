@@ -45,7 +45,10 @@ questions:
     question: >
       Tables are shown as printed (D01), so a table's spoken summary is short; Harness-Zero's Table 4 summary covers
       about 10 of 28 rows. Should someone listening without a screen get fuller table summaries?
-    status: open
+    status: answered
+    answer: >
+      Yes (Ümit, 2026-10-08; D15): every row or model the author's text discusses is named with its key
+      values, and the rest summarized.
 
   - id: Q07
     asked: 2026-10-02

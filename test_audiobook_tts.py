@@ -1066,6 +1066,51 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertEqual([line.strip() for line in lines], prompt)
         self.assertTrue(all(len(line) - len(line.lstrip()) < 4 for line in lines), lines)
 
+    def test_scripts_are_marked_where_they_hang_from_their_symbol(self):
+        import pymupdf
+
+        # The converter's own functions, run on a page drawn the way Attention
+        # prints Equation 3 and "d_k" in prose.
+        source = web._PDF_CONVERTER
+        start = source.index("# Sub- and superscripts as printed")
+        functions = {"collections": __import__("collections")}
+        exec(source[start:source.index("# Replacements are made from the end of the page")], functions)
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            x = 72
+            for text, size, raise_by in (
+                ("lrate = d", 10, 0), ("model", 7, -3), ("-0.5", 7, 4), (" * step_num * warmup_steps", 10, 0),
+                ("-1.5", 7, 4),
+            ):
+                # A subscript and the superscript above it start at the same place.
+                left = x - (pymupdf.get_text_length("model", fontsize=7) if text == "-0.5" else 0)
+                page.insert_text((left, 100 - raise_by), text, fontsize=size)
+                x = left + pymupdf.get_text_length(text, fontsize=size)
+            page.insert_text((72, 200), "keys of dimension d", fontsize=10)
+            page.insert_text((72 + pymupdf.get_text_length("keys of dimension d", fontsize=10), 202), "k", fontsize=7)
+            formula = functions["formula_text"](page, pymupdf.Rect(60, 80, 400, 110))
+            prose = functions["with_subscripts"]("keys of dimension _dk_ .", page, pymupdf.Rect(60, 185, 400, 210))
+        # Only warmup_steps is raised to −1.5, and d_model to −0.5.
+        self.assertEqual(formula, "lrate = d<sub>model</sub><sup>-0.5</sup> * step_num * warmup_steps<sup>-1.5</sup>")
+        self.assertEqual(prose, "keys of dimension _d<sub>k</sub>_ .")
+
+    def test_a_table_is_told_the_paragraphs_that_discuss_it(self):
+        paragraphs = [
+            "Training used label smoothing.",
+            "In Table 3 rows (B), we observe that reducing the attention key size dk hurts model quality.",
+            "Unrelated prose.",
+            "Table 3: Variations on the Transformer architecture.",
+            "![](images/table.png)",
+            "<!-- Start of picture text -->|N|dk|BLEU|<!-- End of picture text -->",
+            "More unrelated prose.",
+            "where the learning rate is the one in Equation 3.",
+        ]
+        kinds = ["prose", "prose", "prose", "caption", "image", "labels", "prose", "prose"]
+        self.assertEqual(web.visual_context(paragraphs, kinds, 4, 6, "Table 3"), (paragraphs[1],))
+        # An equation is told the sentence around it and what names it.
+        self.assertEqual(web.visual_context(paragraphs, kinds, 4, 6, None, ["3"]),
+                         (paragraphs[2], paragraphs[6], paragraphs[7]))
+
     def test_captions_printed_below_their_tables_name_their_own_table(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -2190,7 +2235,8 @@ for line in sys.stdin:
             ))
         requests = [json.loads(line) for line in record.read_text().splitlines()]
         # The batch was capped for its longest text; the heading, alone, for its own.
-        self.assertEqual(requests, [[[HEADING, SENTENCE], 479], [[HEADING], 79]])
+        # "1950s" is counted as spoken, each digit as about five characters.
+        self.assertEqual(requests, [[[HEADING, SENTENCE], 519], [[HEADING], 79]])
         self.assertEqual(completed, {1, 2})
         self.assertAlmostEqual(sf.info(cli._checkpoint_path(checkpoints, 1)).duration, 1.54, places=2)
 
@@ -2212,6 +2258,21 @@ for line in sys.stdin:
         self.assertIsNone(cli.clip_problem(SENTENCE, 12.0))
         self.assertIsNone(cli.clip_problem("Yes.", 0.1))
         self.assertIn("ended early", cli.clip_problem(SENTENCE, 1.1))
+
+    def test_a_sentence_dense_with_numbers_gets_room_and_a_capped_try_is_kept_last(self):
+        numbers = "The costs were 3.3 times 10 to the 18, 2.3 times 10 to the 19, and 1.8 times 10 to the 20."
+        # Counted as spoken, so it is not cut at its last number.
+        self.assertEqual(cli.spoken_length(numbers), len(numbers) + 4 * 18)
+        self.assertIsNone(cli.clip_problem(numbers, 12.0))
+        cap = cli.clip_token_limit([numbers]) / cli.CODEC_TOKENS_PER_SECOND
+        lengths = iter([cap, 0.5])
+        with mock.patch("sys.stdout", io.StringIO()):
+            waveform, rate = cli.checked_clip(
+                3, numbers, np.zeros(int(cap * 100)), 100, lambda text: (np.zeros(int(next(lengths) * 100)), 100)
+            )
+        # Every try failed: the one that ended on its own (too short) beats the
+        # two that stopped at the cap, though those are nearer its length.
+        self.assertEqual(len(waveform) / rate, 0.5)
 
 class UnifiedWorkflowTests(unittest.TestCase):
     def test_pdf_extraction_flows_directly_into_shared_audiobook(self):
@@ -2681,17 +2742,28 @@ class UnifiedWorkflowTests(unittest.TestCase):
         run.pump()
 
         self.assertEqual(run.code, 0)
+        # What a request asks the model to narrate: its source, not the
+        # author's text about a figure that comes with the figure.
+        sources = [
+            "".join(re.findall(r"<SOURCE_PARAGRAPH>(.*?)</SOURCE_PARAGRAPH>", text, re.S))
+            for text, _ in requests
+        ]
         self.assertEqual(sum(
             "The output is computed as a weighted sum of the values, where each "
-            "weight comes from a key." in text
-            # A second request for prose the stub narrated short is the same batch.
-            for text, _ in requests if "reworded these sentences" not in text
+            "weight comes from a key." in source
+            # A second request for the same batch (prose narrated short, or a
+            # dropped "each" the check found) is not another narration of it.
+            for source, (text, _) in zip(sources, requests)
+            if "reworded these sentences" not in text and "A check of your narration" not in text
         ), 1)
         # The request that sends the figure also holds its caption, and no
         # other request does.
         [figure_request] = [text for text, attached in requests if attached]
         self.assertIn("Figure 2: Scaled Dot-Product Attention.", figure_request)
-        self.assertEqual(sum("Figure 2:" in text for text, _ in requests), 1)
+        self.assertEqual(sum("Figure 2:" in source for source in sources), 1)
+        # No paragraph mentions Figure 2, so it is told none of the prose
+        # beside it, which may be anything, such as Acknowledgements.
+        self.assertNotIn("<AUTHOR_CONTEXT>", figure_request)
 
     def test_panel_titles_reach_the_model_as_titles_not_sections(self):
         temporary = tempfile.TemporaryDirectory()
@@ -5522,8 +5594,10 @@ class PaperConcurrencyTests(unittest.TestCase):
             1,
         )[1].split("\nSome immediately preceding batches", 1)[0]
         self.assertLessEqual(len(context), 512)
-        self.assertIn("Paragraph 1: Summary 1", context)
-        self.assertIn("Paragraph 11: Summary 11", context)
+        # The first summary and the latest stay; no batch's place in the book is shown.
+        self.assertTrue(context.startswith("- Summary 1 "), context[:40])
+        self.assertIn("\n- Summary 11 ", context)
+        self.assertNotIn("Paragraph", context)
         self.assertIn("older source-batch summaries omitted", context)
 
 
@@ -5939,11 +6013,71 @@ class GroundingTests(unittest.TestCase):
                          "Figure 6 shows accuracy rising.")
         self.assertEqual(web.label_visual("It shows the trend of Figure 213.", "Figure 6", names),
                          "It shows the trend of Figure 6.")
+        # An equation extracted as text is not in the paper's names, and still not this figure.
+        self.assertEqual(web.label_visual("It plots the loss defined in Equation 2.", "Figure 6", names),
+                         "It plots the loss defined in Equation 2.")
         # A name the paper has may be a real reference: kept, and logged.
         kept = web.label_visual("Figure 6 shows the trend of Figure 3.", "Figure 6", names)
         self.assertEqual(kept, "Figure 6 shows the trend of Figure 3.")
         self.assertEqual(web.visual_label_problems(kept, "Figure 6"),
                          ["the description says Figure 3, though it describes Figure 6"])
+
+    def test_a_narration_stating_what_its_source_does_not_is_asked_about_once_then_marked(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text("Halley counted a total of 34,000 people.\n\nThe method does not improve accuracy.",
+                          encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        asked = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                text = request_path.read_text(encoding="utf-8")
+                again = "A check of your narration" in text
+                asked.append(again)
+                if "Halley" in text:
+                    # Wrong once, then right when told what the check found.
+                    narration = "Halley counted a total of 34,000 people." if again else "Halley counted 3,400 people."
+                else:
+                    # Wrong both times: kept and marked.
+                    narration = "The method does improve accuracy."
+                return f"<NARRATION>{narration}</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "out.txt", "utf-8", in_flight=1, paragraphs_per_worker=1,
+                           prompt_path=prompt, scratch_path=root / "stage")
+        logs = []
+        run.publish = lambda event, data: logs.append(data) if event == "log" else None
+        run.pump()
+        self.assertEqual(run.code, 0)
+        self.assertEqual(asked.count(True), 2)
+        checkpoints = root / "stage" / "paragraph-checkpoints"
+        first = json.loads((checkpoints / "000001-000001.json").read_text())
+        second = json.loads((checkpoints / "000002-000002.json").read_text())
+        self.assertEqual((first["narration"], first["flags"]), ("Halley counted a total of 34,000 people.", []))
+        self.assertEqual((second["narration"], second["flags"]), ("The method does improve accuracy.", ["dropped “not”"]))
+        self.assertIn("Paragraph 2/2 kept and marked: dropped “not”.", "".join(logs))
+        # The mark goes with the passage into the book's narration.
+        groups = web._adapted_reader_groups(
+            (root / "out.txt").read_text(encoding="utf-8"), ["a", "b"], checkpoints,
+        )
+        self.assertEqual([group[3].get("flags") for group in groups], [None, ["dropped “not”"]])
+
+    def test_math_said_in_an_unclear_order_and_an_unstated_magnitude_are_hard_flags(self):
+        problems = web.math_and_magnitude_problems(
+            "The rate is the product of the step number and warmup steps raised to the power of negative 1.5. "
+            "Its cost is orders of magnitude lower.",
+            ["| step_num · warmup_steps<sup>−1.5</sup> | 3.3 · 10<sup>18</sup> |"],
+        )
+        self.assertEqual(len(web.hard_flags(problems)), 2)
+        # Said as steps, or a magnitude the source states, is fine.
+        self.assertEqual(web.math_and_magnitude_problems(
+            "Raise warmup steps to the power of negative 1.5, then multiply the step number by the result. "
+            "It is orders of magnitude faster.",
+            ["It runs orders of magnitude faster."],
+        ), [])
 
     def test_a_changed_word_symbol_or_not_is_named_where_the_kept_share_sees_nothing(self):
         source = "On the hand, the risk of a predictor _Ŷ_ is the loss. Readers familiar with it know."
@@ -5959,6 +6093,9 @@ class GroundingTests(unittest.TestCase):
             ("the set of _x_ with _x_ > 0", "the set of all x such that x is greater than zero"),
             ("the weights w<sub>t</sub> at step 1", "the weights w t at step one"),
             ("the loss ℓ of each", "the loss l of each"),
+            # A less-than sign is math, not the start of a tag that ends at "<sub>".
+            ("width _k < n_ does not connect all pairs, or _log<sub>k</sub>_",
+             "width k less than n does not connect all pairs, or the logarithm base k"),
         ):
             with self.subTest(narration):
                 self.assertEqual(web.prose_changes(source, narration), [])

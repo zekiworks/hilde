@@ -236,15 +236,45 @@ CLIP_SHORT_MIN_CHARS = 20
 # second, under one a character), so a runaway stops past the length check.
 CLIP_TOKENS_PER_CHAR = 2.5
 CLIP_TOKEN_SLACK = 24
+CODEC_TOKENS_PER_SECOND = 12.5
+# A digit is spoken as about five characters: "1,800" is "one thousand eight
+# hundred", and "0.016" "zero point zero one six". Counted as one, a sentence
+# dense with numbers was capped before its last words.
+SPOKEN_CHARS_PER_DIGIT = 5
+# A clip within this of its cap stopped there, likely before its end.
+CLIP_CAP_MARGIN_SECONDS = 0.5
 # A clip that runs on or ends early is made again alone, at most this often.
 CLIP_RETRIES = 2
 # A heading or label without end punctuation is spoken with a period.
 SPOKEN_PERIOD_MAX_CHARS = 80
 
 
+def spoken_length(text):
+    """A text's length as spoken, in characters, each digit counted as the
+    word it is read as."""
+    digits = sum(character.isdigit() for character in text)
+    return len(text) + digits * (SPOKEN_CHARS_PER_DIGIT - 1)
+
+
 def clip_token_limit(texts):
     """The codec tokens a batch's clips may use: enough for its longest text."""
-    return int(max(len(text) for text in texts) * CLIP_TOKENS_PER_CHAR) + CLIP_TOKEN_SLACK
+    return int(max(spoken_length(text) for text in texts) * CLIP_TOKENS_PER_CHAR) + CLIP_TOKEN_SLACK
+
+
+def expected_seconds(text):
+    return max(spoken_length(text) * SPEECH_SECONDS_PER_CHAR, 0.1)
+
+
+def nearest_try(text, lengths):
+    """Which of a chunk's tries, all flagged, to keep, by their lengths in
+    seconds: one that ended on its own before one that stopped at its cap,
+    then the one nearest the expected length."""
+    expected = expected_seconds(text)
+    capped = clip_token_limit([text]) / CODEC_TOKENS_PER_SECOND - CLIP_CAP_MARGIN_SECONDS
+    return min(
+        range(len(lengths)),
+        key=lambda index: (lengths[index] >= capped, abs(math.log(max(lengths[index], 0.01) / expected))),
+    )
 
 
 def spoken(text):
@@ -259,7 +289,7 @@ def spoken(text):
 
 def clip_problem(text, seconds):
     """Why a clip of `seconds` cannot be `text` spoken, or None."""
-    expected = len(text) * SPEECH_SECONDS_PER_CHAR
+    expected = spoken_length(text) * SPEECH_SECONDS_PER_CHAR
     if seconds > expected * CLIP_LONG_FACTOR + CLIP_LONG_SLACK_SECONDS:
         return f"ran on: {seconds:.1f} s for {len(text)} characters, about {expected:.1f} s expected"
     if len(text) >= CLIP_SHORT_MIN_CHARS and seconds < expected * CLIP_SHORT_FACTOR:
@@ -270,8 +300,8 @@ def clip_problem(text, seconds):
 def checked_clip(index, text, waveform, sample_rate, remake):
     """The clip to keep for chunk `index`. One that runs on or ends early is
     made again alone by `remake(text)` -> (waveform, sample_rate), up to
-    CLIP_RETRIES times; if every try fails, the one nearest its expected
-    length is kept and the log says so."""
+    CLIP_RETRIES times; if every try fails, nearest_try() picks the one kept
+    and the log says so."""
     attempts = [(waveform, sample_rate)]
     problem = clip_problem(text, len(waveform) / sample_rate)
     while problem and len(attempts) <= CLIP_RETRIES:
@@ -280,8 +310,7 @@ def checked_clip(index, text, waveform, sample_rate, remake):
         problem = clip_problem(text, len(attempts[-1][0]) / attempts[-1][1])
     if not problem:
         return attempts[-1]
-    expected = max(len(text) * SPEECH_SECONDS_PER_CHAR, 0.1)
-    kept = min(attempts, key=lambda attempt: abs(math.log(max(len(attempt[0]) / attempt[1], 0.01) / expected)))
+    kept = attempts[nearest_try(text, [len(attempt[0]) / attempt[1] for attempt in attempts])]
     print(
         f"Chunk {index} {problem} after {CLIP_RETRIES} more tries; keeping the one "
         f"nearest its length ({len(kept[0]) / kept[1]:.1f} s)",
@@ -1781,10 +1810,9 @@ def _narrate_distributed(
                         batches.appendleft([index])
                         continue
                     if problem:
-                        expected = max(len(text) * SPEECH_SECONDS_PER_CHAR, 0.1)
-                        seconds, payload = min(
-                            tries[index], key=lambda attempt: abs(math.log(max(attempt[0], 0.01) / expected))
-                        )
+                        seconds, payload = tries[index][
+                            nearest_try(text, [attempt[0] for attempt in tries[index]])
+                        ]
                         print(
                             f"Chunk {index} {problem} after {CLIP_RETRIES} more tries; keeping the one "
                             f"nearest its length ({seconds:.1f} s)",

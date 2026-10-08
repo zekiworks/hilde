@@ -207,3 +207,16 @@ runs:
       4 h 7 min book. Text only, no listening pass. Claude's PDF fetch covered pages 1-25 (to §4.1.2): facts
       checked there; §4.2-§10 checked for structure only (labels, broken sentences, footers). Astra checked
       the whole PDF, including figure images. Merged review: R16-01..R16-12.
+
+  - id: R21
+    date: 2026-10-08
+    papers: [attention]
+    hilde_commit: 9a70f65
+    model: lm-studio/gemma-4-31B-it
+    voice: Eir
+    output_file: null   # Audiobooks/attention-is-all-you-need--bdfaa68d8984/ on Can's machine
+    reviewers: [claude, astra]
+    notes: >
+      Recreated 2026-10-08 13:30 UTC with the latest Hilde. Claude checked the text against the PDF and ran
+      Hilde's converter on pages 5-9 to see what Gemma received; Astra checked the text against the PDF and
+      its page images. Merged review: workspace/hilde-bugs-2026-10-08.md; R21-01..R21-09 (T1-T9).

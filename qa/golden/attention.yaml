@@ -120,8 +120,13 @@ asserts:
 
   - id: ATT-25
     bug: B02
-    about: Table 3 rows (B) vary the key size d k, not d v
-    must_not_contain: '(?i)\b(variation|rows?|group) \(?B\)?[^.\n]{0,60}\bd v\b'
+    about: >
+      Table 3 rows (B) vary the key size d k, not d v. Widened in R21 (T1): the 8 October run said
+      "Changing the d v value shows that 32 is slightly better than 16, with … 25.4 compared to 25.1",
+      which the first pattern, looking for "rows (B)", missed
+    must_not_contain:
+      - '(?i)\b(variation|rows?|group) \(?B\)?[^.\n]{0,60}\bd v\b'
+      - '(?i)\bd v\b[^.\n]{0,120}\b25\.[14]\b'
 
   - id: ATT-26
     bug: B03
@@ -169,8 +174,8 @@ asserts:
     bug: B13
     about: >
       Table 2's description gives the base model's own BLEU (27.3 EN-DE, 38.1 EN-FR); the prose claims the base
-      model beats every earlier model and only the table holds the number. Revisit if Q06 decides short table
-      summaries may drop it.
+      model beats every earlier model and only the table holds the number. Q06 is answered (D15): a table's
+      description names every model the text discusses, so it must give this one.
     must_contain: ['27\.3', '38\.1']
 
   - id: ATT-31
@@ -201,6 +206,8 @@ asserts:
     must_not_contain:
       - '(?i)divided by [^.,;\n]{1,30} raised to the power of [^.,;\n]{1,30} divided by'
       - '(?i)product of [^.,;\n]{1,40} and [^.,;\n]{1,40} raised to the power'
+      # Widened in R21 (T4): the first pattern only matched "ten thousand" in words.
+      - '(?i)divided by (?:ten thousand|10,?000) raised to the power of 2 ?i divided by'
 
   - id: ATT-34
     bug: B31
@@ -216,6 +223,35 @@ asserts:
       Dropped in every run from f8e8495 until 94c8f63 asked again (R10-02); ATT-29 passed only because
       the sentence was gone. Any reading of the sizes counts: "d model by d k", "from d model to d k"
     must_contain: '(?i)\bd model\b[^.\n]{0,12}?(?:\bby|\btimes|\bmultiplied by|\bto|\binto|-by-)\s*d k\b'
+
+  - id: ATT-36
+    bug: B11
+    about: >
+      Table 3's label smoothing: no smoothing (0.0) has the lowest perplexity, 4.67, but a lower BLEU than
+      0.1 or 0.2, and §5.4 says smoothing "improves accuracy and BLEU score". "0.0 is better than 0.2"
+      without its metric is wrong (R21-02, T2)
+    must_not_contain: '(?i)(?:epsilon|label smoothing)[^.\n]{0,60}\b0\.0 is better than 0\.2'
+
+  - id: ATT-37
+    bug: B02
+    about: >
+      Table 1's O(1) and O(n) are growth rates, not counts: self-attention takes a constant number of
+      sequential operations, not "one" (R21-05, T5)
+    must_not_contain: '(?i)\b(?:with )?one sequential operation|maximum path length of one\b'
+
+  - id: ATT-38
+    bug: B11
+    about: >
+      Table 2: the base model's training cost is 23 to 55 times below the GNMT + RL and ConvS2S ensembles,
+      and the big model's only 3 to 8 times; neither is "orders of magnitude" (R21-07, T7)
+    must_not_contain: '(?i)orders of magnitude (?:lower|cheaper|less)'
+
+  - id: ATT-39
+    bug: B02
+    about: >
+      Figure 5: neither head links "Law" to "perfect" or "application" to "just"; the page image's line end
+      points show no such lines (R21-06, T6, checked by Astra)
+    must_not_contain: '(?i)between "?Law"? and "?perfect"?|"?application"? and "?just"?'
 
 manual:
   - bug: B15

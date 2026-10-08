@@ -77,7 +77,15 @@ the author's text stops. The job log names any description that doesn't.
 A figure, table, or equation reaches the model on its own, with its caption,
 labels or cells, and picture, and without the model's running summary of the
 paper so far. That summary differs from run to run, so with it the same figure
-was described differently every time.
+was described differently every time. It does get what the author writes about
+it: the paragraphs that mention it ("In Table 3 rows (B)…"), and for an
+equation the sentences around it, for their meaning only and never read again
+in the description. That is how a table description knows which column a
+paragraph is about, and which way a score is better.
+
+An equation keeps its powers and indices: "warmup_steps to the power of −1.5"
+reaches the model with the power on warmup_steps alone, never run into the
+product before it, and "d k" in a sentence reaches it as d with the index k.
 
 With each passage the model also writes a one-line summary and up to six tags,
 which Hilde keeps with the book. They are not read aloud: **Chat with Hilde**
@@ -113,12 +121,17 @@ square root of", never "scaled by", and "one over the square root of d k",
 never "the square root of d k". Nested operations are said as steps, innermost
 first: "multiply the queries by the transposed keys, divide the result by the
 square root of d k, apply a softmax, then multiply by the values". A
-description of a table keeps the values that bound the comparison, such as the
-sizes and scores of the smallest and largest model, and every caveat its
-caption gives about how values were measured. Every statement of a footnote
+description of a table names every row or model the author's text discusses,
+with its key values, and says which metric each comparison is about and which
+direction is better; it pairs each model's score with that model's own cost,
+and keeps every caveat its
+caption gives about how values were measured. Big-O notation is a growth rate:
+O(1) is "constant", never "one operation". Every statement of a footnote
 stays ("Equal contribution. Listing order is random."), and so does every
 quantity in the author's prose, in the author's own voice ("we"). A figure
-description says only what the caption states or the image plainly shows. A
+description says only what the caption states or the image plainly shows; for a
+figure dense with lines, such as an attention map, it describes the pattern
+rather than naming which words a line joins. A
 link the text depends on becomes where in words ("in the tensor2tensor
 repository on GitHub"). An acronym is expanded only where the author spells it
 out, once; the rest, such as GPU, stay acronyms.
@@ -134,9 +147,15 @@ to, that its own text never mentions, and a number the source does not print
 (a rounded one is fine), in a description or in the author's prose. For prose
 it also names each word the narration changed, such as "readers → listeners",
 a symbol that lost its mark ("ŷ → y"), and a "not" or "all" dropped or added,
-leaving out math read aloud ("does not equal"). These lines only point at
-passages worth a look; the narration stays as written. When a stopped job
-resumes, the batches already done get the same naming and checks.
+leaving out math read aloud ("does not equal"). A passage that states a number
+or name its source doesn't print, says "orders of magnitude" where the source
+doesn't, says math in an order that can be heard two ways ("the product of a
+and b squared"), or drops or adds a "not" or an "all", is sent back to the
+model once, naming what was found; the better answer is kept, and
+one still wrong is marked, so **Original** shows it under the passage as
+"Check: …". The other lines only point at passages worth a look; the narration
+stays as written. When a stopped job resumes, the batches already done get the
+same naming and checks.
 
 A local model server is asked at temperature 0.2. Left at a model's default,
 often 1.0, the same paper read noticeably differently on every run; at 0.2 its

@@ -477,6 +477,7 @@ with pymupdf.open(sys.argv[1]) as document:
 """
 
 _PDF_CONVERTER = """\
+import collections
 import os
 import re
 import sys
@@ -732,6 +733,178 @@ def listing_text(sheet, run):
     return "\\n".join(lines)
 
 
+# Sub- and superscripts as printed: a span smaller than the text around it
+# hangs from the span before it, raised (a superscript) or lowered (a
+# subscript). Read flat, "warmup_steps^-1.5" came out "warmup_steps-1.5" and
+# "10000^(2i/d_model)" "100002i/dmodel", and models raised the wrong term.
+def script_tree(sheet, rect):
+    spans = []
+    for block in sheet.get_text("dict", clip=rect)["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                if span["text"].strip():
+                    spans.append({
+                        "text": " ".join(span["text"].split(" ")), "x0": span["bbox"][0],
+                        "x1": span["bbox"][2], "y": span["origin"][1], "size": span["size"],
+                        "flagged": bool(span["flags"] & 1), "children": [], "mark": "",
+                        "script": False, "merged": False, "parent": None,
+                    })
+    if not spans:
+        return [], [], 0
+    weights = collections.Counter()
+    for span in spans:
+        weights[round(span["size"], 1)] += len(span["text"])
+    base = weights.most_common(1)[0][0]
+    spans.sort(key=lambda span: (span["x0"], span["y"]))
+    roots = []
+    for span in spans:
+        if span["size"] > 0.85 * base:
+            roots.append(span)
+            continue
+        before = [
+            other for other in spans
+            if other is not span and not other["merged"]
+            and (other["size"] > 0.85 * base or other["script"])
+            and other["x1"] <= span["x0"] + (0.6 if other["size"] > 0.85 * base else 0.15) * span["size"]
+            and abs(other["y"] - span["y"]) < 1.2 * other["size"]
+        ]
+        if not before:
+            roots.append(span)
+            continue
+        parent = max(before, key=lambda other: (other["x1"], -abs(other["y"] - span["y"])))
+        if (
+            parent["script"] and abs(parent["size"] - span["size"]) < 0.1 * span["size"]
+            and abs(parent["y"] - span["y"]) < 0.15 * span["size"]
+        ):
+            gap = "" if span["x0"] - parent["x1"] < 0.15 * span["size"] else " "
+            parent["text"] += gap + span["text"]
+            parent["x1"] = span["x1"]
+            span["merged"] = True
+            continue
+        shift = span["y"] - parent["y"]
+        # The PDF's superscript flag marks a whole exponent, not a script inside it.
+        raised = (span["flagged"] and not parent["script"]) or shift < -0.15 * parent["size"]
+        span["mark"] = "sup" if raised else "sub" if shift > 0.08 * parent["size"] else ""
+        if not span["mark"]:
+            roots.append(span)
+            continue
+        span["script"] = True
+        span["parent"] = parent
+        parent["children"].append(span)
+    return spans, roots, base
+
+
+def render_scripts(span):
+    text = span["text"].strip() if span["script"] else span["text"]
+    for mark in ("sub", "sup"):
+        parts = [render_scripts(child).strip() for child in span["children"] if child["mark"] == mark]
+        if parts:
+            text += f"<{mark}>{''.join(parts)}</{mark}>"
+    return text
+
+
+# A formula's printed text with <sub> and <sup>, and a stacked fraction as
+# (numerator)/(denominator), each line of a formula in turn.
+def formula_text(sheet, rect):
+    spans, roots, base = script_tree(sheet, rect)
+    if not roots:
+        return ""
+
+    def spaced(items):
+        out, last = "", None
+        for x0, x1, text in sorted(items, key=lambda item: item[0]):
+            if last is not None and x0 - last > 0.12 * base:
+                out += " "
+            out += text
+            last = x1
+        return out
+
+    # Lines of full-size text: a heavy one is a line of the formula; a light
+    # one beside it is a stacked fraction's numerator (above) or denominator.
+    bands = []
+    for span in sorted(roots, key=lambda span: span["y"]):
+        if bands and span["y"] - bands[-1]["y"] < 0.35 * base:
+            bands[-1]["spans"].append(span)
+        else:
+            bands.append({"y": span["y"], "spans": [span]})
+
+    def weight(band):
+        return sum(len(span["text"]) for span in band["spans"])
+
+    heaviest = max(weight(band) for band in bands)
+    lines = [band for band in bands if weight(band) >= 0.4 * heaviest]
+    rendered = []
+    for line in lines:
+        parts = [
+            band for band in bands if band not in lines
+            and min(lines, key=lambda other: abs(other["y"] - band["y"])) is line
+        ]
+        fractions = []
+        for band in parts:
+            place = "num" if band["y"] < line["y"] else "den"
+            for span in band["spans"]:
+                for fraction in fractions:
+                    if span["x0"] < fraction["x1"] + 0.6 * base and span["x1"] > fraction["x0"] - 0.6 * base:
+                        fraction[place].append(span)
+                        fraction["x0"] = min(fraction["x0"], span["x0"])
+                        fraction["x1"] = max(fraction["x1"], span["x1"])
+                        break
+                else:
+                    fraction = {"x0": span["x0"], "x1": span["x1"], "num": [], "den": []}
+                    fraction[place].append(span)
+                    fractions.append(fraction)
+        items = []
+        for span in line["spans"]:
+            centre = (span["x0"] + span["x1"]) / 2
+            inside = next((fraction for fraction in fractions if fraction["x0"] <= centre <= fraction["x1"]), None)
+            if inside is not None and len(span["text"].strip()) <= 2:
+                inside["den" if span["y"] >= line["y"] else "num"].append(span)
+            else:
+                items.append((span["x0"], span["x1"], render_scripts(span)))
+        for fraction in fractions:
+            def joined(group):
+                return spaced([(part["x0"], part["x1"], render_scripts(part)) for part in group])
+            if fraction["num"] and fraction["den"]:
+                text = f"({joined(fraction['num'])})/({joined(fraction['den'])})"
+            else:
+                text = joined(fraction["num"] + fraction["den"])
+            items.append((fraction["x0"], fraction["x1"], text))
+        rendered.append(spaced(items))
+    text = " ".join(" ".join(rendered).split())
+    for gap in (" )", " ,"):
+        text = text.replace(gap, gap.strip())
+    return text
+
+
+# Prose as the layout wrote it, with each subscript it ran into its symbol
+# marked, "_dk_" as "_d<sub>k</sub>_": superscripts already come marked, from
+# the PDF's flag, and the prose's other marks stay.
+def with_subscripts(text, sheet, rect):
+    spans, _, base = script_tree(sheet, rect)
+    pairs = []
+    for span in spans:
+        parent = span["parent"]
+        if span["mark"] != "sub" or parent is None or parent["script"]:
+            continue
+        stem = parent["text"].rstrip()
+        cut = len(stem)
+        while cut and stem[cut - 1].isalnum():
+            cut -= 1
+        tail, script = stem[cut:], span["text"].strip()
+        if tail and script:
+            pairs.append((round(parent["y"] / (0.5 * base)), parent["x0"], tail, script))
+    cursor = 0
+    for _, _, tail, script in sorted(pairs):
+        found = text.find(tail + script, cursor)
+        if found < 0:
+            continue
+        at = found + len(tail)
+        marked = f"<sub>{script}</sub>"
+        text = text[:at] + marked + text[at + len(script):]
+        cursor = at + len(marked)
+    return text
+
+
 # Replacements are made from the end of the page, so earlier positions hold.
 edits = []
 with pymupdf.open(source) as document:
@@ -773,7 +946,7 @@ with pymupdf.open(source) as document:
         if not shown.startswith("![") or "Start of picture text" in shown:
             continue
         x0, y0, x1, y1 = box["bbox"]
-        text = " ".join(sheet.get_text("text", clip=pymupdf.Rect(box["bbox"])).split())
+        text = formula_text(sheet, pymupdf.Rect(box["bbox"]))
         if text and not re.search(r"\\(\\d+[a-z]?\\)$", text):
             number = next((
                 word[4] for word in sheet.get_text("words")
@@ -786,9 +959,24 @@ with pymupdf.open(source) as document:
                 f"\\n\\n{shown}\\n\\n"
                 f"<!-- Start of picture text -->\\n{text}\\n<!-- End of picture text -->\\n\\n"
             )))
+    # Prose keeps its subscripts, which the layout runs into their symbols;
+    # a listing is replaced whole below, so its boxes are left alone here.
+    runs = listing_runs(sheet)
+    listed = {position for run in runs for position in range(run[0], run[-1] + 1)}
+    for position, box in enumerate(boxes):
+        if (
+            position in listed or box.get("class") not in ("text", "list-item", "caption", "footnote")
+            or not box.get("pos") or not box.get("bbox")
+        ):
+            continue
+        start, end = box["pos"]
+        shown = markdown[start:end]
+        marked = with_subscripts(shown, sheet, pymupdf.Rect(box["bbox"]))
+        if marked != shown:
+            edits.append((start, end, marked))
     # One fenced block per listing, without blank lines, so the whole listing
     # stays one paragraph and reaches the model in one request.
-    for run in listing_runs(sheet):
+    for run in runs:
         content = listing_text(sheet, run)
         if not content:
             continue
@@ -1833,6 +2021,8 @@ def narration_originals(narration):
             ),
             "unchanged": bool(passage.get("unchanged")),
             "markdown": "" if passage.get("unchanged") else passage.get("original_text", ""),
+            # What a check found and asking again did not clear, shown beside the original.
+            **({"flags": [str(flag) for flag in passage["flags"]]} if passage.get("flags") else {}),
         }
         for passage in narration["passages"]
     ]
@@ -2578,11 +2768,13 @@ def _adapted_reader_groups(narration, source_paragraphs, checkpoint_dir):
             or end > len(source_paragraphs)
         ):
             return None
-        # The batch's summary and tags go with its passage, for Chat with Hilde.
-        summary, tags = data.get("summary"), data.get("tags")
+        # The batch's summary and tags go with its passage, for Chat with
+        # Hilde, and so do the flags it was kept with, for QA and the reader.
+        summary, tags, flags = data.get("summary"), data.get("tags"), data.get("flags")
         outline = {
             "summary": " ".join(summary.split()),
             "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+            **({"flags": [str(flag) for flag in flags]} if isinstance(flags, list) and flags else {}),
         } if isinstance(summary, str) and summary.strip() else None
         groups.append((adapted.strip(), start, source_paragraphs[start - 1:end], outline))
     # A batch left out entirely, such as a reference entry, adds no text.
@@ -3513,12 +3705,16 @@ def _render_reader_originals(originals, paragraphs):
             )
         ):
             raise ValueError("reader originals are invalid")
+        flags = original.get("flags") or []
+        if not isinstance(flags, list) or not all(isinstance(flag, str) for flag in flags):
+            raise ValueError("reader originals are invalid")
         rendered.append({
             "paragraphs": narrated,
             "page": page,
             "description": description,
             "unchanged": unchanged,
             "html": render_reader_original(markdown) if markdown else "",
+            "flags": flags,
         })
     return rendered
 
@@ -5235,6 +5431,54 @@ def _mentioned_visuals(text):
     return found
 
 
+# What a figure, table, or equation batch is sent of the author's text about
+# it: at most this many paragraphs and characters, the nearest first.
+VISUAL_CONTEXT_PARAGRAPHS = 3
+VISUAL_CONTEXT_CHARS = 2_400
+EQUATION_MENTION_PATTERN = re.compile(r"\b(?:equations?|eqs?\.)\s*\(?(\d+)\)?", re.IGNORECASE)
+
+
+def visual_context(paragraphs, kinds, start, end, label=None, equation_numbers=()):
+    """The author's paragraphs about a figure, table, or equation batch
+    (start, end, 1-based): those that mention it by its caption's `label`
+    ("Table 3") or its printed `equation_numbers` ("Equation 3"), and for an
+    equation or a picture without a caption, the prose just before and just
+    after it, where an equation's sentence and its "where" clause are. A
+    captioned figure no paragraph mentions gets none: the prose beside
+    Attention's appendix figures is its Acknowledgements.
+    The nearest come first, in book order, at most VISUAL_CONTEXT_PARAGRAPHS
+    and VISUAL_CONTEXT_CHARS. A table's request held the right cells and
+    still swapped d k for d v, because §6.2, which names d k, never reached
+    it."""
+    prose = [index for index, kind in enumerate(kinds) if kind == "prose" and not start - 1 <= index < end]
+    wanted = set()
+    if label:
+        word, number = label.lower().split()
+        wanted.add((word, int(number)))
+    numbers = {int(number) for number in equation_numbers}
+    mentioning = [
+        index for index in prose
+        if (wanted and _mentioned_visuals(_layout_text(paragraphs[index])) & wanted)
+        or (numbers and {int(number) for number in EQUATION_MENTION_PATTERN.findall(paragraphs[index])} & numbers)
+    ]
+    neighbors = []
+    if numbers or not label:
+        before = [index for index in prose if index < start - 1]
+        after = [index for index in prose if index >= end]
+        neighbors = before[-1:] + after[:1]
+    chosen = list(dict.fromkeys(
+        neighbors + sorted(mentioning, key=lambda index: min(abs(index - (start - 1)), abs(index - (end - 1))))
+    ))
+    picked, used = [], 0
+    for index in chosen:
+        text = paragraphs[index].strip()
+        if len(picked) == VISUAL_CONTEXT_PARAGRAPHS or used + len(text) > VISUAL_CONTEXT_CHARS:
+            continue
+        picked.append(index)
+        used += len(text)
+    return tuple(paragraphs[index] for index in sorted(picked))
+
+
 def _place_after_mentions(document, kinds, starts):
     """Move each numbered figure or table printed before the paragraph that
     first mentions it, on its own page or the next, to follow that paragraph.
@@ -5581,7 +5825,9 @@ PROSE_CHANGE_MAX_WORDS = 2
 
 
 def _plain_words(text):
-    return re.findall(r"\w+", re.sub(r"<[^>]+>|[*_`]", " ", text).lower())
+    # Only a real tag, "<sub>" or "</sup>": in "k < n does not … <sub>", a
+    # looser "<[^>]+>" took everything between as one tag and lost "not".
+    return re.findall(r"\w+", re.sub(r"</?[A-Za-z][^<>]*>|[*_`]", " ", text).lower())
 
 
 def prose_changes(source, narration):
@@ -5817,15 +6063,19 @@ def label_visual(narration, label, paper_names):
     (`label`, from visual_label()), in code. Whatever name opens the
     description, "Figure 81 and 82" (the request's paragraph numbers), "The
     equation shows", or "Figure 3" for Figure 7, becomes the label, and so
-    does a numbered figure, table, or equation the paper never names
-    (`paper_names`, from paper_visual_names()), "Figure 213". A name the
-    paper has may be a real reference and stays; visual_label_problems()
-    puts it in the log."""
+    does a numbered name of the label's own kind the paper never names
+    (`paper_names`, from paper_visual_names()), "Figure 213". A name of
+    another kind is a reference and stays, whether or not extraction found
+    it: "defined in Equation 2", an equation extracted as text, is not this
+    figure. A name the paper has may be a real reference and stays too;
+    visual_label_problems() puts it in the log."""
+    kind = label.split()[0].lower()
+
     def named(match):
         if not narration[:match.start()].strip():
             return label
         names = _visual_names(match)
-        if not names or names <= paper_names:
+        if not names or names <= paper_names or any(not name.startswith(kind) for name in names):
             return match.group(0)
         return (match.group("det") or "") + label
     return EQUATION_NAME_PATTERN.sub(named, narration)
@@ -6000,15 +6250,12 @@ def paper_summary_context_limit(in_flight):
 
 
 def paper_summary_context(summaries, max_chars):
+    """Earlier batches' summaries, oldest first, one per line, without their
+    paragraph numbers: a model borrows any number it is shown as a label."""
     if not summaries:
         return "(none available when this batch was dispatched)", 0
     max_chars = max(256, int(max_chars))
-    entries = [
-        f"Paragraph{'s' if first != last else ''} "
-        f"{first}{f'-{last}' if first != last else ''}: "
-        f"{compact_paper_summary(summary)}"
-        for first, last, summary in summaries
-    ]
+    entries = [f"- {compact_paper_summary(summary)}" for _, _, summary in summaries]
     complete = "\n".join(entries)
     if len(complete) <= max_chars:
         return complete, 0
@@ -6248,13 +6495,88 @@ these in full, unless the instructions say to leave it out, changing only what
 speech needs."""
 
 
+# A check's finding a model is asked once more about (decision of 2026-10-08):
+# a number or name the source never prints, a magnitude it never states, math
+# said in an order a listener cannot follow, or a dropped or added negation or
+# quantifier. A changed word or a doubtful label is only logged.
+HARD_PROBLEMS = (
+    "which its source does not print", "whom its source never names",
+    "which its source does not state", "which leaves unclear what is raised",
+)
+# Spoken math whose order a listener cannot recover: "the product of the step
+# number and warmup steps raised to the power of negative 1.5" raised the
+# product (Attention's Equation 3, R21-03) though only warmup_steps is.
+AMBIGUOUS_MATH_PATTERNS = (
+    re.compile(
+        r"\b(?:product|sum|difference|quotient|ratio) of [^.,;:\n]{1,40}? and [^.,;:\n]{1,40}?,? "
+        r"(?:raised to the power of|to the power of|squared|cubed)\b", re.IGNORECASE,
+    ),
+    # An exponent followed by another operation without a pause: is it inside?
+    re.compile(
+        r"\braised to the power of [^.,;:\n]{1,30}? (?:divided by|times|multiplied by|plus|minus)\b",
+        re.IGNORECASE,
+    ),
+    # A divisor that is raised: "dividing pos by 10000 raised to the power of…"
+    re.compile(
+        r"\b(?:divided by|dividing [^.,;:\n]{1,20}? by) [^.,;:\n]{1,30}? raised to the power of\b",
+        re.IGNORECASE,
+    ),
+)
+MAGNITUDE_PATTERN = re.compile(r"\borders? of magnitude\b", re.IGNORECASE)
+
+
+def math_and_magnitude_problems(narration, sources):
+    """Spoken math whose order is unclear, and "orders of magnitude" where no
+    source text says it: Table 2's costs, 3 to 55 times apart, were called
+    "orders of magnitude lower" (R21-07)."""
+    problems = [
+        f"the narration says “{match.group(0)}”, which leaves unclear what is raised"
+        for pattern in AMBIGUOUS_MATH_PATTERNS for match in pattern.finditer(narration)
+    ]
+    if MAGNITUDE_PATTERN.search(narration) and not any(MAGNITUDE_PATTERN.search(source) for source in sources):
+        problems.append("the narration says “orders of magnitude”, which its source does not state")
+    return problems
+
+
+def hard_flags(problems, changes=()):
+    """The findings of grounding_problems(), math_and_magnitude_problems(),
+    and prose_changes() that say the narration states something its source
+    does not, or says math in an order a listener cannot follow."""
+    return [problem for problem in problems if problem.endswith(HARD_PROBLEMS)] + [
+        change for change in changes if change.startswith(("dropped “", "added “"))
+    ]
+
+
+def flagged_note(flags):
+    """What a second request says when a check found the narration stating
+    what its source does not, or math said in an unclear order. For the
+    latter, "say it as steps" left Gemma's positional encoding ambiguous in
+    half its answers; "first …, then …, then …" put it in order in 8 of 8."""
+    listed = "\n".join(f"- {flag}" for flag in flags)
+    note = f"""A check of your narration of this batch found:
+{listed}
+Narrate the batch again under the same rules. Keep every number, name, and
+negation exactly as the source prints it, and add no number, name, or claim
+the source does not print."""
+    if any(flag.endswith("which leaves unclear what is raised") for flag in flags):
+        note += """ A listener cannot tell what such a phrase
+raises or divides. Say that math in the order it is computed, one operation
+per clause, innermost first, joined by "first", "then", and "then": "first
+divide a by b, then raise c to that power, then divide x by the result".
+Never put "raised to the power of" right before or after another operation in
+one phrase."""
+    return note
+
+
 def paper_request(
-    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None,
+    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None, cited=(),
 ):
     """One batch's request. A batch that is only a figure, table, or equation
     has no summaries (None): it goes alone, so its request is the same on
-    every run. A note asks again for a batch the model left out whole
-    (LEFT_OUT_NOTES) or narrated with sentences missing (condensed_note()).
+    every run, with what the author writes about it elsewhere (`cited`,
+    from visual_context()) to give it meaning. A note asks again for a batch
+    the model left out whole (LEFT_OUT_NOTES) or narrated with sentences
+    missing (condensed_note()).
 
     The batch's place in the book (start, end, total) is not shown: given
     "paragraphs 81-82", a model labeled a figure without a caption "Figure 81
@@ -6280,6 +6602,15 @@ element. Do not discuss the retry or add text outside those elements."""
     if summaries is None:
         background = """This batch is a figure, table, or equation on its own. Describe it from
 what it carries: its caption, its labels or cells, and its picture."""
+        if cited:
+            author = "\n\n".join(f"<AUTHOR_CONTEXT>\n{text}\n</AUTHOR_CONTEXT>" for text in cited)
+            background += f"""
+What the author writes about it elsewhere follows, for its meaning only: which
+symbol a row or column varies, what each metric measures and which direction is
+better, and what the author concludes. Never read this text aloud, quote it, or
+retell it; the listener hears it in its own place. Describe only the current
+source.
+{author}"""
     else:
         background = f"""Compacted summaries from earlier source batches completed before dispatch:
 {summaries}
@@ -9574,6 +9905,8 @@ class PaperRun(Run):
         image_paths,
         acronyms=(),
         left_out=None,
+        cited=(),
+        review=None,
     ):
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
@@ -9614,6 +9947,7 @@ class PaperRun(Run):
                         attempt,
                         acronyms,
                         note,
+                        cited,
                     ),
                     encoding="utf-8",
                 )
@@ -9705,6 +10039,20 @@ class PaperRun(Run):
                 second_share, _ = prose_kept("\n\n".join(paragraphs), second)
                 if second and second_share is not None and second_share > share:
                     narration, summary, tags = second, second_summary, second_tags
+        # A narration stating what its source does not (review(): hard_flags())
+        # is asked about once more, naming what the check found, and the
+        # answer with fewer such findings is kept; what remains is marked on
+        # the passage by the caller.
+        if narration and review is not None:
+            flags = review(narration)
+            if flags:
+                self.publish(
+                    "log",
+                    f"{batch_label.capitalize()}/{total}: asking again, since {'; '.join(flags[:4])}.\n",
+                )
+                second, second_summary, second_tags = ask(flagged_note(flags))
+                if second and len(review(second)) < len(flags):
+                    narration, summary, tags = second, second_summary, second_tags
         return narration, summary, tags
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
@@ -9736,12 +10084,24 @@ class PaperRun(Run):
         printed = set(printed_equation_numbers(requested))
         citers = footnote_citers(paragraphs, kinds)
         paper_names = paper_visual_names(requested)
+        # What each figure, table, or equation batch is told of the author's text about it.
+        cited = {}
+        for start, end in batches:
+            batch_kinds = kinds[start - 1:end]
+            if not _describes_visual(set(batch_kinds)):
+                continue
+            label = visual_label(paragraphs[start - 1:end], batch_kinds)
+            cited[start] = visual_context(
+                requested, kinds, start, end, label,
+                printed_equation_numbers(requested[start - 1:end]),
+            )
 
         def finish(start, end, narration, saved=False):
             """Name a batch's figure, table, or equation in code, then run the
             checks on it; for a saved batch too, so a fix to either reaches a
-            resumed book. Return the narration and the log lines: the checks
-            only point at a passage, and the narration is kept as written."""
+            resumed book. Return the narration, the log lines, and the hard
+            flags (hard_flags()) a passage is marked with; the narration is
+            kept as written."""
             batch_paragraphs, batch_kinds = paragraphs[start - 1:end], kinds[start - 1:end]
             sources = requested[start - 1:end]
             describes = _describes_visual(set(batch_kinds))
@@ -9775,17 +10135,23 @@ class PaperRun(Run):
                 changed = prose_changes("\n\n".join(sources), narration)
                 if changed:
                     lines.append(f"{named} changed the author's words: {', '.join(changed[:8])}.")
+            else:
+                changed = []
             # What a narration states that its source does not. A footnote's
             # source includes the paragraph its mark sits in, as "†" beside
             # an author's name.
-            grounded = sources + [requested[citers[index]] for index in range(start - 1, end) if index in citers]
+            # A description may take a number from the author's text about it.
+            grounded = sources + list(cited.get(start, ())) + [
+                requested[citers[index]] for index in range(start - 1, end) if index in citers
+            ]
             problems = grounding_problems(narration, grounded, describes, known_names)
+            problems += math_and_magnitude_problems(narration, grounded)
             if visual == "equation":
                 problems += equation_label_problems(narration, sources)
             if label:
                 problems += visual_label_problems(narration, label)
             lines += [f"{named}: {problem}." for problem in problems]
-            return narration, lines
+            return narration, lines, hard_flags(problems, changed)
 
         summaries = []
         results = {}
@@ -9802,10 +10168,11 @@ class PaperRun(Run):
                 continue
             if not isinstance(summary, str) or not summary.strip():
                 continue
-            narration, lines = finish(start, end, narration.strip(), saved=True)
-            if narration != checkpoint["narration"].strip():
+            narration, lines, flags = finish(start, end, narration.strip(), saved=True)
+            if narration != checkpoint["narration"].strip() or (checkpoint.get("flags") or []) != flags:
                 write_json_atomic(
-                    checkpoint_dir / f"{start:06d}-{end:06d}.json", {**checkpoint, "narration": narration}
+                    checkpoint_dir / f"{start:06d}-{end:06d}.json",
+                    {**checkpoint, "narration": narration, "flags": flags},
                 )
             for line in lines:
                 self.publish("log", line + "\n")
@@ -9870,6 +10237,9 @@ class PaperRun(Run):
                 # which batches happen to finish first.
                 tuple(defined_acronyms(requested[:start - 1])),
                 left_out_note(start, end),
+                cited.get(start, ()),
+                # The flags a narration would be marked with, for asking again.
+                lambda narration, start=start, end=end: finish(start, end, narration)[2],
             )
             futures[future] = (start, end)
 
@@ -9925,7 +10295,7 @@ class PaperRun(Run):
                     ):
                         start, end = futures.pop(future)
                         narration, summary, tags = future.result()
-                        narration, lines = finish(start, end, narration)
+                        narration, lines, flags = finish(start, end, narration)
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -9933,11 +10303,20 @@ class PaperRun(Run):
                                 "narration": narration,
                                 "summary": summary,
                                 "tags": tags,
+                                # Kept though asked about once more: marked on the passage.
+                                "flags": flags,
                             },
                         )
                         results[start] = (end, narration, summary)
                         for line in lines:
                             self.publish("log", line + "\n")
+                        if flags:
+                            self.publish(
+                                "log",
+                                f"Paragraph{'s' if end > start else ''} {start}"
+                                f"{f'-{end}' if end > start else ''}/{total} kept and marked: "
+                                f"{'; '.join(flags[:4])}.\n",
+                            )
                         completed_count += end - start + 1
                     commit_ready()
                     committed = next_commit - 1
@@ -12236,6 +12615,8 @@ audio { height:36px; }
              border-bottom:1px solid var(--line); }
 .chat-head h3 { flex:1; min-width:max-content; font-size:15px; }
 .chat-head select { max-width:min(320px,100%); }
+/* Easy to see and to tap, and quieter than the orange Listen button. */
+.chat-head .chat-head-button { min-height:40px; padding:0 14px; font-size:15px; }
 .chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
 .chat-log { display:grid; flex:1; align-content:start; gap:10px; min-height:0; overflow:auto;
@@ -12302,6 +12683,7 @@ button.chat-listen { min-height:40px; padding:0 16px; font-size:15px; }
 .reader-original :is(h1,h2,h3,h4,h5,h6) { font-size:1em; }
 .reader-label { color:var(--dim); font-size:12px; font-weight:650;
                 letter-spacing:.04em; text-transform:uppercase; }
+.reader-flag { color:var(--accent); font-size:.92em; }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
 dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
@@ -12777,8 +13159,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <select id="chat-model"></select>
           <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak" type="checkbox">
             Read answers aloud</label>
-          <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
-          <button class="link" type="button" onclick="closeChat()">Close</button>
+          <button id="chat-new" class="chat-head-button" type="button" onclick="newChat()">New conversation</button>
+          <button class="chat-head-button" type="button" onclick="closeChat()">× Close</button>
         </div>
         <div id="chat-problem" class="chat-problem hidden" role="status">
           <p id="chat-problem-text"></p>
@@ -13505,7 +13887,9 @@ function renderReaderOriginals(originals) {
       for (let id = last; id >= first; id--)
         if (sections.has(id)) { anchor = sections.get(id); break; }
     }
-    if (!original.html && !original.unchanged) continue;
+    // A description's original is often empty (its picture shows instead);
+    // a mark on it still needs a place.
+    if (!original.html && !original.unchanged && !(original.flags || []).length) continue;
     const aside = document.createElement("aside");
     aside.className = "reader-original";
     const label = document.createElement("p");
@@ -13521,6 +13905,13 @@ function renderReaderOriginals(originals) {
       link.target = "_blank"; link.rel = "noopener";
     }
     aside.append(label, template.content);
+    // What a check found that asking again did not clear: worth a listen.
+    if ((original.flags || []).length) {
+      const flagged = document.createElement("p");
+      flagged.className = "reader-flag";
+      flagged.textContent = "Check: " + original.flags.join("; ");
+      aside.append(flagged);
+    }
     if (anchor) anchor.after(aside); else content.prepend(aside);
     anchor = aside;
   }
@@ -13779,9 +14170,15 @@ function resetChatFor(book) {
   renderChatLayout();
   if (book) loadChat();
 }
-function toggleChat() { if (chatOpen) closeChat(); else openChat(); }
-async function openChat() {
+// The Chat with Hilde button opens an empty box, for a question about
+// anything; Ask Hilde opens the chat too, then fills in what is playing.
+function toggleChat() { if (chatOpen) closeChat(); else openChat({ fresh:true }); }
+async function openChat({ fresh = false } = {}) {
   if (!state.player.book) return;
+  if (fresh) {
+    $("chat-input").value = "";
+    setChatAbout(null);
+  }
   keepReaderPlace(() => { chatOpen = true; renderChatLayout(); });
   $("chat-input").focus();
   await Promise.all([loadChat(), refreshChatModels()]);
