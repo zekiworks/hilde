@@ -1,0 +1,576 @@
+# Fact set for "Context Language Models" (arXiv 2609.37725v1). Format: facts/README.md.
+# Every fact was checked against the paper's text; "verified" says how. Values only, never wording:
+# a fact is right when its value sits with the right method, symbol or unit, in any phrasing.
+paper: clm
+source: https://arxiv.org/pdf/2609.37725
+runs:
+  2026-10-01: R6 (Astra and Claude reviews)
+  2026-10-07: R17, 2 h 8 min, 6b4102b
+  2026-10-08: 1 h 54 min, 84e7f88 or later (table cells keep manage_context)
+
+visuals:
+
+  # ---------------------------------------------------------------- Figure 1
+  - name: Figure 1
+    caption: 'work out of the box and can be further improved'
+    holders:
+      CLM: '\bCLMs?\b'
+      Summary: '\bSummary\b'
+    facts:
+      - id: CLM-F01
+        what: Software World held-out speedup, CLM swarm (panel b)
+        value: '1\.044'
+        holder: CLM
+        severity: critical
+        source: Fig. 1b; Fig. 6b
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F02
+        what: Software World held-out speedup, Summary swarm (panel b)
+        value: '1\.026'
+        holder: Summary
+        severity: critical
+        source: Fig. 1b; Fig. 6b
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F03
+        what: GPT-5.6-Sol is the model both swarms run on, not a contender with its own result
+        not: ['(?i)GPT-5\.6[- ]Sol (at|with|reach\w*|scor\w*)[^.;]{0,15}\d', '(?i)baselines?[^.;]{0,60}GPT-5\.6', '(?i)GPT-5\.6[- ]Sol[^.;]{0,30}baseline']
+        severity: important
+        source: App. E, Software World
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-07: wrong, 2026-10-08: wrong}
+      - id: CLM-F04
+        what: 16.0K, 23.6K and 30.9K in the steering panel are first-compaction context sizes, not accuracy
+        says: ['(?i)(compaction|context (size|length))[^.;]{0,80}(16\.0|30\.9) ?K', '(?i)(16\.0|30\.9) ?K[^.;]{0,40}(tokens|context|compaction)']
+        not: ['(?i)accuracy[^.;]{0,50}(16\.0|23\.6|30\.9) ?K', '(?i)30\.9 ?(percent|%)']
+        severity: critical
+        source: Fig. 1c; Fig. 7
+        verified: pdf
+        seen: {2026-10-01: right, 2026-10-07: wrong, 2026-10-08: wrong}
+      - id: CLM-F05
+        what: A_eff in panel d is the efficiency advantage
+        says: ['(?i)efficiency advantage']
+        not: ['(?i)effective (area|attention)']
+        severity: important
+        source: §4.2, Eq. 6
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F06
+        what: w_eff in panel d is the efficiency weight
+        says: ['(?i)(weight of the efficiency advantage|efficiency weight)']
+        not: ['(?i)task weight']
+        severity: important
+        source: §4.2
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: right}
+      - id: CLM-F07
+        what: RL raises Qwen3.5-9B CLM accuracy from 28.8% to 42.5% (panel d)
+        says: ['28\.8[^.;]{0,40}42\.5']
+        severity: important
+        source: Table 2
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F08
+        what: RL lowers CLM PFLOPs per question from 1.52 to 1.34 (panel d)
+        says: ['1\.52[^.;]{0,40}1\.34']
+        severity: important
+        source: Table 2
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F09
+        what: The textual-evolution panel has no RL
+        not: ['(?i)evolv[^.]{0,100}(after|with) RL']
+        severity: important
+        source: Fig. 1c; Fig. 8
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: right}
+
+  # ---------------------------------------------------------------- Figure 2
+  - name: Figure 2
+    caption: 'performance comparison of CLM against baselines'
+    facts:
+      - id: CLM-F10
+        what: CLM is not perfect at every pressure level; its KV Store and Log Triage curves dip
+        not: ['(?i)(constant|consistent|perfect)[^.;]{0,20}accuracy[^.;]{0,30}(1\.0|one point zero)', '(?i)(1\.0|one point zero)[^.;]{0,40}(regardless|every|all (pressure|four))', '(?i)(across|on) all (four )?tasks[^.;]{0,60}(1\.0|one point zero|perfect)']
+        severity: critical
+        source: Fig. 2
+        verified: figure (R6-02)
+        seen: {2026-10-01: wrong, 2026-10-07: wrong, 2026-10-08: wrong}
+
+  # ---------------------------------------------------------------- Equations
+  - name: Equation 1
+    facts:
+      - id: CLM-F11
+        what: A standard LM appends (concatenates) its output to the context; no Recursive Language Model
+        says: ['(?i)(append|concatenat|combined with)']
+        not: ['(?i)Recursive Language Model', '(?i)context-management operation']
+        severity: critical
+        source: §4.1, Eq. 1
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-07: wrong, 2026-10-08: right}
+
+  - name: Equation 2
+    facts:
+      - id: CLM-F12
+        what: The next context is the CLM function applied to the current one; a formula, not a diagram
+        says: ['(?i)CLM function[^.;]{0,60}(applied|of)']
+        not: ['(?i)diagram', '(?i)Recursive Language Model', '(?i)\bloop\b']
+        severity: critical
+        source: §4.1, Eq. 2
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: wrong}
+
+  - name: Equation 3
+    facts:
+      - id: CLM-F13
+        what: Prefix-reuse FLOPs = prefill of the unmatched suffix + decode of the generated tokens
+        says: ['(?i)prefill[^.]{0,200}decode']
+        severity: important
+        source: §4.1, Eq. 3
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Equation 4
+    facts:
+      - id: CLM-F14
+        what: Equation 4 is the CLM transition steered by s; no Recursive Language Model, no suffix cache
+        says: ['(?i)CLM function']
+        not: ['(?i)Recursive Language Model', '(?i)suffix cache', '(?i)diagram']
+        severity: critical
+        source: §4.2, Eq. 4
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: wrong}
+      - id: CLM-F15
+        what: s is an in-context instruction or skill document
+        says: ['(?i)(instruction|skill)']
+        not: ['(?i)\bseed\b', '(?i)system prompt']
+        severity: critical
+        source: §4.2
+        verified: pdf
+        seen: {2026-10-01: missing, 2026-10-07: wrong, 2026-10-08: wrong}
+
+  - name: Equation 5
+    facts:
+      - id: CLM-F16
+        what: s* maximizes the expected trajectory reward over x drawn from D
+        says: ['(?i)maximi[sz]es?[^.;]{0,20}expected reward']
+        severity: important
+        source: §4.2, Eq. 5
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Equation 6
+    facts:
+      - id: CLM-F17
+        what: A_eff is the efficiency advantage
+        says: ['(?i)efficiency advantage']
+        not: ['(?i)effective (area|attention|advantage)']
+        severity: critical
+        source: §4.2, Eq. 6
+        verified: pdf
+        seen: {2026-10-01: right, 2026-10-07: wrong, 2026-10-08: wrong}
+      - id: CLM-F18
+        what: For a successful trajectory, A_eff = clip((c̄ − c_i) / c̄, −1, 1); otherwise 0
+        says: ['(?i)(c bar g minus c i|subtract\w* c i from c bar g)[^.]{0,80}divid\w*[^.]{0,30}c bar g']
+        severity: important
+        source: §4.2, Eq. 6
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Equation 7
+    facts:
+      - id: CLM-F19
+        what: The MLP term of C_token is 6·L·d·d_ff
+        says: ['(?i)\b6 (multiplied by|times) L,? d,? and d ff']
+        severity: important
+        source: App. C, Eq. 7
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Equation 8
+    facts:
+      - id: CLM-F20
+        what: C_attn = 4·L_attn·h_q·d_h
+        says: ['(?i)\b4 (multiplied by|times) L attn,? h q,? and d h']
+        severity: important
+        source: App. C, Eq. 8
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Equation 9
+    facts:
+      - id: CLM-F21
+        what: The prefill attention term uses P_t² − R_t² (prompt and reused lengths)
+        says: ['(?i)P t squared (and|minus) R t squared']
+        not: ['(?i)prefilled and reused lengths', '(?i)sum of updated and generated']
+        severity: important
+        source: App. C, Eq. 9
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: right}
+
+  # ---------------------------------------------------------------- Figures 3, 4
+  - name: Figure 3
+    caption: 'qualitative examples of CLM context-management behaviors'
+
+  - name: Figure 4
+    caption: 'standard serving reuses only prefix-matched cache'
+    facts:
+      - id: CLM-F22
+        what: Standard serving re-prefills the surviving segment C after the edit
+        says: ['(?i)re-?prefill[^.]{0,60}\bC\b']
+        severity: important
+        source: §4.3, Fig. 4
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F23
+        what: Suffix Cache Reuse reuses the cached states of segment C
+        says: ['(?i)reus\w*[^.]{0,50}\bC\b']
+        severity: important
+        source: §4.3, Fig. 4
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  # ---------------------------------------------------------------- Figure 5, Table 1
+  - name: Figure 5
+    caption: 'perform better than action-based and harness-defined baselines'
+    facts:
+      - id: CLM-F24
+        what: On BrowseComp-Plus CLM has the highest accuracy, 59.4% (about 60%)
+        says: ['(?i)CLM[^.;]{0,40}(59\.4|approximately 60|about 60|around 60)']
+        severity: important
+        source: §5.1.1
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F25
+        what: On TerminalBench 2.1 CLM matches Summary (with 70% of its FLOPs); it does not beat it
+        not: ['(?i)(outperforms?|beats?|exceeds?|higher than)[^.;]{0,40}Summary[^.;]{0,80}TerminalBench', '(?i)TerminalBench[^.;]{0,120}CLM[^.;]{0,40}(outperforms?|beats?|exceeds?)[^.;]{0,30}Summary']
+        severity: important
+        source: §5.1.1
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: right}
+      - id: CLM-F26
+        what: Average contexts are 97K (BrowseComp-Plus), 47K (TerminalBench 2.1) and 33K (TBLite)
+        says: ['97 ?K.{0,400}?47 ?K.{0,400}?33 ?K']
+        severity: minor
+        source: Fig. 5 panel titles
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Table 1
+    caption: 'outperform specialized OpenEvolve evolutionary workflows'
+    scope: book          # the description follows the shared Figure 5 / Table 1 captions; its values are unique in the book
+    holders:
+      CLM: '\bCLM\b'
+      CLM-SA: 'subagents?|\(SA\)'
+      OE: '\bOE\b(?!-)'
+      OE-Agent: '\bOE-Agent\b'
+    regions:
+      circle: '(?i)circle packing'
+      heilbronn: '(?i)Heilbronn'
+      minmax: '(?i)min-max'
+      erdos: '(?i)Erd'
+    facts:
+      - {id: CLM-F27, what: Circle packing, CLM with subagents, value: '2\.636', holder: CLM-SA, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F28, what: Circle packing, CLM, value: '2\.618', holder: CLM, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F29, what: Circle packing, OpenEvolve, value: '2\.541', holder: OE, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F30, what: Circle packing, OpenEvolve-Agent, value: '2\.525', holder: OE-Agent, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F31, what: Heilbronn, CLM, value: '0\.03653', holder: CLM, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F32, what: Heilbronn, CLM with subagents, value: '0\.03617', holder: CLM-SA, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F33, what: Heilbronn, OpenEvolve, value: '0\.03127', holder: OE, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F34, what: Heilbronn, OpenEvolve-Agent, value: '0\.03053', holder: OE-Agent, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F35, what: Min-max/min-dist, CLM and CLM with subagents tie, value: '0\.07758', holder: [CLM, CLM-SA], region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F36, what: Min-max/min-dist, OpenEvolve-Agent, value: '0\.07724', holder: OE-Agent, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F37, what: Min-max/min-dist, OpenEvolve, value: '0\.07690', holder: OE, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F38, what: Erdős overlap (lower is better), CLM, value: '0\.38094', holder: CLM, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F39, what: Erdős overlap, CLM with subagents, value: '0\.38109', holder: CLM-SA, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F40, what: Erdős overlap, OpenEvolve, value: '0\.38123', holder: OE, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F41, what: Erdős overlap, OpenEvolve-Agent, value: '0\.38167', holder: OE-Agent, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F42
+        what: On Erdős (lower is better) OpenEvolve, 0.38123, ranks above OpenEvolve-Agent, 0.38167
+        not: ['(?i)Erd.{0,120}?followed by.{0,80}?0\.38167.{0,30}?0\.38123']
+        severity: minor
+        source: Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+
+  # ---------------------------------------------------------------- Figure 6
+  - name: Figure 6
+    caption: 'outperform Codex-style summary harness'
+    holders:
+      CLM: '\bCLMs?\b'
+      CLM-SA: 'subagents?'
+      Summary: '\bSummary\b|summari[sz]ation'
+      Base: '\bBase\b|base harness'
+    regions:
+      qwen: '(?i)\bfor Qwen|Qwen[^.,;]{0,12}(,|:)'
+      sonnet: '(?i)\bfor Claude|(Claude|Sonnet)[^.,;]{0,12}(,|:)'
+      swarm: '(?i)Panel b|Software World'
+    facts:
+      - {id: CLM-F43, what: 'EdgeBench-10, Qwen3.6-27B: CLM final score', value: '44\.6', holder: CLM, region: qwen, severity: critical, source: '§5.1.2; Fig. 6a; App. F', verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F44, what: 'EdgeBench-10, Qwen3.6-27B: CLM PFLOPs per trial', value: '179', holder: CLM, region: qwen, severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F45, what: 'EdgeBench-10, Qwen3.6-27B: CLM with subagents final score', value: '44\.2', holder: CLM-SA, region: qwen, severity: critical, source: '§5.1.2; App. F', verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F46, what: 'EdgeBench-10, Qwen3.6-27B: CLM with subagents PFLOPs per trial', value: '181', holder: CLM-SA, region: qwen, severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F47, what: 'EdgeBench-10, Qwen3.6-27B: Summary final score', value: '42\.3', holder: Summary, region: qwen, severity: critical, source: §5.1.2, verified: pdf, seen: {2026-10-01: wrong, 2026-10-08: right}}
+      - {id: CLM-F48, what: 'EdgeBench-10, Qwen3.6-27B: Summary PFLOPs per trial', value: '437', holder: Summary, region: qwen, severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F49, what: 'EdgeBench-10, Qwen3.6-27B: Base final score', value: '21\.8', holder: Base, region: qwen, severity: important, source: Fig. 6a inset, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F50, what: 'EdgeBench-10, Claude 4.6 Sonnet: CLM final score', value: '51\.0', holder: CLM, region: sonnet, severity: critical, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F51, what: 'EdgeBench-10, Claude 4.6 Sonnet: CLM with subagents final score', value: '50\.4', holder: CLM-SA, region: sonnet, severity: critical, source: §5.1.2, verified: pdf, seen: {2026-10-08: wrong}}
+      - {id: CLM-F52, what: 'EdgeBench-10, Claude 4.6 Sonnet: Summary final score', value: '42\.3', holder: Summary, region: sonnet, severity: critical, source: §5.1.2, verified: pdf, seen: {2026-10-08: missing}}
+      - {id: CLM-F53, what: 'EdgeBench-10, Claude 4.6 Sonnet: Base final score', value: '24\.2', holder: Base, region: sonnet, severity: important, source: Fig. 6a inset, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F54, what: 'Software World: CLM swarm held-out speedup', value: '1\.044', holder: CLM, region: swarm, severity: critical, source: Fig. 6b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F55, what: 'Software World: Summary swarm held-out speedup', value: '1\.026', holder: Summary, region: swarm, severity: critical, source: Fig. 6b, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F56
+        what: The package versions in Figure 6b (2.7.0, 2.34.2, …) are versions, not speedups
+        not: ['(?i)speedup[^.;]{0,40}\b\d+\.\d+\.\d+']
+        severity: critical
+        source: Fig. 6b
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: right}
+
+  # ---------------------------------------------------------------- Figures 7, 8
+  - name: Figure 7
+    caption: 'one sentence in the prompt changes the context-management policy'
+    holders:
+      instructed: '(?<!non-)(?<!un)\binstructed\b'
+      not-instructed: 'non-instructed|no instruction|without (an )?instruction|uninstructed'
+    facts:
+      - id: CLM-F57
+        what: First compaction at 16.0k, 23.6k and 30.9k tokens for Y = 16K, 24K and 32K
+        says: ['(?i)16(\.0)? ?k[^.;]{0,30}23\.6 ?k[^.;]{0,30}30\.9 ?k']
+        severity: critical
+        source: Fig. 7 left; App. E
+        verified: pdf
+        seen: {2026-10-08: right}
+      - {id: CLM-F58, what: 'Boundaries: instructed, compacted at the boundary turn', value: '0\.77', holder: instructed, severity: important, source: Fig. 7 middle, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F59, what: 'Boundaries: instructed, compacted within 2 turns', value: '0\.88', holder: instructed, severity: important, source: Fig. 7 middle, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F60, what: 'Boundaries: no instruction, compacted within 2 turns', value: '0\.40', holder: not-instructed, severity: important, source: Fig. 7 middle, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F61
+        what: 'Backup: 0.68 of edits follow a full backup and 0.09 a partial one'
+        says: ['0\.68[^.;]{0,30}full[^.;]{0,40}0\.09[^.;]{0,30}partial']
+        severity: important
+        source: Fig. 7 right
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Figure 8
+    caption: 'textual evolution for CLMs on'
+
+  # ---------------------------------------------------------------- Table 2
+  - name: Table 2
+    caption: 'RL results on BrowseComp-Plus with Qwen3.5-9B'
+    holders:
+      Summary: '\bSummary\b'
+      CLM: '\bCLM\b'
+    facts:
+      - {id: CLM-F62, what: 'Summary accuracy, 34.7% before RL to 42.1% after', says: ['34\.7[^;]{0,30}42\.1'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F63, what: Summary accuracy after RL, value: '42\.1', holder: Summary, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F64, what: 'CLM accuracy, 28.8% before RL to 42.5% after', says: ['28\.8[^;]{0,30}42\.5'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F65, what: CLM accuracy after RL, value: '42\.5', holder: CLM, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F66, what: 'Summary PFLOPs per question, 4.01 before RL to 2.19 after', says: ['4\.01[^;]{0,30}2\.19'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F67, what: Summary PFLOPs per question after RL, value: '2\.19', holder: Summary, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F68, what: 'CLM PFLOPs per question, 1.52 before RL to 1.34 after', says: ['1\.52[^;]{0,30}1\.34'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F69, what: CLM PFLOPs per question after RL, value: '1\.34', holder: CLM, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F70
+        what: The compute unit is PFLOPs (10^15), not FLOPs
+        not: ['(?i)\b(1\.34|1\.52|2\.19|4\.01) (prefix-reuse )?FLOPs']
+        severity: important
+        source: Table 2
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: right}
+
+  # ---------------------------------------------------------------- Figures 9 to 15
+  - name: Figure 9
+    caption: 'server-side compute decomposition'
+    holders:
+      Standard: 'Standard( SGLang)?\b|standard serving'
+      SCR: 'Suffix Cache Reuse|\bSCR\b'
+    facts:
+      - {id: CLM-F71, what: Task accuracy, both, value: '60\.2', holder: [Standard, SCR], severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F72, what: PFLOPs per question, standard SGLang, value: '10\.98', holder: Standard, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F73, what: PFLOPs per question, Suffix Cache Reuse, value: '7\.14', holder: SCR, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F74
+        what: 10.98 and 7.14 are the totals; 10 is an axis tick, not a decode cost
+        not: ['(?i)decode (cost )?(is|of|at) 10\b']
+        severity: important
+        source: Fig. 9 left
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - {id: CLM-F75, what: 'All turns: SCR reuses 7.8% of prompt tokens beyond prefix hits', value: '7\.8', holder: SCR, severity: important, source: Fig. 9 right, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F76, what: 'Edited turns: SCR reuses 28.2%', value: '28\.2', holder: SCR, severity: important, source: Fig. 9 right, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F77
+        what: 'Edited turns: prefilled share falls from 75.8% (standard) to 41.8% (SCR)'
+        says: ['75\.8.{0,200}?41\.8']
+        severity: important
+        source: Fig. 9 right
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Figure 10
+    caption: 'for full attention layers and linear attention layers'
+    facts:
+      - id: CLM-F78
+        what: Full-attention layers relocate cached keys and values and re-rotate RoPE
+        says: ['(?i)(RoPE|rotary)']
+        severity: minor
+        source: App. B, Fig. 10
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F79
+        what: Linear-attention layers reuse a pre-edit state snapshot
+        says: ['(?i)snapshot']
+        severity: minor
+        source: App. B, Fig. 10
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Figure 11
+    caption: 'sensitivity study of relocated spans'
+    facts:
+      - id: CLM-F80
+        what: Relocated tokens per edit are in thousands (axis "(k)"), about 2k to 4k
+        says: ['(?i)(thousand|\d ?k\b|\d,000)[^.;]{0,20}tokens']
+        not: ['(?i)\b(under |over |about |around )?[1-5] tokens\b']
+        severity: critical
+        source: Fig. 11 right
+        verified: pdf
+        seen: {2026-10-01: right, 2026-10-07: right, 2026-10-08: wrong}
+      - id: CLM-F81
+        what: Accuracy is robust across K; the text claims no SCR accuracy advantage and no best K
+        not: ['(?i)(Suffix Cache Reuse|SCR)[^.;]{0,40}(slightly )?better', '(?i)(best|lowest)[^.;]{0,40}K (equals |= ?)6']
+        severity: minor
+        source: App. B ("robust across K", gains "saturate by K = 6")
+        verified: pdf (text only)
+        seen: {2026-10-08: wrong}
+
+  - name: Figure 12
+    caption: 'also benefits standard chat serving'
+    holders:
+      Standard: 'Standard( SGLang)?\b'
+      SCR: 'Suffix Cache Reuse|\bSCR\b'
+      stripping: 'reasoning stripping'
+      edits: 'context edits'
+    facts:
+      - {id: CLM-F82, what: 'All turns: prefix-cache hits, standard', value: '72\.9', holder: Standard, severity: important, source: Fig. 12, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F83, what: 'All turns: prefix-cache hits, SCR', value: '73\.9', holder: SCR, severity: important, source: Fig. 12, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F84
+        what: 'Of the 7.8% SCR reuses, 5.3 points follow reasoning stripping and 2.5 follow context edits'
+        says: ['(?i)5\.3[^.;]{0,40}reasoning stripping[^.;]{0,40}2\.5[^.;]{0,40}context edits']
+        severity: critical
+        source: App. B, Fig. 12
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: CLM-F85
+        what: 'Edited turns: 19.3% after reasoning stripping, 8.9% after context edits'
+        says: ['(?i)19\.3[^.;]{0,40}reasoning stripping[^.;]{0,40}8\.9']
+        severity: important
+        source: Fig. 12
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  - name: Figure 13
+    caption: 'remaining re-prefill under Suffix Cache Reuse'
+    holders:
+      prefix: 'unchanged prefix(es)?'
+      suffix: 'unchanged suffix(es)?'
+      reused: '\breused\b'
+    facts:
+      - {id: CLM-F86, what: 'Edited turns, standard: prefilled unchanged prefix', value: '29\.5', holder: prefix, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F87, what: 'Edited turns, standard: prefilled unchanged suffix', value: '31\.1', holder: suffix, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F88, what: 'Edited turns, SCR: reused', value: '28\.2', holder: reused, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Figure 14
+    caption: 'FLOPs of one Qwen3.6-27B turn'
+    holders:
+      append: '(?i)append[- ]only'
+      middle: '(?i)mid-context|middle'
+      start: '(?i)at (the )?start|no cache'
+    facts:
+      - {id: CLM-F89, what: 'Append only (R = 18,000): 1.41×10^14 FLOPs', value: '1\.41', holder: append, severity: important, source: App. C, Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F90, what: 'Append only: 87% of compute avoided', value: '87', holder: append, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F91, what: 'Mid-context edit (R = 10,000): 5.74×10^14 FLOPs', value: '5\.74', holder: middle, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F92, what: 'Mid-context edit: 47% avoided', value: '47', holder: middle, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F93, what: 'Edit at start (R = 0): 10.81×10^14 FLOPs', value: '10\.81', holder: start, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Table 3
+    caption: 'the four ContextBench tasks'
+    facts:
+      - {id: CLM-F94, what: 'Needle Retention: ~4K-token chunks with 2–8 needle lines and 140 filler lines', says: ['(?i)2 (to|-|–) 8 needle[^.;]{0,30}140 filler'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F95, what: 'Sudoku Sketchpad: one move per turn on a 16×16 board', says: ['(?i)(16 by 16|16×16|sixteen by sixteen)'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F96, what: 'KV Store: batches of 100 SET operations, 24 GET queries', says: ['(?i)100 SET[^.;]{0,80}24 GET'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F97, what: 'Log Triage: batches of 14–54 log lines, 24 queries', says: ['(?i)14 (to|-|–) 54[^.;]{0,60}24'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Figure 15
+    caption: 'context pressure of every ContextBench level'
+    holders:
+      Needle: 'Needle Retention'
+      Sudoku: 'Sudoku'
+      KV: 'KV Store'
+      Log: 'Log Triage'
+    facts:
+      - {id: CLM-F98, what: 'Needle Retention: up to 224 chunks', value: '224', holder: Needle, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F99, what: 'Sudoku Sketchpad: up to 150 moves', value: '150', holder: Sudoku, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F100, what: 'KV Store: up to 16k records', value: '16 ?k|16,000', holder: KV, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F101, what: 'Log Triage: up to 12,800 log lines', value: '12,?800', holder: Log, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+
+  # ---------------------------------------------------------------- Tables 4, 5
+  - name: Table 4
+    caption: 'blue marks the concrete instruction'
+    holders:
+      ACM: '\bACM\b'
+      Summary: '\bSummary\b'
+    facts:
+      - id: CLM-F102
+        what: Tool and command names keep their underscores
+        says: ['manage_context', 'query_memory', 'READY_FOR_NEXT_OP']
+        not: ['managecontext', 'querymemory', 'READYFORNEXTOP']
+        severity: important
+        source: Table 4
+        verified: pdf
+        seen: {2026-10-07: wrong, 2026-10-08: right}
+      - {id: CLM-F103, what: 'ACM: compress when the gauge is above 22,000', value: '22,?000', holder: ACM, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F104, what: 'Summary: compacts at about 24.6K of 32,768 tokens', value: '24\.6 ?K', holder: Summary, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Table 5
+    caption: 'scores are rescaled to 0'
+    holders:
+      juliet: 'juliet'
+      schemathesis: 'schemathesis'
+    facts:
+      - {id: CLM-F105, what: 'juliet_vulnerability_analyzer starts with 1 file and 9 lines', value: '9', holder: juliet, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F106, what: 'schemathesis_datagen_pipeline starts with 416 files and 112,663 lines', value: '112,?663', holder: schemathesis, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F107, what: 'openrct2 is a JavaScript plugin', says: ['(?i)openrct2[^.;]{0,60}JavaScript'], severity: minor, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+
+  # ---------------------------------------------------------------- Appendix F, G figures
+  - name: Figure 17
+    caption: 'accuracy against compute for Qwen3.5-9B'
+
+  - name: Figure 18
+    caption: 'best-so-far score versus evaluator-scored attempts'
+
+  - name: Figure 19
+    caption: 'single-repository optimization with a 128K'
+    holders:
+      CLM: '\bCLM\b'
+      CLM-SA: 'subagents?'
+      Summary: 'summari[sz]ation|\bSummary\b'
+      Base: 'base harness|\bBase\b'
+    facts:
+      - {id: CLM-F108, what: '128K: CLM with subagents', value: '50\.2', holder: CLM-SA, severity: important, source: App. F, Fig. 19, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F109, what: '128K: CLM', value: '47\.3', holder: CLM, severity: important, source: App. F, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F110, what: '128K: Summary', value: '47\.8', holder: Summary, severity: important, source: App. F, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F111, what: '128K: Base', value: '32\.4', holder: Base, severity: important, source: Fig. 19 inset, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Figure 20
+    caption: 'never use the held-out evaluation set'
+
+  - name: Figure 22
+    caption: 'each point compares a model'
+    facts:
+      - id: CLM-F112
+        what: 1296 is not the lowest mean absolute error in Figure 22 (1086 is lower)
+        not: ['(?i)(lowest|best|smallest)[^.;]{0,60}\b1,?296\b', '(?i)\b1,?296\b[^.;]{0,40}(lowest|best|smallest)']
+        severity: important
+        source: Fig. 22 legend
+        verified: figure (Astra)
+        seen: {2026-10-07: right, 2026-10-08: wrong}
