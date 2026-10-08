@@ -5940,6 +5940,9 @@ class GroundingTests(unittest.TestCase):
                          ["the narration says 26, which its source does not print"])
         self.assertEqual(web.grounding_problems("The base is 10000.", ("The term 100002i grows.",)), [])
         self.assertEqual(web._numbers("from 16.0K to 30.9K, and 100K steps"), ["16000", "30900", "100000"])
+        # OCR spaces a separator on a chart's axis; a list keeps its numbers apart.
+        self.assertEqual(web._numbers("600 800 1 , 000"), ["600", "800", "1000"])
+        self.assertEqual(web._numbers("batches of 16, 32, 128"), ["16", "32", "128"])
 
     def test_a_footnote_is_grounded_by_the_paragraph_its_mark_sits_in(self):
         paragraphs = [

@@ -5922,9 +5922,11 @@ PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
 def _numbers(text):
     """The numbers a text prints, as written once thousands separators, the
     emphasis extraction leaves inside a decimal ("3 _._ 5"), and a thousands
-    suffix ("100K" steps, said "100,000"; "30.9K", 30,900) are gone."""
+    suffix ("100K" steps, said "100,000"; "30.9K", 30,900) are gone. OCR
+    spaces a separator, "1 , 000" on BERT's Figure 9 axis; a list never puts
+    a space before its comma ("16, 32, 128")."""
     text = re.sub(r"(?<=\d)[\s_*]*\.[\s_*]*(?=\d)", ".", text)
-    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    text = re.sub(r"(?<=\d)(?:,| ,\s?)(?=\d{3}\b)", "", text)
     text = re.sub(
         r"(?<![\d.])(\d+(?:\.\d+)?)K\b",
         lambda match: f"{float(match.group(1)) * 1000:g}" if "." in match.group(1)
