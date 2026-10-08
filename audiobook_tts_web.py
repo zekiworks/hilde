@@ -9568,6 +9568,7 @@ class PaperRun(Run):
         scratch_path=None,
         adapt=True,
         local_vision=False,
+        descriptions_only=False,
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -9595,6 +9596,9 @@ class PaperRun(Run):
         self.adapt = bool(adapt)
         # Whether the local server's model sees images, as the user says.
         self.local_vision = bool(local_vision)
+        # QA's descriptions-only runs (qa/describe.py): only figure, table, and
+        # equation batches go to the model; prose keeps the author's text.
+        self.descriptions_only = bool(descriptions_only)
         # What the adaptation kept of the author's prose, and how long this
         # run took to read and adapt the document.
         self.fidelity = None
@@ -10190,6 +10194,19 @@ class PaperRun(Run):
             )
             results[start] = (end, text, text)
             completed_count += 1
+        # A descriptions-only run reads prose as printed, without the model, so
+        # the descriptions can be measured in minutes (qa/facts/README.md).
+        if self.descriptions_only:
+            for start, end in batches:
+                if start in results or _describes_visual(set(kinds[start - 1:end])):
+                    continue
+                text = "\n\n".join(paragraph.strip() for paragraph in requested[start - 1:end] if paragraph.strip())
+                write_json_atomic(
+                    checkpoint_dir / f"{start:06d}-{end:06d}.json",
+                    {"end": end, "narration": text, "summary": text, "tags": []},
+                )
+                results[start] = (end, text, text)
+                completed_count += end - start + 1
 
         futures = {}
         pending_starts = iter([
@@ -10379,6 +10396,7 @@ class PaperRun(Run):
             "schema": EXTRACTION_SCHEMA,
             "input_version": file_version(input_path),
             "adapt": self.adapt,
+            "descriptions_only": self.descriptions_only,
             "model": self.model,
             "local_server": self.local_server,
             # A figure described from its image differs from one described

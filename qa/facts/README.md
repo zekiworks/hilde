@@ -2,7 +2,7 @@
 
 A fact set lists, for one test paper, the facts its figure, table and equation descriptions must state correctly. It replaces reading whole books: each description is scored against fixed facts (see `hilde-plan-2026-10-08.md`).
 
-Reviewers (Claude, Astra) write the fact sets. The scorer in `qa.py` (fixer) reads them. `score_facts.py`, sent with the first fact set, is a reference implementation of the rules below.
+Reviewers (Claude, Astra) write the fact sets. `python qa/qa.py facts RUN... [--baseline RUN...]` scores them, and `python qa/describe.py` makes the runs (descriptions only, 3 per paper). `qa.py validate` checks every fact set. In a flow mapping (`- {id: …, what: …}`), quote a value holding a comma: `what: 'Circle packing, CLM'`, or YAML splits it into another key.
 
 ## Rules
 
@@ -42,9 +42,12 @@ visuals:
 
 ## Where a description is found
 
-- **Figure or table, in narration.json:** the figure or table passage whose sources hold the caption. If no passage holds it (a caption not recognized, as in CLM on 84e7f88), take the last figure or table passage before the passage that does.
+- **Figure or table, in narration.json:** the first passage whose sources hold the caption, when it is a figure or table passage. When it is not (a caption not recognized, as in CLM on 84e7f88 and 9a70f65), take the last passage before it that carries a visual: a figure, table, or equation passage, or a body passage with a figure, table, or equation among its sources (a figure joined into prose), without passing another visual's caption.
 - **Figure or table, in follow-along text:** the paragraphs after the nearest "Description" before the caption. If there is none, the one paragraph just before the caption.
-- **Equation:** every passage or paragraph that opens with "Equation N".
+- **Equation:** every paragraph that opens with "Equation N", also inside a passage of several paragraphs.
+- **Descriptions-only runs** (`qa/describe.py`, `descriptions_only` in book.json) keep the author's prose, so facts with `scope: book` are not scored there.
+
+`python qa/qa.py facts` implements these rules; on the 8 October books it gives each fact's `seen` status for 282 of 284 facts. The other two, BERT-F42 and BERT-F45, are about the reader's layout, which narration.json does not hold.
 - **Opening name:** a description that opens "Figure 8 shows…" or "The equation shows…" for Figure 6 is scored as a wrong label. Labels are written by code, so they are counted apart from the facts.
 
 ## Scoring one fact

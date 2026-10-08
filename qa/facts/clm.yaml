@@ -271,21 +271,21 @@ visuals:
       minmax: '(?i)min-max'
       erdos: '(?i)Erd'
     facts:
-      - {id: CLM-F27, what: Circle packing, CLM with subagents, value: '2\.636', holder: CLM-SA, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F28, what: Circle packing, CLM, value: '2\.618', holder: CLM, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F29, what: Circle packing, OpenEvolve, value: '2\.541', holder: OE, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F30, what: Circle packing, OpenEvolve-Agent, value: '2\.525', holder: OE-Agent, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F31, what: Heilbronn, CLM, value: '0\.03653', holder: CLM, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F32, what: Heilbronn, CLM with subagents, value: '0\.03617', holder: CLM-SA, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F33, what: Heilbronn, OpenEvolve, value: '0\.03127', holder: OE, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F34, what: Heilbronn, OpenEvolve-Agent, value: '0\.03053', holder: OE-Agent, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F35, what: Min-max/min-dist, CLM and CLM with subagents tie, value: '0\.07758', holder: [CLM, CLM-SA], region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F36, what: Min-max/min-dist, OpenEvolve-Agent, value: '0\.07724', holder: OE-Agent, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F37, what: Min-max/min-dist, OpenEvolve, value: '0\.07690', holder: OE, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F38, what: Erdős overlap (lower is better), CLM, value: '0\.38094', holder: CLM, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F39, what: Erdős overlap, CLM with subagents, value: '0\.38109', holder: CLM-SA, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F40, what: Erdős overlap, OpenEvolve, value: '0\.38123', holder: OE, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F41, what: Erdős overlap, OpenEvolve-Agent, value: '0\.38167', holder: OE-Agent, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F27, what: 'Circle packing, CLM with subagents', value: '2\.636', holder: CLM-SA, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F28, what: 'Circle packing, CLM', value: '2\.618', holder: CLM, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F29, what: 'Circle packing, OpenEvolve', value: '2\.541', holder: OE, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F30, what: 'Circle packing, OpenEvolve-Agent', value: '2\.525', holder: OE-Agent, region: circle, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F31, what: 'Heilbronn, CLM', value: '0\.03653', holder: CLM, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F32, what: 'Heilbronn, CLM with subagents', value: '0\.03617', holder: CLM-SA, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F33, what: 'Heilbronn, OpenEvolve', value: '0\.03127', holder: OE, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F34, what: 'Heilbronn, OpenEvolve-Agent', value: '0\.03053', holder: OE-Agent, region: heilbronn, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F35, what: 'Min-max/min-dist, CLM and CLM with subagents tie', value: '0\.07758', holder: [CLM, CLM-SA], region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F36, what: 'Min-max/min-dist, OpenEvolve-Agent', value: '0\.07724', holder: OE-Agent, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F37, what: 'Min-max/min-dist, OpenEvolve', value: '0\.07690', holder: OE, region: minmax, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F38, what: 'Erdős overlap (lower is better), CLM', value: '0\.38094', holder: CLM, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F39, what: 'Erdős overlap, CLM with subagents', value: '0\.38109', holder: CLM-SA, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F40, what: 'Erdős overlap, OpenEvolve', value: '0\.38123', holder: OE, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F41, what: 'Erdős overlap, OpenEvolve-Agent', value: '0\.38167', holder: OE-Agent, region: erdos, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
       - id: CLM-F42
         what: On Erdős (lower is better) OpenEvolve, 0.38123, ranks above OpenEvolve-Agent, 0.38167
         not: ['(?i)Erd.{0,120}?followed by.{0,80}?0\.38167.{0,30}?0\.38123']
@@ -386,9 +386,9 @@ visuals:
       Standard: 'Standard( SGLang)?\b|standard serving'
       SCR: 'Suffix Cache Reuse|\bSCR\b'
     facts:
-      - {id: CLM-F71, what: Task accuracy, both, value: '60\.2', holder: [Standard, SCR], severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F72, what: PFLOPs per question, standard SGLang, value: '10\.98', holder: Standard, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F73, what: PFLOPs per question, Suffix Cache Reuse, value: '7\.14', holder: SCR, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F71, what: 'Task accuracy, both', value: '60\.2', holder: [Standard, SCR], severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F72, what: 'PFLOPs per question, standard SGLang', value: '10\.98', holder: Standard, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F73, what: 'PFLOPs per question, Suffix Cache Reuse', value: '7\.14', holder: SCR, severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
       - id: CLM-F74
         what: 10.98 and 7.14 are the totals; 10 is an axis tick, not a decode cost
         not: ['(?i)decode (cost )?(is|of|at) 10\b']
@@ -486,7 +486,7 @@ visuals:
       middle: '(?i)mid-context|middle'
       start: '(?i)at (the )?start|no cache'
     facts:
-      - {id: CLM-F89, what: 'Append only (R = 18,000): 1.41×10^14 FLOPs', value: '1\.41', holder: append, severity: important, source: App. C, Fig. 14, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F89, what: 'Append only (R = 18,000): 1.41×10^14 FLOPs', value: '1\.41', holder: append, severity: important, source: 'App. C, Fig. 14', verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F90, what: 'Append only: 87% of compute avoided', value: '87', holder: append, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F91, what: 'Mid-context edit (R = 10,000): 5.74×10^14 FLOPs', value: '5\.74', holder: middle, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F92, what: 'Mid-context edit: 47% avoided', value: '47', holder: middle, severity: important, source: Fig. 14, verified: pdf, seen: {2026-10-08: right}}
@@ -556,7 +556,7 @@ visuals:
       Summary: 'summari[sz]ation|\bSummary\b'
       Base: 'base harness|\bBase\b'
     facts:
-      - {id: CLM-F108, what: '128K: CLM with subagents', value: '50\.2', holder: CLM-SA, severity: important, source: App. F, Fig. 19, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F108, what: '128K: CLM with subagents', value: '50\.2', holder: CLM-SA, severity: important, source: 'App. F, Fig. 19', verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F109, what: '128K: CLM', value: '47\.3', holder: CLM, severity: important, source: App. F, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F110, what: '128K: Summary', value: '47\.8', holder: Summary, severity: important, source: App. F, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F111, what: '128K: Base', value: '32\.4', holder: Base, severity: important, source: Fig. 19 inset, verified: pdf, seen: {2026-10-08: right}}

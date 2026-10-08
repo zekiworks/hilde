@@ -5,6 +5,7 @@
   python qa/qa.py check TARGET [--paper ID]      generic checks + golden assertions on one book
   python qa/qa.py report [--bug B02]             markdown summary (paste into the human checklist)
   python qa/qa.py next                           highest-priority unfixed bug class with its open findings
+  python qa/qa.py facts RUN... [--baseline RUN...]   score fact sets (facts/<paper>.yaml) over runs; describe.py makes runs
 
 TARGET is a book folder (Audiobooks/<slug>--<hash12>/), its narration.json, or a plain text file.
 For a book, the checked text is exactly what every voice reads: the non-empty passage texts joined by
@@ -198,6 +199,50 @@ def cmd_validate(_args):
                     except re.error as e:
                         errors.append(f"{path.name} {a['id']}: bad regex {pat!r} ({e})")
 
+    fact_ids = {}
+    for path in sorted((ROOT / "facts").glob("*.yaml")):
+        spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if spec.get("paper") not in paper_ids:
+            errors.append(f"facts/{path.name}: unknown paper '{spec.get('paper')}'")
+        for visual in spec.get("visuals") or []:
+            where = f"facts/{path.name} {visual.get('name')}"
+            if not (visual.get("caption") or visual.get("find") or visual.get("scope") == "book"
+                    or str(visual.get("name", "")).startswith("Equation")):
+                errors.append(f"{where}: needs a caption, find, scope: book, or an Equation name")
+            for key in ("holders", "regions"):
+                for pat in (visual.get(key) or {}).values():
+                    try:
+                        re.compile(pat)
+                    except re.error as e:
+                        errors.append(f"{where}: bad {key} regex {pat!r} ({e})")
+            for fact in visual.get("facts") or []:
+                fid = fact.get("id")
+                if fid in fact_ids:
+                    errors.append(f"{where}: duplicate fact id {fid} (also in {fact_ids[fid]})")
+                fact_ids[fid] = path.name
+                for key in ("id", "what", "severity", "source", "verified"):
+                    if not fact.get(key):
+                        errors.append(f"{where} {fid}: missing '{key}'")
+                unknown = set(fact) - FACT_KEYS
+                if unknown:
+                    errors.append(f"{where} {fid}: unknown keys {sorted(map(str, unknown))} (an unquoted ': ' in YAML?)")
+                if fact.get("severity") not in FACT_SEVERITY:
+                    errors.append(f"{where} {fid}: severity must be one of {sorted(FACT_SEVERITY)}")
+                if "value" in fact and not fact.get("holder"):
+                    errors.append(f"{where} {fid}: a value needs a holder")
+                for holder in as_list(fact.get("holder")):
+                    if holder not in (visual.get("holders") or {}):
+                        errors.append(f"{where} {fid}: unknown holder '{holder}'")
+                if fact.get("region") and fact["region"] not in (visual.get("regions") or {}):
+                    errors.append(f"{where} {fid}: unknown region '{fact['region']}'")
+                if not any(key in fact for key in ("value", "says", "not")):
+                    errors.append(f"{where} {fid}: needs value, says or not")
+                for pat in as_list(fact.get("value")) + as_list(fact.get("says")) + as_list(fact.get("not")):
+                    try:
+                        re.compile(str(pat))
+                    except re.error as e:
+                        errors.append(f"{where} {fid}: bad regex {pat!r} ({e})")
+
     seen = set()
     for f in findings:
         where = f"findings.jsonl line {f['_line']} ({f.get('id', '?')})"
@@ -233,7 +278,7 @@ def cmd_validate(_args):
         print(f"\n{len(errors)} problem(s).")
         return 1
     print(f"OK: {len(bugs)} bug classes, {len(findings)} findings, {len(runs)} runs, "
-          f"{len(golden_ids)} golden assertions.")
+          f"{len(golden_ids)} golden assertions, {len(fact_ids)} facts.")
     return 0
 
 
@@ -508,6 +553,328 @@ def cmd_check(args):
     return 1 if fails else 0
 
 
+# ---------------------------------------------------------------- facts
+# Fact sets (facts/<paper>.yaml; facts/README.md): what each figure, table, and equation
+# description must state, scored right, wrong, or missing, over one run or several.
+FACT_SEVERITY = {"critical", "important", "minor"}
+FACT_KEYS = {"id", "what", "severity", "source", "verified", "seen", "value", "holder", "says", "not",
+             "region", "open"}
+DESCRIBED = {"figure", "table", "equation"}
+NAME_AT_START = re.compile(r"^\s*(?:(The) (equation|figure|table)s?\b|(Figure|Table|Equation)s? (\d+))", re.I)
+MARKERS = {"description", "table", "figure", "equation"}
+NUMBER = re.compile(r"(?<![\d.,])\d+(?:[.,]\d+)*(?:\s?[kK]\b)?")
+AFTER_HOLDER = r"^\s*(?:(?!followed\b|while\b|and\b)[A-Za-z%-]+\s+){0,2}?(?:for|by|of|in|on)\s+(?:the\s+)?"
+
+
+def load_facts(paper):
+    path = ROOT / "facts" / f"{paper}.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _marker(p):
+    """The reader label a copied paragraph ends with ("Description", "Table"), or None."""
+    last = p.strip().splitlines()[-1].strip().lower() if p.strip() else ""
+    return last if last in MARKERS else None
+
+
+def _text_description(visual, paras, caption_at, captions):
+    """A visual's description in follow-along text, as (paragraphs, labelled)."""
+    name = visual["name"]
+    if visual.get("find"):
+        for i, p in enumerate(paras):
+            if _marker(p) != "description":
+                continue
+            block = []
+            for q in paras[i + 1:]:
+                if _marker(q) == "description" or any(c.search(q) for c in captions):
+                    break
+                if q.strip().lower() not in MARKERS:
+                    block.append(q)
+            if re.search(visual["find"], "\n\n".join(block), re.I):
+                return block, True
+        return [], False
+    if name.startswith("Equation"):
+        return [p for p in paras if re.match(rf"{re.escape(name)}\b", p)], False
+    if visual.get("scope") == "book":
+        return paras, False
+    c = caption_at.get(name)
+    if c is None:
+        return [], False
+    others = {i for n, i in caption_at.items() if n != name and i is not None}
+    i = c - 1
+    while i >= 0 and c - i <= 15:
+        if _marker(paras[i]) == "description":
+            return [p for p in paras[i + 1:c] if p.strip().lower() not in MARKERS], True
+        if i in others:
+            break
+        i -= 1
+    j = c - 1
+    while j >= 0 and paras[j].strip().lower() in MARKERS:
+        j -= 1
+    return ([paras[j]] if j >= 0 and j not in others else []), False
+
+
+def _json_description(visual, passages, captions):
+    """A visual's description in narration.json, as (texts, labelled): the figure or table
+    passage that first holds its caption in its sources, else the last passage carrying a
+    visual before the one that does;
+    every passage opening "Equation N"; or the first described passage matching `find`."""
+    name = visual["name"]
+    described = [p for p in passages if p.get("type") in DESCRIBED and p.get("text")]
+    if visual.get("find"):
+        hit = next((p for p in described if re.search(visual["find"], p["text"], re.I)), None)
+        return ([hit["text"]], True) if hit else ([], False)
+    if name.startswith("Equation"):
+        # One passage may read several paragraphs; any of them may open with the name.
+        return [
+            paragraph for p in passages for paragraph in re.split(r"\n\s*\n", p.get("text") or "")
+            if re.match(rf"{re.escape(name)}\b", paragraph)
+        ], False
+    if visual.get("scope") == "book":
+        return [p["text"] for p in passages if p.get("text")], False
+
+    def holds(p, pattern):
+        return any(pattern.search(s.get("text") or "") for s in p.get("sources") or ())
+
+    def carries(p):
+        # A figure joined into a prose batch leaves a body passage holding the figure.
+        return bool(p.get("text")) and (
+            p.get("type") in DESCRIBED or any(s.get("type") in DESCRIBED for s in p.get("sources") or ())
+        )
+
+    own = re.compile(re.escape(visual["caption"]), re.I)
+    first = next((i for i, p in enumerate(passages) if holds(p, own)), None)
+    if first is None:
+        return [], False
+    if passages[first].get("type") in {"figure", "table"}:
+        text = passages[first].get("text") or ""
+        return ([text], True) if text else ([], False)
+    # A caption extraction missed sits in a body passage; the description is the last
+    # passage before it that carries a visual, of any type, since a figure missing its
+    # caption may be typed an equation, or joined into prose.
+    others = [c for c in captions if c.pattern != own.pattern]
+    for i in range(first - 1, -1, -1):
+        p = passages[i]
+        if carries(p):
+            return [p["text"]], True
+        if any(holds(p, c) for c in others):
+            break
+    return [], False
+
+
+def _holder_spans(text, holders):
+    spans = []
+    for name, pattern in (holders or {}).items():
+        for m in re.finditer(pattern, text):
+            spans.append((m.start(), m.end(), name))
+    # Longer, later matches win where two overlap ("CLM with subagents").
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    kept = []
+    for s in spans:
+        if kept and s[0] < kept[-1][1]:
+            if s[1] - s[0] > kept[-1][1] - kept[-1][0]:
+                kept[-1] = s
+            continue
+        kept.append(s)
+    return kept
+
+
+def _sentence_start(text, pos):
+    cut = 0
+    for m in re.finditer(r"[.;!?](?=\s)|\n", text[:pos]):
+        cut = m.end()
+    return cut
+
+
+def _attributions(text, holders):
+    """Each number's span -> the holder it is stated for, or None (README, rule 2)."""
+    spans = _holder_spans(text, holders)
+    claimed, explicit = set(), {}
+    numbers = list(NUMBER.finditer(text))
+    for m in numbers:  # "47.3 for CLM", "7.8 percent reused by SCR"
+        for s in spans:
+            if s[0] >= m.end() and s[0] - m.end() <= 45:
+                between = text[m.end():s[0]]
+                if re.fullmatch(AFTER_HOLDER, between, re.I) and not NUMBER.search(between):
+                    explicit[m.span()] = s[2]
+                    claimed.add(s)
+                break
+    result = {}
+    for m in numbers:
+        if m.span() in explicit:
+            result[m.span()] = explicit[m.span()]
+        elif re.search(r"\bfrom\s+$", text[max(0, m.start() - 6):m.start()], re.I):
+            result[m.span()] = None  # "from A to B": A's owner is not said
+        else:
+            start = _sentence_start(text, m.start())
+            prior = [s for s in spans if start <= s[0] and s[1] <= m.start() and s not in claimed]
+            result[m.span()] = prior[-1][2] if prior else None
+    return result
+
+
+def _region_of(text, pos, regions):
+    best, where = None, -1
+    for name, pattern in (regions or {}).items():
+        for m in re.finditer(pattern, text[:pos]):
+            if m.start() > where:
+                best, where = name, m.start()
+    return best
+
+
+def score_fact(fact, visual, texts):
+    """(status, evidence) for one fact over a description's texts (README, Scoring one fact)."""
+    nots, says = as_list(fact.get("not")), as_list(fact.get("says"))
+    for t in texts:
+        for pattern in nots:
+            m = re.search(pattern, t)
+            if m:
+                return "wrong", m.group(0)
+    if "value" in fact:
+        want = as_list(fact["holder"])
+        value = re.compile(rf"(?<![\d.,])(?:{fact['value']})(?![\d]|[.,]\d)")
+        right = wrong = None
+        for t in texts:
+            owners = _attributions(t, visual.get("holders"))
+            for m in value.finditer(t):
+                if fact.get("region") and _region_of(t, m.start(), visual.get("regions")) != fact["region"]:
+                    continue
+                span = next((s for s in owners if s[0] <= m.start() < s[1]), None)
+                owner = owners.get(span) if span else None
+                snippet = t[max(0, m.start() - 70):m.end() + 10].replace("\n", " ")
+                if owner is None or owner in want:
+                    right = right or snippet
+                else:
+                    wrong = wrong or f"{snippet}  [{owner}]"
+        if wrong:
+            return "wrong", wrong
+        if right:
+            return "right", right
+        if not says:
+            return "missing", ""
+    for t in texts:
+        for pattern in says:
+            m = re.search(pattern, t)
+            if m:
+                return "right", m.group(0)
+    return ("missing", "") if says else ("right", "")
+
+
+def score_facts(t: Target, spec):
+    """Every fact of a fact set scored on one target, and each labelled description's opening name.
+    A descriptions-only run (book.json) has no adapted prose, so book-wide facts are skipped."""
+    descriptions_only = bool(t.book and t.book.get("descriptions_only"))
+    captions = [re.compile(re.escape(v["caption"]), re.I) for v in spec["visuals"] if v.get("caption")]
+    if t.passages is None:
+        paras = [p.strip() for p in re.split(r"\n\s*\n", t.text) if p.strip()]
+        caption_at = {
+            v["name"]: next((i for i, p in enumerate(paras) if re.search(re.escape(v["caption"]), p, re.I)), None)
+            for v in spec["visuals"] if v.get("caption")
+        }
+    facts, labels = [], []
+    for visual in spec["visuals"]:
+        skipped = descriptions_only and visual.get("scope") == "book"
+        if t.passages is None:
+            texts, labelled = _text_description(visual, paras, caption_at, captions)
+            texts = ["\n\n".join(texts)] if texts else []
+        else:
+            texts, labelled = _json_description(visual, t.passages, captions)
+        if labelled and texts and not visual["name"].startswith("Equation"):
+            m = NAME_AT_START.match(texts[0])
+            said = (f"The {m.group(2).lower()}" if m.group(1) else f"{m.group(3).capitalize()} {m.group(4)}") if m else None
+            if visual.get("unnumbered"):  # the paper gives it no number; any "Figure N" is invented
+                labels.append((visual["name"], "wrong" if said and said[-1].isdigit() else "right", said or "(no name)"))
+            elif said:
+                labels.append((visual["name"], "right" if said == visual["name"] else "wrong", said))
+        for fact in visual.get("facts") or []:
+            if skipped:
+                status, evidence = "skipped", "descriptions-only run"
+            elif texts:
+                status, evidence = score_fact(fact, visual, texts)
+            else:
+                status, evidence = "missing", "no description found"
+            facts.append({"id": fact["id"], "in": visual["name"], "what": fact["what"],
+                          "severity": fact.get("severity"), "open": fact.get("open") or visual.get("open"),
+                          "status": status, "evidence": evidence})
+    return facts, labels
+
+
+def cmd_facts(args):
+    targets = [Target(path) for path in args.outputs]
+    baseline = [Target(path) for path in args.baseline or ()]
+    papers = {args.paper or t.paper() for t in targets + baseline}
+    if len(papers) != 1 or None in papers:
+        raise SystemExit(f"one paper per call, found {sorted(map(str, papers))}; name it with --paper")
+    paper = papers.pop()
+    spec = load_facts(paper)
+    if spec is None:
+        raise SystemExit(f"no fact set for {paper} (qa/facts/{paper}.yaml)")
+
+    def score_all(group):
+        return [(t, *score_facts(t, spec)) for t in group]
+
+    runs, base = score_all(targets), score_all(baseline)
+    counted = lambda facts: [f for f in facts if not f["open"] and f["status"] != "skipped"]
+
+    def statuses(scored):
+        table = {}
+        for _, facts, _ in scored:
+            for f in counted(facts):
+                table.setdefault(f["id"], []).append(f["status"])
+        return table
+
+    now, before = statuses(runs), statuses(base)
+    stable = {i for i, s in now.items() if all(x == "right" for x in s)}
+    was_stable = {i for i, s in before.items() if all(x == "right" for x in s)}
+    regressions = sorted(was_stable - stable) if base else []
+    gains = sorted(stable - was_stable) if base else []
+    about = {f["id"]: f for _, facts, _ in runs for f in facts}
+
+    if args.json:
+        print(json.dumps({
+            "paper": paper,
+            "runs": [{"target": str(t.path), "commit": (t.book or {}).get("git_commit"),
+                      "facts": facts, "labels": [dict(zip(("name", "status", "said"), l)) for l in labels]}
+                     for t, facts, labels in runs],
+            "stable": sorted(stable), "unstable": sorted(set(now) - stable),
+            "baseline": [str(t.path) for t, _, _ in base], "regressions": regressions, "gains": gains,
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(f"Fact set {paper}: {len(now)} facts scored over {len(runs)} run{'s' if len(runs) != 1 else ''}")
+        for t, facts, labels in runs:
+            c = counted(facts)
+            totals = {s: sum(f["status"] == s for f in c) for s in ("right", "wrong", "missing")}
+            commit = str((t.book or {}).get("git_commit") or "")[:12]
+            print(f"  {t.path}" + (f" @ {commit}" if commit else "")
+                  + f": right {totals['right']}  wrong {totals['wrong']}  missing {totals['missing']}"
+                  + f"  labels {sum(l[1] == 'right' for l in labels)}/{len(labels)}")
+            for name, status, said in labels:
+                if status != "right":
+                    print(f"      LABEL {name} says {said}")
+        by = {s: sum(1 for i in stable if about[i]["severity"] == s) for s in ("critical", "important", "minor")}
+        print(f"Stable (right in every run): {len(stable)}/{len(now)}"
+              f"  (critical {by['critical']}, important {by['important']}, minor {by['minor']})")
+        letter = {"right": "R", "wrong": "W", "missing": "M"}
+        for i in sorted(set(now) - stable, key=lambda i: (about[i]["severity"] != "critical", i)):
+            f = about[i]
+            print(f"  {' '.join(letter[s] for s in now[i])}  {i:9} [{f['severity']}] {f['in']}: {f['what'][:80]}")
+            evidence = next((r[1] for r in [(None, x["evidence"]) for _, facts, _ in runs for x in facts if x["id"] == i]
+                             if r[1]), "")
+            if evidence:
+                print(f"        ↳ {evidence[:150]}")
+        if base:
+            print(f"\nAgainst the baseline ({len(base)} run{'s' if len(base) != 1 else ''}): "
+                  f"{len(gains)} gained, {len(regressions)} regressed")
+            for i in regressions:
+                print(f"  REGRESSED {i:9} [{about[i]['severity']}] {about[i]['in']}: {about[i]['what'][:80]}")
+            for i in gains:
+                print(f"  GAINED    {i:9} [{about[i]['severity']}] {about[i]['in']}: {about[i]['what'][:80]}")
+        skipped = sum(f["status"] == "skipped" for _, facts, _ in runs[:1] for f in facts)
+        waiting = sum(1 for _, facts, _ in runs[:1] for f in facts if f["open"])
+        if skipped or waiting:
+            print(f"\nNot scored: {skipped} book-wide facts (descriptions-only runs), {waiting} waiting on an open question.")
+    return 1 if regressions or set(now) - stable else 0
+
+
 # ---------------------------------------------------------------- report / next
 def summary():
     bugs = load_yaml("bugs.yaml")["bugs"]
@@ -579,8 +946,14 @@ def main():
     r.add_argument("--json", action="store_true")
     n = sub.add_parser("next")
     n.add_argument("--json", action="store_true")
+    f = sub.add_parser("facts")
+    f.add_argument("outputs", nargs="+", help="runs to score: book folders, narration.json, or text files")
+    f.add_argument("--baseline", nargs="+", help="runs of the code before the change")
+    f.add_argument("--paper")
+    f.add_argument("--json", action="store_true")
     args = p.parse_args()
-    return {"validate": cmd_validate, "check": cmd_check, "report": cmd_report, "next": cmd_next}[args.cmd](args)
+    return {"validate": cmd_validate, "check": cmd_check, "report": cmd_report, "next": cmd_next,
+            "facts": cmd_facts}[args.cmd](args)
 
 
 if __name__ == "__main__":

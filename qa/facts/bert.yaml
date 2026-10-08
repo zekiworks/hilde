@@ -1,0 +1,179 @@
+# Fact set for "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding" (arXiv 1810.04805).
+# Format: facts/README.md. Values checked against Tables 1 to 8, Figure 5's caption and Appendix A.2.
+paper: bert
+source: https://arxiv.org/pdf/1810.04805
+runs:
+  2026-10-08: 1 h 2 min; Hilde commit not recorded yet
+
+visuals:
+
+  # ------------------------------------------------ Figures 1, 2
+  - name: Figure 1
+    find: 'overall pre-training and fine-tuning procedures'
+    facts:
+      - {id: BERT-F01, what: '[CLS] is added in front of every input example; [SEP] separates the two parts', says: ['(?i)\[CLS\][^.]{0,60}in front of every input'], severity: minor, source: Fig. 1 caption, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Figure 2
+    find: 'BERT input representation'
+    facts:
+      - {id: BERT-F02, what: 'Input embedding = token + segment + position embeddings', says: ['(?i)token embedding(?:[^.]|\.\d){0,120}segment embedding(?:[^.]|\.\d){0,160}position embedding'], severity: important, source: Fig. 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F03, what: 'Positions run from 0 to 10 (11 tokens)', says: ['(?i)(zero to ten|0 to 10)'], severity: minor, source: Fig. 2, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 1
+  - name: Table 1
+    caption: 'Table 1: GLUE Test results'
+    holders:
+      LARGE: 'BERT ?large|BERT ?LARGE'
+      BASE: 'BERT ?base|BERT ?BASE'
+      GPT: 'OpenAI GPT'
+      PreOAI: 'pre-OpenAI'
+      ELMo: 'BiLSTM plus ELMo|BiLSTM\+ELMo'
+    facts:
+      - {id: BERT-F04, what: 'Average: BERT LARGE 82.1', value: '82\.1', holder: LARGE, severity: critical, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F05, what: 'Average: BERT BASE 79.6', value: '79\.6', holder: BASE, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F06, what: 'Average: OpenAI GPT 75.1', value: '75\.1', holder: GPT, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F07, what: 'Average: pre-OpenAI state of the art 74.0', value: '74\.0', holder: PreOAI, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F08, what: 'Average: BiLSTM+ELMo+Attn 71.0', value: '71\.0', holder: ELMo, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 2
+  - name: Table 2
+    caption: 'Table 2: SQuAD 1.1 results'
+    holders:
+      human: '[Hh]uman'
+      nlnet: 'nlnet'
+      QANet: 'QANet'
+      RMR: 'R\.M\. Reader'
+      base: 'BERT ?base single'
+      lsingle: 'BERT ?large single'
+      lens: 'BERT ?large ensemble(?! combined)'
+      tqa: 'TriviaQA'
+    facts:
+      - {id: BERT-F09, what: 'Human: test F1 91.2', value: '91\.2', holder: human, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F10, what: 'R.M. Reader (ensemble): test F1 88.5', value: '88\.5', holder: [RMR, base], severity: important, source: Table 2 (88.5 is also BERT BASE dev F1), verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F11, what: 'BERT LARGE single: dev F1 90.9', value: '90\.9', holder: lsingle, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F12, what: 'BERT LARGE ensemble: dev F1 91.8', value: '91\.8', holder: lens, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F13, what: 'BERT LARGE ensemble + TriviaQA: dev F1 92.2, test F1 93.2', says: ['92\.2(?:[^.]|\.\d){0,40}93\.2'], severity: critical, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 3
+  - name: Table 3
+    caption: 'Table 3: SQuAD 2.0 results'
+    holders:
+      bert: 'BERT ?large'
+      MIR: 'MIR-MRC'
+      nlnet: 'nlnet'
+      human: '[Hh]uman'
+    facts:
+      - {id: BERT-F14, what: 'BERT LARGE (single): test EM 80.0', value: '80\.0', holder: bert, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F15, what: 'BERT LARGE (single): test F1 83.1', value: '83\.1', holder: bert, severity: critical, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F16, what: 'MIR-MRC: test F1 78.0', value: '78\.0', holder: MIR, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F17, what: 'nlnet: test F1 77.1', value: '77\.1', holder: nlnet, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F18, what: 'Human: test F1 89.5', value: '89\.5', holder: human, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 4
+  - name: Table 4
+    caption: 'Table 4: SWAG Dev and Test accuracies'
+    holders:
+      LARGE: 'BERT ?LARGE|BERT ?large'
+      BASE: 'BERT ?BASE|BERT ?base'
+      GPT: 'OpenAI GPT'
+      expert: 'experts?'
+      five: 'five annotations'
+    facts:
+      - {id: BERT-F19, what: 'BERT LARGE: dev 86.6', value: '86\.6', holder: LARGE, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F20, what: 'BERT LARGE: test 86.3', value: '86\.3', holder: LARGE, severity: critical, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F21, what: 'BERT BASE: dev 81.6', value: '81\.6', holder: BASE, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F22, what: 'Human expert: test 85.0', value: '85\.0', holder: expert, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F23, what: 'Human, 5 annotations: test 88.0', value: '88\.0', holder: five, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F24, what: 'OpenAI GPT: test 78.0', value: '78\.0', holder: GPT, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 5
+  - name: Table 5
+    caption: 'Table 5: Ablation over the pre-training tasks'
+    holders:
+      base: 'full BERT ?BASE|BERT ?BASE model'
+      noNSP: 'No NSP(?!,)|labeled as No NSP'
+      LTR: 'LTR and No NSP'
+      BiLSTM: 'plus BiLSTM|\+ ?BiLSTM'
+    facts:
+      - {id: BERT-F25, what: 'BERT BASE: MNLI-m 84.4', value: '84\.4', holder: base, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F26, what: 'BERT BASE: SQuAD F1 88.5', value: '88\.5', holder: base, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F27, what: 'No NSP: MNLI-m 83.9, SQuAD 87.9', says: ['83\.9(?:[^.]|\.\d){0,60}87\.9'], severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F28, what: 'LTR & No NSP: MRPC 77.5, SQuAD 77.8', says: ['77\.5(?:[^.]|\.\d){0,60}77\.8'], severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F29, what: '+ BiLSTM: SQuAD 84.9, MRPC 75.7', says: ['84\.9(?:[^.]|\.\d){0,120}75\.7'], severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 6
+  - name: Table 6
+    caption: 'Table 6: Ablation over BERT model size'
+    facts:
+      - {id: BERT-F30, what: 'Smallest model (3 layers): perplexity 5.84, SST-2 88.4', says: ['5\.84(?:[^.]|\.\d){0,60}88\.4'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F31, what: 'Largest model (24 layers): perplexity 3.23, SST-2 93.7', says: ['3\.23(?:[^.]|\.\d){0,60}93\.7'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 7
+  - name: Table 7
+    caption: 'Table 7: CoNLL-2003 Named Entity Recognition results'
+    holders:
+      CSE: '\bCSE\b'
+      CVT: '\bCVT\b'
+      ELMo: '\bELMo\b'
+      LARGE: 'BERT ?LARGE|BERT ?large'
+      BASE: 'BERT ?BASE achieves|BERT ?base achieves'
+    facts:
+      - {id: BERT-F32, what: 'CSE: test F1 93.1, the best baseline', value: '93\.1', holder: CSE, severity: important, source: Table 7, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F33, what: 'CVT: test F1 92.6', value: '92\.6', holder: CVT, severity: important, source: Table 7, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F34, what: 'BERT LARGE fine-tuned: dev 96.6, test 92.8', says: ['96\.6(?:[^.]|\.\d){0,40}92\.8'], severity: important, source: Table 7, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F35, what: 'BERT BASE fine-tuned: dev 96.4, test 92.4', says: ['96\.4(?:[^.]|\.\d){0,40}92\.4'], severity: important, source: Table 7, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F36, what: 'Feature-based: dev F1 from 91.0 (embeddings) to 96.1 (concat of last four layers)', says: ['91\.0(?:[^.]|\.\d){0,80}96\.1'], severity: important, source: Table 7, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 8
+  - name: Table 8
+    caption: 'Table 8: Ablation over different masking strategies'
+    facts:
+      - {id: BERT-F37, what: 'MNLI fine-tune: 83.6 (100% RND) to 84.4 (80% MASK, 20% SAME)', says: ['83\.6(?:[^.]|\.\d){0,80}84\.4'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F38, what: 'NER fine-tune: best 95.4 with 80/10/10', says: ['95\.4(?:[^.]|\.\d){0,40}80 ?(percent|%) MASK, 10 ?(percent|%) SAME'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: BERT-F39, what: 'NER feature-based: 94.0 with 100% MASK, 94.9 with 80/10/10', says: ['94\.0(?:[^.]|\.\d){0,40}100 ?(percent|%) MASK'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 5 (its description is far from its caption)
+  - name: Figure 5
+    find: 'MNLI Dev Accuracy compared across pre-training steps'
+    facts:
+      - {id: BERT-F40, what: 'The curves compare Masked LM and Left-to-Right BERT BASE', says: ['(?i)Masked LM.{0,400}?Left-to-Right'], severity: minor, source: Fig. 5, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ whole book
+  - name: Text
+    scope: book
+    facts:
+      - id: BERT-F41
+        what: '1,000,000 steps is about 40 epochs over the 3.3 billion word corpus; there are no "40,000 steps"'
+        not: ['(?i)40,000 steps']
+        severity: critical
+        source: App. A.2
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: BERT-F42
+        what: 'Section 3.1 reads in order: heading, Task #1 (Masked LM), then Task #2 (Next Sentence Prediction)'
+        not: ['(?s)Task 2: Next Sentence Prediction[^\n]*\n+3\.1 Pre-training BERT']
+        severity: important
+        source: §3.1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: BERT-F43
+        what: 'Email addresses are not read aloud'
+        not: ['(?i)\bat google\.com']
+        severity: minor
+        source: Author block
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: BERT-F44
+        what: '"There is minimal difference …" is one word, not "mini- / small difference"'
+        not: ['(?m)\bmini-\s*$']
+        severity: minor
+        source: §3
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: BERT-F45
+        what: 'Table 6 is not placed under the Conclusion heading'
+        not: ['(?m)^6 Conclusion\s*\n+Description']
+        severity: minor
+        source: §5.2, §6
+        verified: pdf
+        seen: {2026-10-08: wrong}

@@ -6022,6 +6022,40 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(web.visual_label_problems(kept, "Figure 6"),
                          ["the description says Figure 3, though it describes Figure 6"])
 
+    def test_a_descriptions_only_run_sends_only_figures_tables_and_equations(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "The method does not improve accuracy.\n\n"
+            "![](images/plot.png)\n\n**Figure 1:** Accuracy against compute.\n\n"
+            "We conclude with a summary.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        asked = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                asked.append(request_path.read_text(encoding="utf-8"))
+                return "<NARRATION>Figure 1 shows accuracy against compute.</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "out.txt", "utf-8", in_flight=1, paragraphs_per_worker=1,
+                           prompt_path=prompt, scratch_path=root / "stage", descriptions_only=True)
+        run.publish = lambda event, data: None
+        run.pump()
+        self.assertEqual(run.code, 0)
+        # Only the figure reached the model; the prose is the author's, as printed.
+        self.assertEqual(len(asked), 1)
+        self.assertIn("Figure 1:", asked[0])
+        self.assertEqual(
+            (root / "out.txt").read_text(encoding="utf-8"),
+            "The method does not improve accuracy.\n\nFigure 1 shows accuracy against compute.\n\n"
+            "We conclude with a summary.",
+        )
+
     def test_a_narration_stating_what_its_source_does_not_is_asked_about_once_then_marked(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

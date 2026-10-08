@@ -1,0 +1,272 @@
+# Fact set for "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses". Format: facts/README.md.
+# Values checked against https://regularized-rsi.com/assets/RRSI.pdf (figures, tables, appendices).
+# Source quirk, not a fact: Figure 2 itself labels complexity-aware acceptance "L1-style" and structural pruning
+# "L0-style", while §3.1 calls them L2 (Ridge) and L1 (Lasso). A description may follow either; neither is wrong.
+paper: rrsi
+source: https://regularized-rsi.com/assets/RRSI.pdf
+runs:
+  2026-10-01: R5
+  2026-10-08: 1 h 15 min; Hilde commit not recorded yet
+
+visuals:
+
+  # ------------------------------------------------ Figure 1
+  - name: Figure 1
+    find: 'overfits on the split it is scored on'
+    holders:
+      H0: '\bH ?(0|zero)\b|initial harness'
+      prior: 'prior methods|four baseline|average of the'
+      RRSI: '\bRRSI\b'
+    regions:
+      b: '(?i)panel b'
+      c: '(?i)panel c'
+      d: '(?i)panel d'
+    facts:
+      - {id: RRSI-F01, what: 'Panel b, SWE-bench Verified: H0', value: '82\.0', holder: H0, region: b, severity: important, source: Fig. 1b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F02, what: 'Panel b: average of the four baselines', value: '82\.3', holder: prior, region: b, severity: important, source: Fig. 1b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F03, what: 'Panel b: RRSI', value: '83\.8', holder: RRSI, region: b, severity: important, source: Fig. 1b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F04, what: 'Panel c, mean of JobBench, GDPval, APEX-Agents: H0', value: '39\.7', holder: H0, region: c, severity: important, source: Fig. 1c, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F05, what: 'Panel c: average of the four baselines', value: '39\.4', holder: prior, region: c, severity: important, source: Fig. 1c, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F06, what: 'Panel c: RRSI', value: '43\.6', holder: RRSI, region: c, severity: critical, source: Fig. 1c, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F07, what: 'Panel d, Frontier-Eng: H0', value: '17\.7', holder: H0, region: d, severity: important, source: Fig. 1d, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F08, what: 'Panel d: average of the four baselines', value: '17\.9', holder: prior, region: d, severity: important, source: Fig. 1d, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F09, what: 'Panel d: RRSI', value: '22\.0', holder: RRSI, region: d, severity: critical, source: Fig. 1d, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 2
+  - name: Figure 2
+    find: 'proposal-side constraints'
+    facts:
+      - id: RRSI-F10
+        what: 'Proposal side: annealed update sparsity, evidence-aware credit assignment, structured exploration'
+        says: ['(?i)annealed update sparsity[^.]{0,250}evidence-aware credit assignment[^.]{0,250}structured exploration']
+        severity: important
+        source: Fig. 2
+        verified: pdf
+        seen: {2026-10-08: right}
+      - id: RRSI-F11
+        what: 'Selection side: leakage screening, noise-adjusted floor, complexity-aware acceptance, structural pruning'
+        says: ['(?i)leakage screening[^.]{0,250}noise-adjusted[^.]{0,250}complexity-aware acceptance[^.]{0,250}structural pruning']
+        severity: important
+        source: Fig. 2
+        verified: pdf
+        seen: {2026-10-08: right}
+
+  # ------------------------------------------------ Figure 3
+  - name: Figure 3
+    find: 'main results in all three domains'
+    facts:
+      - id: RRSI-F12
+        what: 'The legend colors RRSI by split (scored on vs never seen); the lower value of each pair is H0, not an "unseen split" score'
+        not: ['(?i)(unseen split|split it never sees)[^.;]{0,6}(at|of|is) (74\.2|82\.0|89\.4|86\.9|36\.0|34\.2|48\.8|50\.0|17\.7)\b']
+        severity: critical
+        source: Fig. 3 legend; Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: RRSI-F13
+        what: 'JobBench: H0 36.0, RRSI 40.7 (34.2 is APEX-Agents H0)'
+        says: ['(?i)JobBench(?:[^.]|\.\d){0,120}?36\.0']
+        not: ['(?i)JobBench(?:[^.]|\.\d){0,120}?34\.2']
+        severity: critical
+        source: Fig. 3; Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: RRSI-F14
+        what: 'APEX-Agents: H0 34.2, RRSI 37.9 (36.0 is JobBench H0)'
+        says: ['(?i)APEX-Agents(?:[^.]|\.\d){0,120}?34\.2']
+        not: ['(?i)APEX-Agents(?:[^.]|\.\d){0,120}?36\.0']
+        severity: critical
+        source: Fig. 3; Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - {id: RRSI-F15, what: 'Gain on TerminalBench 2.1 (evolve): +6.0', says: ['(?i)Terminal-?Bench 2\.1(?:[^.]|\.\d){0,50}?\+? ?6\.0'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F16, what: 'Gain on SWE-bench Verified (OOD): +1.8', says: ['(?i)SWE-bench Verified(?:[^.]|\.\d){0,50}?\+? ?1\.8'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F17, what: 'Gain on Harvey LAB (evolve): +1.1', says: ['(?i)Harvey LAB Evolve(?:[^.]|\.\d){0,50}?\+? ?1\.1'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F18, what: 'Gain on Harvey LAB (ID held-out): +2.3', says: ['(?i)Harvey LAB ID held-out(?:[^.]|\.\d){0,50}?\+? ?2\.3'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F66, what: 'Gain on JobBench (OOD): +4.7', says: ['(?i)JobBench(?:[^.]|\.\d){0,50}?\+? ?4\.7'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F67, what: 'Gain on GDPval (OOD): +3.5', says: ['(?i)GDPval(?:[^.]|\.\d){0,50}?\+? ?3\.5'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F68, what: 'Gain on APEX-Agents (OOD): +3.7', says: ['(?i)APEX-Agents(?:[^.]|\.\d){0,50}?\+? ?3\.7'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F69, what: 'Gain on EngDesign (evolve): +4.9', says: ['(?i)EngDesign(?:[^.]|\.\d){0,50}?\+? ?4\.9'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F70, what: 'Gain on Frontier-Eng (OOD): +4.3', says: ['(?i)Frontier-Eng(?:[^.]|\.\d){0,50}?\+? ?4\.3'], severity: important, source: Fig. 3, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 1
+  - name: Table 1
+    caption: 'Comparison with prior harness evolution methods'
+    holders:
+      Meta: 'Meta-Harness'
+      RRSI: '\bRRSI\b'
+    facts:
+      - {id: RRSI-F19, what: 'Meta-Harness has the highest Harvey LAB evolve score, 93.0', value: '93\.0', holder: Meta, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - id: RRSI-F20
+        what: 'On Harvey LAB ID held-out, RRSI and Meta-Harness tie at 89.2; RRSI does not lead alone'
+        not: ['(?i)RRSI[^.;]{0,40}\bleads?\b[^.;]{0,40}ID Held-out', '(?i)ID Held-out[^.;]{0,40}RRSI[^.;]{0,20}\bleads?\b']
+        severity: minor
+        source: Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - {id: RRSI-F21, what: 'RRSI on JobBench', value: '40\.7', holder: RRSI, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F22, what: 'RRSI on GDPval', value: '52\.3', holder: RRSI, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F23, what: 'RRSI on APEX-Agents', value: '37\.9', holder: RRSI, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
+      - id: RRSI-F24
+        what: 'No significance test is reported; RRSI "consistently" outperforms, not "significantly"'
+        not: ['(?i)significantly outperform']
+        severity: minor
+        source: §4.2, Table 1
+        verified: pdf
+        seen: {2026-10-08: wrong}
+
+  # ------------------------------------------------ Table 2
+  - name: Table 2
+    caption: 'Ablation study of the regularizers on agentic workspace tasks. OOD'
+    holders:
+      RRSI: '\bRRSI\b'
+      H0: 'no evolution|\bH ?(0|zero)\b'
+      Unreg: '[Uu]nregularized'
+      noProp: '(without|w/o) (the )?proposal'
+      noAcc: '(without|w/o) (the )?acceptance'
+    facts:
+      - {id: RRSI-F25, what: 'RRSI: OOD average 43.6', value: '43\.6', holder: RRSI, severity: critical, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F26, what: 'RRSI: 2.42 million tokens per trial', value: '2\.42', holder: RRSI, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F27, what: 'H0: OOD average 39.7', value: '39\.7', holder: H0, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F28, what: 'H0: 1.56 million tokens per trial', value: '1\.56', holder: H0, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F29, what: 'Unregularized: Harvey LAB evolve 92.8, the highest', value: '92\.8', holder: Unreg, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F30, what: 'Unregularized: 3.80 million tokens per trial', value: '3\.80?', holder: Unreg, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F31, what: 'Without proposal regularizers: OOD average 41.9', value: '41\.9', holder: noProp, open: Q06, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: missing}}
+      - {id: RRSI-F32, what: 'Without acceptance regularizers: OOD average 41.0', value: '41\.0', holder: noAcc, open: Q06, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Tables 3, 4
+  - name: Table 3
+    caption: 'Policy robustness in the coding domain. Harness evolution'
+    regions:
+      claude: '(?i)Claude Opus'
+      gemini: '(?i)Gemini 3\.5'
+    facts:
+      - {id: RRSI-F33, what: 'Claude Opus 4.8: Terminal-Bench 2.1 74.2 → 80.2', says: ['74\.2[^.;]{0,20}80\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F34, what: 'Claude Opus 4.8: SWE-bench Verified 82.0 → 83.8', says: ['82\.0[^.;]{0,20}83\.8'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F35, what: 'Gemini 3.5 Flash: Terminal-Bench 2.1 64.6 → 78.7 (+14.1)', says: ['64\.6[^.;]{0,20}78\.7[^.;]{0,30}14\.1'], severity: critical, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F36, what: 'Gemini 3.5 Flash: SWE-bench Verified 76.8 → 79.0 (+2.2)', says: ['76\.8[^.;]{0,20}79\.0[^.;]{0,30}2\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Table 4
+    caption: 'Cross-model transfer on Terminal-Bench 2.1. The harness evolved'
+    facts:
+      - {id: RRSI-F37, what: 'Gemini 3.1 Flash Lite (unseen): 11.2 → 14.6, +3.4', says: ['11\.2[^.;]{0,40}14\.6[^.;]{0,40}3\.4'], severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 4
+  - name: Figure 4
+    find: 'trajectory length'
+    holders:
+      AHE: '\bAHE\b'
+      HarnessX: 'HarnessX'
+      Meta: 'Meta-Harness'
+      TTHE: '\bTTHE\b'
+      RRSI: '\bRRSI\b'
+      H0: '\bH ?(0|zero)\b'
+    facts:
+      - {id: RRSI-F38, what: 'Steps per trial: AHE 34.6', value: '34\.6', holder: AHE, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F39, what: 'Steps per trial: HarnessX 29.5', value: '29\.5', holder: HarnessX, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F40, what: 'Steps per trial: Meta-Harness 28.7', value: '28\.7', holder: Meta, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F41, what: 'Steps per trial: TTHE 27.3', value: '27\.3', holder: TTHE, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F42, what: 'Steps per trial: RRSI 26.3', value: '26\.3', holder: RRSI, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F43, what: 'Steps per trial: H0 21.2', value: '21\.2', holder: H0, severity: important, source: Fig. 4b, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Tables 5, 6
+  - name: Table 5
+    caption: 'Hyperparameters used by RRSI in each evolution setting'
+    holders:
+      Coding: '\bCoding\b'
+      Agentic: 'Agentic workspace'
+      Eng: 'Engineering design'
+    facts:
+      - {id: RRSI-F44, what: 'Noise tolerance δ: coding 0.017', value: '0\.017', holder: Coding, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F45, what: 'Noise tolerance δ: agentic workspace 0.004', value: '0\.004', holder: Agentic, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F46, what: 'Noise tolerance δ: engineering design 0.020', value: '0\.020', holder: Eng, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F47, what: 'β1: coding 44.5', value: '44\.5', holder: Coding, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F48, what: 'β1: agentic workspace 35.4', value: '35\.4', holder: Agentic, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F49, what: 'β1: engineering design 24.4', value: '24\.4', holder: Eng, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F50, what: 'β0: engineering design 0.15', value: '0\.15', holder: Eng, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F51, what: 'Evolution rounds: engineering design 40', value: '40', holder: Eng, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Table 6
+    caption: 'Representative harness-evolution decisions from RRSI. The examples'
+    facts:
+      - {id: RRSI-F52, what: 'Coding round 0-A: accepted, +3.93 points', says: ['3\.93'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F53, what: 'Coding round 0-B: rejected by the cost rule, +1.69 points, +26.1% cost', says: ['1\.69[^.]{0,80}26\.1'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F54, what: 'Coding round 8-B: rejected by the floor, −2.81 points, −13.6% cost', says: ['2\.81[^.]{0,80}13\.6'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F55, what: 'Engineering round 2: 122/244 → 128/244 passes, +1.6% tokens', says: ['122[^.]{0,40}244[^.]{0,40}128[^.]{0,40}244[^.]{0,80}1\.6'], severity: important, source: Table 6, verified: pdf, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Equations
+  - name: Equation 6
+    facts:
+      - {id: RRSI-F56, what: 'ΔC is relative: the cost change divided by the incumbent cost', says: ['(?i)divided by the estimated cost of the current'], severity: important, source: '§3.3, Eq. 6', verified: pdf, seen: {2026-10-08: right}}
+
+  - name: Equation 16
+    facts:
+      - id: RRSI-F57
+        what: 'Equation 16 is the novelty count ν: structural component types touched that never appeared in a winning edit; no diagram, no TTHE'
+        says: ['(?i)(nu t|novelty)']
+        not: ['(?i)diagram', '(?i)\bTTHE\b']
+        severity: critical
+        source: App. C.3, Eq. 16
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
+
+  # ------------------------------------------------ Equations and algorithms, whole book
+  - name: Method details
+    scope: book
+    facts:
+      - id: RRSI-F58
+        what: 'S* is the best evolve-set score observed so far, not an optimal score'
+        not: ['(?i)optimal (skill|score)']
+        severity: important
+        source: §3.3, Eq. 5; App. C.3
+        verified: pdf
+        seen: {2026-10-08: wrong}
+      - id: RRSI-F59
+        what: 'T_t and the pruning targets B_t are sets of components, not edits'
+        not: ['(?i)(all|set of( all)?) edits l\b']
+        severity: important
+        source: App. C.2, Eqs. 11, 14; Algorithm 1
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
+      - id: RRSI-F60
+        what: 'Within-band rule is a condition, w_s·ΔS − w_c·ΔC + w_n·ν > 0, where ν is novelty; no maximum with zero, no noise term'
+        not: ['(?i)maximum of zero', '(?i)maximum of this value', '(?i)noise (term|offset)']
+        severity: important
+        source: Algorithm 2; Eq. 17
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
+      - id: RRSI-F61
+        what: 'Algorithm 1 step 8 samples candidates using the exploration directive E_t and the pruning targets B_t'
+        not: ['(?i)(un)?explored edits (E|B) t']
+        severity: important
+        source: Algorithm 1
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
+      - id: RRSI-F62
+        what: 'The stall check compares the current skill with the skill w rounds earlier'
+        says: ['(?i)(time t minus w|w rounds ago)']
+        severity: important
+        source: Algorithm 1 step 3; Eq. 13
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: right}
+      - id: RRSI-F63
+        what: 'The coding instance sets the score-gain weight w_s to zero'
+        says: ['(?i)coding instance sets w ?s to zero']
+        not: ['(?i)coding instance sets the structural novelty weight to zero']
+        severity: important
+        source: App. C.3
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: right}
+      - id: RRSI-F64
+        what: 'Algorithms are not read line by line ("end if", "end for", "else" alone)'
+        not: ['(?m)^\s*(end if|end for|else)\s*$']
+        severity: important
+        source: Algorithms 1, 2
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
+      - id: RRSI-F65
+        what: '"This is the most direct of our classical analogies: …" stays one sentence, with no bridge the paper does not have'
+        not: ['(?m)most direct of our classical\s*$', '(?i)to (clarify|be clear)[^.]{0,30}analog']
+        severity: important
+        source: App. C.2
+        verified: pdf
+        seen: {2026-10-01: wrong, 2026-10-08: wrong}
