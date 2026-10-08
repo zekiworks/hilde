@@ -156,8 +156,9 @@ a symbol that lost its mark ("ŷ → y"), and a "not" or "all" dropped or added,
 leaving out math read aloud ("does not equal"). A passage that states a number
 or name its source doesn't print, says "orders of magnitude" where the source
 doesn't, says math in an order that can be heard two ways ("the product of a
-and b squared"), or drops or adds a "not" or an "all", is sent back to the
-model once, naming what was found; the better answer is kept, and
+and b squared"), leaves out a number its figure's or table's caption gives,
+or drops or adds a "not" or an "all", is sent back to the model once, naming
+what was found; the better answer is kept, and
 one still wrong is marked, so **Original** shows it under the passage as
 "Check: …". The other lines only point at passages worth a look; the narration
 stays as written. When a stopped job resumes, the batches already done get the

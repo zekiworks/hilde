@@ -6571,11 +6571,13 @@ speech needs."""
 
 # A check's finding a model is asked once more about (decision of 2026-10-08):
 # a number or name the source never prints, a magnitude it never states, math
-# said in an order a listener cannot follow, or a dropped or added negation or
-# quantifier. A changed word or a doubtful label is only logged.
+# said in an order a listener cannot follow, a number its caption prints that
+# the description leaves out, or a dropped or added negation or quantifier. A
+# changed word or a doubtful label is only logged.
 HARD_PROBLEMS = (
     "which its source does not print", "whom its source never names",
     "which its source does not state", "which leaves unclear what is raised",
+    "which its caption prints",
 )
 # Spoken math whose order a listener cannot recover: "the product of the step
 # number and warmup steps raised to the power of negative 1.5" raised the
@@ -6612,6 +6614,37 @@ def math_and_magnitude_problems(narration, sources):
     return problems
 
 
+# A number standing on its own in a caption: not one inside a name ("Qwen3.6-27B",
+# "v1.1"), after a section sign ("§3"), or in a path.
+CAPTION_VALUE_PATTERN = re.compile(r"(?<![\w.\-−/§])\d+(?:[.,]\d+)*(?:\s?[kK]\b)?(?![\w\-/]|\.\d)")
+
+
+def caption_number_problems(narration, captions):
+    """Each number a figure's or table's caption prints that its description
+    leaves out, rounded or said as a word ("five") counting as kept. The
+    figure's own name and others it cites ("Figure 3", "Table 1"), years in
+    citations, and footnote marks are not the caption's numbers. DeLM's
+    Figure 3 caption gives the main agent's 73% waiting; its description
+    said "a large majority" (R22, F75)."""
+    said = set(_numbers(narration))
+    words = {str(number): word for word, number in NUMBER_WORDS.items()}
+    problems = []
+    for caption in captions:
+        text = re.sub(r"<sup>.*?</sup>", " ", caption)
+        text = EQUATION_NAME_PATTERN.sub(" ", text)
+        text = re.sub(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", " ", text)
+        for match in CAPTION_VALUE_PATTERN.finditer(text):
+            number = next(iter(_numbers(match.group(0))), None)
+            if number is None or re.fullmatch(r"(?:19|20)\d{2}", number) or number in problems:
+                continue
+            if _printed(number, said) or any(_printed(spoken, {number}) for spoken in said):
+                continue
+            if number in words and re.search(rf"\b{words[number]}\b", narration, re.IGNORECASE):
+                continue
+            problems.append(number)
+    return [f"the description leaves out {number}, which its caption prints" for number in problems]
+
+
 def hard_flags(problems, changes=()):
     """The findings of grounding_problems(), math_and_magnitude_problems(),
     and prose_changes() that say the narration states something its source
@@ -6639,6 +6672,10 @@ per clause, innermost first, joined by "first", "then", and "then": "first
 divide a by b, then raise c to that power, then divide x by the result".
 Never put "raised to the power of" right before or after another operation in
 one phrase."""
+    if any(flag.endswith("which its caption prints") for flag in flags):
+        note += """ Say each number the caption gives, with
+what it measures, as the caption states it; never replace it with a word such
+as "most" or "a large share"."""
     return note
 
 
@@ -10225,6 +10262,9 @@ class PaperRun(Run):
             ]
             problems = grounding_problems(narration, grounded, describes, known_names)
             problems += math_and_magnitude_problems(narration, grounded)
+            if describes:
+                captions = [source for source, kind in zip(sources, batch_kinds) if kind == "caption"]
+                problems += caption_number_problems(narration, captions)
             if visual == "equation":
                 problems += equation_label_problems(narration, sources)
             if label:

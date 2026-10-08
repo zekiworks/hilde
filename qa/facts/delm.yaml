@@ -112,7 +112,7 @@ visuals:
         seen: {2026-10-08: right}
       - id: DELM-F03
         what: 'Only DeLM has peer-status awareness and a stateful shared context'
-        says: ['(?i)\bDE?LM\b[^.;]{0,30}\bonly\b[^.;]{0,160}(?:peer-status|stateful)', '(?i)\bonly\b[^.;]{0,20}\bDE?LM\b[^.;]{0,160}(?:peer-status|stateful)']
+        says: ['(?i)\bDE?LM\b[^.;]{0,30}\bonly\b[^.;]{0,160}(?:peer-status|stateful|all (?:six|6)\b)', '(?i)\bonly\b[^.;]{0,20}\bDE?LM\b[^.;]{0,160}(?:peer-status|stateful|all (?:six|6)\b)']
         not: ['(?i)(?:Codex|Claude Code|AOrchestra)[^.;]{0,30}\bprovides?\b[^.;]{0,40}(?:peer-status|stateful shared context)']
         severity: critical
         source: Table 1

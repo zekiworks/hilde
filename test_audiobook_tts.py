@@ -6154,6 +6154,19 @@ class GroundingTests(unittest.TestCase):
         )
         self.assertEqual([group[3].get("flags") for group in groups], [None, ["dropped “not”"]])
 
+    def test_a_number_the_caption_prints_must_reach_the_description(self):
+        caption = ("Figure 3: Execution timelines with Claude Opus 5.5 and four agents (§3). The main agent spends "
+                   "73% of its time waiting; DeLM finishes 5.5× faster (Mao et al., 2026), see Figure 2.<sup>4</sup>")
+        lost = web.caption_number_problems(
+            "Figure 3 shows the timelines with Claude Opus 5.5 and four agents. The main agent spends a large "
+            "majority of its time waiting, and DeLM finishes 5.5 times faster.", [caption])
+        # The 73% was lost (R22, F75); the model name, §3, the year, Figure 2, and
+        # the footnote mark are not the caption's numbers, and "four" says 4.
+        self.assertEqual(lost, ["the description leaves out 73, which its caption prints"])
+        self.assertEqual(len(web.hard_flags(lost)), 1)
+        self.assertEqual(web.caption_number_problems("The main agent waits 73 percent of the time; DeLM is 5.5 times faster.",
+                                                     [caption]), [])
+
     def test_math_said_in_an_unclear_order_and_an_unstated_magnitude_are_hard_flags(self):
         problems = web.math_and_magnitude_problems(
             "The rate is the product of the step number and warmup steps raised to the power of negative 1.5. "

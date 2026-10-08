@@ -90,7 +90,8 @@ decisions:
     decision: >
       A narration a check finds stating what its source does not (a number or name the source never
       prints, "orders of magnitude" the source never states, or a dropped or added "not", "no", "all" or
-      "only"), or saying math in an order that can be heard two ways, is asked about once more, naming what
+      "only"), saying math in an order that can be heard two ways, or leaving out a number its caption prints
+      (added 2026-10-08 at the reviewers' suggestion, R22 F75), is asked about once more, naming what
       the check found. The answer with fewer such findings is kept; what remains is marked on the
       passage (narration.json "flags") and shown in the Original view. Other checks only log.
     why: >
