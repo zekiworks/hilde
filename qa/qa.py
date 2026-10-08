@@ -623,6 +623,10 @@ def _json_description(visual, passages, captions):
     described = [p for p in passages if p.get("type") in DESCRIBED and p.get("text")]
     if visual.get("find"):
         hit = next((p for p in described if re.search(visual["find"], p["text"], re.I)), None)
+        if hit is None and not visual.get("unnumbered") and re.fullmatch(r"(Figure|Table) \d+", name):
+            # Reworded past `find`: the passage code named after this visual's caption.
+            hit = next((p for p in described if p.get("type") in {"figure", "table"}
+                        and re.match(rf"{re.escape(name)}\b", p["text"])), None)
         return ([hit["text"]], True) if hit else ([], False)
     if name.startswith("Equation"):
         # One passage may read several paragraphs; any of them may open with the name.

@@ -1,0 +1,22 @@
+# Golden assertions for "Decentralized Multi-Agent Systems with Shared Context" (DeLM; arXiv 2606.10662, v2 or later).
+# Description values are in facts/delm.yaml; these cover prose, footnotes and quoted prompts.
+paper: delm
+asserts:
+  - id: DELM-01
+    bug: B10
+    about: The 600-second idle-limit footnote is read after the sentence ending "extra review rounds", not inside it (§3.2)
+    order: ['extra review rounds', '600-second']
+
+  - id: DELM-02
+    bug: B10
+    about: The footnote on Claude Code's cache control with Gemini 3 Flash is read after the SWE-bench Verified heading (§3.3), not before it
+    order: ['(?m)^(\d+(\.\d+)*\.?\s+)?SWE-bench Verified\s*$', '(?i)real cost without cache reuse']
+
+  - id: DELM-03
+    bug: B07
+    about: Appendix E's note command keeps its name; "reserve" is a different command
+    must_not_contain: '(?i)\breserve\b[^.\n]{0,60}\bsyntax\b[^.\n]{0,10}\bnote\b'
+
+manual:
+  - bug: B07
+    check: Appendix E's commands (read, publish, claim, reserve, done, note, apply) are each read under their own name. "python binary refine dot py" in §4.3 is right (binary_refine.py).

@@ -45,9 +45,10 @@ visuals:
 - **Figure or table, in narration.json:** the first passage whose sources hold the caption, when it is a figure or table passage. When it is not (a caption not recognized, as in CLM on 84e7f88 and 9a70f65), take the last passage before it that carries a visual: a figure, table, or equation passage, or a body passage with a figure, table, or equation among its sources (a figure joined into prose), without passing another visual's caption.
 - **Figure or table, in follow-along text:** the paragraphs after the nearest "Description" before the caption. If there is none, the one paragraph just before the caption.
 - **Equation:** every paragraph that opens with "Equation N", also inside a passage of several paragraphs.
+- **`find`, in narration.json:** the first figure, table, or equation passage matching it; when none does and the visual has a number ("Figure 3"), the figure or table passage opening with that name, which code writes from the caption.
 - **Descriptions-only runs** (`qa/describe.py`, `descriptions_only` in book.json) keep the author's prose, so facts with `scope: book` are not scored there.
 
-`python qa/qa.py facts` implements these rules; on the 8 October books it gives each fact's `seen` status for 282 of 284 facts. The other two, BERT-F42 and BERT-F45, are about the reader's layout, which narration.json does not hold.
+`python qa/qa.py facts` implements these rules; on the 8 October books it gives each fact's `seen` status for 380 of 382 facts. The other two, BERT-F42 and BERT-F45, are about the reader's layout, which narration.json does not hold.
 - **Opening name:** a description that opens "Figure 8 shows…" or "The equation shows…" for Figure 6 is scored as a wrong label. Labels are written by code, so they are counted apart from the facts.
 
 ## Scoring one fact

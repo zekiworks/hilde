@@ -236,3 +236,16 @@ runs:
       Recreated 2026-10-08 13:30 UTC with the latest Hilde. Claude checked the text against the PDF and ran
       Hilde's converter on pages 5-9 to see what Gemma received; Astra checked the text against the PDF and
       its page images. Merged review: workspace/hilde-bugs-2026-10-08.md; R21-01..R21-09 (T1-T9).
+
+  - id: R22
+    date: 2026-10-08
+    papers: [delm]
+    hilde_commit: 9a70f65
+    model: lm-studio/gemma-4-31B-it
+    voice: Eir
+    output_file: null   # Audiobooks/decentralized-multi-agent-systems-with-shared-context--9637a7c7d8a0/ on Can's machine
+    reviewers: [claude]
+    notes: >
+      1 h 31 min book, the first time Hilde saw this paper (the unseen paper of the 8 October plan). Claude checked it
+      against arXiv v2's HTML tables, v1 for Tables 8 and 9, and the body for the figures; the figure images were not read.
+      Review: workspace/bunch/hilde-bugs-2026-10-08-delm-rev3.md; fact set facts/delm.yaml, golden/delm.yaml.

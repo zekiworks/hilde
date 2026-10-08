@@ -56,6 +56,16 @@ papers:
       - Figure 5 and Table 1 share a page.
       - The acknowledgments name contains the ligature character U+0133 in the PDF text layer.
 
+  - id: delm
+    title: Decentralized Multi-Agent Systems with Shared Context
+    url: https://arxiv.org/abs/2606.10662v2
+    version: v2 or later
+    sha256:
+      - 9637a7c7d8a09d2181f75c3150c9fac0d00333147b11d100ea5b1c89fed29e17   # R22
+    quirks:
+      - Hilde's PDF may be newer than arXiv v2, or v2's HTML may differ from its PDF; v2's HTML has no Table 4 (DeepSeek-V4.1-Flash), and gives DeLM n = 2 with Claude Opus 5.5 $11.89 per task where the PDF says $12.15.
+      - The name is printed both "DELM" and "DeLM" (keep, D07).
+
   - id: harness-zero
     title: "Harness-Zero: Harness Distillation via Agent-as-Harness"
     url: https://arxiv.org/pdf/2609.24974v1

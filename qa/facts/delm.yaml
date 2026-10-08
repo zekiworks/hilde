@@ -1,0 +1,268 @@
+# Fact set for "Decentralized Multi-Agent Systems with Shared Context" (DeLM; arXiv 2606.10662).
+# Format: facts/README.md. Names follow the book (Tables 1 to 9).
+# verified: arxiv-v2 = checked against arXiv v2's tables (HTML, 1 October 2026), and the body agrees;
+#           computed = arithmetic on those values;
+#           body     = only the paper's body as the book reads it; recheck with Hilde's PDF.
+# Hilde's PDF may be newer than v2, or v2's HTML may differ from its PDF. v2's HTML has no Table 4
+# (DeepSeek-V4.1-Flash), so v2's Tables 4 to 7 are the book's Tables 5 to 8. It also gives DeLM n = 2
+# with Claude Opus 5.5 on DeepSWE $11.89 per task, where the book says $12.15 (DELM-F31, DELM-F32).
+# Score with the book folder (narration.json). In the follow-along text, a figure's `find` block runs
+# into the prose after it (the reader prints no figure captions), and Tables 3 and 5 continue after
+# their captions, so DELM-F46, F47, F81 and F84 score differently there.
+paper: delm
+source: https://arxiv.org/abs/2606.10662v2
+runs:
+  2026-10-08: 1 h 31 min (R22); started before d9f4e2e; commit in the book's book.json
+
+visuals:
+
+  # ------------------------------------------------ Figure 1
+  - name: Figure 1
+    find: '(?i)faster and more accurate than existing'
+    facts:
+      - {id: DELM-F71, what: 'Terminal-Bench 4.0: DeLM n = 2 is 1.78x faster than Codex or Claude Code, averaged over two models', says: ['(?<![\d.])1\.78(?!\d)|(?<![\d.])1\.8(?!\d)'], severity: important, source: 'Fig. 1 caption; Table 2 (1.54, 2.02)', verified: computed, seen: {2026-10-08: right}}
+      - {id: DELM-F72, what: 'Terminal-Bench 4.0: DeLM n = 2 is 12.5 points more accurate, averaged', says: ['12\.5'], severity: important, source: 'Fig. 1 caption; Table 2 (13.33, 11.66)', verified: computed, seen: {2026-10-08: right}}
+      - {id: DELM-F73, what: 'DeepSWE v1.1: DeLM n = 2 is 1.38x faster, averaged', says: ['(?<![\d.])1\.38(?!\d)|(?<![\d.])1\.4(?!\d)'], severity: important, source: 'Fig. 1 caption; Table 3 (1.25, 1.50)', verified: computed, seen: {2026-10-08: right}}
+      - {id: DELM-F74, what: 'DeepSWE v1.1: DeLM n = 2 is 13.3 points more accurate, averaged', says: ['13\.3'], severity: important, source: 'Fig. 1 caption; Table 3 (10.00, 16.66)', verified: computed, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 3
+  - name: Figure 3
+    find: '(?i)centralized orchestration creates bubbles'
+    facts:
+      - {id: DELM-F75, what: 'Claude Code''s main agent spends 73% of its time waiting', says: ['73 ?(?:%|percent)'], severity: important, source: '§1; Fig. 3', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F76, what: 'DeLM finishes 5.5x faster', says: ['5\.5 ?(?:times|x\b|×)'], severity: important, source: '§1; Fig. 3', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F77, what: 'DeLM agents spend 2% of their time waiting', says: ['(?<![\d.])2 ?(?:%|percent)'], severity: minor, source: '§1; Fig. 3', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F78, what: 'Totals: Claude Code with subagents 162.7 min, DeLM 29.3 min', says: ['162\.7[\s\S]{0,300}?29\.3'], severity: minor, source: Fig. 3, verified: computed, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 5
+  - name: Figure 5
+    find: '(?i)makes more progress within the same time budget'
+    holders:
+      D2: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*2\b|\b(?:two|2)[\s-]+agents?\b)|\b(?:two|2)-agent\s+DE?LM'
+      D4: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*4\b|\b(?:four|4)[\s-]+agents?\b)|\b(?:four|4)-agent\s+DE?LM'
+      CC: '\bClaude Code\b'
+    regions:
+      ctags: '(?i)\bctags\b'
+      pandoc: '(?i)\bpandoc\b'
+    facts:
+      - {id: DELM-F80, what: 'ctags, final pass rate: DeLM n = 4 53.28%', value: '53\.28|53\.3', holder: D4, region: ctags, severity: important, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F81, what: 'ctags, final pass rate: DeLM n = 2 41.05%', value: '41\.05|41\.1', holder: D2, region: ctags, severity: minor, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F82, what: 'ctags, final pass rate: Claude Code 34.32%', value: '34\.32|34\.3', holder: CC, region: ctags, severity: important, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F83, what: 'pandoc, final pass rate: DeLM n = 4 50.00%', value: '50(?:\.00?)?', holder: D4, region: pandoc, severity: important, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F84, what: 'pandoc, final pass rate: DeLM n = 2 38.26%', value: '38\.26|38\.3', holder: D2, region: pandoc, severity: minor, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F85, what: 'pandoc, final pass rate: Claude Code 30.09%', value: '30\.09|30\.1', holder: CC, region: pandoc, severity: important, source: '§3.4; Fig. 5', verified: body, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Figure 6
+  # §3.5 gives each pair GPT-6-Astra first, then Claude Opus 5.5 ("1.54 ... using GPT-6-Astra and 2.02 ...
+  # using Claude Opus 5.5"); the ablation pairs (0.87/0.82, 0.98/0.93, 1.09/1.03) are read in that order.
+  - name: Figure 6
+    find: '(?i)ablation on Terminal-Bench'
+    holders:
+      Base: '(?i)base DE?LM|full (?:system|DE?LM)'
+      PS: '(?i)peer-status'
+      ES: '(?i)early sharing'
+      SC: '(?i)shared context|\bP2P\b|direct messag\w*'
+    regions:
+      claude: '(?i)Claude Opus'
+      gpt: '(?i)GPT-6-Astra'
+    facts:
+      - {id: DELM-F86, what: 'Claude Opus 5.5: full DeLM n = 2 is 2.02x faster than the single agent', value: '2\.02|2\.0|2(?= times)', holder: Base, region: claude, severity: important, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F87, what: 'GPT-6-Astra: full DeLM n = 2 is 1.54x faster', value: '1\.54|1\.5', holder: Base, region: gpt, severity: important, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F88, what: 'Claude Opus 5.5: without peer-status, accuracy 90.0 (largest drop, -3.3)', value: '90(?:\.0)?', holder: PS, region: claude, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F89, what: 'GPT-6-Astra: without shared context, accuracy 82.0 (largest drop, -3.0)', value: '82(?:\.0)?', holder: SC, region: gpt, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F90, what: 'GPT-6-Astra: without peer-status, 0.87x (the book says "about 0.8")', value: '0\.87|0\.9', holder: PS, region: gpt, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: wrong}}
+      - {id: DELM-F91, what: 'Claude Opus 5.5: without peer-status, 0.82x', value: '0\.82|0\.8', holder: PS, region: claude, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F92, what: 'GPT-6-Astra: without early sharing, 0.98x (the book says "about 0.9")', value: '0\.98|1\.0|1(?= times)', holder: ES, region: gpt, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: missing}}
+      - {id: DELM-F93, what: 'Claude Opus 5.5: without early sharing, 0.93x', value: '0\.93|0\.9', holder: ES, region: claude, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F94, what: 'GPT-6-Astra: without shared context, 1.09x', value: '1\.09|1\.1', holder: SC, region: gpt, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F95, what: 'Claude Opus 5.5: without shared context, 1.03x (the book says "about 1.1")', value: '1\.03|1\.0|1(?= times)', holder: SC, region: claude, severity: minor, source: '§3.5; Fig. 6', verified: body, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Figure 7
+  - name: Figure 7
+    find: '(?i)more agents build more components'
+    holders:
+      Single: '(?i)single agent|isolated baseline|\bone agent'
+      D2: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*2\b|\b(?:two|2)[\s-]+agents?\b)|\b(?:two|2)-agent\s+DE?LM'
+      D4: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*4\b|\b(?:four|4)[\s-]+agents?\b)|\b(?:four|4)-agent\s+DE?LM'
+    facts:
+      - {id: DELM-F96, what: 'retro-console-soc, GPT-6-Astra: a single agent takes 27.0 minutes', value: '27(?:\.0)?', holder: Single, not: ['(?i)(?:single agent|isolated baseline)[^.;]{0,160}\b(?:about |around |roughly |approximately )?(?:30|thirty) minutes'], severity: important, source: '§4.1', verified: body, seen: {2026-10-08: wrong}}
+      - {id: DELM-F97, what: 'DeLM n = 2 takes 20.9 minutes (1.29x)', value: '20\.9|21', holder: D2, not: ['(?i)(?:two agents|n equals 2)[^.;]{0,80}\b(?:about |around )?22 minutes'], severity: important, source: '§4.1', verified: body, seen: {2026-10-08: wrong}}
+      - {id: DELM-F98, what: 'DeLM n = 4 takes 7.5 minutes', value: '7\.5', holder: D4, severity: important, source: '§4.1', verified: body, seen: {2026-10-08: missing}}
+      - {id: DELM-F99, what: 'n = 4 is 3.6x faster than one agent', says: ['3\.6 ?(?:times|x\b|×)'], severity: minor, source: '§4.1', verified: body, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Table 1
+  - name: Table 1
+    caption: 'Collaboration and coordination mechanisms in the compared multi-agent systems'
+    facts:
+      - id: DELM-F01
+        what: 'Codex and Claude Code provide intermediate-results sharing'
+        says: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\bprovides?\b[^.;]{0,40}intermediate-results sharing']
+        not: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\b(?:lacks?|do not|does not|without)\b[^.;]{0,40}intermediate-results sharing']
+        severity: important
+        source: Table 1
+        verified: arxiv-v2
+        seen: {2026-10-08: right}
+      - id: DELM-F02
+        what: 'AOrchestra lacks parallel subtask execution (it has work reuse and feedback and correction)'
+        says: ['(?i)AOrchestra[^.;]{0,80}\blacks?\b[^.;]{0,20}parallel']
+        not: ['(?i)AOrchestra[^.;]{0,30}\bprovides?\b[^.;]{0,30}parallel']
+        severity: important
+        source: Table 1
+        verified: arxiv-v2
+        seen: {2026-10-08: right}
+      - id: DELM-F03
+        what: 'Only DeLM has peer-status awareness and a stateful shared context'
+        says: ['(?i)\bDE?LM\b[^.;]{0,30}\bonly\b[^.;]{0,160}(?:peer-status|stateful)', '(?i)\bonly\b[^.;]{0,20}\bDE?LM\b[^.;]{0,160}(?:peer-status|stateful)']
+        not: ['(?i)(?:Codex|Claude Code|AOrchestra)[^.;]{0,30}\bprovides?\b[^.;]{0,40}(?:peer-status|stateful shared context)']
+        severity: critical
+        source: Table 1
+        verified: arxiv-v2
+        seen: {2026-10-08: right}
+      - id: DELM-F04
+        what: 'Codex and Claude Code have parallel execution, work reuse, and feedback and correction'
+        says: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\bprovides?\b[^.;]{0,30}(?:all three|parallel)']
+        not: ['(?i)(?:Codex|Claude Code)[^.;]{0,40}\blacks?\b[^.;]{0,30}(?:parallel|work reuse|feedback)']
+        severity: minor
+        source: Table 1
+        verified: arxiv-v2
+        seen: {2026-10-08: right}
+      - {id: DELM-F05, what: 'Isolated agents have none of the six mechanisms', not: ['(?i)isolated agents[^.;]{0,30}\bprovides?\b'], severity: minor, source: Table 1, verified: arxiv-v2, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 2
+  - name: Table 2
+    caption: 'Comparison on Terminal-Bench 4.0 across two base models'
+    holders: &coding
+      Codex: '\bCodex\b'
+      CodexSA: '(?i)\bCodex(?:''s)?\s+(?:with\s+(?:its\s+)?(?:native\s+)?subagents?|\(subagents?\)|(?:native\s+)?subagents?)'
+      CC: '\bClaude Code\b'
+      CCSA: '(?i)\bClaude Code(?:''s)?\s+(?:with\s+(?:its\s+)?(?:native\s+)?subagents?|\(subagents?\)|(?:centralized\s+)?(?:native\s+)?subagents?)'
+      AO: '\bAOrchestra\b'
+      D2: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*2\b|\b(?:two|2)[\s-]+agents?\b)|\b(?:two|2)-agent\s+DE?LM'
+      D4: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*4\b|\b(?:four|4)[\s-]+agents?\b)|\b(?:four|4)-agent\s+DE?LM'
+    regions: &models
+      gpt: '(?i)GPT-6-Astra'
+      claude: '(?i)Claude Opus 5\.5'
+    facts:
+      - {id: DELM-F06, what: 'GPT-6-Astra: DeLM n = 2 has the highest accuracy, 85.00%', value: '85(?:\.00?)?', holder: D2, region: gpt, severity: critical, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F07, what: 'GPT-6-Astra: DeLM n = 4 has the lowest latency, 13.16 min', value: '13\.16|13\.2', holder: D4, region: gpt, severity: important, source: Table 2, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F08, what: 'GPT-6-Astra: Codex has the lowest cost per task, $9.01', value: '9\.01|9 dollars and (?:1|one) cent', holder: Codex, region: gpt, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F09, what: 'GPT-6-Astra: DeLM n = 4 has the lowest cost per submission, $5.97', value: '5\.97|5 dollars and 97 cents', holder: D4, region: gpt, severity: important, source: Table 2, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F10, what: 'GPT-6-Astra: Codex and Codex with subagents, the strongest baselines, 71.67%', value: '71\.67|71\.7', holder: [Codex, CodexSA], region: gpt, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F11, what: 'Claude Opus 5.5: DeLM n = 2 has the highest accuracy, 93.33%', value: '93\.33|93\.3', holder: D2, region: claude, severity: critical, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F12, what: 'Claude Opus 5.5: DeLM n = 2 has the lowest cost per task, $17.91', value: '17\.91|17 dollars and 91 cents|17\.9', holder: D2, region: claude, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F13, what: 'Claude Opus 5.5: DeLM n = 4 has the lowest latency, 52.51 min', value: '52\.51|52\.5', holder: D4, region: claude, severity: important, source: Table 2, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F14, what: 'Claude Opus 5.5: DeLM n = 4 has the lowest cost per submission, $7.50', value: '7\.50?|7 dollars and 50 cents', holder: D4, region: claude, severity: important, source: Table 2, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F15, what: 'Claude Opus 5.5: Claude Code 81.67%', value: '81\.67|81\.7', holder: CC, region: claude, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F16, what: 'Claude Opus 5.5: Claude Code latency 130.75 min', value: '130\.75|130\.8', holder: CC, region: claude, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F17, what: 'Claude Opus 5.5: Claude Code with subagents 80.00%', value: '80(?:\.00?)?', holder: CCSA, region: claude, severity: minor, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F18, what: 'Claude Opus 5.5: DeLM n = 4 89.17%, still above every baseline', value: '89\.17|89\.2', holder: D4, region: claude, severity: important, source: 'Table 2; §3.1', verified: arxiv-v2, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Table 3
+  - name: Table 3
+    caption: 'Comparison on DeepSWE v1.1 across two base models'
+    holders: *coding
+    regions: *models
+    facts:
+      - {id: DELM-F19, what: 'GPT-6-Astra: DeLM n = 2 has the highest accuracy, 98.33%', value: '98\.33|98\.3', holder: D2, region: gpt, severity: critical, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F20, what: 'GPT-6-Astra: DeLM n = 4 has the lowest latency, 12.37 min', value: '12\.37|12\.4', holder: D4, region: gpt, severity: important, source: Table 3, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F21, what: 'GPT-6-Astra: Codex has the lowest cost per task, $9.40', value: '9\.40|9\.4|9 dollars and 40 cents', holder: Codex, region: gpt, severity: important, source: Table 3, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F22, what: 'GPT-6-Astra: DeLM n = 4 has the lowest cost per submission, $7.72', value: '7\.72|7 dollars and 72 cents|7\.7', holder: D4, region: gpt, severity: important, source: Table 3, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F23, what: 'GPT-6-Astra: Codex with subagents, the strongest baseline, 90.00% (DeLM n = 4 also 90.00%)', value: '90(?:\.00?)?', holder: [CodexSA, D4], region: gpt, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F24, what: 'GPT-6-Astra: Codex 88.33%', value: '88\.33|88\.3', holder: Codex, region: gpt, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F25, what: 'Claude Opus 5.5: DeLM n = 4 has the highest accuracy, 90.83%', value: '90\.83|90\.8', holder: D4, region: claude, severity: critical, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F26, what: 'Claude Opus 5.5: DeLM n = 4 has the lowest latency, 31.61 min', value: '31\.61|31\.6', holder: D4, region: claude, severity: important, source: Table 3, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F27, what: 'Claude Opus 5.5: DeLM n = 2 88.33%', value: '88\.33|88\.3', holder: D2, region: claude, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F28, what: 'Claude Opus 5.5: Claude Code 71.67%', value: '71\.67|71\.7', holder: CC, region: claude, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F29, what: 'Claude Opus 5.5: Claude Code with subagents 50.00%', value: '50(?:\.00?)?', holder: CCSA, region: claude, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F30, what: 'Claude Opus 5.5: AOrchestra, the strongest baseline, 73.33%', value: '73\.33|73\.3', holder: AO, region: claude, severity: important, source: 'Table 3; §3.2', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F31, what: 'Claude Opus 5.5: Claude Code has the lowest cost per task, $12.01 (book''s version: DeLM n = 2 $12.15)', value: '12\.01|12 dollars and 1 cent', holder: CC, region: claude, severity: important, source: 'Table 3; §3.2. arXiv v2 prints $11.89 for DeLM n = 2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F32, what: 'Claude Opus 5.5: DeLM n = 2 has the lowest cost per submission, $6.07', value: '6\.07|6 dollars and 7 cents|6\.1', holder: D2, region: claude, severity: minor, source: 'Table 3 ($12.15 / 2). arXiv v2 prints $5.95', verified: body, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 4 (not in arXiv v2's HTML)
+  - name: Table 4
+    caption: 'Comparison of Codex and DELM with DeepSeek-V4.1-Flash'
+    holders:
+      Codex: '\bCodex\b'
+      DeLM: '(?i)\bDE?LM\b'
+    facts:
+      - {id: DELM-F33, what: 'DeepSeek-V4.1-Flash: DeLM n = 2 88.33%', value: '88\.33|88\.3', holder: DeLM, severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F34, what: 'DeepSeek-V4.1-Flash: Codex 76.67%', value: '76\.67|76\.7', holder: Codex, severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F35, what: 'Latency: DeLM 22.25 min, Codex 27.67 min', says: ['22\.25(?:[^.]|\.\d){0,60}27\.67', '27\.67(?:[^.]|\.\d){0,60}22\.25'], severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F36, what: 'Cost per task: DeLM $0.33', value: '0\.33|33 cents|0\.3', holder: DeLM, severity: minor, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 5
+  - name: Table 5
+    caption: 'Comparison on SWE-bench Verified with Gemini 3 Flash'
+    holders:
+      CC: '\bClaude Code\b'
+      mini: '(?i)mini-SWE-agent'
+      AO: '\bAOrchestra\b'
+      D2: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*2\b|\b(?:two|2)[\s-]+agents?\b)|\b(?:two|2)-agent\s+DE?LM'
+      D4: '(?i)\bDE?LM\b,?[^.;,]{0,14}?(?:n\s*(?:equals|=)\s*4\b|\b(?:four|4)[\s-]+agents?\b)|\b(?:four|4)-agent\s+DE?LM'
+    facts:
+      - {id: DELM-F37, what: 'DeLM n = 4 has the highest accuracy, 66.08%', value: '66\.08|66\.1', holder: D4, severity: critical, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F38, what: 'DeLM n = 4 has the lowest latency, 61.01 s', value: '61\.01', holder: D4, severity: important, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F39, what: 'DeLM n = 2 63.72%', value: '63\.72|63\.7', holder: D2, severity: important, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F40, what: 'DeLM n = 2 71.86 s', value: '71\.86|71\.9', holder: D2, severity: minor, source: Table 5, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F41, what: 'AOrchestra, the strongest baseline, 55.26%', says: ['(?i)AOrchestra(?:[^.]|\.\d){0,200}55\.(?:26|3)(?!\d)', '55\.(?:26|3)(?!\d)(?:[^.]|\.\d){0,40}AOrchestra'], severity: important, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F42, what: 'AOrchestra 89.94 s', says: ['(?i)AOrchestra(?:[^.]|\.\d){0,250}89\.94?', '89\.94?(?:[^.]|\.\d){0,40}AOrchestra'], severity: minor, source: Table 5, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F43, what: 'mini-SWE-agent 54.73%', value: '54\.73|54\.7', holder: mini, severity: important, source: Table 5, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F44, what: 'Claude Code has the lowest accuracy, 49.32%', value: '49\.32|49\.3', holder: CC, severity: important, source: Table 5, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F45, what: 'Claude Code has the highest latency, 129.13 s', value: '129\.13|129\.1', holder: CC, severity: important, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F46, what: 'Cost per task: AOrchestra and DeLM n = 2 tie at $0.24', value: '0\.24|24 cents|0\.2', holder: [AO, D2], severity: minor, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F47, what: 'Cost per submission: DeLM n = 2 and n = 4 both $0.12', value: '0\.12|12 cents|0\.1', holder: [D2, D4], severity: minor, source: 'Table 5; §3.3', verified: arxiv-v2, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 6
+  - name: Table 6
+    caption: 'shared-context size (thousands of tokens)'
+    facts:
+      - {id: DELM-F48, what: 'GPT-6-Astra, n = 4, Terminal-Bench 4.0: reading costs 17.68% of task cost, the highest', says: ['(?<![\d.])17\.68(?!\d)|(?<![\d.])17\.7(?!\d)'], severity: important, source: 'Table 6; §4.4', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F49, what: 'Claude Opus 5.5, n = 4, Terminal-Bench 4.0: 3.66%, its highest', says: ['(?<![\d.])3\.66(?!\d)|(?<![\d.])3\.7(?!\d)'], severity: important, source: 'Table 6; §4.4', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F50, what: 'GPT-6-Astra, n = 2, Terminal-Bench 4.0: 9.17%', says: ['(?<![\d.])9\.17(?!\d)|(?<![\d.])9\.2(?!\d)'], severity: minor, source: Table 6, verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F51, what: 'Claude Opus 5.5, n = 4, Terminal-Bench 4.0: 14.48 thousand tokens, the largest context', says: ['(?<![\d.])14\.48(?!\d)|(?<![\d.])14\.5(?!\d)'], severity: minor, source: 'Table 6; §4.4 (under 15 thousand)', verified: arxiv-v2, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Table 7
+  - name: Table 7
+    caption: 'v1.1. Baseline latency is the average execution time'
+    facts:
+      - {id: DELM-F52, what: 'Terminal-Bench 4.0 tasks: average Codex latency 26.91 min', says: ['(?<![\d.])26\.91(?!\d)|(?<![\d.])26\.9(?!\d)'], severity: important, source: Table 7, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F53, what: 'DeepSWE v1.1 tasks: average Codex latency 16.57 min', says: ['(?<![\d.])16\.57(?!\d)|(?<![\d.])16\.6(?!\d)'], severity: important, source: Table 7, verified: arxiv-v2, seen: {2026-10-08: right}}
+
+  # ------------------------------------------------ Table 8
+  - name: Table 8
+    caption: 'comparison on LongBench-v2 Multi-Doc QA across four base models'
+    holders:
+      DeLM: '(?i)\bDE?LM\b'
+      Base: '(?i)base model'
+      CC: '\bClaude Code\b'
+      RA: '\bReadAgent\b'
+    facts:
+      - {id: DELM-F54, what: 'GPT-5.4: DeLM 60.1', value: '60\.1', holder: DeLM, severity: critical, source: 'Table 8; App. C', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F55, what: 'Claude Sonnet 4.6: DeLM 59.8', value: '59\.8', holder: DeLM, severity: important, source: 'Table 8; App. C', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F56, what: 'Gemini 3 Flash: DeLM 61.5', value: '61\.5', holder: DeLM, severity: important, source: 'Table 8; App. C', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F57, what: 'DeepSeek-V4-Pro: DeLM 67.5', value: '67\.5', holder: DeLM, severity: important, source: 'Table 8; App. C', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F58, what: 'GPT-5.4: base model 53.9', value: '53\.9', holder: Base, severity: minor, source: Table 8, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F63, what: 'Claude Sonnet 4.6: base model 53.3', value: '53\.3', holder: Base, severity: minor, source: Table 8, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F59, what: 'Gemini 3 Flash: base model 57.1, the strongest baseline', value: '57\.1', holder: Base, severity: important, source: 'Table 8; App. C (+4.4)', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F60, what: 'DeepSeek-V4-Pro: base model 63.9, the strongest baseline', value: '63\.9', holder: Base, severity: important, source: 'Table 8; App. C (+3.6)', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F61, what: 'GPT-5.4: Claude Code 54.4, the strongest baseline', value: '54\.4', holder: CC, severity: important, source: 'Table 8; App. C (+5.7)', verified: arxiv-v2, seen: {2026-10-08: missing}}
+      - {id: DELM-F62, what: 'Claude Sonnet 4.6: ReadAgent 54.5, the strongest baseline', value: '54\.5', holder: RA, severity: important, source: 'Table 8; App. C (+5.3)', verified: arxiv-v2, seen: {2026-10-08: missing}}
+
+  # ------------------------------------------------ Table 9
+  - name: Table 9
+    caption: 'Comparison of RLM, DELM, and their hybrid'
+    holders:
+      Hybrid: '(?i)\bDE?LM\s*(?:plus|\+)\s*RLM\b(?:\s+hybrid)?|\bhybrid\b'
+      DeLM: '(?i)\bDE?LM\b(?!\s*(?:plus|\+)\s*RLM)'
+      RLM: '\bRLM\b'
+    regions:
+      oolong: '(?i)\bOOLONG\b'
+      longbench: '(?i)LongBench'
+    facts:
+      - {id: DELM-F64, what: 'OOLONG: the hybrid is best, 64.0%', value: '64(?:\.0)?', holder: Hybrid, region: oolong, severity: critical, source: 'Table 9; App. C.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F65, what: 'OOLONG: the hybrid is cheapest, $0.40', value: '0\.40?|40 cents', holder: Hybrid, region: oolong, severity: important, source: Table 9, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F66, what: 'OOLONG: RLM 56.0%', value: '56(?:\.0)?', holder: RLM, region: oolong, severity: important, source: Table 9, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F67, what: 'OOLONG: DeLM 53.3%, below RLM', value: '53\.3', holder: DeLM, region: oolong, severity: important, source: 'Table 9; App. C.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F68, what: 'LongBench-v2: the hybrid is best, 60.3%', value: '60\.3', holder: Hybrid, region: longbench, severity: important, source: Table 9, verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F69, what: 'LongBench-v2: DeLM 57.9%, above RLM', value: '57\.9', holder: DeLM, region: longbench, severity: important, source: 'Table 9; App. C.1', verified: arxiv-v2, seen: {2026-10-08: right}}
+      - {id: DELM-F70, what: 'LongBench-v2: RLM 55.8%', value: '55\.8', holder: RLM, region: longbench, severity: important, source: Table 9, verified: arxiv-v2, seen: {2026-10-08: right}}
