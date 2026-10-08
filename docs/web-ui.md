@@ -134,7 +134,9 @@ every word you type must
 appear, in any order and case. **Delete** removes an audiobook, every voice of
 it, and its text after you confirm. **Listen** opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
-and **Download MP3** retrieves the voice being played. A book read by more
+and **Download MP3** retrieves the voice being played. **← All audiobooks**, or
+the **Listen** tab pressed while a book is open, goes back to the list; from
+another tab, **Listen** brings back the book you had open. A book read by more
 than one voice shows a voice picker. **Change voice** reads the same text in
 another saved voice: nothing is rewritten, and the voice you have keeps
 playing until the new one is ready. **Recreate with the latest Hilde** writes

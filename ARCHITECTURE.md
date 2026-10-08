@@ -771,7 +771,9 @@ The run log shows below every page but **Listen**. Each page:
   than one ready voice), **Change voice** (books with their own text), **Download MP3**,
   **Chat with Hilde**, **Recreate with the latest Hilde**, a notice offering
   **Make <voice> again** for each stale voice, the player, and the
-  synchronized reader; **All audiobooks** returns to the table. **Change
+  synchronized reader; **All audiobooks** returns to the table, and so does the
+  **Listen** tab when pressed while Listen is shown (`chooseListen()`); from
+  another page it opens Listen as it was left, with its book. **Change
   voice** lists the saved voices the book does not have yet. **Recreate** asks
   first. Both start a job whose progress shows on **Progress**.
 - On **Create**, a document whose content is already a book shows **You

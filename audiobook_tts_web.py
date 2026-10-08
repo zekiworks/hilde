@@ -12378,7 +12378,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="tab-voice" type="button" role="tab" aria-controls="page-voice"
         onclick="setTab('voice')">Voices</button>
       <button id="tab-player" type="button" role="tab" aria-controls="page-player"
-        onclick="setTab('player')">Listen</button>
+        onclick="chooseListen()">Listen</button>
     </div>
     <button id="advanced" class="advanced" type="button" aria-expanded="false"
       aria-controls="advanced-panels" onclick="toggleAdvanced()">Advanced</button>
@@ -13746,6 +13746,13 @@ function closeBook() {
   resetChatFor("");
   render(); queueSync();
   $("book-search").focus();
+}
+
+// The Listen tab, pressed while Listen is shown, does what All audiobooks
+// does; from another page it opens Listen as it was, with its book.
+function chooseListen() {
+  if (state.tab !== "player") setTab("player");
+  else if (state.player.book) closeBook();
 }
 
 function downloadBook() {
