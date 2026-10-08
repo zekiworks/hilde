@@ -132,7 +132,8 @@ source names, and when a voice of it was last made. A title is the book's first 
 when that heading is a section such as Abstract. Search looks only at titles;
 every word you type must
 appear, in any order and case. **Delete** removes an audiobook, every voice of
-it, and its text after you confirm. **Listen** opens the book's player and
+it, and its text after you confirm. **Listen**, or a click anywhere on a book's
+row, opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
 and **Download MP3** retrieves the voice being played. **← All audiobooks**, or
 the **Listen** tab pressed while a book is open, goes back to the list; from

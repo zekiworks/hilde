@@ -12187,6 +12187,7 @@ legend + * { clear:both; }
 .book-table .duration { width:120px; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
 .book-table .source { width:26%; color:var(--dim); overflow-wrap:anywhere; }
+.book-table .book-row { cursor:pointer; }
 .data-table .modified { width:1%; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
 .book-title { font-weight:600; }
@@ -14270,6 +14271,13 @@ function bookRow(book) {
   listen.addEventListener("click", () => openAudiobook(book.id, true));
   action.append(listen, deleteButton(`Delete ${book.title}`, (button) => deleteBook(book, button)));
   row.append(title, duration, source, modifiedCell(book.modified), action);
+  // A click anywhere on the row does what Listen does; its buttons keep their
+  // own, and a click that ends a text selection selects.
+  row.className = "book-row";
+  row.addEventListener("click", (event) => {
+    if (event.target.closest("button, a, input") || String(window.getSelection())) return;
+    openAudiobook(book.id, true);
+  });
   return row;
 }
 

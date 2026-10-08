@@ -766,7 +766,8 @@ The run log shows below every page but **Listen**. Each page:
   only, with the same rules.
   Without audiobooks it shows a short explanation and **Create your first
   audiobook**. Each row is a book; its note lists the voices that read its
-  current text. **Listen** opens the book view: title, narrator, duration,
+  current text. **Listen**, or a click anywhere else on its row (not on a
+  button, nor one ending a text selection), opens the book view: title, narrator, duration,
   source, **Follow along**, **Original** (adapted books), a voice picker (more
   than one ready voice), **Change voice** (books with their own text), **Download MP3**,
   **Chat with Hilde**, **Recreate with the latest Hilde**, a notice offering
