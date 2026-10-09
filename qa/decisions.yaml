@@ -117,3 +117,14 @@ decisions:
     why: >
       A listener who hears the wrong command name gets the method wrong: DeLM's note command was read as
       "reserve" (R22-05). The reviewer recommended this split.
+
+  - id: D17
+    date: 2026-10-09
+    by: [umit]
+    decision: >
+      In the fact-set gate, a fact regresses when it was right in every baseline run and is right in at most a third
+      of the new runs (1 of 3). A fact missed in fewer runs is listed as wavering, not counted. Each regression is
+      confirmed by rerunning its paper before a change is accepted or rejected.
+    why: >
+      With 3 runs, a fact right 90% of the time fails "3 of 3" in about 27% of samples, so the strict rule counted
+      single-run misses as regressions (13 on 8 October, 5 by this rule). The reviewer proposed it.

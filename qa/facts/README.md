@@ -66,7 +66,7 @@ visuals:
 ## The gate (from the plan)
 
 A change is accepted when:
-- no fact that was right in the baseline goes wrong or missing;
+- no fact regresses (D17): a fact right in every baseline run must be right in more than a third of the new runs; one missed in fewer is wavering, listed but not counted, and a regression is confirmed by rerunning its paper;
 - the facts it targets are right in 3 of 3 descriptions-only runs;
 - the same holds on one paper Hilde has never seen, with its own fact set.
 

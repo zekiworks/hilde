@@ -831,7 +831,13 @@ def cmd_facts(args):
     now, before = statuses(runs), statuses(base)
     stable = {i for i, s in now.items() if all(x == "right" for x in s)}
     was_stable = {i for i, s in before.items() if all(x == "right" for x in s)}
-    regressions = sorted(was_stable - stable) if base else []
+    # D17: a fact right in every baseline run regresses when it is right in at
+    # most a third of the new runs (1 of 3); one miss in three is noise, listed
+    # apart. A regression is confirmed by rerunning its paper before deciding.
+    regressions = sorted(
+        i for i in was_stable - stable if sum(x == "right" for x in now.get(i, ())) <= len(now.get(i, ())) / 3
+    ) if base else []
+    wavering = sorted(was_stable - stable - set(regressions)) if base else []
     gains = sorted(stable - was_stable) if base else []
     about = {f["id"]: f for _, facts, _ in runs for f in facts}
 
@@ -842,7 +848,8 @@ def cmd_facts(args):
                       "facts": facts, "labels": [dict(zip(("name", "status", "said"), l)) for l in labels]}
                      for t, facts, labels in runs],
             "stable": sorted(stable), "unstable": sorted(set(now) - stable),
-            "baseline": [str(t.path) for t, _, _ in base], "regressions": regressions, "gains": gains,
+            "baseline": [str(t.path) for t, _, _ in base], "regressions": regressions, "wavering": wavering,
+            "gains": gains,
         }, ensure_ascii=False, indent=2))
     else:
         print(f"Fact set {paper}: {len(now)} facts scored over {len(runs)} run{'s' if len(runs) != 1 else ''}")
@@ -869,9 +876,12 @@ def cmd_facts(args):
                 print(f"        ↳ {evidence[:150]}")
         if base:
             print(f"\nAgainst the baseline ({len(base)} run{'s' if len(base) != 1 else ''}): "
-                  f"{len(gains)} gained, {len(regressions)} regressed")
+                  f"{len(gains)} gained, {len(regressions)} regressed (right in at most a third of the runs; "
+                  f"rerun to confirm), {len(wavering)} wavering (missed in fewer)")
             for i in regressions:
                 print(f"  REGRESSED {i:9} [{about[i]['severity']}] {about[i]['in']}: {about[i]['what'][:80]}")
+            for i in wavering:
+                print(f"  WAVERING  {i:9} [{about[i]['severity']}] {about[i]['in']}: {about[i]['what'][:80]}")
             for i in gains:
                 print(f"  GAINED    {i:9} [{about[i]['severity']}] {about[i]['in']}: {about[i]['what'][:80]}")
         skipped = sum(f["status"] == "skipped" for _, facts, _ in runs[:1] for f in facts)
