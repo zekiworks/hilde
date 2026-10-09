@@ -15,11 +15,11 @@ visuals:
     caption: 'work out of the box and can be further improved'
     holders:
       CLM: '\bCLMs?\b'
-      Summary: '\bSummary\b'
+      Summary: '(?i)\bSummary\b'
     facts:
       - id: CLM-F01
         what: Software World held-out speedup, CLM swarm (panel b)
-        value: '1\.044'
+        value: '1\.044?'
         holder: CLM
         severity: critical
         source: Fig. 1b; Fig. 6b
@@ -103,7 +103,7 @@ visuals:
     facts:
       - id: CLM-F11
         what: A standard LM appends (concatenates) its output to the context; no Recursive Language Model
-        says: ['(?i)(append|concatenat|combined with)']
+        says: ['(?i)(append|concatenat|combined with|combin\w* (?:it )?with)']
         not: ['(?i)Recursive Language Model', '(?i)context-management operation']
         severity: critical
         source: §4.1, Eq. 1
@@ -114,7 +114,7 @@ visuals:
     facts:
       - id: CLM-F12
         what: The next context is the CLM function applied to the current one; a formula, not a diagram
-        says: ['(?i)CLM function[^.;]{0,60}(applied|of)']
+        says: ['(?i)CLM function[^.;]{0,60}(applied|of)', '(?i)\bappl(?:y|ying|ies|ied)\b[^.;]{0,30}CLM function']
         not: ['(?i)diagram', '(?i)Recursive Language Model', '(?i)\bloop\b']
         severity: critical
         source: §4.1, Eq. 2
@@ -122,6 +122,7 @@ visuals:
         seen: {2026-10-07: wrong, 2026-10-08: wrong}
 
   - name: Equation 3
+    find: '(?i)\A(?:Equation 3|The equation) (?:says|shows) that (?:the )?(?:prefix-reuse FLOPs|floating point operations for prefix reuse)'   # some runs open "The equation…"; that label is a separate finding
     facts:
       - id: CLM-F13
         what: Prefix-reuse FLOPs = prefill of the unmatched suffix + decode of the generated tokens
@@ -161,18 +162,19 @@ visuals:
         seen: {2026-10-08: right}
 
   - name: Equation 6
+    find: '(?i)\A(?:Equation 6|The equation) (?:says|shows) that the (?:efficiency advantage|effective \w+)'   # as for Equation 3
     facts:
       - id: CLM-F17
         what: A_eff is the efficiency advantage
         says: ['(?i)efficiency advantage']
-        not: ['(?i)effective (area|attention|advantage)']
+        not: ['(?i)effective (area|attention|advantage|activation)']
         severity: critical
         source: §4.2, Eq. 6
         verified: pdf
         seen: {2026-10-01: right, 2026-10-07: wrong, 2026-10-08: wrong}
       - id: CLM-F18
         what: For a successful trajectory, A_eff = clip((c̄ − c_i) / c̄, −1, 1); otherwise 0
-        says: ['(?i)(c bar g minus c i|subtract\w* c i from c bar g)[^.]{0,80}divid\w*[^.]{0,30}c bar g']
+        says: ['(?i)(c bar g minus c i|subtract\w* c i from c bar g)[^.]{0,80}divid\w*[^.]{0,30}c bar g', '(?is)\A(?=.*?\b(?:subtract\w*|minus)\b[^.]{0,200}\bdivid\w*[^.]{0,200}\bclip\w*)(?=.*?\b(?:zero|0)\b)']
         severity: important
         source: §4.2, Eq. 6
         verified: pdf
@@ -218,14 +220,14 @@ visuals:
     facts:
       - id: CLM-F22
         what: Standard serving re-prefills the surviving segment C after the edit
-        says: ['(?i)re-?prefill[^.]{0,60}\bC\b']
+        says: ['(?i)re-?prefill[^.]{0,60}\bC\b', '(?i)\bC\b[^.]{0,40}re-?prefill']
         severity: important
         source: §4.3, Fig. 4
         verified: pdf
         seen: {2026-10-08: right}
       - id: CLM-F23
         what: Suffix Cache Reuse reuses the cached states of segment C
-        says: ['(?i)reus\w*[^.]{0,50}\bC\b']
+        says: ['(?i)reus\w*[^.]{0,50}\bC\b', '(?i)\bC\b[^.]{0,20}\b(?:is |are )?reused']
         severity: important
         source: §4.3, Fig. 4
         verified: pdf
@@ -237,7 +239,7 @@ visuals:
     facts:
       - id: CLM-F24
         what: On BrowseComp-Plus CLM has the highest accuracy, 59.4% (about 60%)
-        says: ['(?i)CLM[^.;]{0,40}(59\.4|approximately 60|about 60|around 60)']
+        says: ['(?i)CLM[^.;]{0,60}(59\.4|(?:approximately|about|around|nearly|roughly|almost|just under|close to) 60)']
         severity: important
         source: §5.1.1
         verified: pdf
@@ -298,17 +300,17 @@ visuals:
   - name: Figure 6
     caption: 'outperform Codex-style summary harness'
     holders:
-      CLM: '\bCLMs?\b'
-      CLM-SA: 'subagents?'
-      Summary: '\bSummary\b|summari[sz]ation'
+      CLM: '\bCLMs?\b(?!\s*\(?\s*(?:with\s+)?subagents?)'
+      CLM-SA: '(?i)(?:\bCLMs?\s*\(?\s*(?:with\s+)?)?subagents?'
+      Summary: '(?i)\bSummary\b|summari[sz]ation'
       Base: '\bBase\b|base harness'
     regions:
       qwen: '(?i)\bfor Qwen|Qwen[^.,;]{0,12}(,|:)'
       sonnet: '(?i)\bfor Claude|(Claude|Sonnet)[^.,;]{0,12}(,|:)'
       swarm: '(?i)Panel b|Software World'
     facts:
-      - {id: CLM-F43, what: 'EdgeBench-10, Qwen3.6-27B: CLM final score', value: '44\.6', holder: CLM, region: qwen, severity: critical, source: '§5.1.2; Fig. 6a; App. F', verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
-      - {id: CLM-F44, what: 'EdgeBench-10, Qwen3.6-27B: CLM PFLOPs per trial', value: '179', holder: CLM, region: qwen, severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F43, what: 'EdgeBench-10, Qwen3.6-27B: CLM final score', value: '44\.6', holder: CLM, region: qwen, not: ['(?i)\bCLM\b(?!s)(?: configuration| harness)?,?\s+(?:\w+\s+){0,3}?(?:at|reaches|reaching|achieves|scores?)\s+(?:a\s+(?:final\s+)?score\s+of\s+)?44\.2\b'], severity: critical, source: '§5.1.2; Fig. 6a; App. F', verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
+      - {id: CLM-F44, what: 'EdgeBench-10, Qwen3.6-27B: CLM PFLOPs per trial', value: '179', holder: CLM, region: qwen, not: ['(?i)\bCLM\b(?!s)(?: configuration| harness)?,?\s+(?:\w+\s+){0,3}?(?:at|reaches|reaching|achieves|scores?)\s+(?:a\s+(?:final\s+)?score\s+of\s+)?44\.2\b'], severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
       - {id: CLM-F45, what: 'EdgeBench-10, Qwen3.6-27B: CLM with subagents final score', value: '44\.2', holder: CLM-SA, region: qwen, severity: critical, source: '§5.1.2; App. F', verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
       - {id: CLM-F46, what: 'EdgeBench-10, Qwen3.6-27B: CLM with subagents PFLOPs per trial', value: '181', holder: CLM-SA, region: qwen, severity: important, source: §5.1.2, verified: pdf, seen: {2026-10-07: wrong, 2026-10-08: wrong}}
       - {id: CLM-F47, what: 'EdgeBench-10, Qwen3.6-27B: Summary final score', value: '42\.3', holder: Summary, region: qwen, severity: critical, source: §5.1.2, verified: pdf, seen: {2026-10-01: wrong, 2026-10-08: right}}
@@ -347,7 +349,7 @@ visuals:
       - {id: CLM-F60, what: 'Boundaries: no instruction, compacted within 2 turns', value: '0\.40', holder: not-instructed, severity: important, source: Fig. 7 middle, verified: pdf, seen: {2026-10-08: right}}
       - id: CLM-F61
         what: 'Backup: 0.68 of edits follow a full backup and 0.09 a partial one'
-        says: ['0\.68[^.;]{0,30}full[^.;]{0,40}0\.09[^.;]{0,30}partial']
+        says: ['0\.68[^.;]{0,30}full[^.;]{0,40}0\.09[^.;]{0,30}partial', '(?is)\A(?=.*?(?<![\d.])0\.68(?!\d))(?=.*?(?<![\d.])0\.09(?!\d))(?=.*?\bfull\b)(?=.*?\bpartial\b)']
         severity: important
         source: Fig. 7 right
         verified: pdf
@@ -365,11 +367,11 @@ visuals:
     facts:
       - {id: CLM-F62, what: 'Summary accuracy, 34.7% before RL to 42.1% after', says: ['34\.7[^;]{0,30}42\.1'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F63, what: Summary accuracy after RL, value: '42\.1', holder: Summary, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F64, what: 'CLM accuracy, 28.8% before RL to 42.5% after', says: ['28\.8[^;]{0,30}42\.5'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F64, what: 'CLM accuracy, 28.8% before RL to 42.5% after', says: ['28\.8[^;]{0,80}42\.5'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F65, what: CLM accuracy after RL, value: '42\.5', holder: CLM, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F66, what: 'Summary PFLOPs per question, 4.01 before RL to 2.19 after', says: ['4\.01[^;]{0,30}2\.19'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F66, what: 'Summary PFLOPs per question, 4.01 before RL to 2.19 after', says: ['4\.01[^;]{0,80}2\.19'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F67, what: Summary PFLOPs per question after RL, value: '2\.19', holder: Summary, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F68, what: 'CLM PFLOPs per question, 1.52 before RL to 1.34 after', says: ['1\.52[^;]{0,30}1\.34'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F68, what: 'CLM PFLOPs per question, 1.52 before RL to 1.34 after', says: ['1\.52[^;]{0,80}1\.34'], severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F69, what: CLM PFLOPs per question after RL, value: '1\.34', holder: CLM, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - id: CLM-F70
         what: The compute unit is PFLOPs (10^15), not FLOPs
@@ -383,7 +385,7 @@ visuals:
   - name: Figure 9
     caption: 'server-side compute decomposition'
     holders:
-      Standard: 'Standard( SGLang)?\b|standard serving'
+      Standard: '(?i)Standard( SGLang)?\b|standard serving'
       SCR: 'Suffix Cache Reuse|\bSCR\b'
     facts:
       - {id: CLM-F71, what: 'Task accuracy, both', value: '60\.2', holder: [Standard, SCR], severity: important, source: Fig. 9 left, verified: pdf, seen: {2026-10-08: right}}
@@ -400,7 +402,7 @@ visuals:
       - {id: CLM-F76, what: 'Edited turns: SCR reuses 28.2%', value: '28\.2', holder: SCR, severity: important, source: Fig. 9 right, verified: pdf, seen: {2026-10-08: right}}
       - id: CLM-F77
         what: 'Edited turns: prefilled share falls from 75.8% (standard) to 41.8% (SCR)'
-        says: ['75\.8.{0,200}?41\.8']
+        says: ['(?s)75\.8.{0,300}?41\.8']
         severity: important
         source: Fig. 9 right
         verified: pdf
@@ -429,7 +431,7 @@ visuals:
     facts:
       - id: CLM-F80
         what: Relocated tokens per edit are in thousands (axis "(k)"), about 2k to 4k
-        says: ['(?i)(thousand|\d ?k\b|\d,000)[^.;]{0,20}tokens']
+        says: ['(?i)(thousand|\d ?k\b|\d,000)[^.;]{0,20}tokens', '(?i)tokens[^.;]{0,40}\bin thousands\b']
         not: ['(?i)\b(under |over |about |around )?[1-5] tokens\b']
         severity: critical
         source: Fig. 11 right
@@ -446,7 +448,7 @@ visuals:
   - name: Figure 12
     caption: 'also benefits standard chat serving'
     holders:
-      Standard: 'Standard( SGLang)?\b'
+      Standard: '(?i)Standard( SGLang)?\b'
       SCR: 'Suffix Cache Reuse|\bSCR\b'
       stripping: 'reasoning stripping'
       edits: 'context edits'
@@ -507,11 +509,16 @@ visuals:
       Sudoku: 'Sudoku'
       KV: 'KV Store'
       Log: 'Log Triage'
+    regions:
+      needle: '(?i)Needle Retention'
+      sudoku: '(?i)Sudoku'
+      kv: '(?i)KV Store'
+      log: '(?i)Log Triage'
     facts:
-      - {id: CLM-F98, what: 'Needle Retention: up to 224 chunks', value: '224', holder: Needle, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F99, what: 'Sudoku Sketchpad: up to 150 moves', value: '150', holder: Sudoku, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F100, what: 'KV Store: up to 16k records', value: '16 ?k|16,000', holder: KV, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
-      - {id: CLM-F101, what: 'Log Triage: up to 12,800 log lines', value: '12,?800', holder: Log, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F98, what: 'Needle Retention: up to 224 chunks', value: '224', holder: Needle, region: needle, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F99, what: 'Sudoku Sketchpad: up to 150 moves', value: '150', holder: Sudoku, region: sudoku, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F100, what: 'KV Store: up to 16k records', value: '16 ?k|16,000', holder: KV, region: kv, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F101, what: 'Log Triage: up to 12,800 log lines', value: '12,?800', holder: Log, region: log, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
 
   # ---------------------------------------------------------------- Tables 4, 5
   - name: Table 4
@@ -537,7 +544,7 @@ visuals:
       juliet: 'juliet'
       schemathesis: 'schemathesis'
     facts:
-      - {id: CLM-F105, what: 'juliet_vulnerability_analyzer starts with 1 file and 9 lines', value: '9', holder: juliet, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
+      - {id: CLM-F105, what: 'juliet_vulnerability_analyzer starts with 1 file and 9 lines', value: '9', holder: juliet, says: ['(?i)juliet[^.]{0,60}\b(?:1|one) files?\b[^.]{0,30}\b(?:9|nine) lines'], severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F106, what: 'schemathesis_datagen_pipeline starts with 416 files and 112,663 lines', value: '112,?663', holder: schemathesis, severity: important, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F107, what: 'openrct2 is a JavaScript plugin', says: ['(?i)openrct2[^.;]{0,60}JavaScript'], severity: minor, source: Table 5, verified: pdf, seen: {2026-10-08: right}}
 

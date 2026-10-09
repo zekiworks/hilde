@@ -96,7 +96,7 @@ visuals:
     facts:
       - id: DELM-F01
         what: 'Codex and Claude Code provide intermediate-results sharing'
-        says: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\bprovides?\b[^.;]{0,40}intermediate-results sharing']
+        says: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\b(?:provides?|supports?|offers?|ha(?:s|ve))\b[^.;]{0,140}intermediate-results sharing']
         not: ['(?i)(?:Codex|Claude Code)[^.;]{0,60}\b(?:lacks?|do not|does not|without)\b[^.;]{0,40}intermediate-results sharing']
         severity: important
         source: Table 1
@@ -185,10 +185,10 @@ visuals:
       Codex: '\bCodex\b'
       DeLM: '(?i)\bDE?LM\b'
     facts:
-      - {id: DELM-F33, what: 'DeepSeek-V4.1-Flash: DeLM n = 2 88.33%', value: '88\.33|88\.3', holder: DeLM, severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
-      - {id: DELM-F34, what: 'DeepSeek-V4.1-Flash: Codex 76.67%', value: '76\.67|76\.7', holder: Codex, severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
-      - {id: DELM-F35, what: 'Latency: DeLM 22.25 min, Codex 27.67 min', says: ['22\.25(?:[^.]|\.\d){0,60}27\.67', '27\.67(?:[^.]|\.\d){0,60}22\.25'], severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
-      - {id: DELM-F36, what: 'Cost per task: DeLM $0.33', value: '0\.33|33 cents|0\.3', holder: DeLM, severity: minor, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F33, what: 'DeepSeek-V4.1-Flash: DeLM n = 2 88.33%', says: ['(?i)\bDE?LM\b[^.;]{0,80}?(?<![\d.])88\.33?(?!\d)', '(?i)(?<![\d.])88\.33?(?!\d)(?: percent)?(?: plus or minus \d+(?:\.\d+)?)?,? (?:for|by) DE?LM'], not: ['(?i)\bCodex(?:''s)?(?:\s+\w+){0,4}?\s+(?<![\d.])88\.33?(?!\d)'], severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F34, what: 'DeepSeek-V4.1-Flash: Codex 76.67%', says: ['(?i)\bCodex(?:''s)?\b[^.;]{0,60}?(?<![\d.])76\.67?(?!\d)', '(?i)(?<![\d.])76\.67?(?!\d)(?: percent)?(?: plus or minus \d+(?:\.\d+)?)?,? (?:for|by) Codex'], not: ['(?i)\bDE?LM\b(?:,? with n equals 2,?)?(?:\s+\w+){0,4}?\s+(?<![\d.])76\.67?(?!\d)'], severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F35, what: 'Latency: DeLM 22.25 min, Codex 27.67 min', says: ['(?s)\A(?=.*?(?<![\d.])22\.25(?![\d]|[.,]\d))(?=.*?(?<![\d.])27\.67(?![\d]|[.,]\d))'], severity: important, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
+      - {id: DELM-F36, what: 'Cost per task: DeLM $0.33', says: ['(?i)(?:0\.33|33 cents)(?: dollars)?(?: plus or minus \d+(?:\.\d+)?)?,? for DE?LM', '(?i)\bDE?LM\b[^.;]{0,60}?(?:0\.33|33 cents)'], not: ['(?i)\bCodex(?:\s+\w+){0,5}?\s+(?:at\s+)?(?:0\.33|33 cents)'], severity: minor, source: 'Table 4; §3.2', verified: body, seen: {2026-10-08: right}}
 
   # ------------------------------------------------ Table 5
   - name: Table 5

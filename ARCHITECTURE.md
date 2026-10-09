@@ -425,7 +425,12 @@ PDF work is page-addressable:
    a numerator sits 0.66 to 0.83 from its line and the positional encoding's
    second line 1.69, and a fraction's parts are grouped left to right, so an
    accent over a later letter stays in place: taken by weight alone, RRSI's
-   numerator "Ĉ(H′) − Ĉ(H_t)" became a line before "ΔS ="),
+   numerator "Ĉ(H′) − Ĉ(H_t)" became a line before "ΔS ="; the number printed
+   beside it, the rightmost span "(5)", always ends the text, and a "fraction"
+   with no letter or digit above or below it, the brace and "=" of cases, sends
+   the formula to the PDF's own line order: read line by line, Procedural
+   Graphs' Equations 5 and 8 and CLM's 3 and 6 had their numbers mid-text, so
+   no description was named by them, R23-01),
    which ends with the number printed beside it, "(3)", taken from the same
    line to its right when the box leaves it out; a model that reads no images
    then knows what the equation says, and code names its description by that

@@ -1073,7 +1073,7 @@ class PaperWorkflowTests(unittest.TestCase):
         # prints Equation 3 and "d_k" in prose.
         source = web._PDF_CONVERTER
         start = source.index("# Sub- and superscripts as printed")
-        functions = {"collections": __import__("collections")}
+        functions = {"collections": __import__("collections"), "re": re}
         exec(source[start:source.index("# Replacements are made from the end of the page")], functions)
         with pymupdf.open() as pdf:
             page = pdf.new_page()
@@ -1100,10 +1100,24 @@ class PaperWorkflowTests(unittest.TestCase):
             page.insert_text((72, 100), "dS = s1 - s0, dC =", fontsize=10)
             page.insert_text((180, 93), "cost1 - cost0", fontsize=10)
             page.insert_text((190, 107), "cost0", fontsize=10)
-            page.insert_text((260, 100), ". (6)", fontsize=10)
+            page.insert_text((260, 100), ".", fontsize=10)
+            page.insert_text((380, 100), "(6)", fontsize=10)
             page.insert_text((72, 117), "y = x + 1", fontsize=10)
             formula = functions["formula_text"](page, pymupdf.Rect(60, 80, 400, 122))
-        self.assertEqual(formula, "dS = s1 - s0, dC = (cost1 - cost0)/(cost0) . (6) y = x + 1")
+        # The printed number ends the formula's text, where Hilde reads it to name the equation.
+        self.assertEqual(formula, "dS = s1 - s0, dC = (cost1 - cost0)/(cost0) . y = x + 1 (6)")
+        # Cases: a brace and "=" beside two rows are no fraction, and the number
+        # printed on the middle line still ends the text (Procedural Graphs' Equation 5).
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((72, 107), "Gk = (", fontsize=10)
+            page.insert_text((110, 100), "cand, if better", fontsize=10)
+            page.insert_text((110, 114), "old, otherwise", fontsize=10)
+            page.insert_text((400, 107), "(5)", fontsize=10)
+            cases = functions["formula_text"](page, pymupdf.Rect(60, 88, 430, 120))
+        self.assertTrue(cases.endswith("(5)"), cases)
+        self.assertNotIn(")/(", cases)
+        self.assertEqual(web.printed_equation_numbers([f"<!-- Start of picture text -->\n{cases}\n<!-- End of picture text -->"]), ["5"])
 
     def test_a_table_is_told_the_paragraphs_that_discuss_it(self):
         paragraphs = [

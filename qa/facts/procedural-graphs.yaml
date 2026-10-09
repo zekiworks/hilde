@@ -14,8 +14,8 @@ visuals:
   - name: Figure 2
     find: 'Self-Evolution process operates offline'
     facts:
-      - {id: PG-F01, what: 'Online guidance uses a 2-hop subgraph around the active node', says: ['(?i)2-hop'], severity: important, source: Fig. 2; §4, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F02, what: 'If matching fails, guidance falls back to the full graph', says: ['(?i)falls? back to the full graph'], severity: important, source: Fig. 2; Eq. 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F01, what: 'Online guidance uses a 2-hop subgraph around the active node', says: ['(?i)(?:2|two)[- ]hop'], severity: important, source: Fig. 2; §4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F02, what: 'If matching fails, guidance falls back to the full graph', says: ['(?i)fall(?:s|ing)? back to the full graph'], severity: important, source: Fig. 2; Eq. 2, verified: pdf, seen: {2026-10-08: right}}
 
   # ------------------------------------------------ Table 1
   - name: Table 1
@@ -36,7 +36,7 @@ visuals:
       - {id: PG-F08, what: 'Gemini 3.1 Pro: PG HotpotQA 87.30', value: '87\.30?', holder: PG, region: pro, severity: important, source: Table 1, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F09
         what: 'Gemini 3.1 Pro: PG is best on all six benchmarks'
-        says: ['(?i)Gemini 3\.1 Pro(?:[^.]|\.\d){0,120}(highest|best)(?:[^.]|\.\d){0,40}(every|all)']
+        says: ['(?i)Gemini 3\.1 Pro(?:[^.]|\.\d){0,120}\b(?:highest|best|leads?|top|first)\b(?:[^.]|\.\d){0,60}\b(?:every|all)\b']
         severity: important
         source: Table 1
         verified: pdf
@@ -67,21 +67,21 @@ visuals:
       baseline: '\bbaseline\b'
       memory: 'memory-based|\bRAP\b|MemoryBank'
     regions:
-      claude: '(?i)For Claude'
-      pro: '(?i)Gemini 3\.1 Pro shows|Gemini 3\.1 Pro:'
-      flash: '(?i)Gemini 3\.5 Flash shows'
-      grok: '(?i)Grok 4\.1 Fast shows'
+      claude: '(?i)Claude Sonnet 4\.6|For Claude'
+      pro: '(?i)Gemini 3\.1 Pro'
+      flash: '(?i)Gemini 3\.5 Flash'
+      grok: '(?i)Grok 4\.1 Fast'
     facts:
-      - {id: PG-F15, what: 'Claude Sonnet 4.6: PG full-horizon survival 58%', value: '58', holder: PG, region: claude, severity: important, source: Table 8; App. C.2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F15, what: 'Claude Sonnet 4.6: PG full-horizon survival 58%', value: '58(?:\.0)?', holder: PG, region: claude, severity: important, source: Table 8; App. C.2, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F16
         what: 'Claude Sonnet 4.6: PG mean cash ends at $76.03M, not 95.2'
         says: ['(?i)76\.0']
-        not: ['(?i)(PG|Procedural Graph)(?:[^.]|\.\d){0,100}95\.2']
+        not: ['(?i)(PG|Procedural Graph)(?:[^.]|\.\d){0,100}95\.2', '(?i)95\.2 million(?:[^.]|\.\d){0,30}\bfor (?:PG|Procedural Graph)', '(?i)\bIts cash trajectory(?:[^.]|\.\d){0,60}95\.2']
         severity: critical
         source: App. C.2
         verified: pdf
         seen: {2026-10-08: wrong}
-      - {id: PG-F17, what: 'Gemini 3.1 Pro: PG survival 34%', value: '34', holder: PG, region: pro, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F17, what: 'Gemini 3.1 Pro: PG survival 34%', value: '34(?:\.0)?', holder: PG, region: pro, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F18
         what: 'Gemini 3.1 Pro: the baseline (6%) and memory methods (RAP 6%, MemoryBank 22%) do not drop to 0% survival'
         not: ['(?i)(baseline|memory-based)(?:[^.]|\.\d){0,60}(drop|fall)s? to 0 ?(%|percent)']
@@ -91,12 +91,12 @@ visuals:
         seen: {2026-10-08: wrong}
       - id: PG-F19
         what: 'Gemini 3.5 Flash: every method has 0% full-horizon survival'
-        says: ['(?i)0 ?(%|percent) survival(?:[^.]|\.\d){0,60}all methods|all (four )?(methods|configurations)(?:[^.]|\.\d){0,40}0 ?(%|percent)']
+        says: ['(?i)0 ?(%|percent) survival(?:[^.]|\.\d){0,60}all methods|all (four )?(methods|configurations)(?:[^.]|\.\d){0,40}0 ?(%|percent)', '(?i)\ball (?:four |the )?(?:methods|configurations|models|agents)\b(?:[^.]|\.\d){0,60}\b0(?:\.0)? ?(?:%|percent)']
         severity: important
         source: Table 8
         verified: pdf
         seen: {2026-10-08: right}
-      - {id: PG-F20, what: 'Grok 4.1 Fast: PG survival 40%', value: '40', holder: PG, region: grok, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F20, what: 'Grok 4.1 Fast: PG survival 40%', value: '40(?:\.0)?', holder: PG, region: grok, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F21, what: 'Grok 4.1 Fast: PG mean cash ends at $30.20M', value: '30\.20?', holder: PG, region: grok, severity: important, source: App. C.2, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F22
         what: 'Grok 4.1 Fast: baseline 26%, RAP 28%, MemoryBank 16% survival, not 20% and 10%'
@@ -117,8 +117,8 @@ visuals:
       - {id: PG-F23, what: 'Mode 5: HotpotQA Ans EM 66.30 (best)', value: '66\.30?', holder: Mode5, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F24, what: 'Mode 5: HotpotQA Ans F1 78.79 (best)', value: '78\.79', holder: Mode5, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F25, what: 'Mode 3: MultiChallenge overall 92.86 (best)', value: '92\.86', holder: Mode3, severity: important, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F26, what: 'Mode 3: instruction retention 100', says: ['(?i)instruction retention at 100'], severity: minor, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F27, what: 'Unguided baseline: self coherence 100', says: ['(?i)self coherence at 100'], severity: minor, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F26, what: 'Mode 3: instruction retention 100', says: ['(?i)instruction retention(?:[^.]|\.\d){0,30}?\b100\b', '(?i)\b100(?:\.00?)?(?:[^.]|\.\d){0,30}instruction retention'], severity: minor, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F27, what: 'Unguided baseline: self coherence 100', says: ['(?i)self coherence(?:[^.]|\.\d){0,30}?\b100\b', '(?i)\b100(?:\.00?)?(?:[^.]|\.\d){0,30}self coherence'], severity: minor, source: Table 2, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F28
         what: 'On MultiChallenge the unguided baseline (87.50) beats Modes 1 (58.93) and 2 (53.57); it does not lag overall'
         not: ['(?i)baseline[^.;]{0,60}\blags?\b', '(?i)baseline(?:[^.]|\.\d){0,80}lower(?:[^.]|\.\d){0,40}MultiChallenge']
@@ -136,7 +136,7 @@ visuals:
       - {id: PG-F29, what: 'Subgraph generative: MultiChallenge accuracy 89.31', value: '89\.31', holder: PG, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F30, what: 'Subgraph generative: GDPval rubric 63.99', value: '63\.99', holder: PG, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F31, what: 'Subgraph generative: ALFWorld success 81.53', value: '81\.53', holder: PG, severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F32, what: 'Subgraph generative has the fewest ALFWorld steps, 18.80', says: ['(?i)(lowest|fewest)(?:[^.]|\.\d){0,40}steps(?:[^.]|\.\d){0,20}18\.80?'], severity: minor, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F32, what: 'Subgraph generative has the fewest ALFWorld steps, 18.80', says: ['(?i)(?:lowest|fewest|fewer)(?:[^.]|\.\d){0,40}steps(?:[^.]|\.\d){0,80}18\.80?'], severity: minor, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
       - id: PG-F33
         what: 'PG uses more tokens than the no-graph baseline on all three benchmarks, and more MultiChallenge steps than full-graph generative (4.22 vs 3.08)'
         not: ['(?i)fewer tokens']
@@ -168,11 +168,11 @@ visuals:
       pro: '(?i)For Gemini 3\.1 Pro|with Gemini 3\.1 Pro|particularly for Gemini 3\.1 Pro|in the Gemini 3\.1 Pro'
       grok: '(?i)for Grok'
     facts:
-      - {id: PG-F38, what: 'Claude Sonnet 4.6: PG full survival 58%', value: '58', holder: PG, region: claude, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F38, what: 'Claude Sonnet 4.6: PG full survival 58%', value: '58(?:\.0)?', holder: PG, region: claude, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F39, what: 'Claude Sonnet 4.6: PG average lifespan 98.58 months', value: '98\.58', holder: PG, region: claude, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F40, what: 'Gemini 3.1 Pro: PG full survival 34%', value: '34', holder: PG, region: pro, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F40, what: 'Gemini 3.1 Pro: PG full survival 34%', value: '34(?:\.0)?', holder: PG, region: pro, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F41, what: 'Gemini 3.1 Pro: PG average lifespan 79.22 months', value: '79\.22', holder: PG, region: pro, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F42, what: 'Gemini 3.1 Pro: PG reaches the second crisis at 54% and the third at 46%', says: ['(?i)second crisis at 54(?:[^.]|\.\d){0,40}third at 46'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F42, what: 'Gemini 3.1 Pro: PG reaches the second crisis at 54% and the third at 46%', says: ['(?i)second crisis at 54(?:[^.]|\.\d){0,40}third at 46', '(?i)\bsecond\b(?:[^.]|\.\d){0,80}?\b54(?:\.0+)? ?(?:%|percent)(?:[^.]|\.\d){0,80}?\b46(?:\.0+)? ?(?:%|percent)'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F43, what: 'Grok 4.1 Fast: PG average lifespan 75.14 months', value: '75\.14', holder: PG, region: grok, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F44, what: 'Gemini 3.1 Pro: PG raises $38.20M', value: '38\.20?', holder: PG, severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
       - {id: PG-F45, what: 'Gemini 3.1 Pro: tool calls per month, PG 3.18 vs baseline 0.89', says: ['3\.18(?:[^.]|\.\d){0,60}0\.89'], severity: important, source: Table 8, verified: pdf, seen: {2026-10-08: right}}
@@ -182,15 +182,15 @@ visuals:
   - name: Figure 6
     find: 'self-evolution trajectory on HotpotQA and MultiChallenge'
     facts:
-      - {id: PG-F47, what: 'HotpotQA, from scratch: validation F1 starts near 77.6 and peaks at 83.31', says: ['(?i)(77\.59|approximately 78|about 78)(?:[^.]|\.\d){0,120}(83\.31|about 83|approximately 83)'], severity: important, source: App. E.4.1, verified: pdf, seen: {2026-10-08: right}}
-      - {id: PG-F48, what: 'MultiChallenge, from the expert prior: starts near 54% and recovers to about 94%', says: ['(?i)(54\.0|roughly 5[34]|about 5[34])(?:[^.]|\.\d){0,200}(93\.9|approximately 94|about 94)'], severity: important, source: App. E.4.2, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F47, what: 'HotpotQA, from scratch: validation F1 starts near 77.6 and peaks at 83.31', says: ['(?i)\b(?:77\.59?|(?:about|approximately|around|roughly|nearly|near) 78)\b(?:[^.]|\.\d){0,160}\b(?:83\.31|(?:about|approximately|around|roughly|over|above|more than|just over) 83)\b'], severity: important, source: App. E.4.1, verified: pdf, seen: {2026-10-08: right}}
+      - {id: PG-F48, what: 'MultiChallenge, from the expert prior: starts near 54% and recovers to about 94%', says: ['(?i)\b(?:54\.0|(?:about|approximately|around|roughly|nearly|near) 5[34])\b(?:[^.]|\.\d){0,200}\b(?:93\.9|(?:about|approximately|around|roughly|nearly) 94)\b'], severity: important, source: App. E.4.2, verified: pdf, seen: {2026-10-08: right}}
 
   # ------------------------------------------------ Equations
   - name: Equation 3
     facts:
       - id: PG-F49
         what: 'g_t in Equation 3 is the step-level guidance, not a graph'
-        says: ['(?i)guidance,? g t|guidance g t']
+        says: ['(?i)guidance,? g t|guidance g t', '(?i)\bthe guidance at (?:time|step) t\b']
         not: ['(?i)graph,? g t']
         severity: critical
         source: §3.2, Eq. 3
@@ -220,6 +220,7 @@ visuals:
         seen: {2026-10-01: wrong, 2026-10-08: wrong}
 
   - name: Equation 8
+    find: '(?i)score for run i'   # some runs open "The equation…" (R20-09); the label is counted apart
     facts:
       - id: PG-F52
         what: 'Score = 5·revenue + cash − 5,000 × cumulative information-tool calls (0 after bankruptcy)'

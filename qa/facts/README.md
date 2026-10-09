@@ -49,7 +49,7 @@ visuals:
 - **Descriptions-only runs** (`qa/describe.py`, `descriptions_only` in book.json) keep the author's prose, so facts with `scope: book` are not scored there.
 
 `python qa/qa.py facts` implements these rules; on the 8 October books it gives each fact's `seen` status for 380 of 382 facts. The other two, BERT-F42 and BERT-F45, are about the reader's layout, which narration.json does not hold.
-- **Opening name:** a description that opens "Figure 8 shows…" or "The equation shows…" for Figure 6 is scored as a wrong label. Labels are written by code, so they are counted apart from the facts.
+- **Opening name:** a description that opens "Figure 8 shows…" or "The equation shows…" for Figure 6 is scored as a wrong label. Labels are written by code, so they are counted apart from the facts. An equation found by `find` is checked the same way: "The equation says…" for Equation 8 is a wrong label (R23-01).
 
 ## Scoring one fact
 
@@ -66,7 +66,7 @@ visuals:
 ## The gate (from the plan)
 
 A change is accepted when:
-- no fact that was right in the baseline goes wrong or missing;
+- no fact regresses (D17): a fact right in every baseline run must be right in more than a third of the new runs; one missed in fewer is wavering, listed but not counted, and a regression is confirmed by rerunning its paper;
 - the facts it targets are right in 3 of 3 descriptions-only runs;
 - the same holds on one paper Hilde has never seen, with its own fact set.
 

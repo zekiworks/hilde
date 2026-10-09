@@ -249,3 +249,16 @@ runs:
       1 h 31 min book, the first time Hilde saw this paper (the unseen paper of the 8 October plan). Claude checked it
       against arXiv v2's HTML tables, v1 for Tables 8 and 9, and the body for the figures; the figure images were not read.
       Review: workspace/bunch/hilde-bugs-2026-10-08-delm-rev3.md; fact set facts/delm.yaml, golden/delm.yaml.
+
+  - id: R23
+    date: 2026-10-08
+    papers: [bert, rrsi, procedural-graphs, clm, delm]
+    hilde_commit: 9a70f65, 5872402, f0c29d9
+    model: lm-studio/gemma-4-31B-it (images on)
+    voice: null
+    output_file: null   # branch qa/runs-2026-10-08, qa/runs/2026-10-08/<paper>/<commit>-<n>/
+    reviewers: [claude]
+    notes: >
+      Descriptions-only runs (qa/describe.py), 3 per paper and commit; DeLM has no 5872402 runs. Scored with the
+      fact sets of workspace/bunch/hilde-factsets-2026-10-09.md: 255/346 facts right in all 3 runs at 9a70f65,
+      287/346 at f0c29d9.

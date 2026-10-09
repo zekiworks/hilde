@@ -15,12 +15,12 @@ visuals:
     find: 'overfits on the split it is scored on'
     holders:
       H0: '\bH ?(0|zero)\b|initial harness'
-      prior: 'prior methods|four baseline|average of the'
+      prior: '(?i)prior methods|four baseline|average of the|prior average|baseline average'
       RRSI: '\bRRSI\b'
     regions:
-      b: '(?i)panel b'
-      c: '(?i)panel c'
-      d: '(?i)panel d'
+      b: '(?i)panel b|\bcoding\b'
+      c: '(?i)panel c|agentic workspace'
+      d: '(?i)panel d|engineering design|Frontier-Eng'
     facts:
       - {id: RRSI-F01, what: 'Panel b, SWE-bench Verified: H0', value: '82\.0', holder: H0, region: b, severity: important, source: Fig. 1b, verified: pdf, seen: {2026-10-08: right}}
       - {id: RRSI-F02, what: 'Panel b: average of the four baselines', value: '82\.3', holder: prior, region: b, severity: important, source: Fig. 1b, verified: pdf, seen: {2026-10-08: right}}
@@ -38,14 +38,14 @@ visuals:
     facts:
       - id: RRSI-F10
         what: 'Proposal side: annealed update sparsity, evidence-aware credit assignment, structured exploration'
-        says: ['(?i)annealed update sparsity[^.]{0,250}evidence-aware credit assignment[^.]{0,250}structured exploration']
+        says: ['(?is)\A(?=.*?annealed update sparsity)(?=.*?evidence-aware credit assignment)(?=.*?structured exploration)']
         severity: important
         source: Fig. 2
         verified: pdf
         seen: {2026-10-08: right}
       - id: RRSI-F11
         what: 'Selection side: leakage screening, noise-adjusted floor, complexity-aware acceptance, structural pruning'
-        says: ['(?i)leakage screening[^.]{0,250}noise-adjusted[^.]{0,250}complexity-aware acceptance[^.]{0,250}structural pruning']
+        says: ['(?is)\A(?=.*?leakage screening)(?=.*?noise-adjusted)(?=.*?complexity-aware acceptance)(?=.*?structural pruning)']
         severity: important
         source: Fig. 2
         verified: pdf
@@ -140,15 +140,15 @@ visuals:
       claude: '(?i)Claude Opus'
       gemini: '(?i)Gemini 3\.5'
     facts:
-      - {id: RRSI-F33, what: 'Claude Opus 4.8: Terminal-Bench 2.1 74.2 → 80.2', says: ['74\.2[^.;]{0,20}80\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
-      - {id: RRSI-F34, what: 'Claude Opus 4.8: SWE-bench Verified 82.0 → 83.8', says: ['82\.0[^.;]{0,20}83\.8'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
-      - {id: RRSI-F35, what: 'Gemini 3.5 Flash: Terminal-Bench 2.1 64.6 → 78.7 (+14.1)', says: ['64\.6[^.;]{0,20}78\.7[^.;]{0,30}14\.1'], severity: critical, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
-      - {id: RRSI-F36, what: 'Gemini 3.5 Flash: SWE-bench Verified 76.8 → 79.0 (+2.2)', says: ['76\.8[^.;]{0,20}79\.0[^.;]{0,30}2\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F33, what: 'Claude Opus 4.8: Terminal-Bench 2.1 74.2 → 80.2', says: ['74\.2(?:[^.;]|\.\d){0,60}80\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F34, what: 'Claude Opus 4.8: SWE-bench Verified 82.0 → 83.8', says: ['82\.0(?:[^.;]|\.\d){0,60}83\.8'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F35, what: 'Gemini 3.5 Flash: Terminal-Bench 2.1 64.6 → 78.7 (+14.1)', says: ['64\.6(?:[^.;]|\.\d){0,60}78\.7(?:[^.;]|\.\d){0,60}14\.1'], severity: critical, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F36, what: 'Gemini 3.5 Flash: SWE-bench Verified 76.8 → 79.0 (+2.2)', says: ['76\.8(?:[^.;]|\.\d){0,60}79\.0(?:[^.;]|\.\d){0,60}2\.2'], severity: important, source: Table 3, verified: pdf, seen: {2026-10-08: right}}
 
   - name: Table 4
     caption: 'Cross-model transfer on Terminal-Bench 2.1. The harness evolved'
     facts:
-      - {id: RRSI-F37, what: 'Gemini 3.1 Flash Lite (unseen): 11.2 → 14.6, +3.4', says: ['11\.2[^.;]{0,40}14\.6[^.;]{0,40}3\.4'], severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - {id: RRSI-F37, what: 'Gemini 3.1 Flash Lite (unseen): 11.2 → 14.6, +3.4', says: ['11\.2(?:[^.;]|\.\d){0,60}14\.6(?:[^.;]|\.\d){0,60}3\.4'], severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
 
   # ------------------------------------------------ Figure 4
   - name: Figure 4
