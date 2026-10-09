@@ -744,6 +744,7 @@ def script_tree(sheet, rect):
     spans = []
     for block in sheet.get_text("dict", clip=rect)["blocks"]:
         for line in block.get("lines", []):
+            line_id = len(spans) and spans[-1]["line"] + 1
             for span in line["spans"]:
                 if span["text"].strip():
                     spans.append({
@@ -751,6 +752,8 @@ def script_tree(sheet, rect):
                         "x1": span["bbox"][2], "y": span["origin"][1], "size": span["size"],
                         "flagged": bool(span["flags"] & 1), "children": [], "mark": "",
                         "script": False, "merged": False, "parent": None,
+                        # Where the PDF puts it, for reading a formula in printed order.
+                        "order": len(spans), "line": line_id,
                     })
     if not spans:
         return [], [], 0
@@ -807,12 +810,23 @@ def render_scripts(span):
 
 
 # A formula's printed text with <sub> and <sup>, and a stacked fraction as
-# (numerator)/(denominator), each line of a formula in turn.
+# (numerator)/(denominator), each line of a formula in turn; the number
+# printed beside it, "(5)", always ends it.
 def formula_text(sheet, rect):
     spans, roots, base = script_tree(sheet, rect)
     if not roots:
         return ""
-
+    # The equation's number is the rightmost span, "(5)". Read in place, a
+    # formula of several lines (cases, an underbrace) put it mid-text, where
+    # the code that names an equation by it never looks: Procedural Graphs'
+    # Equations 5 and 8 and CLM's 3 and 6 became "The equation".
+    number = ""
+    tail = max(roots, key=lambda span: span["x1"])
+    if re.fullmatch(r"\(\d+[a-z]?\)", tail["text"].strip()) and not tail["children"]:
+        number = tail["text"].strip()
+        roots = [span for span in roots if span is not tail]
+        if not roots:
+            return number
     def spaced(items):
         out, last = "", None
         for x0, x1, text in sorted(items, key=lambda item: item[0]):
@@ -847,6 +861,10 @@ def formula_text(sheet, rect):
             lines.append(band)
     lines.sort(key=lambda band: band["y"])
     rendered = []
+    # A "fraction" with no letter or digit above or below it is a brace and a
+    # sign beside the lines of cases, "G_k = { … if …; … otherwise": such a
+    # formula is read in the PDF's own order instead.
+    broken = False
     for line in lines:
         parts = [
             band for band in bands if band not in lines
@@ -879,16 +897,25 @@ def formula_text(sheet, rect):
         for fraction in fractions:
             def joined(group):
                 return spaced([(part["x0"], part["x1"], render_scripts(part)) for part in group])
+
+            def readable(group):
+                return any(character.isalnum() for part in group for character in part["text"])
             if fraction["num"] and fraction["den"]:
+                broken = broken or not (readable(fraction["num"]) and readable(fraction["den"]))
                 text = f"({joined(fraction['num'])})/({joined(fraction['den'])})"
             else:
                 text = joined(fraction["num"] + fraction["den"])
             items.append((fraction["x0"], fraction["x1"], text))
         rendered.append(spaced(items))
+    if broken:
+        printed = {}
+        for span in sorted(roots, key=lambda span: span["order"]):
+            printed.setdefault(span["line"], []).append((span["x0"], span["x1"], render_scripts(span)))
+        rendered = [spaced(pieces) for pieces in printed.values()]
     text = " ".join(" ".join(rendered).split())
     for gap in (" )", " ,"):
         text = text.replace(gap, gap.strip())
-    return text
+    return f"{text} {number}".strip()
 
 
 # Prose as the layout wrote it, with each subscript it ran into its symbol

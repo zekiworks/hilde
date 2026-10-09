@@ -782,7 +782,9 @@ def score_facts(t: Target, spec):
             texts = ["\n\n".join(texts)] if texts else []
         else:
             texts, labelled = _json_description(visual, t.passages, captions)
-        if labelled and texts and not visual["name"].startswith("Equation"):
+        # An equation found by its content (`find`) is checked too: one Hilde names
+        # "The equation…" though the paper numbers it lost its number (R23-01).
+        if labelled and texts:
             m = NAME_AT_START.match(texts[0])
             said = (f"The {m.group(2).lower()}" if m.group(1) else f"{m.group(3).capitalize()} {m.group(4)}") if m else None
             if visual.get("unnumbered"):  # the paper gives it no number; any "Figure N" is invented
