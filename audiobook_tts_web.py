@@ -840,7 +840,7 @@ def formula_text(sheet, rect):
     # Equations 5 and 8 and CLM's 3 and 6 became "The equation".
     number = ""
     tail = max(roots, key=lambda span: span["x1"])
-    if re.fullmatch(r"\(\d+[a-z]?\)", tail["text"].strip()) and not tail["children"]:
+    if re.fullmatch(r"\\(\\d+[a-z]?\\)", tail["text"].strip()) and not tail["children"]:
         number = tail["text"].strip()
         roots = [span for span in roots if span is not tail]
         if not roots:
