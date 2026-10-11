@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the Hilde web server for this machine: both local Qwen3-TTS models,
-# the library in User/ beside this script, and port 8800 on this machine only.
+# the library in ~/.hilde/library, and port 8800 on this machine only.
 # To reach it from other devices, add --host 0.0.0.0. It has no login, so
 # anyone who can then reach port 8800 can use it.
 #

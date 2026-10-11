@@ -27,7 +27,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--port` | `8800`. |
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
-| `--storage-root` | `User/` in the project folder; see [Storage](#storage). |
+| `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Chat with Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
@@ -66,11 +66,12 @@ local network, also when a page redirects there.
 
 ## Storage
 
-`--storage-root` defaults to `User/` in the project folder, which git ignores.
-The server creates and owns this fixed layout:
+`--storage-root` defaults to `~/.hilde/library`, outside the project folder, so
+every copy of Hilde finds the same library and re-cloning the project leaves it
+alone. The server creates and owns this fixed layout:
 
 ```text
-User/
+~/.hilde/library/
 ├── Voices/
 ├── Audiobooks/
 │   └── attention-is-all-you-need--bdfaa68d8984/
@@ -136,9 +137,15 @@ A new library starts with the stock voices from the repository's `voices/`
 folder. They are copied only when the library is created, so a stock voice you
 delete stays deleted.
 
-Because `User/` lives in the project folder, deleting or re-cloning the folder,
-or running `git clean -x`, deletes your library as well. Back it up, or pass
-`--storage-root` to keep the library somewhere else.
+Earlier versions kept the library in `User/` in the project folder. When
+`~/.hilde/library` does not exist yet and `User/` holds voices or books, the
+server does not start an empty library; it stops and prints the command that
+moves `User/` there (`mkdir -p ~/.hilde && mv User ~/.hilde/library`, with full
+paths). Pass `--storage-root` with that folder to keep it where it is instead.
+
+Every copy of Hilde started without `--storage-root` uses the same library. Give
+an older copy you keep for testing its own `--storage-root`: it may rewrite
+books made by newer versions into the layout it knows.
 
 ## Speech models
 

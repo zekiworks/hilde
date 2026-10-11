@@ -4900,6 +4900,23 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertEqual(foreign[0], 403)
         self.assertTrue(web.is_saved_voice(keep))
 
+    def test_a_library_left_in_the_project_folder_stops_a_new_empty_one(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        old, new = root / "project" / "User", root / "home" / ".hilde" / "library"
+        (old / "Audiobooks" / ".backup").mkdir(parents=True)
+        with mock.patch.object(web, "PROJECT_STORAGE_ROOT", old), mock.patch.object(web, "DEFAULT_STORAGE_ROOT", new):
+            # Only hidden leftovers: nothing to move, the new library starts.
+            self.assertIsNone(web.library_left_behind(new))
+            (old / "Audiobooks" / "a-book--0123456789ab").mkdir()
+            # Starting a new library here would show no books: the server stops and says where they are.
+            self.assertEqual(web.library_left_behind(new), old)
+            # Another root, or a default that exists already, is the user's choice.
+            self.assertIsNone(web.library_left_behind(old))
+            new.mkdir(parents=True)
+            self.assertIsNone(web.library_left_behind(new))
+
     def test_stock_voices_seed_only_a_new_library(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

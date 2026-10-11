@@ -175,8 +175,8 @@ each browser changes only its own settings, under **Advanced**.
 
 - [starting the server](docs/configuration.md#start-the-server) and every
   option;
-- [storage](docs/configuration.md#storage): the library lives in `User/` in the
-  project folder, which git ignores, so deleting the folder deletes the library;
+- [storage](docs/configuration.md#storage): the library lives in
+  `~/.hilde/library`, outside the project folder, so re-cloning leaves it alone;
 - [speech models](docs/configuration.md#speech-models), local or on a speech
   server;
 - [narration workers](docs/configuration.md#narration-workers): every GPU the

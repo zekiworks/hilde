@@ -106,7 +106,9 @@ STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
 VOICE_DRAFT_LIMIT = 10
-DEFAULT_STORAGE_ROOT = ROOT / "User"
+# Where the library was kept before it moved to ~/.hilde/library: inside the
+# project folder, where a re-clone or a second checkout lost it.
+PROJECT_STORAGE_ROOT = ROOT / "User"
 STATE_COOKIE_PREFIX = "audiobook_tts_state"
 STATE_COOKIE_COUNT = f"{STATE_COOKIE_PREFIX}_chunks"
 STATE_COOKIE_CHUNK_BYTES = 3_800
@@ -156,6 +158,22 @@ CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_CLIENT_VERSION = "0.144.1"
 # This server's provider sign-ins and keys live here, readable only by its user.
 HILDE_HOME = Path.home() / ".hilde"
+# The library, outside the project folder, so every checkout finds the same one.
+DEFAULT_STORAGE_ROOT = HILDE_HOME / "library"
+
+
+def library_left_behind(storage_root):
+    """The project folder's old library when the server would start a new,
+    empty one in its place: `storage_root` is the default and does not exist
+    yet, and `User/` beside this script holds voices or books. None otherwise."""
+    if Path(storage_root).expanduser().resolve() != DEFAULT_STORAGE_ROOT.resolve() or DEFAULT_STORAGE_ROOT.exists():
+        return None
+    for folder in ("Audiobooks", "Voices"):
+        if any(not path.name.startswith(".") for path in (PROJECT_STORAGE_ROOT / folder).glob("*")):
+            return PROJECT_STORAGE_ROOT
+    return None
+
+
 ANTHROPIC_MODEL_PROVIDER = "anthropic"
 # Anthropic keeps Claude subscription sign-ins to its own apps, so this
 # provider takes an API key from the Claude Console.
@@ -16465,6 +16483,15 @@ def main():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
     tts_models = configured_tts_models(args, parser)
     git_commit()
+    # A new, empty library must not silently replace the one in the project
+    # folder: the server would start with no books.
+    old = library_left_behind(args.storage_root)
+    if old is not None:
+        parser.error(
+            f"your library is still in {old}. Hilde now keeps it in {DEFAULT_STORAGE_ROOT}; move it "
+            f"there with:\n  mkdir -p {DEFAULT_STORAGE_ROOT.parent} && mv {old} {DEFAULT_STORAGE_ROOT}\n"
+            f"or start with --storage-root {old} to keep it where it is."
+        )
     storage = SharedStorage(args.storage_root)
     try:
         prepare_library(storage)

@@ -17,7 +17,7 @@ The following example uses CUDA and FlashAttention 2. Choose a short, natural re
 ```bash
 python audiobook_tts.py create-voice \
   --model-path models/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
-  --voice-dir User/Voices/My-Narrator \
+  --voice-dir ~/.hilde/library/Voices/My-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window. Take a seat, and let me tell you a story in a calm and familiar voice." \
   --language English \
@@ -31,7 +31,7 @@ For reference text stored in a file, replace `--text` with `--input reference.tx
 The command creates:
 
 ```text
-User/Voices/My-Narrator/
+~/.hilde/library/Voices/My-Narrator/
 ├── reference.wav
 ├── transcript.txt
 └── description.txt
@@ -146,7 +146,7 @@ python audiobook_tts.py create-voice \
   --server 192.168.1.50:8880 \
   --server-model gpt-4o-mini-tts \
   --server-voice ash \
-  --voice-dir User/Voices/Remote-Narrator \
+  --voice-dir ~/.hilde/library/Voices/Remote-Narrator \
   --instruct "A warm, clear narrator speaking at a relaxed pace." \
   --text "The morning sunlight falls across the window."
 ```
