@@ -796,6 +796,11 @@ EXTENSION_GLYPHS = {
 # Pieces of a horizontal brace drawn over or under a term: no text.
 EXTENSION_GLYPHS.update({code: "" for code in range(0x7A, 0x80)})
 DELIMITERS = frozenset("()[]{}⟨⟩⌊⌋⌈⌉|‖")
+# A big operator from the same fonts is as tall; its limits hang above and
+# below its middle, not its origin: read as a letter of a line, Merton's
+# "∫ from 0 to T" became a fraction with no letters, and every fraction
+# around it was read in printed order instead (R24).
+BIG_OPERATORS = frozenset("∑∏∫∐⋃⋂")
 # The pieces of a tall bracket some text layers give as private-use
 # characters, in any font: the top piece names the bracket, the rest is none.
 BRACKET_PIECES = {
@@ -829,8 +834,10 @@ def script_tree(sheet, rect):
                         spans.pop()
                         continue
                     spans[-1]["text"] = pieces
-                    # A tall bracket's origin sits far from the line it closes over.
+                    # A tall bracket's origin sits far from the line it closes over,
+                    # as a big operator's does.
                     spans[-1]["delimiter"] = (tall or pieces != text) and set(pieces.strip()) <= DELIMITERS
+                    spans[-1]["operator"] = tall and pieces.strip() in BIG_OPERATORS
     if not spans:
         return [], [], 0
     weights = collections.Counter()
@@ -842,6 +849,19 @@ def script_tree(sheet, rect):
     for span in spans:
         if span["size"] > 0.85 * base:
             roots.append(span)
+            continue
+        # A limit set over, under, or beside a big operator hangs from it,
+        # above or below its middle: "∫<sub>0</sub><sup>T</sup>".
+        operator = next((
+            other for other in spans if other["operator"]
+            and other["x0"] - 0.6 * span["size"] <= span["x0"] <= other["x1"] + 0.6 * span["size"]
+            and other["top"] - span["size"] <= span["y"] <= other["bottom"] + span["size"]
+        ), None)
+        if operator is not None:
+            span["mark"] = "sup" if span["y"] < (operator["top"] + operator["bottom"]) / 2 else "sub"
+            span["script"] = True
+            span["parent"] = operator
+            operator["children"].append(span)
             continue
         before = [
             other for other in spans
@@ -889,6 +909,14 @@ def script_tree(sheet, rect):
         span["script"] = True
         span["parent"] = parent
         parent["children"].append(span)
+    # A text layer's box for a big operator is not its glyph's, so its middle
+    # can sit below both limits; with limits at two heights, the higher is
+    # the upper one.
+    for operator in (span for span in spans if span["operator"] and span["children"]):
+        heights = [child["y"] for child in operator["children"]]
+        if max(heights) - min(heights) > 0.5 * min(child["size"] for child in operator["children"]):
+            for child in operator["children"]:
+                child["mark"] = "sup" if child["y"] < (max(heights) + min(heights)) / 2 else "sub"
     return spans, roots, base
 
 
@@ -933,8 +961,8 @@ def formula_text(sheet, rect):
     bands = []
     # A tall bracket's origin is far above or below its line; it closes over
     # that line, so it joins the line nearest its middle, never a fraction.
-    tall = [span for span in roots if span["delimiter"]]
-    for span in sorted((span for span in roots if not span["delimiter"]), key=lambda span: span["y"]):
+    tall = [span for span in roots if span["delimiter"] or span["operator"]]
+    for span in sorted((span for span in roots if not (span["delimiter"] or span["operator"])), key=lambda span: span["y"]):
         if bands and span["y"] - bands[-1]["y"] < 0.35 * base:
             bands[-1]["spans"].append(span)
         else:

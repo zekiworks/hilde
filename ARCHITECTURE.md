@@ -435,8 +435,12 @@ PDF work is page-addressable:
    (`EXTENSION_FONT`: cmex, txex, pxex) are decoded from their codes
    (`EXTENSION_GLYPHS`), private-use bracket pieces (`BRACKET_PIECES`) become
    the bracket they build, and brace pieces are dropped, so CLM's tall
-   brackets no longer read "h … i"; a tall delimiter joins the line nearest
-   its middle, never a fraction; a band of
+   brackets no longer read "h … i"; a tall delimiter or big operator
+   (`BIG_OPERATORS`: ∑ ∏ ∫ …) joins the line nearest its middle, never a
+   fraction, and an operator's limits hang from it, the higher of two as
+   `<sup>`: "∫<sub>0</sub><sup>T</sup>", "∑<sub>i=1</sub><sup>n</sup>"
+   (Merton's integrals had become fractions without letters, which sent
+   every formula holding one to printed order); a band of
    text is a line of its own only when it holds a quarter of the heaviest
    band's text and sits 1.2 text heights or more from every heavier line, since
    a numerator sits 0.66 to 0.83 from its line and the positional encoding's
