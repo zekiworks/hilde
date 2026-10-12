@@ -10053,6 +10053,29 @@ class PaperRun(Run):
             f"No text-adaptation model is available for {self.model or 'this document'}."
         )
 
+    def record_block(self, scratch, request_path, system_prompt, attachments, response):
+        """Keep one model call of a batch in the stage's blocks/ folder: the
+        request as sent, the images attached, the model and its settings, the
+        code, and the raw response, before any parsing or naming. With these a
+        wrong description can be traced to the first stage that got it wrong:
+        the extracted text, the crop, the request, or the model. One JSON line
+        per call, so a second request for the same batch is kept beside the first."""
+        blocks = scratch / "blocks"
+        blocks.mkdir(exist_ok=True)
+        record = {
+            "batch": request_path.stem,
+            "request": request_path.read_text(encoding="utf-8"),
+            "attachments": [path.relative_to(scratch).as_posix() for path in attachments],
+            "model": self.model,
+            "temperature": LOCAL_MODEL_TEMPERATURE if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS else None,
+            "local_vision": self.local_vision,
+            "prompt_sha256": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
+            "git_commit": git_commit(),
+            "response": response,
+        }
+        with (blocks / f"{request_path.stem}.jsonl").open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def paragraph_batch_response(
         self,
         scratch,
@@ -10127,6 +10150,8 @@ class PaperRun(Run):
                         f"({attempt + 1}/{PAPER_RESPONSE_ATTEMPTS})…\n",
                     )
                     continue
+                # What went in and what came back, before any parsing or naming.
+                self.record_block(scratch, request_path, system_prompt, attachments, response)
                 try:
                     narration, summary, tags = parse_paper_response(response)
                 except ValueError:
@@ -10620,6 +10645,7 @@ class PaperRun(Run):
                 "images",
                 "pdf-pages",
                 "paragraph-checkpoints",
+                "blocks",
             ):
                 shutil.rmtree(scratch / directory_name, ignore_errors=True)
             for file_name in ("document.md", "document-pages.json"):
