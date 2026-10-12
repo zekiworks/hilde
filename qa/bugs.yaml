@@ -417,13 +417,11 @@ bugs:
     layer: extract
     status: fixed
     fix: >
-      Partly fixed in efc7009: book.json records local_vision, and the docs say to tick "This model sees images"
-      again after removing a local server, which clears it. Whether Hilde should send images by default to a
-      local model that accepts them is Q08. Without images, Gemma 4 misread CLM's Figures 5, 9 and 11 in 3 of 3
-      runs at both 9a70f65 and 7591bb9 and with both prompts; with images it read them right in 3 of 3. The
-      8 Oct books (9a70f65) were made with images: RRSI's says "The figure shows the Google logo" for a page-1
-      picture that reached the model with no text. The 12 Oct CLM book was not: it invents a system diagram for
-      a logo, as Gemma does without images in 3 of 3 runs and never with them.
+      efc7009: the converter drops a picture box under 3% of the page's width and height. Across 10 library
+      papers (604 pages) only two such boxes exist: CLM's 5 pt link logo and an 11 pt one on RRSI's first page.
+    test: test_an_icon_in_a_line_of_text_is_no_figure; golden CLM-27.
+
+  - id: B41
     slug: figures-without-images
     title: A local model describes figures from their labels alone, and nothing records it
     priority: P1
@@ -433,7 +431,10 @@ bugs:
       Partly fixed in efc7009: book.json records local_vision, and the docs say to tick "This model sees images"
       again after removing a local server, which clears it. Whether Hilde should send images by default to a
       local model that accepts them is Q08. Without images, Gemma 4 misread CLM's Figures 5, 9 and 11 in 3 of 3
-      runs at both 9a70f65 and 7591bb9 and with both prompts; with images it read them right in 3 of 3.
+      runs at both 9a70f65 and 7591bb9 and with both prompts; with images it read them right in 3 of 3. The
+      8 Oct books (9a70f65) were made with images: RRSI's says "The figure shows the Google logo" for a page-1
+      picture that reached the model with no text. The 12 Oct CLM book was not: it invents a system diagram for
+      a logo, as Gemma does without images in 3 of 3 runs and never with them.
     test: The figure facts of CLM (F71-F73, F115, F116, Figure 5) on runs with images on.
 
   - id: B42
