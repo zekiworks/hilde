@@ -191,6 +191,28 @@ class PaperWorkflowTests(unittest.TestCase):
             normalize({"audiobook": {"step": "publish"}})["audiobook"]["step"], "book"
         )
 
+    def test_error_correction_is_on_unless_unticked(self):
+        self.assertIs(normalize({})["audiobook"]["verify"], True)
+        self.assertEqual(normalize({})["audiobook"]["verify_model"], "")
+        unticked = normalize({"audiobook": {"verify": False, "verify_model": "lm-studio/checker"}})
+        self.assertIs(unticked["audiobook"]["verify"], False)
+        self.assertEqual(unticked["audiobook"]["verify_model"], "lm-studio/checker")
+
+    def test_a_check_reports_only_problems_and_a_correction_needs_a_fix_and_nothing_new(self):
+        # Gemma lists statements it found right too, with "Problem: none".
+        self.assertEqual(web.verification_problems(
+            "<ISSUES>\n"
+            '- Narration: "about 60 percent" | Image: CLM at 60 | Problem: none\n'
+            '- Narration: "a decode cost of 10" | Image: 10 is an axis tick | Problem: 10 is no cost.\n'
+            "</ISSUES>"
+        ), ['Narration: "a decode cost of 10" | Image: 10 is an axis tick | Problem: 10 is no cost.'])
+        self.assertEqual(web.verification_problems("<ISSUES>none</ISSUES>"), [])
+        self.assertTrue(web.correction_holds("<RESULT>\n1: FIXED | ok\n2: NOT FIXED | no\nNEW: none\n</RESULT>"))
+        self.assertFalse(web.correction_holds("<RESULT>\n1: NOT FIXED | still 10\nNEW: none\n</RESULT>"))
+        self.assertFalse(web.correction_holds(
+            '<RESULT>\n1: FIXED | ok\nNEW: Revision: "Summary leads" | Image: CLM leads | Problem: wrong leader.\n</RESULT>'
+        ))
+
     def test_html_shell_disables_browser_caching(self):
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             server.daemon_threads = True
@@ -2887,6 +2909,77 @@ class UnifiedWorkflowTests(unittest.TestCase):
         # No paragraph mentions Figure 2, so it is told none of the prose
         # beside it, which may be anything, such as Acknowledgements.
         self.assertNotIn("<AUTHOR_CONTEXT>", figure_request)
+
+    def test_error_correction_keeps_a_correction_only_when_its_check_holds(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "Caching makes serving cheaper.\n\n"
+            "Table 4: The check each skill runs.\n\n"
+            "|Method|Check|\n|---|---|\n"
+            "|CLM|No note, or a token count that did not drop, means the batch is still in your context.|\n\n"
+            "The skills differ in mechanism.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        # CLM's Table 4: a failure condition turned into one for success.
+        wrong = "Table 4 shows that success is confirmed if a note appears."
+        right = "Table 4 shows that no note, or a token count that did not drop, means the batch is still in context."
+
+        def made(name, verdict, verify=True):
+            calls = []
+
+            class StubPaperRun(PaperRun):
+                def model_response(self, request_path, system_prompt, attachments=(), model=None):
+                    text = request_path.read_text(encoding="utf-8")
+                    calls.append((request_path.stem, model))
+                    if request_path.stem.endswith("-check"):
+                        return (
+                            '<ISSUES>\n- Narration: "success is confirmed if a note appears" | Source: "No note" '
+                            "| Problem: a failure condition became one for success.\n</ISSUES>"
+                            if wrong in text else "<ISSUES>none</ISSUES>"
+                        )
+                    if request_path.stem.endswith("-recheck"):
+                        return verdict
+                    rewrite = "A check of your narration of this batch against its source found" in text
+                    narration = right if rewrite else wrong if "Table 4:" in text else "Narrated prose."
+                    return f"<NARRATION>{narration}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+            stage = root / name
+            run = StubPaperRun(
+                source, stage / "prepared.txt", "utf-8", "lm-studio/writer", in_flight=1,
+                prompt_path=prompt, scratch_path=stage, verify=verify, verify_model="lm-studio/checker",
+            )
+            run.pump()
+            self.assertEqual(run.code, 0)
+            return (stage / "prepared.txt").read_text(encoding="utf-8"), calls, run.verification
+
+        # The second check finds the problem fixed and nothing new: the correction is read.
+        text, calls, counts = made("held", "<RESULT>\n1: FIXED | the condition is restored.\nNEW: none\n</RESULT>")
+        self.assertIn(right, text)
+        self.assertNotIn(wrong, text)
+        self.assertEqual(counts, {"checked": 1, "flagged": 1, "corrected": 1})
+        # Only the table is checked, and only by the checking model; the writer
+        # writes the correction.
+        self.assertEqual(
+            [model for stem, model in calls if stem.endswith(("-check", "-recheck"))],
+            ["lm-studio/checker", "lm-studio/checker"],
+        )
+        self.assertTrue(all(model is None for stem, model in calls if not stem.endswith(("-check", "-recheck"))))
+        # The correction brings a new problem: the first description stays.
+        text, _, counts = made("rejected", (
+            '<RESULT>\n1: FIXED | restored.\nNEW: Revision: "batch is still in context" '
+            '| Source: "your context" | Problem: invented.\n</RESULT>'
+        ))
+        self.assertIn(wrong, text)
+        self.assertEqual(counts["corrected"], 0)
+        # Unticked, nothing is checked.
+        text, calls, _ = made("off", "", verify=False)
+        self.assertIn(wrong, text)
+        self.assertFalse([stem for stem, _ in calls if stem.endswith("-check")])
 
     def test_panel_titles_reach_the_model_as_titles_not_sections(self):
         temporary = tempfile.TemporaryDirectory()

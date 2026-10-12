@@ -90,6 +90,11 @@ SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
+# A description of a figure, table, or equation is checked against its source,
+# corrected, and the correction checked again (PaperRun.check_description()).
+VERIFY_PROMPT_PATH = ROOT / "prompts" / "PAPER-VERIFY.md"
+REPAIR_PROMPT_PATH = ROOT / "prompts" / "PAPER-REPAIR.md"
+RECHECK_PROMPT_PATH = ROOT / "prompts" / "PAPER-RECHECK.md"
 INSTALL_SCRIPT_PATH = ROOT / "install.sh"
 # Hilde's release, recorded in every book; git checkouts also record the commit.
 HILDE_VERSION = "0.1.0"
@@ -2685,6 +2690,7 @@ def _migrate_book(storage, key, known_source, items):
                     "git_commit": None,
                     "prompt_hash": None,
                     "local_vision": None,
+                    "verification": None,
                     "schema_version": None,
                     "model": adaptation.get("model"),
                     "adapted": bool(adaptation),
@@ -6910,6 +6916,64 @@ as "most" or "a large share"."""
     return note
 
 
+# A listed item whose problem is "none" is a statement the checker looked at
+# and found right; Gemma lists those too, though the prompt says not to.
+NO_PROBLEM_PATTERN = re.compile(
+    r"Problem:\s*(?:none|no problem|this is correct|correct|no issue|n/a)\b"
+    r"|\(Wait|Re-evaluating|making it correct",
+    flags=re.IGNORECASE,
+)
+
+
+def verification_problems(response):
+    """The problems a check of a description reports (prompts/PAPER-VERIFY.md),
+    one line each; none when it found none or answered out of form."""
+    match = re.search(r"<ISSUES>(.*?)(?:</ISSUES>|$)", response, re.DOTALL)
+    body = match.group(1) if match else ""
+    return [
+        line.strip().lstrip("-").strip() for line in body.splitlines()
+        if "Problem:" in line and not NO_PROBLEM_PATTERN.search(line)
+    ]
+
+
+def check_request(request, narration, attached, tag="NARRATION_TO_CHECK", problems=()):
+    """What the checker gets: the request the description was written from,
+    whether the figure's image comes with it, the problems found before (for
+    the check of a correction), and the narration to check."""
+    seen = (
+        "The figure's image is attached." if attached
+        else "No image is attached; you have only the text."
+    )
+    listed = "\n".join(f"{number}: {problem}" for number, problem in enumerate(problems, 1))
+    found = f"<PROBLEMS>\n{listed}\n</PROBLEMS>\n\n" if problems else ""
+    shown = narration.strip() or "(empty: nothing is read aloud)"
+    return f"{request}\n\n{seen}\n\n{found}<{tag}>\n{shown}\n</{tag}>"
+
+
+def repair_note(template, draft, problems):
+    """The second request for a description the check found problems in
+    (prompts/PAPER-REPAIR.md): the problems and the draft, to be corrected and
+    otherwise kept. Started from scratch instead, a description fixed one
+    error and could bring another."""
+    listed = "\n".join(f"- {problem}" for problem in problems)
+    return template.replace("{issues}", listed).replace("{draft}", draft.strip())
+
+
+def correction_holds(response):
+    """Whether the check of a correction (prompts/PAPER-RECHECK.md) found it
+    fixed at least one problem and brought no new one. Judged instead by a
+    fresh check finding fewer problems, 11 of 20 correct fixes of CLM's
+    Table 4 were thrown away for a spurious complaint about the new wording."""
+    match = re.search(r"<RESULT>(.*?)(?:</RESULT>|$)", response, re.DOTALL)
+    body = match.group(1) if match else ""
+    fixed = re.findall(r"^\s*\d+:\s*FIXED\b", body, re.MULTILINE)
+    new = [
+        line for line in re.findall(r"^\s*NEW:\s*(.*)$", body, re.MULTILINE)
+        if not re.fullmatch(r"(?i)none\.?", line.strip())
+    ]
+    return bool(fixed) and not new
+
+
 def paper_request(
     paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None, cited=(),
 ):
@@ -7556,6 +7620,10 @@ def normalize(state):
             ),
             # Set in Add local: send figures to the local model as images.
             "local_vision": audiobook.get("local_vision") is True,
+            # Error correction of descriptions: on unless unticked; its checking
+            # model, the text model when empty.
+            "verify": audiobook.get("verify") is not False,
+            "verify_model": stored_text(audiobook, "verify_model"),
             "in_flight": stored_text(
                 audiobook, "in_flight", str(PAPER_DEFAULT_IN_FLIGHT)
             ),
@@ -7634,6 +7702,8 @@ def values_of(state, tts_models, storage):
         "local_server": audiobook["local_server"].strip(),
         "local_provider": audiobook["local_provider"],
         "local_vision": audiobook["local_vision"],
+        "verify": audiobook["verify"],
+        "verify_model": audiobook["verify_model"].strip(),
         "in_flight": audiobook["in_flight"].strip(),
         "paragraphs_per_worker": audiobook["paragraphs_per_worker"].strip(),
         "chunk_max_chars": audiobook["chunk_max_chars"].strip(),
@@ -9911,6 +9981,8 @@ class PaperRun(Run):
         adapt=True,
         local_vision=False,
         descriptions_only=False,
+        verify=False,
+        verify_model="",
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -9941,6 +10013,16 @@ class PaperRun(Run):
         # QA's descriptions-only runs (qa/describe.py): only figure, table, and
         # equation batches go to the model; prose keeps the author's text.
         self.descriptions_only = bool(descriptions_only)
+        # Error correction: each description of a figure, table, or equation
+        # is checked against its source by verify_model (the text model when
+        # empty), corrected, and the correction checked again. The job turns
+        # it on unless the user unticks it.
+        self.verify = bool(verify)
+        self.verify_model = str(verify_model or "").strip()
+        self.verify_prompts = None
+        # What the checks did, for book.json.
+        self.verification = {"checked": 0, "flagged": 0, "corrected": 0}
+        self.verification_lock = threading.Lock()
         # What the adaptation kept of the author's prose, and how long this
         # run took to read and adapt the document.
         self.fidelity = None
@@ -10197,11 +10279,12 @@ class PaperRun(Run):
         )
         return markdown_path, images
 
-    def model_response(self, request_path, system_prompt, attachments=()):
-        """Ask the model, again after a dropped connection, up to MODEL_RETRIES times."""
+    def model_response(self, request_path, system_prompt, attachments=(), model=None):
+        """Ask the model, again after a dropped connection, up to MODEL_RETRIES
+        times; `model` (the checking model) instead of the text model if given."""
         for retry in range(MODEL_RETRIES + 1):
             try:
-                return self.request_model(request_path, system_prompt, attachments)
+                return self.request_model(request_path, system_prompt, attachments, model)
             except ModelConnectionError as exc:
                 if retry == MODEL_RETRIES:
                     raise
@@ -10215,9 +10298,10 @@ class PaperRun(Run):
                     raise InterruptedError("document processing stopped") from None
         raise AssertionError("unreachable model retry loop")
 
-    def request_model(self, request_path, system_prompt, attachments):
+    def request_model(self, request_path, system_prompt, attachments, model=None):
         text = request_path.read_text(encoding="utf-8")
-        provider, _, name = self.model.partition("/")
+        model = model or self.model
+        provider, _, name = model.partition("/")
         if provider == OPENAI_MODEL_PROVIDER:
             return openai_response(
                 name, system_prompt, text, attachments, self.model_stream,
@@ -10236,10 +10320,10 @@ class PaperRun(Run):
                 self.model_stream,
             )
         raise RuntimeError(
-            f"No text-adaptation model is available for {self.model or 'this document'}."
+            f"No text-adaptation model is available for {model or 'this document'}."
         )
 
-    def record_block(self, scratch, request_path, system_prompt, attachments, response):
+    def record_block(self, scratch, request_path, system_prompt, attachments, response, model=None):
         """Keep one model call of a batch in the stage's blocks/ folder: the
         request as sent, the images attached, the model and its settings, the
         code, and the raw response, before any parsing or naming. With these a
@@ -10252,8 +10336,8 @@ class PaperRun(Run):
             "batch": request_path.stem,
             "request": request_path.read_text(encoding="utf-8"),
             "attachments": [path.relative_to(scratch).as_posix() for path in attachments],
-            "model": self.model,
-            "temperature": LOCAL_MODEL_TEMPERATURE if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS else None,
+            "model": model or self.model,
+            "temperature": LOCAL_MODEL_TEMPERATURE if (model or self.model).partition("/")[0] in LOCAL_MODEL_PROVIDERS else None,
             "local_vision": self.local_vision,
             "prompt_sha256": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
             "git_commit": git_commit(),
@@ -10276,21 +10360,21 @@ class PaperRun(Run):
         left_out=None,
         cited=(),
         review=None,
+        verify=False,
     ):
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
         request_path = scratch / f"paragraphs-{start}-{end}.txt"
         source = "\n\n".join(paragraphs)
         # Extracted Markdown links images relative to the extraction folder.
-        attachments = tuple(
+        batch_images = tuple(
             path for path in image_paths
             if path.relative_to(scratch).as_posix() in source
         )
         # A local server may run a text-only model, which refuses images; it
         # reads the text extracted from each figure instead, unless the user
         # says the model sees images.
-        if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS and not self.local_vision:
-            attachments = ()
+        attachments = batch_images if self.sees_images(self.model) else ()
         figure_note = (
             f" with {len(attachments)} figure attachment"
             f"{'s' if len(attachments) != 1 else ''}"
@@ -10424,7 +10508,71 @@ class PaperRun(Run):
                 second, second_summary, second_tags = ask(flagged_note(flags))
                 if second and len(review(second)) < len(flags):
                     narration, summary, tags = second, second_summary, second_tags
+        # Error correction: a description checked against its source, then
+        # corrected and the correction checked again (check_description()).
+        if narration and verify:
+            corrected = self.check_description(
+                scratch, request_path.stem,
+                paper_request(paragraphs, context, start, end, total, 1, acronyms, None, cited),
+                batch_images, narration, ask, f"{batch_label.capitalize()}/{total}",
+            )
+            if corrected is not None:
+                narration, summary, tags = corrected
         return narration, summary, tags
+
+    def sees_images(self, model):
+        """Whether a model gets figures as images: a cloud model always, a
+        local one when the user says it sees them."""
+        return model.partition("/")[0] not in LOCAL_MODEL_PROVIDERS or self.local_vision
+
+    def check_description(self, scratch, stem, request, images, narration, ask, label):
+        """Check a description against its source with the checking model and,
+        if it reports problems, ask for a corrected description and check that:
+        the correction is kept only if it fixed at least one problem and brought
+        no new one. Return (narration, summary, tags) of a kept correction, or
+        None. On CLM's descriptions written with images, Gemma checking Gemma
+        this way fixed 16 of 21 wrong ones and broke 3 of 93 right ones (R24)."""
+        model = self.verify_model or self.model
+        verify_prompt, repair_template, recheck_prompt = self.verify_prompts
+        attached = images if self.sees_images(model) else ()
+
+        def consult(name, prompt, text):
+            path = scratch / f"{stem}-{name}.txt"
+            path.write_text(text, encoding="utf-8")
+            try:
+                response = self.model_response(path, prompt, attached, model=model)
+            except ModelRanOn as error:
+                self.publish("log", f"{label}: the {name} gave no answer ({error}); the description stays as written.\n")
+                return None
+            self.record_block(scratch, path, prompt, attached, response, model=model)
+            return response
+
+        with self.verification_lock:
+            self.verification["checked"] += 1
+        problems = verification_problems(
+            consult("check", verify_prompt, check_request(request, narration, bool(attached))) or ""
+        )
+        if not problems:
+            return None
+        with self.verification_lock:
+            self.verification["flagged"] += 1
+        self.publish(
+            "log",
+            f"{label}: the check found {len(problems)} problem{'s' if len(problems) != 1 else ''} "
+            f"({problems[0][:240]}); asking for a corrected description.\n",
+        )
+        corrected = ask(repair_note(repair_template, narration, problems))
+        verdict = consult(
+            "recheck", recheck_prompt,
+            check_request(request, corrected[0], bool(attached), "REVISION", problems),
+        )
+        if verdict is None or not correction_holds(verdict):
+            self.publish("log", f"{label}: the correction did not hold up when checked again; the first description stays.\n")
+            return None
+        with self.verification_lock:
+            self.verification["corrected"] += 1
+        self.publish("log", f"{label}: the corrected description replaces the first.\n")
+        return corrected
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
         total = len(paragraphs)
@@ -10628,6 +10776,8 @@ class PaperRun(Run):
                 cited.get(start, ()),
                 # The flags a narration would be marked with, for asking again.
                 lambda narration, start=start, end=end: finish(start, end, narration)[2],
+                # Error correction, for descriptions only.
+                self.verify and _describes_visual(set(kinds[start - 1:end])),
             )
             futures[future] = (start, end)
 
@@ -10763,6 +10913,12 @@ class PaperRun(Run):
             if self.adapt
             else None
         )
+        # Error correction's prompts, plain text beside the adaptation prompt.
+        if self.adapt and self.verify:
+            self.verify_prompts = tuple(
+                path.read_text(encoding="utf-8")
+                for path in (VERIFY_PROMPT_PATH, REPAIR_PROMPT_PATH, RECHECK_PROMPT_PATH)
+            )
         identity = {
             "schema": EXTRACTION_SCHEMA,
             "input_version": file_version(input_path),
@@ -10790,6 +10946,16 @@ class PaperRun(Run):
             "converter_version": (
                 hashlib.sha256(_PDF_CONVERTER.encode("utf-8")).hexdigest()
                 if input_path.suffix.lower() == ".pdf"
+                else None
+            ),
+            # Error correction, its checking model, and its prompts: a checked
+            # description may read differently from the first one written.
+            "verification": (
+                {
+                    "model": self.verify_model or self.model,
+                    "prompts": hashlib.sha256("\n".join(self.verify_prompts).encode("utf-8")).hexdigest(),
+                }
+                if self.adapt and self.verify
                 else None
             ),
         }
@@ -11270,6 +11436,8 @@ class AudiobookRun(Run):
                 scratch_path=extraction_dir,
                 adapt=self.values["adapt"],
                 local_vision=self.values["local_vision"],
+                verify=self.values["verify"],
+                verify_model=self.values["verify_model"],
             )
             self.paper_run.publish = self.publish
             self.paper_run.stop_requested = self.stop_requested
@@ -11310,6 +11478,16 @@ class AudiobookRun(Run):
             "local_vision": (
                 self.paper_run.local_vision
                 if adapted and self.paper_run.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
+                else None
+            ),
+            # Error correction: the checking model and what it did, or null
+            # when it was off.
+            "verification": (
+                {
+                    "model": self.paper_run.verify_model or self.paper_run.model,
+                    **self.paper_run.verification,
+                }
+                if adapted and self.paper_run.verify
                 else None
             ),
             "adapted": adapted,
@@ -13352,6 +13530,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="paper-model-status" class="note"></span>
             </div>
           </div>
+          <div id="error-correction" class="field">
+            <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
+            <span class="note">Each description of a figure, table, or equation is checked against
+              the paper; one with a problem is rewritten, and the rewrite is kept only if a second
+              check finds it fixed. It takes longer.</span>
+            <div id="verify-model-row" class="field">
+              <label for="paper-verify-model">Checking model</label>
+              <div class="line">
+                <select id="paper-verify-model"><option value="">Same as the text model</option></select>
+              </div>
+            </div>
+          </div>
           <p id="create-problem" class="problem hidden"></p>
           <div class="actions">
             <button id="run" class="primary" type="button"
@@ -13755,14 +13945,15 @@ const FIELDS = [
   ["wav-subtype", "voice.wav_subtype"], ["clone-voice", "audiobook.server_voice"],
   ["shared-voice", "audiobook.voice"], ["document", "audiobook.document"],
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
-  ["paper-model", "audiobook.model"], ["paper-local-server", "audiobook.local_server"],
+  ["paper-model", "audiobook.model"], ["paper-verify-model", "audiobook.verify_model"],
+  ["paper-local-server", "audiobook.local_server"],
   ["paper-local-provider", "audiobook.local_provider"],
   ["paper-in-flight", "audiobook.in_flight"],
   ["paper-paragraphs-per-worker", "audiobook.paragraphs_per_worker"],
   ["chunk-max-chars", "audiobook.chunk_max_chars"], ["batch-size", "audiobook.batch_size"],
   ["mp3-level", "audiobook.mp3_level"],
 ];
-const FLAGS = [["adapt", "audiobook.adapt"]];
+const FLAGS = [["adapt", "audiobook.adapt"], ["paper-verify", "audiobook.verify"]];
 
 function at(path) { const [group, key] = path.split("."); return state[group][key]; }
 function put(path, value) { const [group, key] = path.split("."); state[group][key] = value; }
@@ -13804,13 +13995,14 @@ function load(data) {
   caps = data.capabilities || caps; jobs = data.queue || [];
   configuration = data.configuration || configuration;
   runs = data.runs || []; consumers = data.consumers || [];
-  const model = $("paper-model");
-  if (state.audiobook.model &&
-      ![...model.options].some((option) => option.value === state.audiobook.model)) {
-    const saved = document.createElement("option");
-    saved.value = state.audiobook.model;
-    saved.textContent = `${state.audiobook.model} (saved)`;
-    model.append(saved);
+  // A saved model stays chosen until the catalog says whether it is still there.
+  for (const [id, key] of [["paper-model", "model"], ["paper-verify-model", "verify_model"]]) {
+    const select = $(id), saved = state.audiobook[key];
+    if (saved && ![...select.options].some((option) => option.value === saved)) {
+      const option = document.createElement("option");
+      option.value = saved; option.textContent = `${saved} (saved)`;
+      select.append(option);
+    }
   }
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
@@ -15492,6 +15684,9 @@ function renderCreate() {
   $("adapt").closest(".field").classList.toggle("hidden", voiceOnly);
   // Adapting needs a model, so its choice sits with the choice to adapt.
   $("adaptation-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
+  // Error correction checks what adapting writes; its model only matters when on.
+  $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
+  $("verify-model-row").classList.toggle("hidden", !state.audiobook.verify);
   $("run").textContent = voiceOnly ? "Add this voice" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
@@ -16102,16 +16297,12 @@ async function sendAirdrop() {
   } catch (error) { setStatus(error.message, true); }
 }
 
-function applyPaperCatalog(catalog) {
-  const selected = state.audiobook.model;
-  const select = $("paper-model");
+// One model picker: its first choice, then the catalog's models by provider,
+// and a saved choice the catalog no longer lists, marked unavailable.
+function fillModelSelect(select, selected, first, catalog) {
   select.replaceChildren();
   const fallback = document.createElement("option");
-  fallback.value = "";
-  fallback.textContent = catalog.default_model
-    ? `Default — ${catalog.default_model}`
-    : catalog.local_error ? "Default — your local server, once it answers"
-    : "No model yet: connect a provider or add a local server";
+  fallback.value = ""; fallback.textContent = first;
   select.append(fallback);
   const groups = new Map();
   for (const model of catalog.models || []) {
@@ -16130,6 +16321,16 @@ function applyPaperCatalog(catalog) {
     select.append(unavailable);
   }
   select.value = selected;
+}
+
+function applyPaperCatalog(catalog) {
+  fillModelSelect($("paper-model"), state.audiobook.model,
+    catalog.default_model ? `Default — ${catalog.default_model}`
+      : catalog.local_error ? "Default — your local server, once it answers"
+      : "No model yet: connect a provider or add a local server",
+    catalog);
+  fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
+    "Same as the text model", catalog);
   paperOpenAIConnected = !!catalog.openai_connected;
   paperAnthropicConnected = !!catalog.anthropic_connected;
   renderPaperAnthropic(catalog.anthropic_error);

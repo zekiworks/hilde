@@ -2,7 +2,7 @@
 """Descriptions-only runs of one paper, for fact-set scoring. Read AGENTS.md first.
 
   python qa/describe.py PDF --model lm-studio/gemma-4-31B-it --local-server 127.0.0.1:8010 \
-      [--local-vision] [--runs 3] [--in-flight 3] [--hilde DIR] --out DIR
+      [--local-vision] [--verify [--verify-model M]] [--runs 3] [--in-flight 3] [--hilde DIR] --out DIR
 
 Each run adapts only the paper's figure, table, and equation batches with Hilde's own pipeline
 (PaperRun with descriptions_only): the same extraction, requests, naming, checks, and second
@@ -62,9 +62,11 @@ def run_once(web, args, pdf, folder, extraction):
         (scratch / "extraction.json").write_text(json.dumps({**manifest, "complete": False}), encoding="utf-8")
     log = (folder / "log.txt").open("a", encoding="utf-8")
     prepared = folder / "prepared.txt"
+    # Error correction only when asked, so an older checkout without it still runs.
+    checked = {"verify": True, "verify_model": args.verify_model} if args.verify else {}
     run = web.PaperRun(
         pdf, prepared, "utf-8", args.model, args.local_server, in_flight=args.in_flight,
-        local_vision=args.local_vision, descriptions_only=True, scratch_path=scratch,
+        local_vision=args.local_vision, descriptions_only=True, scratch_path=scratch, **checked,
     )
     run.publish = lambda event, data: event == "log" and (log.write(str(data)), log.flush())
     started = time.monotonic()
@@ -81,6 +83,7 @@ def run_once(web, args, pdf, folder, extraction):
         "git_commit": commit_of(Path(web.__file__).parent),
         "model": args.model,
         "local_vision": args.local_vision,
+        "verification": {"model": args.verify_model or args.model, **run.verification} if args.verify else None,
         "prompt_hash": run.prompt_version,
         "narration_sha256": hashlib.sha256(data).hexdigest(),
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -95,6 +98,8 @@ def main():
     p.add_argument("--model", required=True)
     p.add_argument("--local-server", default="")
     p.add_argument("--local-vision", action="store_true", help="the local model sees images")
+    p.add_argument("--verify", action="store_true", help="error correction: check, correct, and check again each description")
+    p.add_argument("--verify-model", default="", help="the checking model (default: --model)")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--in-flight", type=int, default=3)
     p.add_argument("--hilde", type=Path, default=ROOT.parent, help="Hilde checkout to run (default: this one)")

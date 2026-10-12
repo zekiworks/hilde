@@ -128,3 +128,18 @@ decisions:
     why: >
       With 3 runs, a fact right 90% of the time fails "3 of 3" in about 27% of samples, so the strict rule counted
       single-run misses as regressions (13 on 8 October, 5 by this rule). The reviewer proposed it.
+
+  - id: D18
+    date: 2026-10-12
+    by: [umit]
+    decision: >
+      Error correction for descriptions of figures, tables, and equations, on by default: the checking model (the
+      text model unless one is chosen) checks each description against its source with the image when it can see
+      images, a description with problems is written again from its draft and the problems, and the correction
+      replaces it only if a second, targeted check finds at least one problem fixed and nothing new wrong.
+      Complaints must rest on printed text, never on the checker's own estimate of where a point sits. Prompts are
+      plain-text files (prompts/PAPER-VERIFY.md, PAPER-REPAIR.md, PAPER-RECHECK.md).
+    why: >
+      On CLM's 114 descriptions written with images, Gemma checking Gemma this way fixed 16 of 21 wrong ones and
+      broke 3 of 93 right ones; a checker with the image and no printed-text rule fixed 18 and broke 5, a checker
+      without the image fixed 14 and dropped values from about 15 right ones. Of the three, this was chosen.

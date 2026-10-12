@@ -134,7 +134,9 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   instead. That count measures dropped wording, not meaning: a sentence
   reworded with the same words, or an added claim, goes unnoticed.
 - **Figure descriptions are model-generated and can be wrong.** Check the
-  original figure before relying on a number or a trend. A book's text is
+  original figure before relying on a number or a trend. **Check and correct
+  descriptions** catches many errors but can introduce one: checked by the same
+  model, a plot it misreads stays misread. A book's text is
   written once: a new voice reads it as it is, and only **Recreate with the
   latest Hilde** writes it again.
 - **Text-only local models never see the figure.** They describe it from the

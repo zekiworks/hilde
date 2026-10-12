@@ -56,6 +56,19 @@ adaptation**:
   the labels read from inside it, and its caption always go to the model
   together, so it is described once. A figure or table with a caption is
   always a passage of its own in the book's text.
+- **Check and correct descriptions** (on by default) checks each description
+  of a figure, table, or equation against the paper. One with a problem, such
+  as a value given to the wrong method or a condition turned around, is written
+  again, and the new description replaces the first only if a second check
+  finds the problem fixed and nothing new wrong. **Checking model** is the
+  model that checks; it is the text model unless you choose another. The
+  checking model gets the figure as an image when it is a cloud model or a
+  local one marked as seeing images. Checking takes longer: up to three more
+  requests per figure, table, or equation. The job log names every problem a
+  check found and whether the correction was kept, and the book records the
+  checking model and the counts. A check can be wrong too: on one test paper
+  it fixed 16 of 21 wrong descriptions and made 3 of 93 right ones wrong, by
+  misreading where a plot's points sit.
 
 Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
