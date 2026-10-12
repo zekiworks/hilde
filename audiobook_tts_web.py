@@ -101,7 +101,7 @@ BOOK_SCHEMA = 1
 # what a request carries changes, through resolve_citations() or the
 # summaries a figure, table, or equation goes without, so checkpoints made
 # from the old requests are redone.
-EXTRACTION_SCHEMA = 15
+EXTRACTION_SCHEMA = 16
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -5323,16 +5323,56 @@ def marks_after_sentences(paragraphs, kinds):
     return moved
 
 
+# Told with an equation the author's sentence runs into ("…utility is", the
+# picture, "where…"), which the model otherwise describes as one standing on
+# its own: "…utility is\n\nEquation 2 says that…" in 13 of the 21 such
+# requests of Merton and CLM, and in 1 with this note. Quoting the phrase to
+# avoid ("never as 'Equation N says'") made the model write it (R24-15).
+INLINE_EQUATION_NOTE = (
+    "Equation inside the author's sentence: continue that sentence with the "
+    "equation in words, without introducing or naming the equation, and with "
+    "no paragraph break."
+)
+
+
 def model_paragraphs(paragraphs, kinds):
     """Return the paragraphs as the model gets them.
 
     Extraction writes a figure's panel titles as headings; the model is told
-    what they are, so it does not read them out as sections.
+    what they are, so it does not read them out as sections. An uncaptioned
+    equation after prose that stops mid-sentence, the one `paper_batches()`
+    keeps with that sentence, has its printed text marked as part of it.
     """
-    return [
-        f"Panel title: {_layout_text(paragraph)}" if kind == "panel" else paragraph
-        for paragraph, kind in zip(paragraphs, kinds)
-    ]
+    shown = []
+    for index, (paragraph, kind) in enumerate(zip(paragraphs, kinds)):
+        if kind == "panel":
+            paragraph = f"Panel title: {_layout_text(paragraph)}"
+        elif kind == "labels" and _equation_math([paragraph]):
+            start = index
+            while start > 0 and kinds[start - 1] in FIGURE_PART_KINDS:
+                start -= 1
+            end = index
+            while end + 1 < len(kinds) and kinds[end + 1] in FIGURE_PART_KINDS:
+                end += 1
+            if _inside_sentence(paragraphs, kinds, start - 1, start, end):
+                paragraph = f"{INLINE_EQUATION_NOTE}\n{paragraph.lstrip()}"
+        shown.append(paragraph)
+    return shown
+
+
+def _inside_sentence(paragraphs, kinds, before, start, end):
+    """Whether figure parts start..end, uncaptioned, sit between the halves of
+    one sentence: the prose at `before` stops mid-sentence and the prose
+    right after them continues it."""
+    return (
+        before >= 0
+        and set(kinds[start:end + 1]) <= FIGURE_PART_KINDS
+        and kinds[before] == "prose"
+        and not _ends_sentence(paragraphs[before])
+        and end + 1 < len(kinds)
+        and kinds[end + 1] == "prose"
+        and _continues_sentence(paragraphs[before], paragraphs[end + 1])
+    )
 
 
 def _ends_sentence(paragraph):
@@ -6025,15 +6065,7 @@ def paper_batches(paragraphs, per_worker):
         ):
             units[-1] = (units[-1][0], end)
             continue
-        inline = (
-            units
-            and set(kinds[start:end + 1]) <= FIGURE_PART_KINDS
-            and kinds[units[-1][1]] == "prose"
-            and not _ends_sentence(paragraphs[units[-1][1]])
-            and end + 1 < len(kinds)
-            and kinds[end + 1] == "prose"
-            and _continues_sentence(paragraphs[units[-1][1]], paragraphs[end + 1])
-        )
+        inline = units and _inside_sentence(paragraphs, kinds, units[-1][1], start, end)
         if inline:
             units[-1] = (units[-1][0], end + 1)
         elif units and start <= units[-1][1]:

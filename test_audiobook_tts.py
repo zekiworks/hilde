@@ -2924,6 +2924,20 @@ class UnifiedWorkflowTests(unittest.TestCase):
         # The numbered heading after it is read as printed, without the model.
         self.assertNotIn("paragraphs-5-5", requests)
 
+    def test_an_equation_inside_a_sentence_reaches_the_model_as_part_of_it(self):
+        equation = [
+            "![](images/e.png)",
+            "<!-- Start of picture text -->\nU = E (w<sup>γ</sup>/γ) (2)\n<!-- End of picture text -->",
+        ]
+        # Merton's "the investor's total expected utility is [Equation 2] where…":
+        # described on its own, it was spliced in as "…is\n\nEquation 2 says…".
+        inside = ["The investor's total expected utility is", *equation, "where γ < 1 sets the risk aversion."]
+        standing = ["The utility is defined as follows:", *equation, "The parameter β trades off the two."]
+        for paragraphs, marked in ((inside, True), (standing, False)):
+            shown = web.model_paragraphs(paragraphs, web._layout_kinds(paragraphs))
+            self.assertEqual(shown[2].startswith(web.INLINE_EQUATION_NOTE), marked, shown)
+            self.assertEqual(shown[:2] + shown[3:], paragraphs[:2] + paragraphs[3:])
+
     def test_a_numbered_heading_is_read_as_printed_without_the_model(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

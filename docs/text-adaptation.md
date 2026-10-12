@@ -97,7 +97,9 @@ uses them to find the paragraphs a question is about.
 In a PDF, a sentence that a page break, a figure, or a footnote splits is
 joined back together before the model sees it; what split it then follows the
 sentence. An equation printed as a picture stays inside its sentence and goes
-to the model with it, so the sentence is read through. A listing set in a
+to the model with it, so the sentence is read through, the equation in words as
+part of it ("the total utility is the expected value of…"), without "Equation 2
+says" breaking in. A listing set in a
 typewriter font, such as a program, a prompt, or a skill file, reaches the
 model as one block from the page's own lines, even across a page break or a
 table printed inside it, so a sentence wrapped from one line to the next is
