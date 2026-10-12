@@ -274,5 +274,10 @@ runs:
     notes: >
       Repair of the 12 Oct CLM book (7591bb9) against 9a70f65. Descriptions-only runs, 3 per paper at 26abdb1 and
       at the fix (CLM at efc7009, whose CLM extraction equals 6d733e7's; PG and Merton at 6d733e7); Merton also
-      as full adaptations, 3 per side. Per-block model experiments (request x prompt x images, 3 repeats each)
-      located each case's first wrong stage; see the findings.
+      as full adaptations, 3 per side; CLM again at 852753d (D17 confirmation). Per-block model experiments
+      (request x prompt x images, 3 repeats each) located each case's first wrong stage; see the findings.
+      Outcome, images on: CLM identifiers 84/84 per side of the fix (26abdb1: 6/29 in the 12 Oct book), 9 facts
+      gained; the four D17 regressions flagged after efc7009 did not hold on rerun or are scorer misses with the
+      value present (F49, F57, F73), F112 a number-format artifact. PG: 1 gained, none regressed, labels 10/10.
+      Merton: identifiers 51/51 both sides; integrals and sums fixed (R24-11); inline-equation splices fixed in
+      f0d7dc6 (R24-15).
