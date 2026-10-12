@@ -99,7 +99,8 @@ alone. The server creates and owns this fixed layout:
   document once:
   - `book.json` records the document's full SHA-256 and the file names it came
     under, the Hilde version and git commit, the prompt, extraction schema, and
-    model that wrote its text, how much of the author's prose the text kept,
+    model that wrote its text, whether a local model saw its figures as images
+    (`local_vision`), how much of the author's prose the text kept,
     and each voice with when it was made, its length, and whether it reads the
     book's current text (`ready`) or an earlier one (`stale`);
   - `source.pdf` (or `.md`, `.txt`) is a copy of the document;

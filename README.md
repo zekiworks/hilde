@@ -138,10 +138,13 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   written once: a new voice reads it as it is, and only **Recreate with the
   latest Hilde** writes it again.
 - **Text-only local models never see the figure.** They describe it from the
-  text extracted from it (labels, numbers, caption), so a figure with few
-  labels gets a thin description, and an equation printed as an image is left
-  out. OpenAI and Claude models, and a local model marked as seeing images,
-  receive figures as images.
+  text extracted from it (labels, numbers, caption), and then misread charts:
+  on Context Language Models, Gemma 4 without images took a bar chart's token
+  shares for accuracy, reversed a trend, read a sum as a product, and put a
+  wrong value on a panel in every one of three runs, and got each right in
+  every run with images. OpenAI and Claude models, and a local model marked
+  as seeing images, receive figures as images; `book.json` records which a
+  local model's book was made with (`local_vision`).
 - **Cloud providers receive your document.** A document goes to OpenAI or
   Anthropic (directly, or through Claude Code) when you choose one of their models, or, with **Model** left on
   Default, when you have added no local server. The text and figures of each

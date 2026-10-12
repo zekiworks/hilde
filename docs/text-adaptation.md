@@ -46,7 +46,10 @@ adaptation**:
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
   Tick **This model sees images** when the model accepts images, as Gemma 4
-  does; figures and equations then go to it as images.
+  does; figures and equations then go to it as images. Removing the server
+  clears the tick, so check it when you add the server again: from labels
+  alone, Gemma 4 misread chart values and trends that it read right from
+  the image.
 - **Workers** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
@@ -98,8 +101,12 @@ to the model with it, so the sentence is read through. A listing set in a
 typewriter font, such as a program, a prompt, or a skill file, reaches the
 model as one block from the page's own lines, even across a page break or a
 table printed inside it, so a sentence wrapped from one line to the next is
-read through rather than split into two passages. A table whose caption the
-PDF stores as ordinary text ("Table 6: …") still gets that caption. A figure
+read through rather than split into two passages. A caption is recognized
+as "Table 6: …", "Figure 2. …", or with its label in bold and nothing after
+the number ("**Figure 6** CLMs outperform…"), also when the PDF stores it as
+ordinary text, and a figure or table with a caption on each side takes the
+one that names it. A picture no bigger than a letter or two, such as a logo
+in a line of text, is not a figure and is left out. A figure
 or table printed before the text that first mentions it ("as Figure 3
 shows…"), on the same page or the next, moves after that text, so its
 description never comes before the author introduces it or in the middle of

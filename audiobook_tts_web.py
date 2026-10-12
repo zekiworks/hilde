@@ -101,7 +101,7 @@ BOOK_SCHEMA = 1
 # what a request carries changes, through resolve_citations() or the
 # summaries a figure, table, or equation goes without, so checkpoints made
 # from the old requests are redone.
-EXTRACTION_SCHEMA = 14
+EXTRACTION_SCHEMA = 15
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -306,6 +306,14 @@ PICTURE_TEXT_PATTERN = re.compile(
 # "Figure 1 | …", but not a sentence that starts "Figure 2 shows".
 CAPTION_PATTERN = re.compile(
     r"^(?:figure|fig\.|table)[ \t]*\d+(?:\.\d+)*[a-z]?[ \t]*[:.|](?:\s|$)",
+    flags=re.IGNORECASE,
+)
+# A caption whose label is set in bold with no punctuation after it, "**Figure
+# 6** CLMs outperform…" or "**Figure 6 CLMs outperform….**": a sentence about
+# a figure is never bold. Missed, every caption of such a paper was read as
+# prose, and its figures reached the model without them (R20-08, R24).
+BOLD_CAPTION_PATTERN = re.compile(
+    r"^\*\*(?:figure|fig\.|table)[ \t]*\d+(?:\.\d+)*[a-z]?(?:\*\*|[ \t])",
     flags=re.IGNORECASE,
 )
 # The figure or table a caption names, and those a passage mentions, as in
@@ -553,13 +561,18 @@ if not isinstance(markdown, str):
     raise RuntimeError(f"PDF page {page + 1} returned invalid Markdown")
 
 boxes = chunk.get("page_boxes") or []
-# A caption opens with its number and punctuation, "Table 6:"; a sentence
-# about the table, "Table 5 lists…", does not.
+# A caption opens with its number and punctuation, "Table 6:", or with its
+# label in bold, "**Table 6** …"; a sentence about the table, "Table 5
+# lists…", does neither.
 TABLE_CAPTION = re.compile(r"(?:table|tab\\.)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?[ \\t]*[:.|](?:\\s|$)", re.I)
+BOLD_TABLE_CAPTION = re.compile(r"\\*\\*(?:table|tab\\.)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?(?:\\*\\*|[ \\t])", re.I)
 # The caption of something else: a figure's printed below it can sit right
 # above a table, and is never that table's.
 OTHER_CAPTION = re.compile(
     r"(?:figure|fig\\.|algorithm|listing|code)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?[ \\t]*[:.|](?:\\s|$)", re.I
+)
+BOLD_OTHER_CAPTION = re.compile(
+    r"\\*\\*(?:figure|fig\\.|algorithm|listing|code)[ \\t]*\\d+(?:\\.\\d+)*[a-z]?(?:\\*\\*|[ \\t])", re.I
 )
 MONOSPACE_FONT = re.compile(r"mono|courier|consol|menlo|typewriter|tt\\d", re.I)
 # Layout classes a listing's lines come out as; a table or picture never is one.
@@ -581,9 +594,10 @@ def box_text(position):
 
 
 def opens_table_caption(position):
-    return boxes[position].get("class") in ("caption", "text") and TABLE_CAPTION.match(
-        plain(box_text(position)).strip()
-    ) is not None
+    return boxes[position].get("class") in ("caption", "text") and (
+        TABLE_CAPTION.match(plain(box_text(position)).strip()) is not None
+        or BOLD_TABLE_CAPTION.match(box_text(position).strip()) is not None
+    )
 
 
 def gap(upper, lower):
@@ -595,9 +609,11 @@ def gap(upper, lower):
 
 def table_caption_part(position):
     # A caption box that does not open another kind of caption.
-    return boxes[position].get("class") == "caption" and OTHER_CAPTION.match(
-        plain(box_text(position)).strip()
-    ) is None
+    return (
+        boxes[position].get("class") == "caption"
+        and OTHER_CAPTION.match(plain(box_text(position)).strip()) is None
+        and BOLD_OTHER_CAPTION.match(box_text(position).strip()) is None
+    )
 
 
 def caption_chains(position):
@@ -758,6 +774,38 @@ def listing_text(sheet, run):
 # hangs from the span before it, raised (a superscript) or lowered (a
 # subscript). Read flat, "warmup_steps^-1.5" came out "warmup_steps-1.5" and
 # "10000^(2i/d_model)" "100002i/dmodel", and models raised the wrong term.
+# What ends a span that never takes a script: an operator, a separator, or an
+# opening bracket.
+SCRIPTLESS = frozenset("+−-=×·,;([{⟨<>≤≥≈→")
+# TeX's math-extension fonts (cmex, txex, pxex) print big brackets, operators,
+# radicals, and wide accents as codes the text layer reads as letters and
+# control characters: Equation 9's "[ ½ … ]" came out "h 1 2 … i", and
+# "(unmatched context suffix)" with \\x00 and \\x01. Decoded by the fonts'
+# shared layout.
+EXTENSION_FONT = re.compile(r"(?i)cmex|txex|pxex")
+EXTENSION_GLYPHS = {
+    code: glyph
+    for codes, glyphs in (
+        (range(0x00, 0x10), "()[]⌊⌋⌈⌉{}⟨⟩|‖/∖"), (range(0x10, 0x1E), "()()[]⌊⌋⌈⌉{}⟨⟩"),
+        (range(0x20, 0x2C), "()[]⌊⌋⌈⌉{}⟨⟩"), (range(0x30, 0x3F), "()[][][]{}{}{}|"),
+        (range(0x40, 0x46), "()()⟨⟩"), (range(0x50, 0x55), "∑∏∫⋃⋂"), (range(0x58, 0x5D), "∑∏∫⋃⋂"),
+        (range(0x60, 0x68), "∐∐ˆˆˆ˜˜˜"), (range(0x68, 0x70), "[]⌊⌋⌈⌉{}"), (range(0x70, 0x75), "√√√√√"),
+    )
+    for code, glyph in zip(codes, glyphs)
+}
+# Pieces of a horizontal brace drawn over or under a term: no text.
+EXTENSION_GLYPHS.update({code: "" for code in range(0x7A, 0x80)})
+DELIMITERS = frozenset("()[]{}⟨⟩⌊⌋⌈⌉|‖")
+# The pieces of a tall bracket some text layers give as private-use
+# characters, in any font: the top piece names the bracket, the rest is none.
+BRACKET_PIECES = {
+    0xF8EB: "(", 0xF8EE: "[", 0xF8F1: "{", 0xF8F6: ")", 0xF8F9: "]", 0xF8FC: "}",
+    **{code: "" for code in (0xF8EC, 0xF8ED, 0xF8EF, 0xF8F0, 0xF8F2, 0xF8F3, 0xF8F4, 0xF8F5,
+                             0xF8F7, 0xF8F8, 0xF8FA, 0xF8FB, 0xF8FD, 0xF8FE)},
+}
+
+
+# The tree of scripts each formula span hangs in (see above).
 def script_tree(sheet, rect):
     spans = []
     for block in sheet.get_text("dict", clip=rect)["blocks"]:
@@ -768,11 +816,21 @@ def script_tree(sheet, rect):
                     spans.append({
                         "text": " ".join(span["text"].split(" ")), "x0": span["bbox"][0],
                         "x1": span["bbox"][2], "y": span["origin"][1], "size": span["size"],
+                        "top": span["bbox"][1], "bottom": span["bbox"][3],
                         "flagged": bool(span["flags"] & 1), "children": [], "mark": "",
                         "script": False, "merged": False, "parent": None,
                         # Where the PDF puts it, for reading a formula in printed order.
                         "order": len(spans), "line": line_id,
                     })
+                    tall = bool(EXTENSION_FONT.search(span["font"]))
+                    text = spans[-1]["text"].translate(EXTENSION_GLYPHS) if tall else spans[-1]["text"]
+                    pieces = text.translate(BRACKET_PIECES)
+                    if not pieces.strip():
+                        spans.pop()
+                        continue
+                    spans[-1]["text"] = pieces
+                    # A tall bracket's origin sits far from the line it closes over.
+                    spans[-1]["delimiter"] = (tall or pieces != text) and set(pieces.strip()) <= DELIMITERS
     if not spans:
         return [], [], 0
     weights = collections.Counter()
@@ -796,6 +854,22 @@ def script_tree(sheet, rect):
             roots.append(span)
             continue
         parent = max(before, key=lambda other: (other["x1"], -abs(other["y"] - span["y"])))
+        # An operator or an opening bracket never takes a script, and a script
+        # sits at most about 0.4 of a text height from its base: a small span
+        # beyond either is part of something else, such as the stacked 1 over 2
+        # of a one half, which as "attn<sub>2</sub> h<sub>1</sub>" became
+        # "C attn squared" (CLM's Equation 9, R24).
+        if (
+            not parent["script"] and parent["text"].rstrip()[-1:] in SCRIPTLESS
+        ) or abs(span["y"] - parent["y"]) > 0.6 * parent["size"] or any(
+            # A glyph between them, such as a tall bracket, separates the two.
+            other is not span and other is not parent and not other["merged"] and other["size"] > 0.85 * base
+            and parent["x1"] - 0.5 < (other["x0"] + other["x1"]) / 2 < span["x0"] + 0.5
+            and abs(other["y"] - span["y"]) < 2 * max(other["size"], parent["size"])
+            for other in spans
+        ):
+            roots.append(span)
+            continue
         if (
             parent["script"] and abs(parent["size"] - span["size"]) < 0.1 * span["size"]
             and abs(parent["y"] - span["y"]) < 0.15 * span["size"]
@@ -857,11 +931,16 @@ def formula_text(sheet, rect):
     # Lines of full-size text: a heavy one is a line of the formula; a light
     # one beside it is a stacked fraction's numerator (above) or denominator.
     bands = []
-    for span in sorted(roots, key=lambda span: span["y"]):
+    # A tall bracket's origin is far above or below its line; it closes over
+    # that line, so it joins the line nearest its middle, never a fraction.
+    tall = [span for span in roots if span["delimiter"]]
+    for span in sorted((span for span in roots if not span["delimiter"]), key=lambda span: span["y"]):
         if bands and span["y"] - bands[-1]["y"] < 0.35 * base:
             bands[-1]["spans"].append(span)
         else:
             bands.append({"y": span["y"], "spans": [span]})
+    if not bands:
+        return " ".join(span["text"].strip() for span in sorted(roots, key=lambda span: span["x0"]))
 
     def weight(band):
         return sum(len(span["text"]) for span in band["spans"])
@@ -904,7 +983,10 @@ def formula_text(sheet, rect):
                     fraction = {"x0": span["x0"], "x1": span["x1"], "num": [], "den": []}
                     fraction[place].append(span)
                     fractions.append(fraction)
-        items = []
+        items = [
+            (span["x0"], span["x1"], render_scripts(span)) for span in tall
+            if min(lines, key=lambda other: abs(other["y"] - (span["top"] + span["bottom"]) / 2)) is line
+        ]
         for span in line["spans"]:
             centre = (span["x0"] + span["x1"]) / 2
             inside = next((fraction for fraction in fractions if fraction["x0"] <= centre <= fraction["x1"]), None)
@@ -969,6 +1051,14 @@ def with_subscripts(text, sheet, rect):
 edits = []
 with pymupdf.open(source) as document:
     sheet = document[page]
+    # A picture smaller than a letter or two, an icon set in a line of text,
+    # is not a figure: CLM's 5 pt link logo on its first page reached the
+    # model alone, and the model invented a figure for it (R24).
+    for box in boxes:
+        if box.get("class") == "picture" and box.get("pos") and box.get("bbox"):
+            x0, y0, x1, y1 = box["bbox"]
+            if x1 - x0 < 0.03 * sheet.rect.width and y1 - y0 < 0.03 * sheet.rect.height:
+                edits.append((*box["pos"], ""))
     # A table's cells come out of the layout unreliably: words split across
     # columns ("BL|EU"), stray emphasis, and tags. Show each table as printed,
     # cut from the page, and keep its cells behind the picture as its text, as
@@ -2562,6 +2652,7 @@ def _migrate_book(storage, key, known_source, items):
                     "hilde_version": None,
                     "git_commit": None,
                     "prompt_hash": None,
+                    "local_vision": None,
                     "schema_version": None,
                     "model": adaptation.get("model"),
                     "adapted": bool(adaptation),
@@ -5101,7 +5192,7 @@ def _layout_kinds(paragraphs):
             kind = "image" if MARKDOWN_IMAGE_PATTERN.search(text) else "labels"
         elif MARKDOWN_HEADING_PATTERN.fullmatch(text):
             kind = "heading"
-        elif CAPTION_PATTERN.match(plain):
+        elif CAPTION_PATTERN.match(plain) or BOLD_CAPTION_PATTERN.match(text.lstrip("> ")):
             kind = "caption"
         elif text.startswith(">") or FOOTNOTE_PATTERN.match(plain):
             kind = "footnote"
@@ -5593,7 +5684,7 @@ def _place_after_mentions(document, kinds, starts):
         for paragraph, kind in zip(document, kinds)
     ]
     following, moved = {}, 0
-    for start, end in _paper_units(kinds):
+    for start, end in _paper_units(document, kinds):
         if not set(kinds[start:end + 1]) & FIGURE_PART_KINDS:
             continue
         caption = next((
@@ -5796,7 +5887,15 @@ def join_pdf_pages(pages):
     return "\n\n".join(document), starts, rejoined, moved, notes
 
 
-def _paper_units(kinds):
+def _caption_name(text):
+    """("table", 4) for text that opens as a caption of Table 4 does, or None."""
+    match = CAPTION_NUMBER_PATTERN.match(_layout_text(text))
+    if match is None:
+        return None
+    return ("table" if match.group(1).lower().startswith("tab") else "figure", int(match.group(2)))
+
+
+def _paper_units(paragraphs, kinds):
     """Group paragraph indexes into a whole figure or table, or one paragraph."""
     units = []
     index = 0
@@ -5808,7 +5907,30 @@ def _paper_units(kinds):
             and kinds[index + 1] in FIGURE_PART_KINDS
         )
         if captioned:
-            index += 1  # a caption printed above its table or figure
+            # A visual with a caption on both sides takes the one its picture
+            # is named after, "![Table 4 …]", as extraction names a table.
+            # Figure 16's caption, printed under listings read as prose, sits
+            # right above CLM's Table 4, whose own caption is printed below
+            # it; taken first, it gave Table 4 Figure 16's caption (R24).
+            end = index + 1
+            while end + 1 < len(kinds) and kinds[end + 1] in FIGURE_PART_KINDS:
+                end += 1
+            named = {
+                _caption_name(image.group(1))
+                for paragraph in paragraphs[index + 1:end + 1]
+                for image in MARKDOWN_IMAGE_PATTERN.finditer(paragraph)
+            } - {None}
+            if (
+                end + 1 < len(kinds) and kinds[end + 1] == "caption"
+                and _caption_name(paragraphs[end + 1]) in named
+                and _caption_name(paragraphs[index]) not in named
+            ):
+                units.append((index, index))
+                index += 1
+                start = index
+                captioned = False
+            else:
+                index += 1  # a caption printed above its table or figure
         if kinds[index] in FIGURE_PART_KINDS:
             while index + 1 < len(kinds) and kinds[index + 1] in FIGURE_PART_KINDS:
                 index += 1
@@ -5860,7 +5982,7 @@ def paper_batches(paragraphs, per_worker):
     """
     kinds = _layout_kinds(paragraphs)
     units = []
-    for unit in _paper_units(kinds):
+    for unit in _paper_units(paragraphs, kinds):
         start, end = unit
         # A footnote goes with the paragraph citing it, so the model can say
         # what or whom it is about.
@@ -11119,6 +11241,13 @@ class AudiobookRun(Run):
             "prompt_hash": self.paper_run.prompt_version if adapted else None,
             "schema_version": EXTRACTION_SCHEMA,
             "model": self.paper_run.model if adapted else None,
+            # Whether figures reached a local model as images: without them it
+            # reads only their labels, and its descriptions differ (R24).
+            "local_vision": (
+                self.paper_run.local_vision
+                if adapted and self.paper_run.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
+                else None
+            ),
             "adapted": adapted,
             "chunk_max_chars": int(self.values["chunk_max_chars"]),
             "prose": self.paper_run.fidelity if adapted else None,

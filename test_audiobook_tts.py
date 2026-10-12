@@ -1118,6 +1118,23 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertTrue(cases.endswith("(5)"), cases)
         self.assertNotIn(")/(", cases)
         self.assertEqual(web.printed_equation_numbers([f"<!-- Start of picture text -->\n{cases}\n<!-- End of picture text -->"]), ["5"])
+        # A stacked one-half, set small, inside a bracket after a subscripted
+        # symbol (CLM's Equation 9): a fraction each time, and never a script
+        # of the symbol before the bracket, as "C_attn₂ … +₂¹" was.
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            x = 72
+            for text, size, y, step in (
+                ("F = C", 10, 100, 0), ("attn", 7, 102, 1), ("[", 10, 100, 0.5),
+                ("1", 7, 96, None), ("2", 7, 103.5, 0.5), ("(P + G) +", 10, 100, 0.5),
+                ("1", 7, 96, None), ("2", 7, 103.5, 0.5), ("G]", 10, 100, 0),
+            ):
+                page.insert_text((x, y), text, fontsize=size)
+                if step is not None:
+                    x += pymupdf.get_text_length(text, fontsize=size) + step
+            page.insert_text((300, 100), "(9)", fontsize=10)
+            half = functions["formula_text"](page, pymupdf.Rect(60, 85, 330, 112))
+        self.assertEqual(half, "F = C<sub>attn</sub> [(1)/(2)(P + G) +(1)/(2)G] (9)")
 
     def test_a_table_is_told_the_paragraphs_that_discuss_it(self):
         paragraphs = [
@@ -1208,6 +1225,75 @@ class PaperWorkflowTests(unittest.TestCase):
              for match in [re.fullmatch(r"!\[(.*)\]\(images/[^)]*-table-\d+\.png\)", p)] if match],
             [caption],
         )
+
+    def test_an_icon_in_a_line_of_text_is_no_figure(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+
+        def draw(page):
+            # CLM's first page sets a 5 pt logo in its link line; alone in a
+            # request, it had the model invent a figure.
+            icon = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 16, 16), False)
+            icon.set_rect(icon.irect, (30, 90, 200))
+            figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
+            figure.set_rect(figure.irect, (200, 90, 40))
+            for line in range(8):
+                page.insert_text((72, 100 + 14 * line), "Body text of the paper about context and models.", fontsize=10)
+            page.insert_text((72, 230), "Code: github.com/example/clm", fontsize=10)
+            page.insert_image(pymupdf.Rect(232, 222, 238, 229), pixmap=icon)
+            page.insert_image(pymupdf.Rect(150, 260, 450, 420), pixmap=figure)
+            page.insert_text((150, 436), "Figure 1: The method.", fontsize=9)
+            for line in range(10):
+                page.insert_text((72, 470 + 14 * line), "More body text follows the figure here.", fontsize=10)
+
+        paragraphs = self.converted_page(Path(temporary.name), draw)
+        self.assertEqual(len([p for p in paragraphs if p.startswith("![")]), 1, paragraphs)
+
+    def test_a_caption_labelled_in_bold_without_punctuation_names_its_table(self):
+        # The converter's own caption functions, on CLM's page 19: the layout
+        # files Table 3's caption, "**Table 3** The four …", as body text
+        # under the table, and Figure 15's as a caption under the next picture.
+        source = web._PDF_CONVERTER
+        start = source.index("# A caption opens with its number and punctuation")
+        markdown = (
+            "|Task|Metric|\n|---|---|\n|Needle|Recall|"
+            "**Table 3** The four ContextBench tasks.\n\n"
+            "**Figure 15** Context pressure of every level."
+        )
+        table_end = markdown.index("**Table 3**")
+        caption_end = markdown.index("**Figure 15**")
+        functions = {"re": re, "markdown": markdown, "boxes": [
+            {"class": "table", "pos": (0, table_end), "bbox": (95, 68, 517, 157)},
+            {"class": "text", "pos": (table_end, caption_end), "bbox": (70, 166, 542, 184)},
+            {"class": "caption", "pos": (caption_end, len(markdown)), "bbox": (70, 365, 542, 397)},
+        ]}
+        exec(source[start:source.index("def monospace_share")], functions)
+        self.assertEqual(functions["table_captions"]([0]), {0: "Table 3 The four ContextBench tasks."})
+
+    def test_a_bold_caption_without_punctuation_is_its_visuals(self):
+        paragraphs = [
+            "The plot compares four runs.",
+            "![](images/a.png)",
+            "<!-- Start of picture text -->Accuracy<!-- End of picture text -->",
+            "**Figure 6** CLMs outperform the summary harness.",
+            "Figure 6 shows the gap.",
+            "**Figure 16 Operations as the agent receives them.** Shortened where marked.",
+            "![Table 4 Excerpts of each skill.](images/page-0019-table-1.png)",
+            "<!-- Start of picture text -->|Method|Excerpt|<!-- End of picture text -->",
+            "**Table 4** Excerpts of each skill.",
+            "The skills differ in mechanism.",
+        ]
+        kinds = web._layout_kinds(paragraphs)
+        # A bold label opens a caption; a sentence about a figure does not.
+        self.assertEqual([kinds[3], kinds[4], kinds[5], kinds[8]], ["caption", "prose", "caption", "caption"])
+        # Between two captions, a table takes the one its picture is named
+        # after, not Figure 16's printed above it (CLM, page 19).
+        batches = web.paper_batches(paragraphs, 1)
+        self.assertEqual(batches, [(1, 1), (2, 4), (5, 5), (6, 6), (7, 9), (10, 10)])
+        self.assertEqual(web.visual_label(paragraphs[6:9], kinds[6:9]), "Table 4")
+
 
     def test_a_listing_cut_by_a_page_or_a_table_stays_whole_and_takes_no_sentence(self):
         def joined(*pages):
@@ -2545,6 +2631,7 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertRegex(record["prompt_hash"], r"^[0-9a-f]{64}$")
         self.assertIn("git_commit", record)
         self.assertEqual(record["model"], "lm-studio/faithful")
+        self.assertIs(record["local_vision"], False)
         self.assertEqual(record["chunk_max_chars"], 500)
         _, narration_sha256 = web.read_narration(storage.audiobooks / book)
         self.assertEqual(record["narration_sha256"], narration_sha256)

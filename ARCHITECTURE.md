@@ -239,7 +239,10 @@ and the full hash in `book.json`.
   checkout moves on while the server runs, or `null` outside a
   checkout), `prompt_hash` (the SHA-256 of the system prompt, `null` without
   adaptation), `schema_version` (`EXTRACTION_SCHEMA`, the paragraph-selection
-  rules the text was made under; unrelated to `schema`), `model`, `adapted`,
+  rules the text was made under; unrelated to `schema`), `model`,
+  `local_vision` (whether a local model got figures as images; `null` for a
+  cloud model, without adaptation, or for a book made before it was recorded;
+  without images Gemma 4 misread CLM's charts in every run, R24), `adapted`,
   `chunk_max_chars` (the chunk size its reader splits the text at), `prose`
   (`adaptation_fidelity()`), `seconds` for reading and adapting, and
   `narration_sha256`, the SHA-256 of `narration.json`'s bytes. `voices` lists
@@ -392,14 +395,19 @@ PDF work is page-addressable:
    printed and the model gets the picture and the cells. `caption_chains()`
    finds the caption boxes directly above and below each table; a box the
    layout files as body `text` counts when it opens a caption ("Table 6:",
-   `TABLE_CAPTION`), never a sentence about the table ("Table 5 lists…").
+   `TABLE_CAPTION`, or a bold label with nothing after the number, "**Table
+   3** The four…", `BOLD_TABLE_CAPTION`, as CLM prints every caption), never a
+   sentence about the table ("Table 5 lists…").
    `table_captions()` then gives each table one: a caption between a table and
    anything else is that table's, above before below, and one between two
    tables, as Table 1's sits over Table 2 when captions are printed below
    them (BERT), goes to whichever has none of its own, the nearer if both.
    No caption is used twice, and a caption box that opens another kind of
-   caption (`OTHER_CAPTION`: "Figure 1:", "Algorithm 2:") is never a table's,
-   as BERT's Figure 1 caption sits right above its Table 1.
+   caption (`OTHER_CAPTION`, `BOLD_OTHER_CAPTION`: "Figure 1:", "**Algorithm
+   2**") is never a table's, as BERT's Figure 1 caption sits right above its
+   Table 1. A `picture` box under 3% of the page's width and height, an icon
+   set in a line of text, is dropped: CLM's 5 pt link logo reached the model
+   alone, and the model invented a figure for it (R24).
    A listing set in a typewriter font (a program, a prompt, a skill file)
    comes out of the layout as many boxes, one per paragraph or list item,
    with a list item started wherever a line wraps and the font's spaces
@@ -419,7 +427,16 @@ PDF work is page-addressable:
    the span before it as `<sup>` or `<sub>` by its baseline, by the PDF's
    superscript flag for a whole exponent, nested, and a stacked fraction is
    written `(numerator)/(denominator)`, so "warmup_steps<sup>−1.5</sup>" no
-   longer reads "warmup_steps−1.5" and models raise the right term; a band of
+   longer reads "warmup_steps−1.5" and models raise the right term; no span
+   hangs from one ending in an operator, separator, or opening bracket
+   (`SCRIPTLESS`), from a base more than 0.6 text heights off its baseline, or
+   across a full-size glyph between them, so a small stacked ½ after "C_attn
+   [" is a fraction, not "C_attn₂ … +₂¹"; glyphs of a math-extension font
+   (`EXTENSION_FONT`: cmex, txex, pxex) are decoded from their codes
+   (`EXTENSION_GLYPHS`), private-use bracket pieces (`BRACKET_PIECES`) become
+   the bracket they build, and brace pieces are dropped, so CLM's tall
+   brackets no longer read "h … i"; a tall delimiter joins the line nearest
+   its middle, never a fraction; a band of
    text is a line of its own only when it holds a quarter of the heaviest
    band's text and sits 1.2 text heights or more from every heavier line, since
    a numerator sits 0.66 to 0.83 from its line and the positional encoding's
@@ -461,8 +478,12 @@ PDF work is page-addressable:
    with its caption: an image without a caption is usually an equation
    printed as a picture ("the complexity is [equation] where …") and stays
    inside its sentence; `paper_batches()` then sends it with both halves.
-   Captions are recognized as "Figure 2:", "Table 4.",
-   or "Figure 1 | …". A caption broken above its table or figure is mended
+   Captions are recognized as "Figure 2:", "Table 4.", "Figure 1 | …", or a
+   label set in bold with nothing after the number, "**Figure 6** CLMs…" or
+   "**Figure 6 CLMs….**" (`BOLD_CAPTION_PATTERN`; a sentence about a figure
+   is never bold). Missed, all 26 of CLM's captions were read as prose: every
+   figure reached the model without its caption, its number guessed, and
+   three figures cut sentences they did not interrupt. A caption broken above its table or figure is mended
    too. A sentence goes on behind a code mark (`` `test_normal` tasks``
    continues in lowercase). No sentence is joined into or onto a fenced
    listing (`_is_listing()`), and `_merge_listings()` makes a listing that a
@@ -541,8 +562,8 @@ or to `paper_batches()` bumps the extraction identity's `schema`.
 
 When adaptation is enabled:
 
-- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, roadmap sentences that announce later sections even without numbers, numbered cross-references except a figure's or table's own number, page furniture, citation machinery) is left out; headings keep the paper's own numbers and appendix letters as printed, one rule for every heading, never "Part" or "Section" added; tables (keeping the values that bound the comparison and the caption's caveats), formulas and notation (nested operations as steps, innermost first), long lists, runs of numbers, figures, and code are tuned down to their point; operations and sizes stay exact wherever math is spoken, the author's sentences included ("one over the square root of d k"); a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word, every quantity and every footnote statement included, in the author's voice;
-- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A captioned figure or table (`visual_label()` names it by its caption, "Table 3") is a batch of its own, never merged with the prose around it, so its narration is its description alone: one figure or table passage in `narration.json`. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link;
+- `paper_system_prompt()` combines the instructions in `prompts/PAPER-AUDIO-BOOK.md` with the transport contract. The instructions put the listener first: reader apparatus (contents and section lists, roadmap sentences that announce later sections even without numbers, numbered cross-references except a figure's or table's own number, page furniture, citation machinery) is left out; headings keep the paper's own numbers and appendix letters as printed, one rule for every heading, never "Part" or "Section" added; tables (keeping the values that bound the comparison and the caption's caveats), formulas and notation (nested operations as steps, innermost first), long lists, runs of numbers, figures, and code are tuned down to their point; operations and sizes stay exact wherever math is spoken, the author's sentences included ("one over the square root of d k"); a condition keeps which way it points, a sign of failure never restated as one of success (once its caption framed every row's check as "how to confirm that a step worked", Gemma turned CLM's Table 4 check "No note, or a token count that did not drop, means the batch is still in your context" into "success if a note appears or the token count drops" in 7 of 12 runs; with the rule inside the table rule, 9 of 12; as a rule of its own, 0 of 12, R24); a description of a figure, table, or standalone equation opens with a spoken cue that names it ("Figure 2 shows…", "The equation says…"), numbered only when the page gives the number; the author's prose stays word for word, every quantity and every footnote statement included, in the author's voice;
+- `paper_batches()` plans consecutive paragraph batches of up to **Paragraphs per worker**, but never splits a figure or table: its panel titles, images, the labels read from inside it, and its caption, above or below, are one unit, so one request describes it once, knowing its caption. A visual with a caption on each side takes the caption above unless its picture is named after the one below and not the one above (`_paper_units()`, `_caption_name()`: extraction names a table's picture "![Table 4 …]"); CLM's Figure 16 caption, printed under listings read as prose, sits right above its Table 4 and was taken as that table's (R24). A captioned figure or table (`visual_label()` names it by its caption, "Table 3") is a batch of its own, never merged with the prose around it, so its narration is its description alone: one figure or table passage in `narration.json`. Titled images without a caption, such as labelled equations, stay separate units, except an uncaptioned image between the halves of a sentence (`_continues_sentence()`), usually an equation printed as a picture: it joins both halves in one unit, so the model reads the sentence through with the equation in words instead of describing it between the halves. A rolling pool dispatches the batches to the chosen model, and each request's image attachments are the figures its paragraphs link;
 - `model_paragraphs()` gives the model each paragraph as it should see it. Extraction writes a panel title as a heading, so requests send it as `Panel title: …`; otherwise the model reads it out as a section of its own. A heading the paper numbers (`numbered_heading()`: `NUMBERED_HEADING_PATTERN`, "4 Why Self-Attention", "3.1. A Regularization View", "B. Baseline Methods", "II. Results"; a lone capital needs its period, so "A Short Paper" is a title) is a batch of its own that never reaches the model: its checkpoint is the heading's words as printed, so every heading of a book follows one rule. A model rendered RRSI's printed "1. Introduction", "B. Baseline Methods", and "C. Method Details" as "1 Introduction", "Appendix B. Baseline Methods", and "Appendix C Method Details" in one run. Unnumbered headings still go to the model;
 - prose batches carry the compacted summaries of earlier batches for continuity; a batch that is only a figure, table, or equation (`_describes_visual()`) goes alone, with no summaries (`paper_request()` with `None`), and is described from what it carries: its caption, labels or cells, and picture. Summaries are model-written, so with them any earlier difference changed every later description; alone, a description's request is the same on every run. It is told the author's own text about it instead, inside `<AUTHOR_CONTEXT>` elements the prompt says are for meaning only, never to be read or retold (`visual_context()`): the prose paragraphs that mention its caption's label ("Table 3") or its printed equation number, nearest first, and for an equation (`_visual_type()`, or a printed number) the prose just before and after it. A figure or table gets only paragraphs that name it: the prose beside Attention's appendix figures is its Acknowledgements, and beside CLM's Figure 6, whose caption extraction missed, half a sentence of another section, with which Gemma swapped two models' scores in 1 of 3 tries and never without it; at most `VISUAL_CONTEXT_PARAGRAPHS` and `VISUAL_CONTEXT_CHARS`, each without a bold run-in heading (`RUN_IN_HEADING_PATTERN`): given "Complexity-Aware Acceptance. For a candidate H′ … let", Gemma called RRSI's cost Ĉ "complexity" in 3 of 3 runs, and "cost" without the heading. Without it, Table 3's correct cells were described with d v for d k, and label smoothing judged by perplexity alone, because §5.4 and §6.2 never reached the request (R21-01, R21-02). An earlier try that quoted the author's paragraphs unmarked was dropped because the model read them out in the description; the elements and the rule are what keep them out. `defined_acronyms()` lists the acronyms the author spelled out ("Wall Street Journal (WSJ)", checked letter by letter against the words before it) in the paragraphs before each batch, computed from the source so it does not depend on which batches finish first; the prompt expands an acronym only where the author does, once;
 - `reference_entries()` reads the numbered reference list from the whole source, before it is left out: each entry that opens a paragraph, follows another inside one, or follows the References heading extraction ran it into, as every author's surname (split at commas, "and", and "&"), with at least three entries. `resolve_citations()` then settles each numbered citation in a request in code. Citations joined by "and" or a comma (`CITATION_CHAIN_JOIN`) are one chain, so "such as [17, 18] and [9]" is decided once; a citation after ", and" that is the subject of its clause (`CITATION_CLAUSE_START`, a lowercase word after it), as in "as shown in [30], and [9] later extended it", starts its own and is named. A chain the sentence needs (`CITATION_NEEDED_BEFORE`: after "similar to", "as in", "following", or opening a sentence or clause) becomes whom it cites (`cited_as()`): one work its authors, "Press and Wolf" or "Ba and colleagues"; several their first authors, "Kalchbrenner and Gehring", "Wu, Bahdanau, and Gehring"; a work the list lacks is "earlier work", left out beside named ones. Any other chain, a parenthetical "networks [13]", is removed, as the prompt removes citation numbers. Handing the model "[Hochreiter and Schmidhuber, 1997]" made it read such brackets aloud, years and all; settled, it never guesses whom "[30]" means and never reads a parenthetical source;
