@@ -1,0 +1,2795 @@
+{
+ "schema": 2,
+ "original_view": true,
+ "passages": [
+  {
+   "id": 1,
+   "type": "heading",
+   "page": 1,
+   "text": "# A Certainty Equivalent Merton Problem",
+   "original_text": "# A Certainty Equivalent Merton Problem",
+   "unchanged": true,
+   "paragraphs": [
+    0,
+    0
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 1,
+     "text": "# A Certainty Equivalent Merton Problem"
+    }
+   ],
+   "summary": "# A Certainty Equivalent Merton Problem",
+   "tags": []
+  },
+  {
+   "id": 2,
+   "type": "body",
+   "page": 1,
+   "text": "Nicholas Moehle Stephen Boyd",
+   "original_text": "Nicholas Moehle Stephen Boyd",
+   "unchanged": true,
+   "paragraphs": [
+    1,
+    1
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 1,
+     "text": "Nicholas Moehle Stephen Boyd"
+    }
+   ],
+   "summary": "Nicholas Moehle Stephen Boyd",
+   "tags": []
+  },
+  {
+   "id": 3,
+   "type": "body",
+   "page": 1,
+   "text": "January 27, 2021",
+   "original_text": "January 27, 2021",
+   "unchanged": true,
+   "paragraphs": [
+    2,
+    2
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 1,
+     "text": "January 27, 2021"
+    }
+   ],
+   "summary": "January 27, 2021",
+   "tags": []
+  },
+  {
+   "id": 4,
+   "type": "heading",
+   "page": 1,
+   "text": "### Abstract",
+   "original_text": "### Abstract",
+   "unchanged": true,
+   "paragraphs": [
+    3,
+    3
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 1,
+     "text": "### Abstract"
+    }
+   ],
+   "summary": "### Abstract",
+   "tags": []
+  },
+  {
+   "id": 5,
+   "type": "body",
+   "page": 1,
+   "text": "The Merton problem is the well-known stochastic control problem of choosing consumption over time, as well as an investment mix, to maximize expected constant relative risk aversion (CRRA) utility of consumption. Merton formulated the problem and provided an analytical solution in 1970; since then a number of extensions of the original formulation have been solved. In this note we identify a certainty equivalent problem, i.e., a deterministic optimal control problem with the same optimal value function and optimal policy, for the base Merton problem, as well as a number of extensions. When time is discretized, the certainty equivalent problem becomes a second-order cone program (SOCP), readily formulated and solved using domain specific languages for convex optimization. This makes it a good starting point for model predictive control, a policy that can handle extensions that are either too cumbersome or impossible to handle exactly using standard dynamic programming methods.",
+   "original_text": "The Merton problem is the well-known stochastic control problem of choosing consumption over time, as well as an investment mix, to maximize expected constant relative risk aversion (CRRA) utility of consumption. Merton formulated the problem and provided an analytical solution in 1970; since then a number of extensions of the original formulation have been solved. In this note we identify a certainty equivalent problem, i.e., a deterministic optimal control problem with the same optimal value function and optimal policy, for the base Merton problem, as well as a number of extensions. When time is discretized, the certainty equivalent problem becomes a second-order cone program (SOCP), readily formulated and solved using domain specific languages for convex optimization. This makes it a good starting point for model predictive control, a policy that can handle extensions that are either too cumbersome or impossible to handle exactly using standard dynamic programming methods.",
+   "unchanged": true,
+   "paragraphs": [
+    4,
+    4
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 1,
+     "text": "The Merton problem is the well-known stochastic control problem of choosing consumption over time, as well as an investment mix, to maximize expected constant relative risk aversion (CRRA) utility of consumption. Merton formulated the problem and provided an analytical solution in 1970; since then a number of extensions of the original formulation have been solved. In this note we identify a certainty equivalent problem, i.e., a deterministic optimal control problem with the same optimal value function and optimal policy, for the base Merton problem, as well as a number of extensions. When time is discretized, the certainty equivalent problem becomes a second-order cone program (SOCP), readily formulated and solved using domain specific languages for convex optimization. This makes it a good starting point for model predictive control, a policy that can handle extensions that are either too cumbersome or impossible to handle exactly using standard dynamic programming methods."
+    }
+   ],
+   "summary": "The Merton problem is the well-known stochastic control problem of choosing consumption over time, as well as an investment mix, to maximize expected constant relative risk aversion (CRRA) utility of consumption. Merton formulated the problem and provided an analytical solution in 1970; since then a number of extensions of the original formulation have been solved. In this note we identify a certainty equivalent problem, i.e., a deterministic optimal control problem with the same optimal value function and optimal policy, for the base Merton problem, as well as a number of extensions. When time is discretized, the certainty equivalent problem becomes a second-order cone program (SOCP), readily formulated and solved using domain specific languages for convex optimization. This makes it a good starting point for model predictive control, a policy that can handle extensions that are either too cumbersome or impossible to handle exactly using standard dynamic programming methods.",
+   "tags": []
+  },
+  {
+   "id": 6,
+   "type": "heading",
+   "page": 1,
+   "text": "1 Introduction",
+   "original_text": "## 1 Introduction",
+   "unchanged": true,
+   "paragraphs": [
+    5,
+    5
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 1,
+     "text": "## 1 Introduction"
+    }
+   ],
+   "summary": "1 Introduction",
+   "tags": []
+  },
+  {
+   "id": 7,
+   "type": "body",
+   "page": 1,
+   "text": "We revisit Merton’s seminal 1970 formulation (and solution) of the consumption and investment decisions of an individual investor. We present a formulation of Merton’s problem as a deterministic convex optimal control problem, and in particular, a second-order cone program (SOCP) when time is discretized. Even though the Merton problem was first solved more than 50 years ago, its reformulation as a deterministic convex optimization problem provides fresh insight into the solution of the stochastic problem that may be useful for formulating other multiperiod investment problems as convex optimization problems.",
+   "original_text": "We revisit Merton’s seminal 1970 formulation (and solution) of the consumption and investment decisions of an individual investor. We present a formulation of Merton’s problem as a deterministic convex optimal control problem, and in particular, a second-order cone program (SOCP) when time is discretized. Even though the Merton problem was first solved more than 50 years ago, its reformulation as a deterministic convex optimization problem provides fresh insight into the solution of the stochastic problem that may be useful for formulating other multiperiod investment problems as convex optimization problems.",
+   "unchanged": true,
+   "paragraphs": [
+    6,
+    6
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 1,
+     "text": "We revisit Merton’s seminal 1970 formulation (and solution) of the consumption and investment decisions of an individual investor. We present a formulation of Merton’s problem as a deterministic convex optimal control problem, and in particular, a second-order cone program (SOCP) when time is discretized. Even though the Merton problem was first solved more than 50 years ago, its reformulation as a deterministic convex optimization problem provides fresh insight into the solution of the stochastic problem that may be useful for formulating other multiperiod investment problems as convex optimization problems."
+    }
+   ],
+   "summary": "We revisit Merton’s seminal 1970 formulation (and solution) of the consumption and investment decisions of an individual investor. We present a formulation of Merton’s problem as a deterministic convex optimal control problem, and in particular, a second-order cone program (SOCP) when time is discretized. Even though the Merton problem was first solved more than 50 years ago, its reformulation as a deterministic convex optimization problem provides fresh insight into the solution of the stochastic problem that may be useful for formulating other multiperiod investment problems as convex optimization problems.",
+   "tags": []
+  },
+  {
+   "id": 8,
+   "type": "body",
+   "page": 1,
+   "text": "We also see two practical advantages to the certainty equivalent formulation. First, for extensions of the Merton problem for which a solution is known, working out the optimal policy can be complex and error prone. To handle these extensions with the certainty equivalent form, we simply add the appropriate terms to the objective or constraints, to obtain the optimal policy. The problem specification is straightforward and transparent, especially when expressed in a domain specific language (DSL) for convex optimization, such as cvxpy [DB16].",
+   "original_text": "We also see two practical advantages to the certainty equivalent formulation. First, for extensions of the Merton problem for which a solution is known, working out the optimal policy can be complex and error prone. To handle these extensions with the certainty equivalent form, we simply add the appropriate terms to the objective or constraints, to obtain the optimal policy. The problem specification is straightforward and transparent, especially when expressed in a domain specific language (DSL) for convex optimization, such as cvxpy [DB16].",
+   "unchanged": true,
+   "paragraphs": [
+    7,
+    7
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 1,
+     "text": "We also see two practical advantages to the certainty equivalent formulation. First, for extensions of the Merton problem for which a solution is known, working out the optimal policy can be complex and error prone. To handle these extensions with the certainty equivalent form, we simply add the appropriate terms to the objective or constraints, to obtain the optimal policy. The problem specification is straightforward and transparent, especially when expressed in a domain specific language (DSL) for convex optimization, such as cvxpy [DB16]."
+    }
+   ],
+   "summary": "We also see two practical advantages to the certainty equivalent formulation. First, for extensions of the Merton problem for which a solution is known, working out the optimal policy can be complex and error prone. To handle these extensions with the certainty equivalent form, we simply add the appropriate terms to the objective or constraints, to obtain the optimal policy. The problem specification is straightforward and transparent, especially when expressed in a domain specific language (DSL) for convex optimization, such as cvxpy [DB16].",
+   "tags": []
+  },
+  {
+   "id": 9,
+   "type": "body",
+   "page": 2,
+   "text": "The second and perhaps more significant advantage is that the certainty equivalent problem can be used as a starting point for further extensions of the Merton problem, for which no closed-form solutions are known. In this case, the certainty equivalence property is lost, and solving the deterministic problem no longer solves the corresponding stochastic problem exactly. We can, however, still use model predictive control (MPC), a method that involves online convex optimization, to develop a policy that handles the extension. MPC policies are simple, easy to implement, fully interpretable, and have excellent (if not always optimal) practical performance.",
+   "original_text": "The second and perhaps more significant advantage is that the certainty equivalent problem can be used as a starting point for further extensions of the Merton problem, for which no closed-form solutions are known. In this case, the certainty equivalence property is lost, and solving the deterministic problem no longer solves the corresponding stochastic problem exactly. We can, however, still use model predictive control (MPC), a method that involves online convex optimization, to develop a policy that handles the extension. MPC policies are simple, easy to implement, fully interpretable, and have excellent (if not always optimal) practical performance.",
+   "unchanged": true,
+   "paragraphs": [
+    8,
+    8
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 2,
+     "text": "The second and perhaps more significant advantage is that the certainty equivalent problem can be used as a starting point for further extensions of the Merton problem, for which no closed-form solutions are known. In this case, the certainty equivalence property is lost, and solving the deterministic problem no longer solves the corresponding stochastic problem exactly. We can, however, still use model predictive control (MPC), a method that involves online convex optimization, to develop a policy that handles the extension. MPC policies are simple, easy to implement, fully interpretable, and have excellent (if not always optimal) practical performance."
+    }
+   ],
+   "summary": "The second and perhaps more significant advantage is that the certainty equivalent problem can be used as a starting point for further extensions of the Merton problem, for which no closed-form solutions are known. In this case, the certainty equivalence property is lost, and solving the deterministic problem no longer solves the corresponding stochastic problem exactly. We can, however, still use model predictive control (MPC), a method that involves online convex optimization, to develop a policy that handles the extension. MPC policies are simple, easy to implement, fully interpretable, and have excellent (if not always optimal) practical performance.",
+   "tags": []
+  },
+  {
+   "id": 10,
+   "type": "heading",
+   "page": 2,
+   "text": "1.1 Previous work",
+   "original_text": "# 1.1 Previous work",
+   "unchanged": true,
+   "paragraphs": [
+    9,
+    9
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 2,
+     "text": "# 1.1 Previous work"
+    }
+   ],
+   "summary": "1.1 Previous work",
+   "tags": []
+  },
+  {
+   "id": 11,
+   "type": "body",
+   "page": 2,
+   "text": "Merton’s problem. Merton’s consumption–investment problem dates back to his original 1970 paper [Mer70]. Many extensions to the basic Merton problem exist, some of which were covered in Merton’s original paper. (These include deterministic income and general HARA utility.) Most proposed extensions do not have a closed-form solution, but some that do include uncertain mortality, life insurance, and annuities, first adressed by [Ric75]. Some extensions for the specific case of quadratic utility are handled in [BC10]. We note that many of these extensions individually lead to complicated solutions, and deriving the optimal policy when several extensions are combined may be very inconvenient for a practical implementation.",
+   "original_text": "Merton’s problem. Merton’s consumption–investment problem dates back to his original 1970 paper [Mer70]. Many extensions to the basic Merton problem exist, some of which were covered in Merton’s original paper. (These include deterministic income and general HARA utility.) Most proposed extensions do not have a closed-form solution, but some that do include uncertain mortality, life insurance, and annuities, first adressed by [Ric75]. Some extensions for the specific case of quadratic utility are handled in [BC10]. We note that many of these extensions individually lead to complicated solutions, and deriving the optimal policy when several extensions are combined may be very inconvenient for a practical implementation.",
+   "unchanged": true,
+   "paragraphs": [
+    10,
+    10
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 2,
+     "text": "Merton’s problem. Merton’s consumption–investment problem dates back to his original 1970 paper [Mer70]. Many extensions to the basic Merton problem exist, some of which were covered in Merton’s original paper. (These include deterministic income and general HARA utility.) Most proposed extensions do not have a closed-form solution, but some that do include uncertain mortality, life insurance, and annuities, first adressed by [Ric75]. Some extensions for the specific case of quadratic utility are handled in [BC10]. We note that many of these extensions individually lead to complicated solutions, and deriving the optimal policy when several extensions are combined may be very inconvenient for a practical implementation."
+    }
+   ],
+   "summary": "Merton’s problem. Merton’s consumption–investment problem dates back to his original 1970 paper [Mer70]. Many extensions to the basic Merton problem exist, some of which were covered in Merton’s original paper. (These include deterministic income and general HARA utility.) Most proposed extensions do not have a closed-form solution, but some that do include uncertain mortality, life insurance, and annuities, first adressed by [Ric75]. Some extensions for the specific case of quadratic utility are handled in [BC10]. We note that many of these extensions individually lead to complicated solutions, and deriving the optimal policy when several extensions are combined may be very inconvenient for a practical implementation.",
+   "tags": []
+  },
+  {
+   "id": 12,
+   "type": "body",
+   "page": 2,
+   "text": "Certainty equivalence. Rarely, stochastic control problems have a certainty equivalent formulation, i.e., a deterministic optimal control problem with the same optimal policy. The most famous example is the linear quadratic regulator (LQR) problem, in which the dynamics are affine, driven by additive noise, and the stage costs are convex quadratic [BB18], [Ber17, §3.1], [KS72, §3]. In this case, the certainty equivalent problem is obtained by simply ignoring the stochastic noise term. Many extensions to linear quadratic control also have a certainty equivalent reformulation. Examples include the linear quadratic Guassian problem, in which the state is imperfectly observed [KS72, §5], and linear exponential quadratic regulator (LEQR) problem, which uses a risk-sensitive cost function [Whi90]. Our certainty equivalent formulation is similar to LEQR in that the uncertain quantity is adversarial [Whi90, §10.2]. (For the Merton problem, the uncertain quantity is the investment returns.)",
+   "original_text": "Certainty equivalence. Rarely, stochastic control problems have a certainty equivalent formulation, i.e., a deterministic optimal control problem with the same optimal policy. The most famous example is the linear quadratic regulator (LQR) problem, in which the dynamics are affine, driven by additive noise, and the stage costs are convex quadratic [BB18], [Ber17, §3.1], [KS72, §3]. In this case, the certainty equivalent problem is obtained by simply ignoring the stochastic noise term. Many extensions to linear quadratic control also have a certainty equivalent reformulation. Examples include the linear quadratic Guassian problem, in which the state is imperfectly observed [KS72, §5], and linear exponential quadratic regulator (LEQR) problem, which uses a risk-sensitive cost function [Whi90]. Our certainty equivalent formulation is similar to LEQR in that the uncertain quantity is adversarial [Whi90, §10.2]. (For the Merton problem, the uncertain quantity is the investment returns.)",
+   "unchanged": true,
+   "paragraphs": [
+    11,
+    11
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 2,
+     "text": "Certainty equivalence. Rarely, stochastic control problems have a certainty equivalent formulation, i.e., a deterministic optimal control problem with the same optimal policy. The most famous example is the linear quadratic regulator (LQR) problem, in which the dynamics are affine, driven by additive noise, and the stage costs are convex quadratic [BB18], [Ber17, §3.1], [KS72, §3]. In this case, the certainty equivalent problem is obtained by simply ignoring the stochastic noise term. Many extensions to linear quadratic control also have a certainty equivalent reformulation. Examples include the linear quadratic Guassian problem, in which the state is imperfectly observed [KS72, §5], and linear exponential quadratic regulator (LEQR) problem, which uses a risk-sensitive cost function [Whi90]. Our certainty equivalent formulation is similar to LEQR in that the uncertain quantity is adversarial [Whi90, §10.2]. (For the Merton problem, the uncertain quantity is the investment returns.)"
+    }
+   ],
+   "summary": "Certainty equivalence. Rarely, stochastic control problems have a certainty equivalent formulation, i.e., a deterministic optimal control problem with the same optimal policy. The most famous example is the linear quadratic regulator (LQR) problem, in which the dynamics are affine, driven by additive noise, and the stage costs are convex quadratic [BB18], [Ber17, §3.1], [KS72, §3]. In this case, the certainty equivalent problem is obtained by simply ignoring the stochastic noise term. Many extensions to linear quadratic control also have a certainty equivalent reformulation. Examples include the linear quadratic Guassian problem, in which the state is imperfectly observed [KS72, §5], and linear exponential quadratic regulator (LEQR) problem, which uses a risk-sensitive cost function [Whi90]. Our certainty equivalent formulation is similar to LEQR in that the uncertain quantity is adversarial [Whi90, §10.2]. (For the Merton problem, the uncertain quantity is the investment returns.)",
+   "tags": []
+  },
+  {
+   "id": 13,
+   "type": "body",
+   "page": 2,
+   "text": "Model predictive control. In model predictive control, unknown values of future parameters are replaced with estimates or forecasts over a planning horizon extending from the current time to some time in the future, resulting in a deterministic optimal control problem. This problem is solved, with the result intrepretable as a plan of action over the planning horizon. The MPC policy simply uses the current or first value in the plan of action. This planning is repeated when updated forecasts are available, using the updated forecasts and current state. When applied in the context of stochastic control, MPC policies are not optimal in general, but often exhibit excellent practical performance, and are widely used in several application areas. MPC is discussed in detail in [BBM17; KH06]. In [Boy+14], the authors use a computational bound to show that MPC is nearly optimal for some stochastic control problems in finance.",
+   "original_text": "Model predictive control. In model predictive control, unknown values of future parameters are replaced with estimates or forecasts over a planning horizon extending from the current time to some time in the future, resulting in a deterministic optimal control problem. This problem is solved, with the result intrepretable as a plan of action over the planning horizon. The MPC policy simply uses the current or first value in the plan of action. This planning is repeated when updated forecasts are available, using the updated forecasts and current state. When applied in the context of stochastic control, MPC policies are not optimal in general, but often exhibit excellent practical performance, and are widely used in several application areas. MPC is discussed in detail in [BBM17; KH06]. In [Boy+14], the authors use a computational bound to show that MPC is nearly optimal for some stochastic control problems in finance.",
+   "unchanged": true,
+   "paragraphs": [
+    12,
+    12
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 2,
+     "text": "Model predictive control. In model predictive control, unknown values of future parameters are replaced with estimates or forecasts over a planning horizon extending from the current time to some time in the future, resulting in a deterministic optimal control problem. This problem is solved, with the result intrepretable as a plan of action over the planning horizon. The MPC policy simply uses the current or first value in the plan of action. This planning is repeated when updated forecasts are available, using the updated forecasts and current state. When applied in the context of stochastic control, MPC policies are not optimal in general, but often exhibit excellent practical performance, and are widely used in several application areas. MPC is discussed in detail in [BBM17; KH06]. In [Boy+14], the authors use a computational bound to show that MPC is nearly optimal for some stochastic control problems in finance."
+    }
+   ],
+   "summary": "Model predictive control. In model predictive control, unknown values of future parameters are replaced with estimates or forecasts over a planning horizon extending from the current time to some time in the future, resulting in a deterministic optimal control problem. This problem is solved, with the result intrepretable as a plan of action over the planning horizon. The MPC policy simply uses the current or first value in the plan of action. This planning is repeated when updated forecasts are available, using the updated forecasts and current state. When applied in the context of stochastic control, MPC policies are not optimal in general, but often exhibit excellent practical performance, and are widely used in several application areas. MPC is discussed in detail in [BBM17; KH06]. In [Boy+14], the authors use a computational bound to show that MPC is nearly optimal for some stochastic control problems in finance.",
+   "tags": []
+  },
+  {
+   "id": 14,
+   "type": "body",
+   "page": 3,
+   "text": "As discussed above, ignoring uncertainty is in fact optimal for linear quadratic control, and MPC leads to an optimal policy when applied to LQR. In this sense, MPC can be interpreted as applying certainty-equivalence beyond where it is theoretically justified in order to obtain a good heuristic control policy [Ber17, §4.3]. For the Merton problem, we also propose to use a certainty equivalent problem as the basis of an MPC control policy, even when certain extensions to the base problem ruin exact certainty equivalence.",
+   "original_text": "As discussed above, ignoring uncertainty is in fact optimal for linear quadratic control, and MPC leads to an optimal policy when applied to LQR. In this sense, MPC can be interpreted as applying certainty-equivalence beyond where it is theoretically justified in order to obtain a good heuristic control policy [Ber17, §4.3]. For the Merton problem, we also propose to use a certainty equivalent problem as the basis of an MPC control policy, even when certain extensions to the base problem ruin exact certainty equivalence.",
+   "unchanged": true,
+   "paragraphs": [
+    13,
+    13
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 3,
+     "text": "As discussed above, ignoring uncertainty is in fact optimal for linear quadratic control, and MPC leads to an optimal policy when applied to LQR. In this sense, MPC can be interpreted as applying certainty-equivalence beyond where it is theoretically justified in order to obtain a good heuristic control policy [Ber17, §4.3]. For the Merton problem, we also propose to use a certainty equivalent problem as the basis of an MPC control policy, even when certain extensions to the base problem ruin exact certainty equivalence."
+    }
+   ],
+   "summary": "As discussed above, ignoring uncertainty is in fact optimal for linear quadratic control, and MPC leads to an optimal policy when applied to LQR. In this sense, MPC can be interpreted as applying certainty-equivalence beyond where it is theoretically justified in order to obtain a good heuristic control policy [Ber17, §4.3]. For the Merton problem, we also propose to use a certainty equivalent problem as the basis of an MPC control policy, even when certain extensions to the base problem ruin exact certainty equivalence.",
+   "tags": []
+  },
+  {
+   "id": 15,
+   "type": "body",
+   "page": 3,
+   "text": "While MPC has been used in practical applications for decades, recent advances make it very attractive, and easy, to develop and deploy. First, DSLs for convex optimization allow the control policy to be expressed in a few lines of very simple and clear code, that express the dynamics, objective, and constraints, which makes it easier to develop, debug, and maintain (for example by adding or updating a constraint). Code generation systems such as cvxgen [MB12] can be used to generate low-level code for that solves the problem specified, which is suitable for use in high speed embedded applications [WB09]. In the context of the present paper, this means that the MPC policy we propose in §6 can be very conveniently implemented.",
+   "original_text": "While MPC has been used in practical applications for decades, recent advances make it very attractive, and easy, to develop and deploy. First, DSLs for convex optimization allow the control policy to be expressed in a few lines of very simple and clear code, that express the dynamics, objective, and constraints, which makes it easier to develop, debug, and maintain (for example by adding or updating a constraint). Code generation systems such as cvxgen [MB12] can be used to generate low-level code for that solves the problem specified, which is suitable for use in high speed embedded applications [WB09]. In the context of the present paper, this means that the MPC policy we propose in §6 can be very conveniently implemented.",
+   "unchanged": true,
+   "paragraphs": [
+    14,
+    14
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 3,
+     "text": "While MPC has been used in practical applications for decades, recent advances make it very attractive, and easy, to develop and deploy. First, DSLs for convex optimization allow the control policy to be expressed in a few lines of very simple and clear code, that express the dynamics, objective, and constraints, which makes it easier to develop, debug, and maintain (for example by adding or updating a constraint). Code generation systems such as cvxgen [MB12] can be used to generate low-level code for that solves the problem specified, which is suitable for use in high speed embedded applications [WB09]. In the context of the present paper, this means that the MPC policy we propose in §6 can be very conveniently implemented."
+    }
+   ],
+   "summary": "While MPC has been used in practical applications for decades, recent advances make it very attractive, and easy, to develop and deploy. First, DSLs for convex optimization allow the control policy to be expressed in a few lines of very simple and clear code, that express the dynamics, objective, and constraints, which makes it easier to develop, debug, and maintain (for example by adding or updating a constraint). Code generation systems such as cvxgen [MB12] can be used to generate low-level code for that solves the problem specified, which is suitable for use in high speed embedded applications [WB09]. In the context of the present paper, this means that the MPC policy we propose in §6 can be very conveniently implemented.",
+   "tags": []
+  },
+  {
+   "id": 16,
+   "type": "body",
+   "page": 3,
+   "text": "Multi-period portfolio optimization. It is instructive to compare our certainty equivalent problem to popular formulations of multi-period portfolio allocation (See [Boy+17] and references therein). There are two features present in our certainty equivalent problem that we do not see in practical multiperiod portfolio construction problems in the literature: 1. The risk term (which is quadratic in the dollar-valued asset allocation vector x<sub>t</sub>), is normalized by the total wealth w<sub>t</sub>, which is also is a decision variable. This risk term is jointly convex in x<sub>t</sub> and w<sub>t</sub> (and is in fact SOCP representable). With this normalization, risk preferences are consistent even as the wealth w<sub>t</sub> changes over the investment horizon.",
+   "original_text": "Multi-period portfolio optimization. It is instructive to compare our certainty equivalent problem to popular formulations of multi-period portfolio allocation (See [Boy+17] and references therein). There are two features present in our certainty equivalent problem that we do not see in practical multiperiod portfolio construction problems in the literature: 1. The risk term (which is quadratic in the dollar-valued asset allocation vector x<sub>t</sub>), is normalized by the total wealth w<sub>t</sub>, which is also is a decision variable. This risk term is jointly convex in x<sub>t</sub> and w<sub>t</sub> (and is in fact SOCP representable). With this normalization, risk preferences are consistent even as the wealth w<sub>t</sub> changes over the investment horizon.",
+   "unchanged": true,
+   "paragraphs": [
+    15,
+    15
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 3,
+     "text": "Multi-period portfolio optimization. It is instructive to compare our certainty equivalent problem to popular formulations of multi-period portfolio allocation (See [Boy+17] and references therein). There are two features present in our certainty equivalent problem that we do not see in practical multiperiod portfolio construction problems in the literature: 1. The risk term (which is quadratic in the dollar-valued asset allocation vector x<sub>t</sub>), is normalized by the total wealth w<sub>t</sub>, which is also is a decision variable. This risk term is jointly convex in x<sub>t</sub> and w<sub>t</sub> (and is in fact SOCP representable). With this normalization, risk preferences are consistent even as the wealth w<sub>t</sub> changes over the investment horizon."
+    }
+   ],
+   "summary": "Multi-period portfolio optimization. It is instructive to compare our certainty equivalent problem to popular formulations of multi-period portfolio allocation (See [Boy+17] and references therein). There are two features present in our certainty equivalent problem that we do not see in practical multiperiod portfolio construction problems in the literature: 1. The risk term (which is quadratic in the dollar-valued asset allocation vector x<sub>t</sub>), is normalized by the total wealth w<sub>t</sub>, which is also is a decision variable. This risk term is jointly convex in x<sub>t</sub> and w<sub>t</sub> (and is in fact SOCP representable). With this normalization, risk preferences are consistent even as the wealth w<sub>t</sub> changes over the investment horizon.",
+   "tags": []
+  },
+  {
+   "id": 17,
+   "type": "body",
+   "page": 3,
+   "text": "2. The risk term is included as a penalty in the dynamics, i.e., by taking more risk now, one should expected to have lower wealth in the future. This contrasts with the tradition of penalizing risk in the objective function.",
+   "original_text": "2. The risk term is included as a penalty in the dynamics, i.e., by taking more risk now, one should expected to have lower wealth in the future. This contrasts with the tradition of penalizing risk in the objective function.",
+   "unchanged": true,
+   "paragraphs": [
+    16,
+    16
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 3,
+     "text": "2. The risk term is included as a penalty in the dynamics, i.e., by taking more risk now, one should expected to have lower wealth in the future. This contrasts with the tradition of penalizing risk in the objective function."
+    }
+   ],
+   "summary": "2. The risk term is included as a penalty in the dynamics, i.e., by taking more risk now, one should expected to have lower wealth in the future. This contrasts with the tradition of penalizing risk in the objective function.",
+   "tags": []
+  },
+  {
+   "id": 18,
+   "type": "body",
+   "page": 3,
+   "text": "We believe these to be valuable improvements to standard multi-period portfolio construction formulations, especially in cases when the control or optimization is over a very long time period.",
+   "original_text": "We believe these to be valuable improvements to standard multi-period portfolio construction formulations, especially in cases when the control or optimization is over a very long time period.",
+   "unchanged": true,
+   "paragraphs": [
+    17,
+    17
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 3,
+     "text": "We believe these to be valuable improvements to standard multi-period portfolio construction formulations, especially in cases when the control or optimization is over a very long time period."
+    }
+   ],
+   "summary": "We believe these to be valuable improvements to standard multi-period portfolio construction formulations, especially in cases when the control or optimization is over a very long time period.",
+   "tags": []
+  },
+  {
+   "id": 19,
+   "type": "heading",
+   "page": 4,
+   "text": "1.2 Outline",
+   "original_text": "## 1.2 Outline",
+   "unchanged": true,
+   "paragraphs": [
+    18,
+    18
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 4,
+     "text": "## 1.2 Outline"
+    }
+   ],
+   "summary": "1.2 Outline",
+   "tags": []
+  },
+  {
+   "id": 20,
+   "type": "body",
+   "page": 4,
+   "text": "In §2, we give the base Merton problem and review its solution, for future reference. In §3, we give a certainty equivalent problem and prove equivalence. In §4, discuss several extensions to the Merton problem, and show how each one changes the certainty equivalent formulation. In §6, we discuss how to use the certainty equivalent problem for model predictive control.",
+   "original_text": "In §2, we give the base Merton problem and review its solution, for future reference. In §3, we give a certainty equivalent problem and prove equivalence. In §4, discuss several extensions to the Merton problem, and show how each one changes the certainty equivalent formulation. In §6, we discuss how to use the certainty equivalent problem for model predictive control.",
+   "unchanged": true,
+   "paragraphs": [
+    19,
+    19
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "In §2, we give the base Merton problem and review its solution, for future reference. In §3, we give a certainty equivalent problem and prove equivalence. In §4, discuss several extensions to the Merton problem, and show how each one changes the certainty equivalent formulation. In §6, we discuss how to use the certainty equivalent problem for model predictive control."
+    }
+   ],
+   "summary": "In §2, we give the base Merton problem and review its solution, for future reference. In §3, we give a certainty equivalent problem and prove equivalence. In §4, discuss several extensions to the Merton problem, and show how each one changes the certainty equivalent formulation. In §6, we discuss how to use the certainty equivalent problem for model predictive control.",
+   "tags": []
+  },
+  {
+   "id": 21,
+   "type": "heading",
+   "page": 4,
+   "text": "2 Merton problem",
+   "original_text": "# 2 Merton problem",
+   "unchanged": true,
+   "paragraphs": [
+    20,
+    20
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 4,
+     "text": "# 2 Merton problem"
+    }
+   ],
+   "summary": "2 Merton problem",
+   "tags": []
+  },
+  {
+   "id": 22,
+   "type": "body",
+   "page": 4,
+   "text": "In this section we discuss the Merton problem and its solution. To keep the proofs concise, we consider the most basic form of this problem; extensions are considered in §4. Our formulation is in continuous time and relies on stochastic calculus. However, to maintain both brevity and accessibility, we are cavalier about the technical details, with the assumption that a sophisticated reader can fill in the gaps, or consult other references.",
+   "original_text": "In this section we discuss the Merton problem and its solution. To keep the proofs concise, we consider the most basic form of this problem; extensions are considered in §4. Our formulation is in continuous time and relies on stochastic calculus. However, to maintain both brevity and accessibility, we are cavalier about the technical details, with the assumption that a sophisticated reader can fill in the gaps, or consult other references.",
+   "unchanged": true,
+   "paragraphs": [
+    21,
+    21
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "In this section we discuss the Merton problem and its solution. To keep the proofs concise, we consider the most basic form of this problem; extensions are considered in §4. Our formulation is in continuous time and relies on stochastic calculus. However, to maintain both brevity and accessibility, we are cavalier about the technical details, with the assumption that a sophisticated reader can fill in the gaps, or consult other references."
+    }
+   ],
+   "summary": "In this section we discuss the Merton problem and its solution. To keep the proofs concise, we consider the most basic form of this problem; extensions are considered in §4. Our formulation is in continuous time and relies on stochastic calculus. However, to maintain both brevity and accessibility, we are cavalier about the technical details, with the assumption that a sophisticated reader can fill in the gaps, or consult other references.",
+   "tags": []
+  },
+  {
+   "id": 23,
+   "type": "body",
+   "page": 4,
+   "text": "Dynamics. An investor must choose how to invest and consume over a lifetime of T years. The investor has wealth w<sub>t</sub> > 0 at time t, and consumes wealth at rate ct > 0, for t ∈ [0, T ], with the remaining wealth invested in a portfolio with mean rate of return µ<sub>t</sub> and volatility σ<sub>t</sub>. The wealth dynamics are a geometric random walk,\n\n![](images/merton.pdf-0004-05.png)\n\n<!-- Start of picture text -->\ndw<sub>t</sub> = (µ<sub>t</sub> w<sub>t</sub> − c<sub>t</sub>) dt + σ<sub>t</sub> w<sub>t</sub> dzt,\n<!-- End of picture text -->\n\nwhere z<sub>t</sub> is a Brownian motion. The initial condition is w<sub>0</sub> = w<sub>init</sub> > 0.",
+   "original_text": "Dynamics. An investor must choose how to invest and consume over a lifetime of T years. The investor has wealth w<sub>t</sub> > 0 at time t, and consumes wealth at rate ct > 0, for t ∈ [0, T ], with the remaining wealth invested in a portfolio with mean rate of return µ<sub>t</sub> and volatility σ<sub>t</sub>. The wealth dynamics are a geometric random walk,\n\nwhere z<sub>t</sub> is a Brownian motion. The initial condition is w<sub>0</sub> = w<sub>init</sub> > 0.",
+   "unchanged": false,
+   "paragraphs": [
+    22,
+    25
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "Dynamics. An investor must choose how to invest and consume over a lifetime of T years. The investor has wealth w<sub>t</sub> > 0 at time t, and consumes wealth at rate ct > 0, for t ∈ [0, T ], with the remaining wealth invested in a portfolio with mean rate of return µ<sub>t</sub> and volatility σ<sub>t</sub>. The wealth dynamics are a geometric random walk,"
+    },
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "![](images/merton.pdf-0004-05.png)"
+    },
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "<!-- Start of picture text -->\ndw<sub>t</sub> = (µ<sub>t</sub> w<sub>t</sub> − c<sub>t</sub>) dt + σ<sub>t</sub> w<sub>t</sub> dzt,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 4,
+     "text": "where z<sub>t</sub> is a Brownian motion. The initial condition is w<sub>0</sub> = w<sub>init</sub> > 0."
+    }
+   ],
+   "summary": "Dynamics. An investor must choose how to invest and consume over a lifetime of T years. The investor has wealth w<sub>t</sub> > 0 at time t, and consumes wealth at rate ct > 0, for t ∈ [0, T ], with the remaining wealth invested in a portfolio with mean rate of return µ<sub>t</sub> and volatility σ<sub>t</sub>. The wealth dynamics are a geometric random walk, ![](images/merton.pdf-0004-05.png) <!-- Start of picture text --> dw<sub>t</sub> = (µ<sub>t</sub> w<sub>t</sub> − c<sub>t</sub>) dt + σ<sub>t</sub> w<sub>t</sub> dzt, <!-- End of picture text --> where z<sub>t</sub> is a Brownian motion. The initial condition is w<sub>0</sub> = w<sub>init</sub> > 0.",
+   "tags": []
+  },
+  {
+   "id": 24,
+   "type": "body",
+   "page": 4,
+   "text": "Investment portfolio. The portfolio consists of n assets, with an investment mix given by the fractional allocation θ<sub>t</sub>, with 1<sup>T</sup> θ<sub>t</sub> = 1 (where 1 is the vector with all entries one). Thus we invest (w<sub>t</sub>θ<sub>t</sub>)i dollars in asset i, with a negative value denoting a short position. The portfolio return rate and volatility are given by\n\n![](images/merton.pdf-0004-08.png)\n\n<!-- Start of picture text -->\nµ<sub>t</sub> = µ<sup>T</sup> θ<sub>t</sub>, σ<sub>t</sub> = (θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>)<sup>1/2</sup>,\n<!-- End of picture text -->\n\nwhere µ ∈ R<sup>n</sup> is the mean of the return process, and Σ is the symmetric positive definite covariance. (Note that we use the time-varying scalar µ<sub>t</sub> to denote the portfolio return as a function of time, and the vector µ to denote the constant expected return rates of the n assets.)",
+   "original_text": "Investment portfolio. The portfolio consists of n assets, with an investment mix given by the fractional allocation θ<sub>t</sub>, with 1<sup>T</sup> θ<sub>t</sub> = 1 (where 1 is the vector with all entries one). Thus we invest (w<sub>t</sub>θ<sub>t</sub>)i dollars in asset i, with a negative value denoting a short position. The portfolio return rate and volatility are given by\n\nwhere µ ∈ R<sup>n</sup> is the mean of the return process, and Σ is the symmetric positive definite covariance. (Note that we use the time-varying scalar µ<sub>t</sub> to denote the portfolio return as a function of time, and the vector µ to denote the constant expected return rates of the n assets.)",
+   "unchanged": false,
+   "paragraphs": [
+    26,
+    29
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "Investment portfolio. The portfolio consists of n assets, with an investment mix given by the fractional allocation θ<sub>t</sub>, with 1<sup>T</sup> θ<sub>t</sub> = 1 (where 1 is the vector with all entries one). Thus we invest (w<sub>t</sub>θ<sub>t</sub>)i dollars in asset i, with a negative value denoting a short position. The portfolio return rate and volatility are given by"
+    },
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "![](images/merton.pdf-0004-08.png)"
+    },
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "<!-- Start of picture text -->\nµ<sub>t</sub> = µ<sup>T</sup> θ<sub>t</sub>, σ<sub>t</sub> = (θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>)<sup>1/2</sup>,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 4,
+     "text": "where µ ∈ R<sup>n</sup> is the mean of the return process, and Σ is the symmetric positive definite covariance. (Note that we use the time-varying scalar µ<sub>t</sub> to denote the portfolio return as a function of time, and the vector µ to denote the constant expected return rates of the n assets.)"
+    }
+   ],
+   "summary": "Investment portfolio. The portfolio consists of n assets, with an investment mix given by the fractional allocation θ<sub>t</sub>, with 1<sup>T</sup> θ<sub>t</sub> = 1 (where 1 is the vector with all entries one). Thus we invest (w<sub>t</sub>θ<sub>t</sub>)i dollars in asset i, with a negative value denoting a short position. The portfolio return rate and volatility are given by ![](images/merton.pdf-0004-08.png) <!-- Start of picture text --> µ<sub>t</sub> = µ<sup>T</sup> θ<sub>t</sub>, σ<sub>t</sub> = (θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>)<sup>1/2</sup>, <!-- End of picture text --> where µ ∈ R<sup>n</sup> is the mean of the return process, and Σ is the symmetric positive definite covariance. (Note that we use the time-varying scalar µ<sub>t</sub> to denote the portfolio return as a function of time, and the vector µ to denote the constant expected return rates of the n assets.)",
+   "tags": []
+  },
+  {
+   "id": 25,
+   "type": "body",
+   "page": 4,
+   "text": "The investment allocation decision θ<sub>t</sub> satisfies 1<sup>T</sup> θ<sub>t</sub> = 1, as well as other investment constraints, which we summarize as θ<sub>t</sub> ∈ Θ, where Θ is a convex set. These could include risk limits, sector exposure limits, or concentration limits. (See [Boy+17, §4.4] for an overview of convex investment constraints.) For notational convenience, we assume every θ<sub>t</sub> ∈ Θ satisfies 1<sup>T</sup> θ<sub>t</sub> = 1.",
+   "original_text": "The investment allocation decision θ<sub>t</sub> satisfies 1<sup>T</sup> θ<sub>t</sub> = 1, as well as other investment constraints, which we summarize as θ<sub>t</sub> ∈ Θ, where Θ is a convex set. These could include risk limits, sector exposure limits, or concentration limits. (See [Boy+17, §4.4] for an overview of convex investment constraints.) For notational convenience, we assume every θ<sub>t</sub> ∈ Θ satisfies 1<sup>T</sup> θ<sub>t</sub> = 1.",
+   "unchanged": true,
+   "paragraphs": [
+    30,
+    30
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "The investment allocation decision θ<sub>t</sub> satisfies 1<sup>T</sup> θ<sub>t</sub> = 1, as well as other investment constraints, which we summarize as θ<sub>t</sub> ∈ Θ, where Θ is a convex set. These could include risk limits, sector exposure limits, or concentration limits. (See [Boy+17, §4.4] for an overview of convex investment constraints.) For notational convenience, we assume every θ<sub>t</sub> ∈ Θ satisfies 1<sup>T</sup> θ<sub>t</sub> = 1."
+    }
+   ],
+   "summary": "The investment allocation decision θ<sub>t</sub> satisfies 1<sup>T</sup> θ<sub>t</sub> = 1, as well as other investment constraints, which we summarize as θ<sub>t</sub> ∈ Θ, where Θ is a convex set. These could include risk limits, sector exposure limits, or concentration limits. (See [Boy+17, §4.4] for an overview of convex investment constraints.) For notational convenience, we assume every θ<sub>t</sub> ∈ Θ satisfies 1<sup>T</sup> θ<sub>t</sub> = 1.",
+   "tags": []
+  },
+  {
+   "id": 26,
+   "type": "body",
+   "page": 4,
+   "text": "With the portfolio return and volatility we obtain the wealth dynamics",
+   "original_text": "With the portfolio return and volatility we obtain the wealth dynamics",
+   "unchanged": true,
+   "paragraphs": [
+    31,
+    31
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 4,
+     "text": "With the portfolio return and volatility we obtain the wealth dynamics"
+    }
+   ],
+   "summary": "With the portfolio return and volatility we obtain the wealth dynamics",
+   "tags": []
+  },
+  {
+   "id": 27,
+   "type": "equation",
+   "page": 4,
+   "text": "Equation 1 says that the change in wealth, d w t, equals the quantity mu transpose times theta t times w t minus c t, multiplied by d t, plus the square root of theta t transpose times Sigma t times theta t, multiplied by w t times d z t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    32,
+    32
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "![](images/merton.pdf-0004-12.png)"
+    },
+    {
+     "type": "equation",
+     "page": 4,
+     "text": "<!-- Start of picture text -->\ndw<sub>t</sub> = (µ<sup>T</sup> θ<sub>t</sub> w<sub>t</sub> − c<sub>t</sub>) dt + \u0000θ<sub>t</sub><sup>T</sup> Σ<sup>t</sup> θ<sup>t</sup> \u0001<sub>1/2</sub> w<sub>t</sub> dzt. (1)\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "Equation 1 defines the wealth dynamics of the investor.",
+   "tags": [
+    "wealth dynamics",
+    "stochastic differential equation"
+   ]
+  },
+  {
+   "id": 28,
+   "type": "body",
+   "page": 5,
+   "text": "Utility. The investor has lifetime consumption utility �0T<sup>c</sup> t<sup>γ/γdt and bequest utility</sup> wT<sup>γ/γ.Theriskaversionparameterγsatisfiesγ< 1andγ̸=0.Theinvestor’stotal</sup> expec<sub>t</sub>ed utility is\n\n![](images/merton.pdf-0005-01.png)\n\n<!-- Start of picture text -->\n\u0012 Z<sub>T</sub> \u0013 U = E (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt . (2)\n<!-- End of picture text -->\n\nThe parameter β > 0 trades off consumption and bequest utility.",
+   "original_text": "Utility. The investor has lifetime consumption utility �0T<sup>c</sup> t<sup>γ/γdt and bequest utility</sup> wT<sup>γ/γ.Theriskaversionparameterγsatisfiesγ< 1andγ̸=0.Theinvestor’stotal</sup> expec<sub>t</sub>ed utility is\n\nThe parameter β > 0 trades off consumption and bequest utility.",
+   "unchanged": false,
+   "paragraphs": [
+    33,
+    36
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "Utility. The investor has lifetime consumption utility �0T<sup>c</sup> t<sup>γ/γdt and bequest utility</sup> wT<sup>γ/γ.Theriskaversionparameterγsatisfiesγ< 1andγ̸=0.Theinvestor’stotal</sup> expec<sub>t</sub>ed utility is"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "![](images/merton.pdf-0005-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "<!-- Start of picture text -->\n\u0012 Z<sub>T</sub> \u0013 U = E (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt . (2)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 5,
+     "text": "The parameter β > 0 trades off consumption and bequest utility."
+    }
+   ],
+   "summary": "Utility. The investor has lifetime consumption utility �0T<sup>c</sup> t<sup>γ/γdt and bequest utility</sup> wT<sup>γ/γ.Theriskaversionparameterγsatisfiesγ< 1andγ̸=0.Theinvestor’stotal</sup> expec<sub>t</sub>ed utility is ![](images/merton.pdf-0005-01.png) <!-- Start of picture text --> \u0012 Z<sub>T</sub> \u0013 U = E (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt . (2) <!-- End of picture text --> The parameter β > 0 trades off consumption and bequest utility.",
+   "tags": []
+  },
+  {
+   "id": 29,
+   "type": "body",
+   "page": 5,
+   "text": "Stochastic control problem. At each time t, the investor chooses the consumption ct and the investment allocation θ<sub>t</sub>. A policy maps the time t and the current wealth w<sub>t</sub> to the consumption c<sub>t</sub> and the allocation θ<sub>t</sub>, which we write as\n\n![](images/merton.pdf-0005-04.png)\n\n<!-- Start of picture text -->\n(c<sub>t</sub>, θ<sub>t</sub>) = π<sub>t</sub> (w<sub>t</sub>), (3)\n<!-- End of picture text -->\n\nwhere for each t ∈ [0, T ], π<sub>t</sub> : R<sub>++</sub> → R<sub>++</sub> × Θ. (Here R<sub>++</sub> denotes the set of positive real numbers.) The Merton problem is to choose a policy π<sub>t</sub>, t ∈ [0, T ], to maximize U.",
+   "original_text": "Stochastic control problem. At each time t, the investor chooses the consumption ct and the investment allocation θ<sub>t</sub>. A policy maps the time t and the current wealth w<sub>t</sub> to the consumption c<sub>t</sub> and the allocation θ<sub>t</sub>, which we write as\n\nwhere for each t ∈ [0, T ], π<sub>t</sub> : R<sub>++</sub> → R<sub>++</sub> × Θ. (Here R<sub>++</sub> denotes the set of positive real numbers.) The Merton problem is to choose a policy π<sub>t</sub>, t ∈ [0, T ], to maximize U.",
+   "unchanged": false,
+   "paragraphs": [
+    37,
+    40
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "Stochastic control problem. At each time t, the investor chooses the consumption ct and the investment allocation θ<sub>t</sub>. A policy maps the time t and the current wealth w<sub>t</sub> to the consumption c<sub>t</sub> and the allocation θ<sub>t</sub>, which we write as"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "![](images/merton.pdf-0005-04.png)"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "<!-- Start of picture text -->\n(c<sub>t</sub>, θ<sub>t</sub>) = π<sub>t</sub> (w<sub>t</sub>), (3)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 5,
+     "text": "where for each t ∈ [0, T ], π<sub>t</sub> : R<sub>++</sub> → R<sub>++</sub> × Θ. (Here R<sub>++</sub> denotes the set of positive real numbers.) The Merton problem is to choose a policy π<sub>t</sub>, t ∈ [0, T ], to maximize U."
+    }
+   ],
+   "summary": "Stochastic control problem. At each time t, the investor chooses the consumption ct and the investment allocation θ<sub>t</sub>. A policy maps the time t and the current wealth w<sub>t</sub> to the consumption c<sub>t</sub> and the allocation θ<sub>t</sub>, which we write as ![](images/merton.pdf-0005-04.png) <!-- Start of picture text --> (c<sub>t</sub>, θ<sub>t</sub>) = π<sub>t</sub> (w<sub>t</sub>), (3) <!-- End of picture text --> where for each t ∈ [0, T ], π<sub>t</sub> : R<sub>++</sub> → R<sub>++</sub> × Θ. (Here R<sub>++</sub> denotes the set of positive real numbers.) The Merton problem is to choose a policy π<sub>t</sub>, t ∈ [0, T ], to maximize U.",
+   "tags": []
+  },
+  {
+   "id": 30,
+   "type": "heading",
+   "page": 5,
+   "text": "2.1 Solution via dynamic programming",
+   "original_text": "# 2.1 Solution via dynamic programming",
+   "unchanged": true,
+   "paragraphs": [
+    41,
+    41
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 5,
+     "text": "# 2.1 Solution via dynamic programming"
+    }
+   ],
+   "summary": "2.1 Solution via dynamic programming",
+   "tags": []
+  },
+  {
+   "id": 31,
+   "type": "body",
+   "page": 5,
+   "text": "We review here the solution of the Merton problem via dynamic programming, for completeness and also for future reference.",
+   "original_text": "We review here the solution of the Merton problem via dynamic programming, for completeness and also for future reference.",
+   "unchanged": true,
+   "paragraphs": [
+    42,
+    42
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "We review here the solution of the Merton problem via dynamic programming, for completeness and also for future reference."
+    }
+   ],
+   "summary": "We review here the solution of the Merton problem via dynamic programming, for completeness and also for future reference.",
+   "tags": []
+  },
+  {
+   "id": 32,
+   "type": "body",
+   "page": 5,
+   "text": "Value function. The value function V<sub>t</sub> : R<sub>++</sub> → R, for t ∈ [0, T ], is defined as\n\n![](images/merton.pdf-0005-09.png)\n\n<!-- Start of picture text -->\nV<sub>t</sub> (w) = E (\u0012β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>t</sub> Z<sub>T</sub> (1)/(γ)c<sub>τ</sub><sup>γ</sup> dτ\u0013,\n<!-- End of picture text -->\n\nwith c<sub>τ</sub> and θ<sub>τ</sub> following an optimal policy for τ ∈ [t, T ], and initial condition w<sub>t</sub> = w. We define V<sub>T</sub> (w) = (B/γ)w<sup>γ</sup> for w > 0.",
+   "original_text": "Value function. The value function V<sub>t</sub> : R<sub>++</sub> → R, for t ∈ [0, T ], is defined as\n\nwith c<sub>τ</sub> and θ<sub>τ</sub> following an optimal policy for τ ∈ [t, T ], and initial condition w<sub>t</sub> = w. We define V<sub>T</sub> (w) = (B/γ)w<sup>γ</sup> for w > 0.",
+   "unchanged": false,
+   "paragraphs": [
+    43,
+    46
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "Value function. The value function V<sub>t</sub> : R<sub>++</sub> → R, for t ∈ [0, T ], is defined as"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "![](images/merton.pdf-0005-09.png)"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "<!-- Start of picture text -->\nV<sub>t</sub> (w) = E (\u0012β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>t</sub> Z<sub>T</sub> (1)/(γ)c<sub>τ</sub><sup>γ</sup> dτ\u0013,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 5,
+     "text": "with c<sub>τ</sub> and θ<sub>τ</sub> following an optimal policy for τ ∈ [t, T ], and initial condition w<sub>t</sub> = w. We define V<sub>T</sub> (w) = (B/γ)w<sup>γ</sup> for w > 0."
+    }
+   ],
+   "summary": "Value function. The value function V<sub>t</sub> : R<sub>++</sub> → R, for t ∈ [0, T ], is defined as ![](images/merton.pdf-0005-09.png) <!-- Start of picture text --> V<sub>t</sub> (w) = E (\u0012β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>t</sub> Z<sub>T</sub> (1)/(γ)c<sub>τ</sub><sup>γ</sup> dτ\u0013, <!-- End of picture text --> with c<sub>τ</sub> and θ<sub>τ</sub> following an optimal policy for τ ∈ [t, T ], and initial condition w<sub>t</sub> = w. We define V<sub>T</sub> (w) = (B/γ)w<sup>γ</sup> for w > 0.",
+   "tags": []
+  },
+  {
+   "id": 33,
+   "type": "body",
+   "page": 5,
+   "text": "If the value function is sufficiently smooth, it satisfies the Hamilton-Jacobi-Bellman PDE\n\n![](images/merton.pdf-0005-12.png)\n\n<!-- Start of picture text -->\n−V<sub>t</sub>˙ (w) =<sub>c,θ∈</sub> sup<sub>Θ</sub> (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013 (4)\n<!-- End of picture text -->\n\nfor w > 0. Conversely, any function satisfying (4) and the terminal condition V<sub>T</sub> = 0 is the value function. Here V<sup>˙</sup> t denotes the partial derivative of V with respect to time, and V<sub>t</sub><sup>′andV</sup> t<sup>′′denotethefirstandsecondpartialderivativeswithrespectto</sup> the wealth.",
+   "original_text": "If the value function is sufficiently smooth, it satisfies the Hamilton-Jacobi-Bellman PDE\n\nfor w > 0. Conversely, any function satisfying (4) and the terminal condition V<sub>T</sub> = 0 is the value function. Here V<sup>˙</sup> t denotes the partial derivative of V with respect to time, and V<sub>t</sub><sup>′andV</sup> t<sup>′′denotethefirstandsecondpartialderivativeswithrespectto</sup> the wealth.",
+   "unchanged": false,
+   "paragraphs": [
+    47,
+    50
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "If the value function is sufficiently smooth, it satisfies the Hamilton-Jacobi-Bellman PDE"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "![](images/merton.pdf-0005-12.png)"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "<!-- Start of picture text -->\n−V<sub>t</sub>˙ (w) =<sub>c,θ∈</sub> sup<sub>Θ</sub> (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013 (4)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 5,
+     "text": "for w > 0. Conversely, any function satisfying (4) and the terminal condition V<sub>T</sub> = 0 is the value function. Here V<sup>˙</sup> t denotes the partial derivative of V with respect to time, and V<sub>t</sub><sup>′andV</sup> t<sup>′′denotethefirstandsecondpartialderivativeswithrespectto</sup> the wealth."
+    }
+   ],
+   "summary": "If the value function is sufficiently smooth, it satisfies the Hamilton-Jacobi-Bellman PDE ![](images/merton.pdf-0005-12.png) <!-- Start of picture text --> −V<sub>t</sub>˙ (w) =<sub>c,θ∈</sub> sup<sub>Θ</sub> (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013 (4) <!-- End of picture text --> for w > 0. Conversely, any function satisfying (4) and the terminal condition V<sub>T</sub> = 0 is the value function. Here V<sup>˙</sup> t denotes the partial derivative of V with respect to time, and V<sub>t</sub><sup>′andV</sup> t<sup>′′denotethefirstandsecondpartialderivativeswithrespectto</sup> the wealth.",
+   "tags": []
+  },
+  {
+   "id": 34,
+   "type": "body",
+   "page": 5,
+   "text": "It is well known that the value function for the Merton problem is\n\n![](images/merton.pdf-0005-15.png)\n\n<!-- Start of picture text -->\nV<sub>t</sub> (w) = a<sub>t</sub> (w<sup>γ</sup>)/(γ), (5)\n<!-- End of picture text -->\n\nwhere a<sub>t</sub> is a function of time. To obtain a<sub>t</sub>, we first solve a Markowitz portfolio allocation problem,\n\n![](images/merton.pdf-0006-01.png)\n\n<!-- Start of picture text -->\nmaximize µ<sup>T</sup> θ + (γ − 1)/(2)θ<sup>T</sup> Σθ subject to θ ∈ Θ, (6)\n<!-- End of picture text -->\n\nwith variable θ. (Since γ − 1 < 0, the second term is a concave risk adjustment.) We let r<sub>ce</sub> denote the optimal value, and we denote the solution as θ<sub>ce</sub>. We then have, for t ∈ [0, T ],\n\n![](images/merton.pdf-0006-03.png)\n\n<!-- Start of picture text -->\n\u0012 \u0012 \u0010 \u0011\u0013\u0013<sup>1−γ</sup> a<sub>t</sub> = (1 − γ)/(γr<sub>ce</sub>) 1 − C exp (γr<sub>ce</sub>)/(1 − γ) (T − t), (7)\n<!-- End of picture text -->\n\nwhere C = 1 − γr<sub>ce</sub>β<sup>1/(1−γ)</sup> /(1 − γ).",
+   "original_text": "It is well known that the value function for the Merton problem is\n\nwhere a<sub>t</sub> is a function of time. To obtain a<sub>t</sub>, we first solve a Markowitz portfolio allocation problem,\n\nwith variable θ. (Since γ − 1 < 0, the second term is a concave risk adjustment.) We let r<sub>ce</sub> denote the optimal value, and we denote the solution as θ<sub>ce</sub>. We then have, for t ∈ [0, T ],\n\nwhere C = 1 − γr<sub>ce</sub>β<sup>1/(1−γ)</sup> /(1 − γ).",
+   "unchanged": false,
+   "paragraphs": [
+    51,
+    60
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 5,
+     "text": "It is well known that the value function for the Merton problem is"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "![](images/merton.pdf-0005-15.png)"
+    },
+    {
+     "type": "equation",
+     "page": 5,
+     "text": "<!-- Start of picture text -->\nV<sub>t</sub> (w) = a<sub>t</sub> (w<sup>γ</sup>)/(γ), (5)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 6,
+     "text": "where a<sub>t</sub> is a function of time. To obtain a<sub>t</sub>, we first solve a Markowitz portfolio allocation problem,"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\nmaximize µ<sup>T</sup> θ + (γ − 1)/(2)θ<sup>T</sup> Σθ subject to θ ∈ Θ, (6)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 6,
+     "text": "with variable θ. (Since γ − 1 < 0, the second term is a concave risk adjustment.) We let r<sub>ce</sub> denote the optimal value, and we denote the solution as θ<sub>ce</sub>. We then have, for t ∈ [0, T ],"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-03.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\n\u0012 \u0012 \u0010 \u0011\u0013\u0013<sup>1−γ</sup> a<sub>t</sub> = (1 − γ)/(γr<sub>ce</sub>) 1 − C exp (γr<sub>ce</sub>)/(1 − γ) (T − t), (7)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 6,
+     "text": "where C = 1 − γr<sub>ce</sub>β<sup>1/(1−γ)</sup> /(1 − γ)."
+    }
+   ],
+   "summary": "It is well known that the value function for the Merton problem is ![](images/merton.pdf-0005-15.png) <!-- Start of picture text --> V<sub>t</sub> (w) = a<sub>t</sub> (w<sup>γ</sup>)/(γ), (5) <!-- End of picture text --> where a<sub>t</sub> is a function of time. To obtain a<sub>t</sub>, we first solve a Markowitz portfolio allocation problem, ![](images/merton.pdf-0006-01.png) <!-- Start of picture text --> maximize µ<sup>T</sup> θ + (γ − 1)/(2)θ<sup>T</sup> Σθ subject to θ ∈ Θ, (6) <!-- End of picture text --> with variable θ. (Since γ − 1 < 0, the second term is a concave risk adjustment.) We let r<sub>ce</sub> denote the optimal value, and we denote the solution as θ<sub>ce</sub>. We then have, for t ∈ [0, T ], ![](images/merton.pdf-0006-03.png) <!-- Start of picture text --> \u0012 \u0012 \u0010 \u0011\u0013\u0013<sup>1−γ</sup> a<sub>t</sub> = (1 − γ)/(γr<sub>ce</sub>) 1 − C exp (γr<sub>ce</sub>)/(1 − γ) (T − t), (7) <!-- End of picture text --> where C = 1 − γr<sub>ce</sub>β<sup>1/(1−γ)</sup> /(1 − γ).",
+   "tags": []
+  },
+  {
+   "id": 35,
+   "type": "body",
+   "page": 6,
+   "text": "Optimal policy. The optimal policy can be expressed in terms of the value function as\n\n![](images/merton.pdf-0006-06.png)\n\n<!-- Start of picture text -->\nπ<sub>t</sub><sup>⋆</sup> (w) = (c<sup>t</sup>, θ<sup>t<sub>c,θ∈Θ</sub></sup>) = argmax (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013.\n<!-- End of picture text -->\n\nWith the value function (5), we obtain the following optimal policy. The consumption has the simple form\n\n![](images/merton.pdf-0006-08.png)\n\n<!-- Start of picture text -->\nct = a(1/(γ−1))/(t)wt,\n<!-- End of picture text -->\n\nand the optimal investment mix is constant over time,",
+   "original_text": "Optimal policy. The optimal policy can be expressed in terms of the value function as\n\nWith the value function (5), we obtain the following optimal policy. The consumption has the simple form\n\nand the optimal investment mix is constant over time,",
+   "unchanged": false,
+   "paragraphs": [
+    61,
+    67
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 6,
+     "text": "Optimal policy. The optimal policy can be expressed in terms of the value function as"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-06.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\nπ<sub>t</sub><sup>⋆</sup> (w) = (c<sup>t</sup>, θ<sup>t<sub>c,θ∈Θ</sub></sup>) = argmax (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013.\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 6,
+     "text": "With the value function (5), we obtain the following optimal policy. The consumption has the simple form"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-08.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\nct = a(1/(γ−1))/(t)wt,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 6,
+     "text": "and the optimal investment mix is constant over time,"
+    }
+   ],
+   "summary": "Optimal policy. The optimal policy can be expressed in terms of the value function as ![](images/merton.pdf-0006-06.png) <!-- Start of picture text --> π<sub>t</sub><sup>⋆</sup> (w) = (c<sup>t</sup>, θ<sup>t<sub>c,θ∈Θ</sub></sup>) = argmax (\u0012 1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w)(µ<sup>T</sup> θw − c) + (1)/(2)V<sub>t<sup>′′</sup></sub> (w)(θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013. <!-- End of picture text --> With the value function (5), we obtain the following optimal policy. The consumption has the simple form ![](images/merton.pdf-0006-08.png) <!-- Start of picture text --> ct = a(1/(γ−1))/(t)wt, <!-- End of picture text --> and the optimal investment mix is constant over time,",
+   "tags": []
+  },
+  {
+   "id": 36,
+   "type": "equation",
+   "page": 6,
+   "text": "The equation says that theta t equals theta ce.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    68,
+    68
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-10.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\nθ<sub>t</sub> = θ<sub>ce</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "An equation stating that theta t is equal to theta ce.",
+   "tags": [
+    "merton problem",
+    "investment mix"
+   ]
+  },
+  {
+   "id": 37,
+   "type": "body",
+   "page": 6,
+   "text": "(In extensions of the Merton problem, described below, the optimal investment mix is not constant over time.)",
+   "original_text": "(In extensions of the Merton problem, described below, the optimal investment mix is not constant over time.)",
+   "unchanged": true,
+   "paragraphs": [
+    69,
+    69
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 6,
+     "text": "(In extensions of the Merton problem, described below, the optimal investment mix is not constant over time.)"
+    }
+   ],
+   "summary": "(In extensions of the Merton problem, described below, the optimal investment mix is not constant over time.)",
+   "tags": []
+  },
+  {
+   "id": 38,
+   "type": "body",
+   "page": 6,
+   "text": "Proof of optimality. Here we show that the function (5) satisfies the HamiltonJacobi-Bellman PDE. To do this, first we substitute V<sup>˙</sup> , V<sub>t</sub><sup>′andV</sup> t<sup>′′into(4)toobtain</sup>",
+   "original_text": "Proof of optimality. Here we show that the function (5) satisfies the HamiltonJacobi-Bellman PDE. To do this, first we substitute V<sup>˙</sup> , V<sub>t</sub><sup>′andV</sup> t<sup>′′into(4)toobtain</sup>",
+   "unchanged": true,
+   "paragraphs": [
+    70,
+    70
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 6,
+     "text": "Proof of optimality. Here we show that the function (5) satisfies the HamiltonJacobi-Bellman PDE. To do this, first we substitute V<sup>˙</sup> , V<sub>t</sub><sup>′andV</sup> t<sup>′′into(4)toobtain</sup>"
+    }
+   ],
+   "summary": "Proof of optimality. Here we show that the function (5) satisfies the HamiltonJacobi-Bellman PDE. To do this, first we substitute V<sup>˙</sup> , V<sub>t</sub><sup>′andV</sup> t<sup>′′into(4)toobtain</sup>",
+   "tags": []
+  },
+  {
+   "id": 39,
+   "type": "equation",
+   "page": 6,
+   "text": "The equation shows that negative a t times w raised to the power of gamma, divided by gamma, equals the supremum over c and theta in theta of the following expression: one over gamma times c raised to the power of gamma, plus a t times w raised to the power of negative 1 multiplied by the quantity mu transpose theta w minus c, plus one half times a t times gamma minus 1 times w raised to the power of negative 2 multiplied by the quantity theta transpose sigma theta times w squared.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    71,
+    71
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-13.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\n− z<sup>V (w)˙</sup> }| { a<sub>t</sub>˙ w<sup>γ</sup> γ =<sub>c,θ∈</sub> sup<sub>Θ</sub> \u0012 1 γ c<sup>γ</sup> + z<sup>V<sup>′<sub>(</sub></sup></sup> }|<sup>γ−1w)</sup> { a<sub>t</sub> w (µ<sup>T</sup> θw − c) + 1 2 z<sup>V<sup>′′<sub>(</sub></sup></sup> }|<sup>w)</sup> { a<sub>t</sub> (γ − 1)w<sup>γ−2</sup> (θ<sup>T</sup> Σθ)w<sup>2</sup> \u0013 .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation representing a supremum over c and theta. It relates the time derivative of the value function to a combination of power utility and portfolio dynamics.",
+   "tags": [
+    "optimal control",
+    "hamilton-jacobi-bellman",
+    "merton problem"
+   ],
+   "flags": [
+    "the narration says “raised to the power of negative 1 multiplied by”, which leaves unclear what is raised",
+    "the narration says “raised to the power of negative 2 multiplied by”, which leaves unclear what is raised"
+   ]
+  },
+  {
+   "id": 40,
+   "type": "body",
+   "page": 6,
+   "text": "By pulling out w<sup>γ−1</sup> from the last two terms and simplifying, we obtain",
+   "original_text": "By pulling out w<sup>γ−1</sup> from the last two terms and simplifying, we obtain",
+   "unchanged": true,
+   "paragraphs": [
+    72,
+    72
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 6,
+     "text": "By pulling out w<sup>γ−1</sup> from the last two terms and simplifying, we obtain"
+    }
+   ],
+   "summary": "By pulling out w<sup>γ−1</sup> from the last two terms and simplifying, we obtain",
+   "tags": []
+  },
+  {
+   "id": 41,
+   "type": "equation",
+   "page": 6,
+   "text": "Equation 8 says that the negative of the time derivative of a t, multiplied by w raised to the power of gamma, all divided by gamma, is equal to the supremum over c and theta in theta, of the sum of one over gamma times c raised to the power of gamma, and a t times w raised to the power of gamma minus one, multiplied by the quantity: mu transpose times theta, plus gamma minus one divided by two, times theta transpose times sigma times theta, all multiplied by w, minus c.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    73,
+    73
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "![](images/merton.pdf-0006-15.png)"
+    },
+    {
+     "type": "equation",
+     "page": 6,
+     "text": "<!-- Start of picture text -->\n\u0012 \u0012\u0010 \u0011 \u0013\u0013 −a<sub>t</sub>˙ (w<sup>γ</sup>)/(γ) =<sub>c,θ∈</sub> sup<sub>Θ</sub> (1)/(γ)c<sup>γ</sup> + a<sup>t</sup> w<sup>γ−1</sup> µ<sup>T</sup> θ + (γ − 1)/(2)θ<sup>T</sup> Σθ w − c . (8)\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "Equation 8 defines a supremum involving consumption and portfolio weights in a utility maximization context.",
+   "tags": [
+    "merton problem",
+    "utility maximization",
+    "stochastic control"
+   ],
+   "flags": [
+    "the narration says “raised to the power of gamma minus”, which leaves unclear what is raised"
+   ]
+  },
+  {
+   "id": 42,
+   "type": "body",
+   "page": 7,
+   "text": "The maximizing θ is the solution θ<sub>ce</sub> to problem (6). The quantity in the inner parantheses of (8) is the optimal value r<sub>ce</sub> of this problem, which can be intrepreted as the certainty equivalent return. We now have",
+   "original_text": "The maximizing θ is the solution θ<sub>ce</sub> to problem (6). The quantity in the inner parantheses of (8) is the optimal value r<sub>ce</sub> of this problem, which can be intrepreted as the certainty equivalent return. We now have",
+   "unchanged": true,
+   "paragraphs": [
+    74,
+    74
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "The maximizing θ is the solution θ<sub>ce</sub> to problem (6). The quantity in the inner parantheses of (8) is the optimal value r<sub>ce</sub> of this problem, which can be intrepreted as the certainty equivalent return. We now have"
+    }
+   ],
+   "summary": "The maximizing θ is the solution θ<sub>ce</sub> to problem (6). The quantity in the inner parantheses of (8) is the optimal value r<sub>ce</sub> of this problem, which can be intrepreted as the certainty equivalent return. We now have",
+   "tags": []
+  },
+  {
+   "id": 43,
+   "type": "equation",
+   "page": 7,
+   "text": "The equation shows that negative a dot t multiplied by w raised to the power of gamma, all divided by gamma, equals the supremum over c of the following expression: one over gamma times c raised to the power of gamma, plus beta t times w raised to the power of gamma minus one, multiplied by the quantity r ce times w minus c.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    75,
+    75
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "![](images/merton.pdf-0007-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "<!-- Start of picture text -->\n−a<sub>t</sub>˙ (w<sup>γ</sup>)/(γ<sub>c</sub>) = sup (\u0012 1)/(γ)c<sup>γ</sup> + β<sup>t</sup> w<sup>γ−1</sup> (r<sup>ce</sup> w − c)\u0013 .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation relating the rate of change of a variable to a supremum over consumption. It expresses a relationship involving wealth, gamma, and the certainty equivalent return.",
+   "tags": [
+    "optimization",
+    "supremum",
+    "wealth dynamics"
+   ],
+   "flags": [
+    "the narration says “raised to the power of gamma minus”, which leaves unclear what is raised"
+   ]
+  },
+  {
+   "id": 44,
+   "type": "body",
+   "page": 7,
+   "text": "The supremum over c is obtained for c = a<sup>1</sup> t<sup>/(γ−1)</sup> w. Substituting in this value and simplifying, we obtain",
+   "original_text": "The supremum over c is obtained for c = a<sup>1</sup> t<sup>/(γ−1)</sup> w. Substituting in this value and simplifying, we obtain",
+   "unchanged": true,
+   "paragraphs": [
+    76,
+    76
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "The supremum over c is obtained for c = a<sup>1</sup> t<sup>/(γ−1)</sup> w. Substituting in this value and simplifying, we obtain"
+    }
+   ],
+   "summary": "The supremum over c is obtained for c = a<sup>1</sup> t<sup>/(γ−1)</sup> w. Substituting in this value and simplifying, we obtain",
+   "tags": []
+  },
+  {
+   "id": 45,
+   "type": "equation",
+   "page": 7,
+   "text": "The equation says that negative a dot t equals 1 minus gamma, multiplied by a t raised to the power of the result of first dividing gamma by gamma minus 1, plus gamma times a t times r ce.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    77,
+    77
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "![](images/merton.pdf-0007-03.png)"
+    },
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "<!-- Start of picture text -->\n−a<sub>t</sub>˙ = (1 − γ)a<sub>t</sub><sup>γ/(γ−1)</sup> + γa<sub>t</sub> r<sub>ce</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "Equation 7 defines a differential equation for a t involving gamma and r ce.",
+   "tags": [
+    "differential equation",
+    "merton problem"
+   ]
+  },
+  {
+   "id": 46,
+   "type": "body",
+   "page": 7,
+   "text": "It can be verified that the definition of at in (7) is indeed a solution to this differential equation with terminal condition a<sub>T</sub> = β.",
+   "original_text": "It can be verified that the definition of at in (7) is indeed a solution to this differential equation with terminal condition a<sub>T</sub> = β.",
+   "unchanged": true,
+   "paragraphs": [
+    78,
+    78
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "It can be verified that the definition of at in (7) is indeed a solution to this differential equation with terminal condition a<sub>T</sub> = β."
+    }
+   ],
+   "summary": "It can be verified that the definition of at in (7) is indeed a solution to this differential equation with terminal condition a<sub>T</sub> = β.",
+   "tags": []
+  },
+  {
+   "id": 47,
+   "type": "heading",
+   "page": 7,
+   "text": "3 Certainty equivalent problem",
+   "original_text": "# 3 Certainty equivalent problem",
+   "unchanged": true,
+   "paragraphs": [
+    79,
+    79
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 7,
+     "text": "# 3 Certainty equivalent problem"
+    }
+   ],
+   "summary": "3 Certainty equivalent problem",
+   "tags": []
+  },
+  {
+   "id": 48,
+   "type": "body",
+   "page": 7,
+   "text": "In this section we present a deterministic convex optimal control problem that is equivalent to the Merton problem in the sense that it has the same value function and same optimal policy.",
+   "original_text": "In this section we present a deterministic convex optimal control problem that is equivalent to the Merton problem in the sense that it has the same value function and same optimal policy.",
+   "unchanged": true,
+   "paragraphs": [
+    80,
+    80
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "In this section we present a deterministic convex optimal control problem that is equivalent to the Merton problem in the sense that it has the same value function and same optimal policy."
+    }
+   ],
+   "summary": "In this section we present a deterministic convex optimal control problem that is equivalent to the Merton problem in the sense that it has the same value function and same optimal policy.",
+   "tags": []
+  },
+  {
+   "id": 49,
+   "type": "body",
+   "page": 7,
+   "text": "This certainty equivalent problem is\n\n![](images/merton.pdf-0007-08.png)\n\n<!-- Start of picture text -->\nmaximize (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt subject to w<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>), t ∈ [0, T ] x<sub>t</sub>w<sub>0</sub> /w<sub>t</sub>= w<sub>init</sub>∈ Θ., t ∈ [0, T ] (9)\n<!-- End of picture text -->\n\nThe variables are the consumption c<sub>t</sub> : [0, T ] → R<sub>++</sub>, wealth w<sub>t</sub> : [0, T ] → R<sub>++</sub>, and x<sub>t</sub> : [0, T ] → R<sup>n</sup> , which is the dollar-valued allocation of wealth to each asset. (In the notation of §2, we have xt = w<sub>t</sub>θ<sub>t</sub>, and θ<sub>t</sub> = xt/w<sub>t</sub>.) Note that the constraint x<sub>t</sub>/wt ∈ Θ implies 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>, i.e., the total wealth is the sum of the dollar-valued asset allocations.",
+   "original_text": "This certainty equivalent problem is\n\nThe variables are the consumption c<sub>t</sub> : [0, T ] → R<sub>++</sub>, wealth w<sub>t</sub> : [0, T ] → R<sub>++</sub>, and x<sub>t</sub> : [0, T ] → R<sup>n</sup> , which is the dollar-valued allocation of wealth to each asset. (In the notation of §2, we have xt = w<sub>t</sub>θ<sub>t</sub>, and θ<sub>t</sub> = xt/w<sub>t</sub>.) Note that the constraint x<sub>t</sub>/wt ∈ Θ implies 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>, i.e., the total wealth is the sum of the dollar-valued asset allocations.",
+   "unchanged": false,
+   "paragraphs": [
+    81,
+    84
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "This certainty equivalent problem is"
+    },
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "![](images/merton.pdf-0007-08.png)"
+    },
+    {
+     "type": "equation",
+     "page": 7,
+     "text": "<!-- Start of picture text -->\nmaximize (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt subject to w<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>), t ∈ [0, T ] x<sub>t</sub>w<sub>0</sub> /w<sub>t</sub>= w<sub>init</sub>∈ Θ., t ∈ [0, T ] (9)\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 7,
+     "text": "The variables are the consumption c<sub>t</sub> : [0, T ] → R<sub>++</sub>, wealth w<sub>t</sub> : [0, T ] → R<sub>++</sub>, and x<sub>t</sub> : [0, T ] → R<sup>n</sup> , which is the dollar-valued allocation of wealth to each asset. (In the notation of §2, we have xt = w<sub>t</sub>θ<sub>t</sub>, and θ<sub>t</sub> = xt/w<sub>t</sub>.) Note that the constraint x<sub>t</sub>/wt ∈ Θ implies 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>, i.e., the total wealth is the sum of the dollar-valued asset allocations."
+    }
+   ],
+   "summary": "This certainty equivalent problem is ![](images/merton.pdf-0007-08.png) <!-- Start of picture text --> maximize (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt subject to w<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>), t ∈ [0, T ] x<sub>t</sub>w<sub>0</sub> /w<sub>t</sub>= w<sub>init</sub>∈ Θ., t ∈ [0, T ] (9) <!-- End of picture text --> The variables are the consumption c<sub>t</sub> : [0, T ] → R<sub>++</sub>, wealth w<sub>t</sub> : [0, T ] → R<sub>++</sub>, and x<sub>t</sub> : [0, T ] → R<sup>n</sup> , which is the dollar-valued allocation of wealth to each asset. (In the notation of §2, we have xt = w<sub>t</sub>θ<sub>t</sub>, and θ<sub>t</sub> = xt/w<sub>t</sub>.) Note that the constraint x<sub>t</sub>/wt ∈ Θ implies 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>, i.e., the total wealth is the sum of the dollar-valued asset allocations.",
+   "tags": []
+  },
+  {
+   "id": 50,
+   "type": "body",
+   "page": 7,
+   "text": "The objective is the lifetime utility, but without expectation since this problem is deterministic. The first constraint resembles the dynamics of the stochastic process (1), and we call this the dynamics constraint. We will see that for any solution to (9), this inequality constraint holds with equality, in which case the dynamics constraint becomes a (deterministic) ODE.",
+   "original_text": "The objective is the lifetime utility, but without expectation since this problem is deterministic. The first constraint resembles the dynamics of the stochastic process (1), and we call this the dynamics constraint. We will see that for any solution to (9), this inequality constraint holds with equality, in which case the dynamics constraint becomes a (deterministic) ODE.",
+   "unchanged": true,
+   "paragraphs": [
+    85,
+    85
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "The objective is the lifetime utility, but without expectation since this problem is deterministic. The first constraint resembles the dynamics of the stochastic process (1), and we call this the dynamics constraint. We will see that for any solution to (9), this inequality constraint holds with equality, in which case the dynamics constraint becomes a (deterministic) ODE."
+    }
+   ],
+   "summary": "The objective is the lifetime utility, but without expectation since this problem is deterministic. The first constraint resembles the dynamics of the stochastic process (1), and we call this the dynamics constraint. We will see that for any solution to (9), this inequality constraint holds with equality, in which case the dynamics constraint becomes a (deterministic) ODE.",
+   "tags": []
+  },
+  {
+   "id": 51,
+   "type": "body",
+   "page": 7,
+   "text": "Interpretation. The problem can be interpreted in the following way. We plan for a single outcome of the stochastic process (1). In particular, the dynamics constraint restricts the growth rate of the wealth to be no greater than the µ<sup>T</sup> x<sub>t</sub> − ct (the mean growth rate in the stochastic process (1)), but reduced by the additional term (1/2)(γ − 1)x<sup>T</sup> t<sup>Σx<sub>t</sub>/wt.Becauseγ<1,thistermisnegative.Withthechangeof</sup> variables θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>, we have\n\n![](images/merton.pdf-0008-01.png)\n\n<!-- Start of picture text -->\n(x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(w<sub>t</sub>) = w<sub>t</sub> θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>,\n<!-- End of picture text -->\n\ni.e., this adjustment term is proportional to the variance of the portfolio growth rate with investment allocation θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>. In other words, we are pessimistically planning for bad investment returns, with the degree of pessimism depending on the risk aversion parameter γ and the risk of our portfolio.",
+   "original_text": "Interpretation. The problem can be interpreted in the following way. We plan for a single outcome of the stochastic process (1). In particular, the dynamics constraint restricts the growth rate of the wealth to be no greater than the µ<sup>T</sup> x<sub>t</sub> − ct (the mean growth rate in the stochastic process (1)), but reduced by the additional term (1/2)(γ − 1)x<sup>T</sup> t<sup>Σx<sub>t</sub>/wt.Becauseγ<1,thistermisnegative.Withthechangeof</sup> variables θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>, we have\n\ni.e., this adjustment term is proportional to the variance of the portfolio growth rate with investment allocation θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>. In other words, we are pessimistically planning for bad investment returns, with the degree of pessimism depending on the risk aversion parameter γ and the risk of our portfolio.",
+   "unchanged": false,
+   "paragraphs": [
+    86,
+    89
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 7,
+     "text": "Interpretation. The problem can be interpreted in the following way. We plan for a single outcome of the stochastic process (1). In particular, the dynamics constraint restricts the growth rate of the wealth to be no greater than the µ<sup>T</sup> x<sub>t</sub> − ct (the mean growth rate in the stochastic process (1)), but reduced by the additional term (1/2)(γ − 1)x<sup>T</sup> t<sup>Σx<sub>t</sub>/wt.Becauseγ<1,thistermisnegative.Withthechangeof</sup> variables θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>, we have"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "![](images/merton.pdf-0008-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "<!-- Start of picture text -->\n(x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(w<sub>t</sub>) = w<sub>t</sub> θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 8,
+     "text": "i.e., this adjustment term is proportional to the variance of the portfolio growth rate with investment allocation θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>. In other words, we are pessimistically planning for bad investment returns, with the degree of pessimism depending on the risk aversion parameter γ and the risk of our portfolio."
+    }
+   ],
+   "summary": "Interpretation. The problem can be interpreted in the following way. We plan for a single outcome of the stochastic process (1). In particular, the dynamics constraint restricts the growth rate of the wealth to be no greater than the µ<sup>T</sup> x<sub>t</sub> − ct (the mean growth rate in the stochastic process (1)), but reduced by the additional term (1/2)(γ − 1)x<sup>T</sup> t<sup>Σx<sub>t</sub>/wt.Becauseγ<1,thistermisnegative.Withthechangeof</sup> variables θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>, we have ![](images/merton.pdf-0008-01.png) <!-- Start of picture text --> (x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(w<sub>t</sub>) = w<sub>t</sub> θ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup>, <!-- End of picture text --> i.e., this adjustment term is proportional to the variance of the portfolio growth rate with investment allocation θ<sub>t</sub> = x<sub>t</sub>/w<sub>t</sub>. In other words, we are pessimistically planning for bad investment returns, with the degree of pessimism depending on the risk aversion parameter γ and the risk of our portfolio.",
+   "tags": []
+  },
+  {
+   "id": 52,
+   "type": "body",
+   "page": 8,
+   "text": "In fact, in problem (9), we plan for the returns",
+   "original_text": "In fact, in problem (9), we plan for the returns",
+   "unchanged": true,
+   "paragraphs": [
+    90,
+    90
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 8,
+     "text": "In fact, in problem (9), we plan for the returns"
+    }
+   ],
+   "summary": "In fact, in problem (9), we plan for the returns",
+   "tags": []
+  },
+  {
+   "id": 53,
+   "type": "equation",
+   "page": 8,
+   "text": "The equation shows that r t equals mu plus gamma minus one, divided by two times w t, multiplied by sigma x t, which also equals mu plus gamma minus one, divided by two, multiplied by sigma theta t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    91,
+    91
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "![](images/merton.pdf-0008-04.png)"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "<!-- Start of picture text -->\nr<sub>t</sub> = µ + (γ − 1)/(2w<sub>t</sub>)Σx<sub>t</sub> = µ + (γ − 1)/(2)Σθ<sub>t</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation relating r t to mu, gamma, w t, sigma x t, and sigma theta t.",
+   "tags": [
+    "portfolio risk",
+    "risk allocation"
+   ]
+  },
+  {
+   "id": 54,
+   "type": "body",
+   "page": 8,
+   "text": "The coefficients in front of Σx<sub>t</sub> and Σθ<sub>t</sub> are negative, and the entries of Σx<sub>t</sub> and Σθ<sub>t</sub> are typically positive. The vector Σθt can be interpreted as the risk allocation to the individual assets in the portfolio, since",
+   "original_text": "The coefficients in front of Σx<sub>t</sub> and Σθ<sub>t</sub> are negative, and the entries of Σx<sub>t</sub> and Σθ<sub>t</sub> are typically positive. The vector Σθt can be interpreted as the risk allocation to the individual assets in the portfolio, since",
+   "unchanged": true,
+   "paragraphs": [
+    92,
+    92
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 8,
+     "text": "The coefficients in front of Σx<sub>t</sub> and Σθ<sub>t</sub> are negative, and the entries of Σx<sub>t</sub> and Σθ<sub>t</sub> are typically positive. The vector Σθt can be interpreted as the risk allocation to the individual assets in the portfolio, since"
+    }
+   ],
+   "summary": "The coefficients in front of Σx<sub>t</sub> and Σθ<sub>t</sub> are negative, and the entries of Σx<sub>t</sub> and Σθ<sub>t</sub> are typically positive. The vector Σθt can be interpreted as the risk allocation to the individual assets in the portfolio, since",
+   "tags": []
+  },
+  {
+   "id": 55,
+   "type": "equation",
+   "page": 8,
+   "text": "The equation shows that the product of the transpose of theta t and sigma theta t is equal to the sum from i equals 1 to n of the i-th element of theta t multiplied by the i-th element of sigma theta t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    93,
+    93
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "![](images/merton.pdf-0008-06.png)"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "<!-- Start of picture text -->\nθ<sub>t</sub><sup>T</sup> Σθ<sup>t</sup> =<sub>i=1</sub> Xn(θ<sub>t</sub>)<sub>i</sub> (Σθ<sub>t</sub>)<sub>i</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The equation defines the product of the portfolio weights and the risk allocation vector as a sum of their element-wise products.",
+   "tags": [
+    "portfolio variance",
+    "risk allocation"
+   ]
+  },
+  {
+   "id": 56,
+   "type": "body",
+   "page": 8,
+   "text": "In other words, the planned asset returns are the mean returns, reduced in proportion to the marginal contribution of each asset to the portfolio variance. This is related to the concept of risk parity [BST16].",
+   "original_text": "In other words, the planned asset returns are the mean returns, reduced in proportion to the marginal contribution of each asset to the portfolio variance. This is related to the concept of risk parity [BST16].",
+   "unchanged": true,
+   "paragraphs": [
+    94,
+    94
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 8,
+     "text": "In other words, the planned asset returns are the mean returns, reduced in proportion to the marginal contribution of each asset to the portfolio variance. This is related to the concept of risk parity [BST16]."
+    }
+   ],
+   "summary": "In other words, the planned asset returns are the mean returns, reduced in proportion to the marginal contribution of each asset to the portfolio variance. This is related to the concept of risk parity [BST16].",
+   "tags": []
+  },
+  {
+   "id": 57,
+   "type": "body",
+   "page": 8,
+   "text": "Convexity. Convexity of (9) follows from the fact that the risk penalty term x<sup>T</sup> t<sup>Σx<sub>t</sub>/wtisaquadratic-over-linearfunction,withisjointlyconvexinxtandwt</sup> [BV04, §3.1.5]. Also, the set\n\n![](images/merton.pdf-0008-09.png)\n\n<!-- Start of picture text -->\n{(x<sub>t</sub>, w<sub>t</sub>) ∈ R<sup>n</sup> × R<sub>++</sub> | x<sub>t</sub> /w<sub>t</sub> ∈ Θ}\n<!-- End of picture text -->\n\nis the perspective of Θ, which is convex when Θ is [BV04, §2.3.3]. In fact, in most practical portfolio construction problems, Θ can described by a collection of linear and quadratic constraints [Boy+17, §4.4]. In this case, when problem (9) is discretized, it becomes an SOCP, which we describe in §7.",
+   "original_text": "Convexity. Convexity of (9) follows from the fact that the risk penalty term x<sup>T</sup> t<sup>Σx<sub>t</sub>/wtisaquadratic-over-linearfunction,withisjointlyconvexinxtandwt</sup> [BV04, §3.1.5]. Also, the set\n\nis the perspective of Θ, which is convex when Θ is [BV04, §2.3.3]. In fact, in most practical portfolio construction problems, Θ can described by a collection of linear and quadratic constraints [Boy+17, §4.4]. In this case, when problem (9) is discretized, it becomes an SOCP, which we describe in §7.",
+   "unchanged": false,
+   "paragraphs": [
+    95,
+    98
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 8,
+     "text": "Convexity. Convexity of (9) follows from the fact that the risk penalty term x<sup>T</sup> t<sup>Σx<sub>t</sub>/wtisaquadratic-over-linearfunction,withisjointlyconvexinxtandwt</sup> [BV04, §3.1.5]. Also, the set"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "![](images/merton.pdf-0008-09.png)"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "<!-- Start of picture text -->\n{(x<sub>t</sub>, w<sub>t</sub>) ∈ R<sup>n</sup> × R<sub>++</sub> | x<sub>t</sub> /w<sub>t</sub> ∈ Θ}\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 8,
+     "text": "is the perspective of Θ, which is convex when Θ is [BV04, §2.3.3]. In fact, in most practical portfolio construction problems, Θ can described by a collection of linear and quadratic constraints [Boy+17, §4.4]. In this case, when problem (9) is discretized, it becomes an SOCP, which we describe in §7."
+    }
+   ],
+   "summary": "Convexity. Convexity of (9) follows from the fact that the risk penalty term x<sup>T</sup> t<sup>Σx<sub>t</sub>/wtisaquadratic-over-linearfunction,withisjointlyconvexinxtandwt</sup> [BV04, §3.1.5]. Also, the set ![](images/merton.pdf-0008-09.png) <!-- Start of picture text --> {(x<sub>t</sub>, w<sub>t</sub>) ∈ R<sup>n</sup> × R<sub>++</sub> | x<sub>t</sub> /w<sub>t</sub> ∈ Θ} <!-- End of picture text --> is the perspective of Θ, which is convex when Θ is [BV04, §2.3.3]. In fact, in most practical portfolio construction problems, Θ can described by a collection of linear and quadratic constraints [Boy+17, §4.4]. In this case, when problem (9) is discretized, it becomes an SOCP, which we describe in §7.",
+   "tags": []
+  },
+  {
+   "id": 58,
+   "type": "body",
+   "page": 8,
+   "text": "Equivalence to Merton problem. The Merton problem and problem (9) are equivalent in the sense that they have the same value function and optimal policy. To see this, we first consider a modified version of (9) in which we convert the dynamics to an equality constraint using a slack variable u<sub>t</sub> ≥ 0:",
+   "original_text": "Equivalence to Merton problem. The Merton problem and problem (9) are equivalent in the sense that they have the same value function and optimal policy. To see this, we first consider a modified version of (9) in which we convert the dynamics to an equality constraint using a slack variable u<sub>t</sub> ≥ 0:",
+   "unchanged": true,
+   "paragraphs": [
+    99,
+    99
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 8,
+     "text": "Equivalence to Merton problem. The Merton problem and problem (9) are equivalent in the sense that they have the same value function and optimal policy. To see this, we first consider a modified version of (9) in which we convert the dynamics to an equality constraint using a slack variable u<sub>t</sub> ≥ 0:"
+    }
+   ],
+   "summary": "Equivalence to Merton problem. The Merton problem and problem (9) are equivalent in the sense that they have the same value function and optimal policy. To see this, we first consider a modified version of (9) in which we convert the dynamics to an equality constraint using a slack variable u<sub>t</sub> ≥ 0:",
+   "tags": []
+  },
+  {
+   "id": 59,
+   "type": "equation",
+   "page": 8,
+   "text": "The equation shows that the rate of change of wealth, w t, equals the product of the transpose of mu and x t, minus c t, plus a term where gamma minus one is divided by two and multiplied by the product of the transpose of x t, sigma, and x t, all divided by w t, plus u t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    100,
+    100
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "![](images/merton.pdf-0008-12.png)"
+    },
+    {
+     "type": "equation",
+     "page": 8,
+     "text": "<!-- Start of picture text -->\nw<sub>t</sub>˙ = µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>) + u<sub>t</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation for the rate of change of wealth. It relates wealth dynamics to mu, x t, c t, gamma, sigma, and u t.",
+   "tags": [
+    "wealth dynamics",
+    "merton problem",
+    "differential equation"
+   ]
+  },
+  {
+   "id": 60,
+   "type": "body",
+   "page": 9,
+   "text": "The new control inpu<sub>t</sub> u<sub>t</sub> can be interpreted as the rate at which we discard wealth. (We will see that at optimality ut = 0.) For this modified problem, the HamiltonJacobi-Bellman equation is\n\n![](images/merton.pdf-0009-01.png)\n\n<!-- Start of picture text -->\n−V˙ (w) =<sub>c,x∈wΘ</sub> sup<sub>,u≥0</sub> (1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w) \u0012\u0010µ<sup>T</sup> x + (γ − 1)/(2w)x<sup>T</sup> ( Σ \u0011)/(x)w − c − u\u0013 .\n<!-- End of picture text -->\n\nFirst note that with our value function candidate (5), we have V<sup>′</sup> (w) > 0, and therefore u = 0, as expected. Now, by using the change of variables x = θw and plugging in our value function candidate, this equation becomes (8). From this point on, the proof that this candidate value function satisfies the Hamilton-Jacobi-Bellman equation proceeds exactly as for the (stochastic) Merton problem.",
+   "original_text": "The new control inpu<sub>t</sub> u<sub>t</sub> can be interpreted as the rate at which we discard wealth. (We will see that at optimality ut = 0.) For this modified problem, the HamiltonJacobi-Bellman equation is\n\nFirst note that with our value function candidate (5), we have V<sup>′</sup> (w) > 0, and therefore u = 0, as expected. Now, by using the change of variables x = θw and plugging in our value function candidate, this equation becomes (8). From this point on, the proof that this candidate value function satisfies the Hamilton-Jacobi-Bellman equation proceeds exactly as for the (stochastic) Merton problem.",
+   "unchanged": false,
+   "paragraphs": [
+    101,
+    104
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "The new control inpu<sub>t</sub> u<sub>t</sub> can be interpreted as the rate at which we discard wealth. (We will see that at optimality ut = 0.) For this modified problem, the HamiltonJacobi-Bellman equation is"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "![](images/merton.pdf-0009-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "<!-- Start of picture text -->\n−V˙ (w) =<sub>c,x∈wΘ</sub> sup<sub>,u≥0</sub> (1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w) \u0012\u0010µ<sup>T</sup> x + (γ − 1)/(2w)x<sup>T</sup> ( Σ \u0011)/(x)w − c − u\u0013 .\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 9,
+     "text": "First note that with our value function candidate (5), we have V<sup>′</sup> (w) > 0, and therefore u = 0, as expected. Now, by using the change of variables x = θw and plugging in our value function candidate, this equation becomes (8). From this point on, the proof that this candidate value function satisfies the Hamilton-Jacobi-Bellman equation proceeds exactly as for the (stochastic) Merton problem."
+    }
+   ],
+   "summary": "The new control inpu<sub>t</sub> u<sub>t</sub> can be interpreted as the rate at which we discard wealth. (We will see that at optimality ut = 0.) For this modified problem, the HamiltonJacobi-Bellman equation is ![](images/merton.pdf-0009-01.png) <!-- Start of picture text --> −V˙ (w) =<sub>c,x∈wΘ</sub> sup<sub>,u≥0</sub> (1)/(γ)c<sup>γ</sup> + V<sub>t<sup>′</sup></sub> (w) \u0012\u0010µ<sup>T</sup> x + (γ − 1)/(2w)x<sup>T</sup> ( Σ \u0011)/(x)w − c − u\u0013 . <!-- End of picture text --> First note that with our value function candidate (5), we have V<sup>′</sup> (w) > 0, and therefore u = 0, as expected. Now, by using the change of variables x = θw and plugging in our value function candidate, this equation becomes (8). From this point on, the proof that this candidate value function satisfies the Hamilton-Jacobi-Bellman equation proceeds exactly as for the (stochastic) Merton problem.",
+   "tags": []
+  },
+  {
+   "id": 61,
+   "type": "heading",
+   "page": 9,
+   "text": "4 Exact extensions",
+   "original_text": "# 4 Exact extensions",
+   "unchanged": true,
+   "paragraphs": [
+    105,
+    105
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 9,
+     "text": "# 4 Exact extensions"
+    }
+   ],
+   "summary": "4 Exact extensions",
+   "tags": []
+  },
+  {
+   "id": 62,
+   "type": "body",
+   "page": 9,
+   "text": "Here we consider several extensions to the Merton problem, all of which are known in the literature and have closed-form solutions. For each one, we describe how to modify problem (9) to maintain the certainty-equivalence property.",
+   "original_text": "Here we consider several extensions to the Merton problem, all of which are known in the literature and have closed-form solutions. For each one, we describe how to modify problem (9) to maintain the certainty-equivalence property.",
+   "unchanged": true,
+   "paragraphs": [
+    106,
+    106
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "Here we consider several extensions to the Merton problem, all of which are known in the literature and have closed-form solutions. For each one, we describe how to modify problem (9) to maintain the certainty-equivalence property."
+    }
+   ],
+   "summary": "Here we consider several extensions to the Merton problem, all of which are known in the literature and have closed-form solutions. For each one, we describe how to modify problem (9) to maintain the certainty-equivalence property.",
+   "tags": []
+  },
+  {
+   "id": 63,
+   "type": "body",
+   "page": 9,
+   "text": "Time-varying parameters. The Merton problem can be solved when µ, Σ, and Θ change over time. To handle this in the certainty equivalent problem, we simply replace these parameters by µ<sub>t</sub>, Σ<sub>t</sub>, and Θ<sub>t</sub>. (Here µt denotes the time-varying vector of asset expected returns, a notation clash with our previous use of µt as the scalar portfolio expected return.) Similarly, if we discount the consumption utility of the Merton problem:",
+   "original_text": "Time-varying parameters. The Merton problem can be solved when µ, Σ, and Θ change over time. To handle this in the certainty equivalent problem, we simply replace these parameters by µ<sub>t</sub>, Σ<sub>t</sub>, and Θ<sub>t</sub>. (Here µt denotes the time-varying vector of asset expected returns, a notation clash with our previous use of µt as the scalar portfolio expected return.) Similarly, if we discount the consumption utility of the Merton problem:",
+   "unchanged": true,
+   "paragraphs": [
+    107,
+    107
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "Time-varying parameters. The Merton problem can be solved when µ, Σ, and Θ change over time. To handle this in the certainty equivalent problem, we simply replace these parameters by µ<sub>t</sub>, Σ<sub>t</sub>, and Θ<sub>t</sub>. (Here µt denotes the time-varying vector of asset expected returns, a notation clash with our previous use of µt as the scalar portfolio expected return.) Similarly, if we discount the consumption utility of the Merton problem:"
+    }
+   ],
+   "summary": "Time-varying parameters. The Merton problem can be solved when µ, Σ, and Θ change over time. To handle this in the certainty equivalent problem, we simply replace these parameters by µ<sub>t</sub>, Σ<sub>t</sub>, and Θ<sub>t</sub>. (Here µt denotes the time-varying vector of asset expected returns, a notation clash with our previous use of µt as the scalar portfolio expected return.) Similarly, if we discount the consumption utility of the Merton problem:",
+   "tags": []
+  },
+  {
+   "id": 64,
+   "type": "equation",
+   "page": 9,
+   "text": "The equation says that U is the expectation of the sum of two terms: first, beta divided by gamma, multiplied by w T raised to the power of gamma; and second, the integral from zero to T of alpha t divided by gamma, multiplied by c t raised to the power of gamma, with respect to t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    108,
+    108
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "![](images/merton.pdf-0009-06.png)"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "<!-- Start of picture text -->\n\u0012 Z<sub>T</sub> \u0013 U = E (β)/(γ)w<sub>T</sub><sup>γ</sup> +<sub>0</sub> (α<sub>t</sub>)/(γ) c<sub>t</sub><sup>γ</sup> dt .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation for the utility U in the Merton problem. It expresses U as the expectation of a terminal wealth term and an integrated consumption term.",
+   "tags": [
+    "merton problem",
+    "utility function",
+    "consumption discount"
+   ]
+  },
+  {
+   "id": 65,
+   "type": "body",
+   "page": 9,
+   "text": "where α<sub>t</sub> > 0 is the discount of the consumption utility at time t, then the objective of the certainty equivalent problem will match U (but without the expectation).",
+   "original_text": "where α<sub>t</sub> > 0 is the discount of the consumption utility at time t, then the objective of the certainty equivalent problem will match U (but without the expectation).",
+   "unchanged": true,
+   "paragraphs": [
+    109,
+    109
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "where α<sub>t</sub> > 0 is the discount of the consumption utility at time t, then the objective of the certainty equivalent problem will match U (but without the expectation)."
+    }
+   ],
+   "summary": "where α<sub>t</sub> > 0 is the discount of the consumption utility at time t, then the objective of the certainty equivalent problem will match U (but without the expectation).",
+   "tags": []
+  },
+  {
+   "id": 66,
+   "type": "body",
+   "page": 9,
+   "text": "Uncertain mortality and bequest. Here the terminal time t<sub>f</sub> ∈ [0, T ] is random with probability density p<sub>t</sub> and survival function",
+   "original_text": "Uncertain mortality and bequest. Here the terminal time t<sub>f</sub> ∈ [0, T ] is random with probability density p<sub>t</sub> and survival function",
+   "unchanged": true,
+   "paragraphs": [
+    110,
+    110
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "Uncertain mortality and bequest. Here the terminal time t<sub>f</sub> ∈ [0, T ] is random with probability density p<sub>t</sub> and survival function"
+    }
+   ],
+   "summary": "Uncertain mortality and bequest. Here the terminal time t<sub>f</sub> ∈ [0, T ] is random with probability density p<sub>t</sub> and survival function",
+   "tags": []
+  },
+  {
+   "id": 67,
+   "type": "equation",
+   "page": 9,
+   "text": "The equation says that s t, the survival function, is the probability that the random terminal time t f is greater than t, which is equal to the integral of the probability density p t from t to T.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    111,
+    111
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "![](images/merton.pdf-0009-09.png)"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "<!-- Start of picture text -->\ns<sub>t</sub> = Prob(t<sub>f</sub> > t) =<sub>t</sub> Z<sub>T</sub> p<sub>t</sub> dt.\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The equation defines the survival function s t as the probability that the terminal time t f exceeds t.",
+   "tags": [
+    "survival function",
+    "probability density"
+   ]
+  },
+  {
+   "id": 68,
+   "type": "body",
+   "page": 9,
+   "text": "In this case, the investor’s utility is\n\n![](images/merton.pdf-0009-11.png)\n\n<!-- Start of picture text -->\n\u0012 Z<sub>t<sub>f</sub></sub> \u0013 U = E (B)/(γ)w<sub>t<sub>f</sub></sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt .\n<!-- End of picture text -->\n\nHere the expectation is taken over t<sub>f</sub> as well as the paths of the stochastic process (1).",
+   "original_text": "In this case, the investor’s utility is\n\nHere the expectation is taken over t<sub>f</sub> as well as the paths of the stochastic process (1).",
+   "unchanged": false,
+   "paragraphs": [
+    112,
+    115
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 9,
+     "text": "In this case, the investor’s utility is"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "![](images/merton.pdf-0009-11.png)"
+    },
+    {
+     "type": "equation",
+     "page": 9,
+     "text": "<!-- Start of picture text -->\n\u0012 Z<sub>t<sub>f</sub></sub> \u0013 U = E (B)/(γ)w<sub>t<sub>f</sub></sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt .\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 9,
+     "text": "Here the expectation is taken over t<sub>f</sub> as well as the paths of the stochastic process (1)."
+    }
+   ],
+   "summary": "In this case, the investor’s utility is ![](images/merton.pdf-0009-11.png) <!-- Start of picture text --> \u0012 Z<sub>t<sub>f</sub></sub> \u0013 U = E (B)/(γ)w<sub>t<sub>f</sub></sub><sup>γ</sup> +<sub>0</sub> (1)/(γ)c<sub>t</sub><sup>γ</sup> dt . <!-- End of picture text --> Here the expectation is taken over t<sub>f</sub> as well as the paths of the stochastic process (1).",
+   "tags": []
+  },
+  {
+   "id": 69,
+   "type": "body",
+   "page": 10,
+   "text": "With this modification, the objective of the certainty equivalent problem changes",
+   "original_text": "With this modification, the objective of the certainty equivalent problem changes",
+   "unchanged": true,
+   "paragraphs": [
+    116,
+    116
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "With this modification, the objective of the certainty equivalent problem changes"
+    }
+   ],
+   "summary": "With this modification, the objective of the certainty equivalent problem changes",
+   "tags": []
+  },
+  {
+   "id": 70,
+   "type": "body",
+   "page": 10,
+   "text": "to\n\n![](images/merton.pdf-0010-02.png)\n\n<!-- Start of picture text -->\nZ<sub>T</sub> \u0012 \u0013 0 (p<sub>t</sub> β)/(γ) w<sub>t</sub><sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> dt.\n<!-- End of picture text -->\n\nWe weight the consump<sub>t</sub>ion utility by the probability the investor is still alive, i.e., we treat the survival function as a discount factor. We also get utility for the bequest continuously over the interval [0, T ], weighted by the density function pt.",
+   "original_text": "to\n\nWe weight the consump<sub>t</sub>ion utility by the probability the investor is still alive, i.e., we treat the survival function as a discount factor. We also get utility for the bequest continuously over the interval [0, T ], weighted by the density function pt.",
+   "unchanged": false,
+   "paragraphs": [
+    117,
+    120
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "to"
+    },
+    {
+     "type": "figure",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-02.png)"
+    },
+    {
+     "type": "figure",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nZ<sub>T</sub> \u0012 \u0013 0 (p<sub>t</sub> β)/(γ) w<sub>t</sub><sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> dt.\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 10,
+     "text": "We weight the consump<sub>t</sub>ion utility by the probability the investor is still alive, i.e., we treat the survival function as a discount factor. We also get utility for the bequest continuously over the interval [0, T ], weighted by the density function pt."
+    }
+   ],
+   "summary": "to ![](images/merton.pdf-0010-02.png) <!-- Start of picture text --> Z<sub>T</sub> \u0012 \u0013 0 (p<sub>t</sub> β)/(γ) w<sub>t</sub><sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> dt. <!-- End of picture text --> We weight the consump<sub>t</sub>ion utility by the probability the investor is still alive, i.e., we treat the survival function as a discount factor. We also get utility for the bequest continuously over the interval [0, T ], weighted by the density function pt.",
+   "tags": []
+  },
+  {
+   "id": 71,
+   "type": "body",
+   "page": 10,
+   "text": "Annuities and life insurance. This extension is due to [Ric75]. Continuing with the previous extension, we allow the investor to purchase life insurance. The premium is lt, which the investor can choose, and the payout of the plan is λ<sub>t</sub>l<sub>t</sub>, where λ<sub>t</sub> ≥ 0 is the payout-to-premium ratio at time t. When l<sub>t</sub> < 0, we interpret this as an annuity. In particular, at time t, the investor has −l<sub>t</sub> in the annuity account, which is lost on death, in return for an additional return of −λ<sub>t</sub>lt. The actuarially fair value of λt is p<sub>t</sub>/s<sub>t</sub>, which is called the force of mortality. (If λt > p<sub>t</sub>/s<sub>t</sub>, then life insurance is favorable and annuities are unfavorable; if λ<sub>t</sub> < p<sub>t</sub>/s<sub>t</sub>, the reverse is true.)",
+   "original_text": "Annuities and life insurance. This extension is due to [Ric75]. Continuing with the previous extension, we allow the investor to purchase life insurance. The premium is lt, which the investor can choose, and the payout of the plan is λ<sub>t</sub>l<sub>t</sub>, where λ<sub>t</sub> ≥ 0 is the payout-to-premium ratio at time t. When l<sub>t</sub> < 0, we interpret this as an annuity. In particular, at time t, the investor has −l<sub>t</sub> in the annuity account, which is lost on death, in return for an additional return of −λ<sub>t</sub>lt. The actuarially fair value of λt is p<sub>t</sub>/s<sub>t</sub>, which is called the force of mortality. (If λt > p<sub>t</sub>/s<sub>t</sub>, then life insurance is favorable and annuities are unfavorable; if λ<sub>t</sub> < p<sub>t</sub>/s<sub>t</sub>, the reverse is true.)",
+   "unchanged": true,
+   "paragraphs": [
+    121,
+    121
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "Annuities and life insurance. This extension is due to [Ric75]. Continuing with the previous extension, we allow the investor to purchase life insurance. The premium is lt, which the investor can choose, and the payout of the plan is λ<sub>t</sub>l<sub>t</sub>, where λ<sub>t</sub> ≥ 0 is the payout-to-premium ratio at time t. When l<sub>t</sub> < 0, we interpret this as an annuity. In particular, at time t, the investor has −l<sub>t</sub> in the annuity account, which is lost on death, in return for an additional return of −λ<sub>t</sub>lt. The actuarially fair value of λt is p<sub>t</sub>/s<sub>t</sub>, which is called the force of mortality. (If λt > p<sub>t</sub>/s<sub>t</sub>, then life insurance is favorable and annuities are unfavorable; if λ<sub>t</sub> < p<sub>t</sub>/s<sub>t</sub>, the reverse is true.)"
+    }
+   ],
+   "summary": "Annuities and life insurance. This extension is due to [Ric75]. Continuing with the previous extension, we allow the investor to purchase life insurance. The premium is lt, which the investor can choose, and the payout of the plan is λ<sub>t</sub>l<sub>t</sub>, where λ<sub>t</sub> ≥ 0 is the payout-to-premium ratio at time t. When l<sub>t</sub> < 0, we interpret this as an annuity. In particular, at time t, the investor has −l<sub>t</sub> in the annuity account, which is lost on death, in return for an additional return of −λ<sub>t</sub>lt. The actuarially fair value of λt is p<sub>t</sub>/s<sub>t</sub>, which is called the force of mortality. (If λt > p<sub>t</sub>/s<sub>t</sub>, then life insurance is favorable and annuities are unfavorable; if λ<sub>t</sub> < p<sub>t</sub>/s<sub>t</sub>, the reverse is true.)",
+   "tags": []
+  },
+  {
+   "id": 72,
+   "type": "body",
+   "page": 10,
+   "text": "With this modification, the objective of the certainty-equivalant problem changes",
+   "original_text": "With this modification, the objective of the certainty-equivalant problem changes",
+   "unchanged": true,
+   "paragraphs": [
+    122,
+    122
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "With this modification, the objective of the certainty-equivalant problem changes"
+    }
+   ],
+   "summary": "With this modification, the objective of the certainty-equivalant problem changes",
+   "tags": []
+  },
+  {
+   "id": 73,
+   "type": "body",
+   "page": 10,
+   "text": "to\n\n![](images/merton.pdf-0010-07.png)\n\n<!-- Start of picture text -->\nU =<sub>0</sub> Z<sub>T</sub> (\u0012p<sub>t</sub> β)/(γ) (w<sup>t</sup> + λ<sup>t</sup> l<sup>t</sup>)<sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> \u0013 dt,\n<!-- End of picture text -->\n\ni.e., we add the insurance payout to the wealth in the bequest utility. The dynamics change to\n\n![](images/merton.pdf-0010-09.png)\n\n<!-- Start of picture text -->\nw<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> − l<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>) .\n<!-- End of picture text -->\n\nHere we subtract the insurance premium from the growth rate of the wealth.",
+   "original_text": "to\n\ni.e., we add the insurance payout to the wealth in the bequest utility. The dynamics change to\n\nHere we subtract the insurance premium from the growth rate of the wealth.",
+   "unchanged": false,
+   "paragraphs": [
+    123,
+    129
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "to"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-07.png)"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nU =<sub>0</sub> Z<sub>T</sub> (\u0012p<sub>t</sub> β)/(γ) (w<sup>t</sup> + λ<sup>t</sup> l<sup>t</sup>)<sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> \u0013 dt,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 10,
+     "text": "i.e., we add the insurance payout to the wealth in the bequest utility. The dynamics change to"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-09.png)"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nw<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> − l<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>) .\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 10,
+     "text": "Here we subtract the insurance premium from the growth rate of the wealth."
+    }
+   ],
+   "summary": "to ![](images/merton.pdf-0010-07.png) <!-- Start of picture text --> U =<sub>0</sub> Z<sub>T</sub> (\u0012p<sub>t</sub> β)/(γ) (w<sup>t</sup> + λ<sup>t</sup> l<sup>t</sup>)<sup>γ</sup> + (s<sup>t</sup>)/(γ)c<sub>t</sub><sup>γ</sup> \u0013 dt, <!-- End of picture text --> i.e., we add the insurance payout to the wealth in the bequest utility. The dynamics change to ![](images/merton.pdf-0010-09.png) <!-- Start of picture text --> w<sub>t</sub>˙ ≤ µ<sup>T</sup> x<sub>t</sub> − c<sub>t</sub> − l<sub>t</sub> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub>) . <!-- End of picture text --> Here we subtract the insurance premium from the growth rate of the wealth.",
+   "tags": []
+  },
+  {
+   "id": 74,
+   "type": "body",
+   "page": 10,
+   "text": "Income. We can add a deterministic income stream, with income rate y<sub>t</sub> at time t. The stochastic dynamics are modified be the addition of y<sub>t</sub> to the drift term of the wealth process, i.e.,",
+   "original_text": "Income. We can add a deterministic income stream, with income rate y<sub>t</sub> at time t. The stochastic dynamics are modified be the addition of y<sub>t</sub> to the drift term of the wealth process, i.e.,",
+   "unchanged": true,
+   "paragraphs": [
+    130,
+    130
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "Income. We can add a deterministic income stream, with income rate y<sub>t</sub> at time t. The stochastic dynamics are modified be the addition of y<sub>t</sub> to the drift term of the wealth process, i.e.,"
+    }
+   ],
+   "summary": "Income. We can add a deterministic income stream, with income rate y<sub>t</sub> at time t. The stochastic dynamics are modified be the addition of y<sub>t</sub> to the drift term of the wealth process, i.e.,",
+   "tags": []
+  },
+  {
+   "id": 75,
+   "type": "equation",
+   "page": 10,
+   "text": "The equation says that mu t is equal to the product of the transpose of mu, theta t, and w t, plus y t, minus c t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    131,
+    131
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-12.png)"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nµ<sub>t</sub> = µ<sup>T</sup> θ<sub>t</sub> w<sub>t</sub> + y<sub>t</sub> − c<sub>t</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation for the drift term of the wealth process. It incorporates asset returns, income, and consumption.",
+   "tags": [
+    "wealth process",
+    "stochastic dynamics",
+    "income stream"
+   ]
+  },
+  {
+   "id": 76,
+   "type": "body",
+   "page": 10,
+   "text": "In this case, we also assume one of the assets is risk free with return µ<sub>rf</sub> and volatility 0, and that",
+   "original_text": "In this case, we also assume one of the assets is risk free with return µ<sub>rf</sub> and volatility 0, and that",
+   "unchanged": true,
+   "paragraphs": [
+    132,
+    132
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "In this case, we also assume one of the assets is risk free with return µ<sub>rf</sub> and volatility 0, and that"
+    }
+   ],
+   "summary": "In this case, we also assume one of the assets is risk free with return µ<sub>rf</sub> and volatility 0, and that",
+   "tags": []
+  },
+  {
+   "id": 77,
+   "type": "equation",
+   "page": 10,
+   "text": "Equation 10 says that the set of portfolio weights consists of all vectors theta such that the sum of the elements of theta equals one.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    133,
+    133
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-14.png)"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nΘ = {θ | 1<sup>T</sup> θ = 1}. (10)\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "Equation 10 defines the set of portfolio weights as those where the sum of weights equals one.",
+   "tags": [
+    "portfolio weights",
+    "constraints"
+   ]
+  },
+  {
+   "id": 78,
+   "type": "body",
+   "page": 10,
+   "text": "These assumptions allow the investor to counteract the income stream by shorting the risk-free asset and investing the proceeds in a preferred portfolio of other assets. The fair value of the income stream is its net present value over [t, T ] at the risk-free rate:",
+   "original_text": "These assumptions allow the investor to counteract the income stream by shorting the risk-free asset and investing the proceeds in a preferred portfolio of other assets. The fair value of the income stream is its net present value over [t, T ] at the risk-free rate:",
+   "unchanged": true,
+   "paragraphs": [
+    134,
+    134
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "These assumptions allow the investor to counteract the income stream by shorting the risk-free asset and investing the proceeds in a preferred portfolio of other assets. The fair value of the income stream is its net present value over [t, T ] at the risk-free rate:"
+    }
+   ],
+   "summary": "These assumptions allow the investor to counteract the income stream by shorting the risk-free asset and investing the proceeds in a preferred portfolio of other assets. The fair value of the income stream is its net present value over [t, T ] at the risk-free rate:",
+   "tags": []
+  },
+  {
+   "id": 79,
+   "type": "equation",
+   "page": 10,
+   "text": "The equation says that v t equals the integral from t to T of the following expression: first multiply negative mu rf by y t, then raise e to that power, and integrate with respect to t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    135,
+    135
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "![](images/merton.pdf-0010-16.png)"
+    },
+    {
+     "type": "equation",
+     "page": 10,
+     "text": "<!-- Start of picture text -->\nv<sub>t</sub> =<sub>t</sub> Z<sub>T</sub> e<sup>−µ<sub>rf<sup>y<sub>t</sub></sup></sub></sup> dt,\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical equation for v t. It defines v t as the integral of an exponential decay function involving mu rf and y t.",
+   "tags": [
+    "human capital",
+    "net present value",
+    "integral"
+   ]
+  },
+  {
+   "id": 80,
+   "type": "body",
+   "page": 10,
+   "text": "which can be interpreted as the remaining human capital of the investor.",
+   "original_text": "which can be interpreted as the remaining human capital of the investor.",
+   "unchanged": true,
+   "paragraphs": [
+    136,
+    136
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 10,
+     "text": "which can be interpreted as the remaining human capital of the investor."
+    }
+   ],
+   "summary": "which can be interpreted as the remaining human capital of the investor.",
+   "tags": []
+  },
+  {
+   "id": 81,
+   "type": "body",
+   "page": 11,
+   "text": "For this extension, the dynamics in (9) are replaced by\n\n![](images/merton.pdf-0011-01.png)\n\n<!-- Start of picture text -->\nw<sub>t</sub>˙ ≤ µ<sub>t</sub><sup>T</sup> x<sup>t</sup> + y<sup>t</sup> − c<sup>t</sup> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub> + v<sub>t</sub>) .\n<!-- End of picture text -->\n\nNote the addition of the income term y<sub>t</sub> and the normalization of risk by the total wealth plus the remaining human capital. In this case, the wealth w<sub>t</sub> need not be positive but instead satisfies w<sub>t</sub>+v<sub>t</sub> > 0. Because of this, we also replace the constraint x<sub>t</sub>/w<sub>t</sub> ∈ Θ (which is not defined for w<sub>t</sub> = 0) with 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>.",
+   "original_text": "For this extension, the dynamics in (9) are replaced by\n\nNote the addition of the income term y<sub>t</sub> and the normalization of risk by the total wealth plus the remaining human capital. In this case, the wealth w<sub>t</sub> need not be positive but instead satisfies w<sub>t</sub>+v<sub>t</sub> > 0. Because of this, we also replace the constraint x<sub>t</sub>/w<sub>t</sub> ∈ Θ (which is not defined for w<sub>t</sub> = 0) with 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>.",
+   "unchanged": false,
+   "paragraphs": [
+    137,
+    140
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 11,
+     "text": "For this extension, the dynamics in (9) are replaced by"
+    },
+    {
+     "type": "equation",
+     "page": 11,
+     "text": "![](images/merton.pdf-0011-01.png)"
+    },
+    {
+     "type": "equation",
+     "page": 11,
+     "text": "<!-- Start of picture text -->\nw<sub>t</sub>˙ ≤ µ<sub>t</sub><sup>T</sup> x<sup>t</sup> + y<sup>t</sup> − c<sup>t</sup> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub> + v<sub>t</sub>) .\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 11,
+     "text": "Note the addition of the income term y<sub>t</sub> and the normalization of risk by the total wealth plus the remaining human capital. In this case, the wealth w<sub>t</sub> need not be positive but instead satisfies w<sub>t</sub>+v<sub>t</sub> > 0. Because of this, we also replace the constraint x<sub>t</sub>/w<sub>t</sub> ∈ Θ (which is not defined for w<sub>t</sub> = 0) with 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>."
+    }
+   ],
+   "summary": "For this extension, the dynamics in (9) are replaced by ![](images/merton.pdf-0011-01.png) <!-- Start of picture text --> w<sub>t</sub>˙ ≤ µ<sub>t</sub><sup>T</sup> x<sup>t</sup> + y<sup>t</sup> − c<sup>t</sup> + ((γ − 1) x<sub>t</sub><sup>T</sup> Σx<sup>t</sup>)/(2 w<sub>t</sub> + v<sub>t</sub>) . <!-- End of picture text --> Note the addition of the income term y<sub>t</sub> and the normalization of risk by the total wealth plus the remaining human capital. In this case, the wealth w<sub>t</sub> need not be positive but instead satisfies w<sub>t</sub>+v<sub>t</sub> > 0. Because of this, we also replace the constraint x<sub>t</sub>/w<sub>t</sub> ∈ Θ (which is not defined for w<sub>t</sub> = 0) with 1<sup>T</sup> x<sub>t</sub> = w<sub>t</sub>.",
+   "tags": []
+  },
+  {
+   "id": 82,
+   "type": "body",
+   "page": 11,
+   "text": "Epstein–Zin preferences. One interesting feature of the certainty equivalent problem (9) is that the risk aversion parameter γ appears separately in the objective and dynamics constraint. It is reasonable to ask whether, by modifying the consumption utility to be\n\n![](images/merton.pdf-0011-04.png)\n\n<!-- Start of picture text -->\n(β)/(ρ)w<sub>T</sub><sup>ρ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(ρ)c<sub>t</sub><sup>ρ</sup> dt\n<!-- End of picture text -->\n\nfor some ρ̸ = γ with ρ < 1 and ρ̸ = 0, but keeping γ in the dynamics constraint, problem (9) is equivalent to some variant of the Merton problem. This is indeed the case, but with the expected utility U replaced by Epstein–Zin preferences, where 1/ρ is the elasticity of intertemporal substitution and γ is the risk aversion. For details, see [DE92].",
+   "original_text": "Epstein–Zin preferences. One interesting feature of the certainty equivalent problem (9) is that the risk aversion parameter γ appears separately in the objective and dynamics constraint. It is reasonable to ask whether, by modifying the consumption utility to be\n\nfor some ρ̸ = γ with ρ < 1 and ρ̸ = 0, but keeping γ in the dynamics constraint, problem (9) is equivalent to some variant of the Merton problem. This is indeed the case, but with the expected utility U replaced by Epstein–Zin preferences, where 1/ρ is the elasticity of intertemporal substitution and γ is the risk aversion. For details, see [DE92].",
+   "unchanged": false,
+   "paragraphs": [
+    141,
+    144
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 11,
+     "text": "Epstein–Zin preferences. One interesting feature of the certainty equivalent problem (9) is that the risk aversion parameter γ appears separately in the objective and dynamics constraint. It is reasonable to ask whether, by modifying the consumption utility to be"
+    },
+    {
+     "type": "figure",
+     "page": 11,
+     "text": "![](images/merton.pdf-0011-04.png)"
+    },
+    {
+     "type": "figure",
+     "page": 11,
+     "text": "<!-- Start of picture text -->\n(β)/(ρ)w<sub>T</sub><sup>ρ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(ρ)c<sub>t</sub><sup>ρ</sup> dt\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 11,
+     "text": "for some ρ̸ = γ with ρ < 1 and ρ̸ = 0, but keeping γ in the dynamics constraint, problem (9) is equivalent to some variant of the Merton problem. This is indeed the case, but with the expected utility U replaced by Epstein–Zin preferences, where 1/ρ is the elasticity of intertemporal substitution and γ is the risk aversion. For details, see [DE92]."
+    }
+   ],
+   "summary": "Epstein–Zin preferences. One interesting feature of the certainty equivalent problem (9) is that the risk aversion parameter γ appears separately in the objective and dynamics constraint. It is reasonable to ask whether, by modifying the consumption utility to be ![](images/merton.pdf-0011-04.png) <!-- Start of picture text --> (β)/(ρ)w<sub>T</sub><sup>ρ</sup> +<sub>0</sub> Z<sub>T</sub> (1)/(ρ)c<sub>t</sub><sup>ρ</sup> dt <!-- End of picture text --> for some ρ̸ = γ with ρ < 1 and ρ̸ = 0, but keeping γ in the dynamics constraint, problem (9) is equivalent to some variant of the Merton problem. This is indeed the case, but with the expected utility U replaced by Epstein–Zin preferences, where 1/ρ is the elasticity of intertemporal substitution and γ is the risk aversion. For details, see [DE92].",
+   "tags": []
+  },
+  {
+   "id": 83,
+   "type": "heading",
+   "page": 11,
+   "text": "5 Inexact extensions",
+   "original_text": "# 5 Inexact extensions",
+   "unchanged": true,
+   "paragraphs": [
+    145,
+    145
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 11,
+     "text": "# 5 Inexact extensions"
+    }
+   ],
+   "summary": "5 Inexact extensions",
+   "tags": []
+  },
+  {
+   "id": 84,
+   "type": "body",
+   "page": 11,
+   "text": "Here we discuss several extensions of problem (9) that (to our knowledge) do not exactly solve a version of the Merton problem. Some of these build on the exact extensions of §4.",
+   "original_text": "Here we discuss several extensions of problem (9) that (to our knowledge) do not exactly solve a version of the Merton problem. Some of these build on the exact extensions of §4.",
+   "unchanged": true,
+   "paragraphs": [
+    146,
+    146
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 11,
+     "text": "Here we discuss several extensions of problem (9) that (to our knowledge) do not exactly solve a version of the Merton problem. Some of these build on the exact extensions of §4."
+    }
+   ],
+   "summary": "Here we discuss several extensions of problem (9) that (to our knowledge) do not exactly solve a version of the Merton problem. Some of these build on the exact extensions of §4.",
+   "tags": []
+  },
+  {
+   "id": 85,
+   "type": "body",
+   "page": 11,
+   "text": "Modified utility. We can change the objective of (9) to use any increasing, concave utility function for either consumption or bequest. These utility functions need not be additive over time: For example, we can maximize the minimum consumption over the interval [0, T ],",
+   "original_text": "Modified utility. We can change the objective of (9) to use any increasing, concave utility function for either consumption or bequest. These utility functions need not be additive over time: For example, we can maximize the minimum consumption over the interval [0, T ],",
+   "unchanged": true,
+   "paragraphs": [
+    147,
+    147
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 11,
+     "text": "Modified utility. We can change the objective of (9) to use any increasing, concave utility function for either consumption or bequest. These utility functions need not be additive over time: For example, we can maximize the minimum consumption over the interval [0, T ],"
+    }
+   ],
+   "summary": "Modified utility. We can change the objective of (9) to use any increasing, concave utility function for either consumption or bequest. These utility functions need not be additive over time: For example, we can maximize the minimum consumption over the interval [0, T ],",
+   "tags": []
+  },
+  {
+   "id": 86,
+   "type": "body",
+   "page": 11,
+   "text": "As a special case, we can add a minimum consumption constraint\n\n![](images/merton.pdf-0011-10.png)\n\n<!-- Start of picture text -->\nct ≥ c(min)/(t),\n<!-- End of picture text -->\n\nwhere c<sup>min</sup> t is the minimum allowable consumption amount as a func<sub>t</sub>ion of age. Similarly, we can enforce a minimum bequest over some time window (say, to care for underage dependents until they come of age).",
+   "original_text": "As a special case, we can add a minimum consumption constraint\n\nwhere c<sup>min</sup> t is the minimum allowable consumption amount as a func<sub>t</sub>ion of age. Similarly, we can enforce a minimum bequest over some time window (say, to care for underage dependents until they come of age).",
+   "unchanged": false,
+   "paragraphs": [
+    148,
+    151
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 11,
+     "text": "As a special case, we can add a minimum consumption constraint"
+    },
+    {
+     "type": "equation",
+     "page": 11,
+     "text": "![](images/merton.pdf-0011-10.png)"
+    },
+    {
+     "type": "equation",
+     "page": 11,
+     "text": "<!-- Start of picture text -->\nct ≥ c(min)/(t),\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 11,
+     "text": "where c<sup>min</sup> t is the minimum allowable consumption amount as a func<sub>t</sub>ion of age. Similarly, we can enforce a minimum bequest over some time window (say, to care for underage dependents until they come of age)."
+    }
+   ],
+   "summary": "As a special case, we can add a minimum consumption constraint ![](images/merton.pdf-0011-10.png) <!-- Start of picture text --> ct ≥ c(min)/(t), <!-- End of picture text --> where c<sup>min</sup> t is the minimum allowable consumption amount as a func<sub>t</sub>ion of age. Similarly, we can enforce a minimum bequest over some time window (say, to care for underage dependents until they come of age).",
+   "tags": []
+  },
+  {
+   "id": 87,
+   "type": "body",
+   "page": 12,
+   "text": "Spending limit. We can limit consumption as a fraction of income with the constraint",
+   "original_text": "Spending limit. We can limit consumption as a fraction of income with the constraint",
+   "unchanged": true,
+   "paragraphs": [
+    152,
+    152
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "Spending limit. We can limit consumption as a fraction of income with the constraint"
+    }
+   ],
+   "summary": "Spending limit. We can limit consumption as a fraction of income with the constraint",
+   "tags": []
+  },
+  {
+   "id": 88,
+   "type": "body",
+   "page": 12,
+   "text": "c<sub>t</sub> ≤ ηy<sub>t</sub>",
+   "original_text": "c<sub>t</sub> ≤ ηy<sub>t</sub>",
+   "unchanged": true,
+   "paragraphs": [
+    153,
+    153
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "c<sub>t</sub> ≤ ηy<sub>t</sub>"
+    }
+   ],
+   "summary": "c<sub>t</sub> ≤ ηy<sub>t</sub>",
+   "tags": []
+  },
+  {
+   "id": 89,
+   "type": "body",
+   "page": 12,
+   "text": "for some parameter η > 0. For example, when η = 0.7, this constraint means that we can’t consume more than 70% of our income, i.e., we must have a savings rate of 30%.",
+   "original_text": "for some parameter η > 0. For example, when η = 0.7, this constraint means that we can’t consume more than 70% of our income, i.e., we must have a savings rate of 30%.",
+   "unchanged": true,
+   "paragraphs": [
+    154,
+    154
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "for some parameter η > 0. For example, when η = 0.7, this constraint means that we can’t consume more than 70% of our income, i.e., we must have a savings rate of 30%."
+    }
+   ],
+   "summary": "for some parameter η > 0. For example, when η = 0.7, this constraint means that we can’t consume more than 70% of our income, i.e., we must have a savings rate of 30%.",
+   "tags": []
+  },
+  {
+   "id": 90,
+   "type": "body",
+   "page": 12,
+   "text": "This constraint can be adjusted to account for investment income. To see this, take d ∈ R<sup>n</sup> to be the vector of dividend yields for each asset, which is constant and known in advance. The modified constraint becomes",
+   "original_text": "This constraint can be adjusted to account for investment income. To see this, take d ∈ R<sup>n</sup> to be the vector of dividend yields for each asset, which is constant and known in advance. The modified constraint becomes",
+   "unchanged": true,
+   "paragraphs": [
+    155,
+    155
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "This constraint can be adjusted to account for investment income. To see this, take d ∈ R<sup>n</sup> to be the vector of dividend yields for each asset, which is constant and known in advance. The modified constraint becomes"
+    }
+   ],
+   "summary": "This constraint can be adjusted to account for investment income. To see this, take d ∈ R<sup>n</sup> to be the vector of dividend yields for each asset, which is constant and known in advance. The modified constraint becomes",
+   "tags": []
+  },
+  {
+   "id": 91,
+   "type": "equation",
+   "page": 12,
+   "text": "The equation says that consumption at time t is less than or equal to the product of eta and income at time t, plus the dot product of the dividend yield vector d and the asset holdings vector x at time t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    156,
+    156
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "![](images/merton.pdf-0012-04.png)"
+    },
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "<!-- Start of picture text -->\nc<sub>t</sub> ≤ ηy<sub>t</sub> + d<sup>T</sup> x<sub>t</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source provides a mathematical constraint for consumption. It incorporates income and dividend yields from asset holdings.",
+   "tags": [
+    "consumption constraint",
+    "dividend yields",
+    "investment income"
+   ]
+  },
+  {
+   "id": 92,
+   "type": "body",
+   "page": 12,
+   "text": "When this constraint is tight, i.e., when we desire to consume more than η times our income, there is added incentive to invest in assets with high dividend yield.",
+   "original_text": "When this constraint is tight, i.e., when we desire to consume more than η times our income, there is added incentive to invest in assets with high dividend yield.",
+   "unchanged": true,
+   "paragraphs": [
+    157,
+    157
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "When this constraint is tight, i.e., when we desire to consume more than η times our income, there is added incentive to invest in assets with high dividend yield."
+    }
+   ],
+   "summary": "When this constraint is tight, i.e., when we desire to consume more than η times our income, there is added incentive to invest in assets with high dividend yield.",
+   "tags": []
+  },
+  {
+   "id": 93,
+   "type": "body",
+   "page": 12,
+   "text": "Minimum cash balance. We can include a constraint that the amount invested in cash be above a certain level, i.e.,\n\n![](images/merton.pdf-0012-07.png)\n\n<!-- Start of picture text -->\n(x<sub>t</sub>)<sub>i</sub> ≥ (x<sub>t</sub><sup>min</sup>)<sub>i</sub>,\n<!-- End of picture text -->\n\nwhere i is the index of the cash asset. This is similar to an emergency fund constraint that we must keep six months worth of consumption in cash, which is expressed as",
+   "original_text": "Minimum cash balance. We can include a constraint that the amount invested in cash be above a certain level, i.e.,\n\nwhere i is the index of the cash asset. This is similar to an emergency fund constraint that we must keep six months worth of consumption in cash, which is expressed as",
+   "unchanged": false,
+   "paragraphs": [
+    158,
+    161
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "Minimum cash balance. We can include a constraint that the amount invested in cash be above a certain level, i.e.,"
+    },
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "![](images/merton.pdf-0012-07.png)"
+    },
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "<!-- Start of picture text -->\n(x<sub>t</sub>)<sub>i</sub> ≥ (x<sub>t</sub><sup>min</sup>)<sub>i</sub>,\n<!-- End of picture text -->"
+    },
+    {
+     "type": "body",
+     "page": 12,
+     "text": "where i is the index of the cash asset. This is similar to an emergency fund constraint that we must keep six months worth of consumption in cash, which is expressed as"
+    }
+   ],
+   "summary": "Minimum cash balance. We can include a constraint that the amount invested in cash be above a certain level, i.e., ![](images/merton.pdf-0012-07.png) <!-- Start of picture text --> (x<sub>t</sub>)<sub>i</sub> ≥ (x<sub>t</sub><sup>min</sup>)<sub>i</sub>, <!-- End of picture text --> where i is the index of the cash asset. This is similar to an emergency fund constraint that we must keep six months worth of consumption in cash, which is expressed as",
+   "tags": []
+  },
+  {
+   "id": 94,
+   "type": "equation",
+   "page": 12,
+   "text": "The equation says that the amount of the cash asset at time t must be greater than or equal to zero point five times the consumption at time t.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    162,
+    162
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "![](images/merton.pdf-0012-09.png)"
+    },
+    {
+     "type": "equation",
+     "page": 12,
+     "text": "<!-- Start of picture text -->\n(x<sub>t</sub>)<sub>i</sub> ≥ 0.5c<sub>t</sub> .\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "The source contains an equation representing a cash asset constraint. It specifies that the cash asset must be at least half of the current consumption.",
+   "tags": [
+    "cash asset",
+    "consumption constraint"
+   ]
+  },
+  {
+   "id": 95,
+   "type": "heading",
+   "page": 12,
+   "text": "6 Application to model predictive control",
+   "original_text": "# 6 Application to model predictive control",
+   "unchanged": true,
+   "paragraphs": [
+    163,
+    163
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 12,
+     "text": "# 6 Application to model predictive control"
+    }
+   ],
+   "summary": "6 Application to model predictive control",
+   "tags": []
+  },
+  {
+   "id": 96,
+   "type": "body",
+   "page": 12,
+   "text": "Model predictive control is a technique for stochastic control problems that leverages a deterministic approximation of the stochastic problem. To evaluate an MPC policy, we first solve this determistic problem to obtain a planned trajectory for the state and control input over the planning horizon. We then implement only the first control input in this plan, and rest of the planned trajectory is discarded. To obtain future control inputs, the policy is evaluated again, which requires solving a new deterministic problem.",
+   "original_text": "Model predictive control is a technique for stochastic control problems that leverages a deterministic approximation of the stochastic problem. To evaluate an MPC policy, we first solve this determistic problem to obtain a planned trajectory for the state and control input over the planning horizon. We then implement only the first control input in this plan, and rest of the planned trajectory is discarded. To obtain future control inputs, the policy is evaluated again, which requires solving a new deterministic problem.",
+   "unchanged": true,
+   "paragraphs": [
+    164,
+    164
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "Model predictive control is a technique for stochastic control problems that leverages a deterministic approximation of the stochastic problem. To evaluate an MPC policy, we first solve this determistic problem to obtain a planned trajectory for the state and control input over the planning horizon. We then implement only the first control input in this plan, and rest of the planned trajectory is discarded. To obtain future control inputs, the policy is evaluated again, which requires solving a new deterministic problem."
+    }
+   ],
+   "summary": "Model predictive control is a technique for stochastic control problems that leverages a deterministic approximation of the stochastic problem. To evaluate an MPC policy, we first solve this determistic problem to obtain a planned trajectory for the state and control input over the planning horizon. We then implement only the first control input in this plan, and rest of the planned trajectory is discarded. To obtain future control inputs, the policy is evaluated again, which requires solving a new deterministic problem.",
+   "tags": []
+  },
+  {
+   "id": 97,
+   "type": "body",
+   "page": 12,
+   "text": "In the context of the Merton problem, the certainty equivalent problem is used as a basis for a simple model predictive control policy, which we denote π<sub>t</sub><sup>mpc</sup> . We first define this policy when t = 0, with initial wealth w<sub>0</sub>. We start by solving the deterministic control problem (9) to obtain the optimal trajec<sub>t</sub>ories ct and θ<sub>t</sub>. The MPC policy then takes π<sub>0</sub><sup>mpc</sup> (w0) = (c<sub>0</sub>, θ<sub>0</sub>). To define the MPC policy for t ∈ (0, T ), we first form a new instance of problem (9), which is defined over the interval [t, T ] and has initial wealth w<sub>t</sub>. Once again we solve the deterministic optimal control problem (9), to obtain optimal c<sub>τ</sub> and θ<sub>τ</sub> over the interval τ ∈ [t, T ]. We then take π<sub>t</sub><sup>mpc</sup> (w<sub>t</sub>) = (c<sub>t</sub>, θ<sub>t</sub>). Evaluating the MPC policy therefore always requires solving a deterministic optimal control problem of the form (9).",
+   "original_text": "In the context of the Merton problem, the certainty equivalent problem is used as a basis for a simple model predictive control policy, which we denote π<sub>t</sub><sup>mpc</sup> . We first define this policy when t = 0, with initial wealth w<sub>0</sub>. We start by solving the deterministic control problem (9) to obtain the optimal trajec<sub>t</sub>ories ct and θ<sub>t</sub>. The MPC policy then takes π<sub>0</sub><sup>mpc</sup> (w0) = (c<sub>0</sub>, θ<sub>0</sub>). To define the MPC policy for t ∈ (0, T ), we first form a new instance of problem (9), which is defined over the interval [t, T ] and has initial wealth w<sub>t</sub>. Once again we solve the deterministic optimal control problem (9), to obtain optimal c<sub>τ</sub> and θ<sub>τ</sub> over the interval τ ∈ [t, T ]. We then take π<sub>t</sub><sup>mpc</sup> (w<sub>t</sub>) = (c<sub>t</sub>, θ<sub>t</sub>). Evaluating the MPC policy therefore always requires solving a deterministic optimal control problem of the form (9).",
+   "unchanged": true,
+   "paragraphs": [
+    165,
+    165
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 12,
+     "text": "In the context of the Merton problem, the certainty equivalent problem is used as a basis for a simple model predictive control policy, which we denote π<sub>t</sub><sup>mpc</sup> . We first define this policy when t = 0, with initial wealth w<sub>0</sub>. We start by solving the deterministic control problem (9) to obtain the optimal trajec<sub>t</sub>ories ct and θ<sub>t</sub>. The MPC policy then takes π<sub>0</sub><sup>mpc</sup> (w0) = (c<sub>0</sub>, θ<sub>0</sub>). To define the MPC policy for t ∈ (0, T ), we first form a new instance of problem (9), which is defined over the interval [t, T ] and has initial wealth w<sub>t</sub>. Once again we solve the deterministic optimal control problem (9), to obtain optimal c<sub>τ</sub> and θ<sub>τ</sub> over the interval τ ∈ [t, T ]. We then take π<sub>t</sub><sup>mpc</sup> (w<sub>t</sub>) = (c<sub>t</sub>, θ<sub>t</sub>). Evaluating the MPC policy therefore always requires solving a deterministic optimal control problem of the form (9)."
+    }
+   ],
+   "summary": "In the context of the Merton problem, the certainty equivalent problem is used as a basis for a simple model predictive control policy, which we denote π<sub>t</sub><sup>mpc</sup> . We first define this policy when t = 0, with initial wealth w<sub>0</sub>. We start by solving the deterministic control problem (9) to obtain the optimal trajec<sub>t</sub>ories ct and θ<sub>t</sub>. The MPC policy then takes π<sub>0</sub><sup>mpc</sup> (w0) = (c<sub>0</sub>, θ<sub>0</sub>). To define the MPC policy for t ∈ (0, T ), we first form a new instance of problem (9), which is defined over the interval [t, T ] and has initial wealth w<sub>t</sub>. Once again we solve the deterministic optimal control problem (9), to obtain optimal c<sub>τ</sub> and θ<sub>τ</sub> over the interval τ ∈ [t, T ]. We then take π<sub>t</sub><sup>mpc</sup> (w<sub>t</sub>) = (c<sub>t</sub>, θ<sub>t</sub>). Evaluating the MPC policy therefore always requires solving a deterministic optimal control problem of the form (9).",
+   "tags": []
+  },
+  {
+   "id": 98,
+   "type": "body",
+   "page": 13,
+   "text": "MPC is a convenient way to implement the optimal policy for the basic problem or any of the extensions of §4. In those cases, the MPC policy is optimal. When MPC is applied with constraints and an objective that do not correspond to any version of Merton problem, the MPC policy is a sophisticated heuristic, and very useful in practice.",
+   "original_text": "MPC is a convenient way to implement the optimal policy for the basic problem or any of the extensions of §4. In those cases, the MPC policy is optimal. When MPC is applied with constraints and an objective that do not correspond to any version of Merton problem, the MPC policy is a sophisticated heuristic, and very useful in practice.",
+   "unchanged": true,
+   "paragraphs": [
+    166,
+    166
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "MPC is a convenient way to implement the optimal policy for the basic problem or any of the extensions of §4. In those cases, the MPC policy is optimal. When MPC is applied with constraints and an objective that do not correspond to any version of Merton problem, the MPC policy is a sophisticated heuristic, and very useful in practice."
+    }
+   ],
+   "summary": "MPC is a convenient way to implement the optimal policy for the basic problem or any of the extensions of §4. In those cases, the MPC policy is optimal. When MPC is applied with constraints and an objective that do not correspond to any version of Merton problem, the MPC policy is a sophisticated heuristic, and very useful in practice.",
+   "tags": []
+  },
+  {
+   "id": 99,
+   "type": "body",
+   "page": 13,
+   "text": "To use MPC in practice requires discretizing problem (9), which we discuss in the next section.",
+   "original_text": "To use MPC in practice requires discretizing problem (9), which we discuss in the next section.",
+   "unchanged": true,
+   "paragraphs": [
+    167,
+    167
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "To use MPC in practice requires discretizing problem (9), which we discuss in the next section."
+    }
+   ],
+   "summary": "To use MPC in practice requires discretizing problem (9), which we discuss in the next section.",
+   "tags": []
+  },
+  {
+   "id": 100,
+   "type": "heading",
+   "page": 13,
+   "text": "7 Discretized problem",
+   "original_text": "# 7 Discretized problem",
+   "unchanged": true,
+   "paragraphs": [
+    168,
+    168
+   ],
+   "sources": [
+    {
+     "type": "heading",
+     "page": 13,
+     "text": "# 7 Discretized problem"
+    }
+   ],
+   "summary": "7 Discretized problem",
+   "tags": []
+  },
+  {
+   "id": 101,
+   "type": "body",
+   "page": 13,
+   "text": "Here we show how to discretize problem (9). We do this for the basic problem only, but note that the extensions can be handled similarly.",
+   "original_text": "Here we show how to discretize problem (9). We do this for the basic problem only, but note that the extensions can be handled similarly.",
+   "unchanged": true,
+   "paragraphs": [
+    169,
+    169
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "Here we show how to discretize problem (9). We do this for the basic problem only, but note that the extensions can be handled similarly."
+    }
+   ],
+   "summary": "Here we show how to discretize problem (9). We do this for the basic problem only, but note that the extensions can be handled similarly.",
+   "tags": []
+  },
+  {
+   "id": 102,
+   "type": "body",
+   "page": 13,
+   "text": "We let xk denote the value of x<sub>t</sub> in (9) at time t = hk, k = 0, . . . , K, where h = T/K is the discretization interval. (We use the same notation, but index x with the subscript k to denote the discretized variable, and index with t to denote the continuous variable.) We similarly define the discretized variables c<sub>k</sub> and w<sub>k</sub>. Replacing the time derivative w˙ t with the forward Euler approximation (w<sub>k+1</sub>−w<sub>k</sub>)/h, and replacing the integral in the objective with a Riemann sum approximation, we obtain the discretized problem",
+   "original_text": "We let xk denote the value of x<sub>t</sub> in (9) at time t = hk, k = 0, . . . , K, where h = T/K is the discretization interval. (We use the same notation, but index x with the subscript k to denote the discretized variable, and index with t to denote the continuous variable.) We similarly define the discretized variables c<sub>k</sub> and w<sub>k</sub>. Replacing the time derivative w˙ t with the forward Euler approximation (w<sub>k+1</sub>−w<sub>k</sub>)/h, and replacing the integral in the objective with a Riemann sum approximation, we obtain the discretized problem",
+   "unchanged": true,
+   "paragraphs": [
+    170,
+    170
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "We let xk denote the value of x<sub>t</sub> in (9) at time t = hk, k = 0, . . . , K, where h = T/K is the discretization interval. (We use the same notation, but index x with the subscript k to denote the discretized variable, and index with t to denote the continuous variable.) We similarly define the discretized variables c<sub>k</sub> and w<sub>k</sub>. Replacing the time derivative w˙ t with the forward Euler approximation (w<sub>k+1</sub>−w<sub>k</sub>)/h, and replacing the integral in the objective with a Riemann sum approximation, we obtain the discretized problem"
+    }
+   ],
+   "summary": "We let xk denote the value of x<sub>t</sub> in (9) at time t = hk, k = 0, . . . , K, where h = T/K is the discretization interval. (We use the same notation, but index x with the subscript k to denote the discretized variable, and index with t to denote the continuous variable.) We similarly define the discretized variables c<sub>k</sub> and w<sub>k</sub>. Replacing the time derivative w˙ t with the forward Euler approximation (w<sub>k+1</sub>−w<sub>k</sub>)/h, and replacing the integral in the objective with a Riemann sum approximation, we obtain the discretized problem",
+   "tags": []
+  },
+  {
+   "id": 103,
+   "type": "equation",
+   "page": 13,
+   "text": "Equation 11 says to maximize the sum of two terms. The first term is beta divided by gamma, multiplied by w T. The second term is a sum from k equals 0 to K minus 1 of the following: first raise c k to the power of gamma, then multiply that result by h, and then divide by gamma.\n\nThis is subject to three constraints. First, for k equals 0 to K minus 1, subtract w k from w k plus 1, then divide by h, and the result must be less than or equal to the sum of three parts: first, the product of the transpose of mu and x k; second, minus c k; and third, a term where you first subtract 1 from gamma, then multiply by the product of the transpose of x k and the product of sigma and x k, then divide that result by 2, and finally divide by w k.\n\nSecond, for k equals 0 to K, divide x k by w k, and the result must be in the set theta.\n\nThird, w 0 equals w init.",
+   "original_text": "",
+   "unchanged": false,
+   "paragraphs": [
+    171,
+    174
+   ],
+   "sources": [
+    {
+     "type": "equation",
+     "page": 13,
+     "text": "![](images/merton.pdf-0013-06.png)"
+    },
+    {
+     "type": "equation",
+     "page": 13,
+     "text": "<!-- Start of picture text -->\nmaximize (β)/(γ)w<sub>T</sub><sup>γ<sup>K−</sup></sup> +<sub>k=0</sub> (X<sup>1</sup> h)/(γ)c<sub>k</sub><sup>γ</sup> subject to w<sub>k+1</sub> ( − w<sub>k</sub>)/(h) ≤ µ<sup>T</sup> x<sub>k</sub> − c<sub>k</sub> + ((γ − 1) x<sub>k</sub><sup>T</sup> Σx<sup>k</sup>)/(2 w<sub>k</sub>), k = 0, . . ., K − 1 x<sub>k</sub>w<sub>0</sub> /w<sub>k</sub>= w<sub>init</sub>∈ Θ., k = 0, . . ., K (11)\n<!-- End of picture text -->"
+    }
+   ],
+   "summary": "Equation 11 defines the discretized optimization problem. It specifies the objective function to maximize and the constraints on wealth, consumption, and portfolio allocation.",
+   "tags": [
+    "discretization",
+    "optimization",
+    "merton problem"
+   ]
+  },
+  {
+   "id": 104,
+   "type": "body",
+   "page": 13,
+   "text": "The variables are x<sub>k</sub> ∈ R<sup>n</sup> and w<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K and c<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K − 1. All of the extensions (exact and inexact) discussed above can be discretized as well, but we do not give the details here.",
+   "original_text": "The variables are x<sub>k</sub> ∈ R<sup>n</sup> and w<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K and c<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K − 1. All of the extensions (exact and inexact) discussed above can be discretized as well, but we do not give the details here.",
+   "unchanged": true,
+   "paragraphs": [
+    175,
+    175
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "The variables are x<sub>k</sub> ∈ R<sup>n</sup> and w<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K and c<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K − 1. All of the extensions (exact and inexact) discussed above can be discretized as well, but we do not give the details here."
+    }
+   ],
+   "summary": "The variables are x<sub>k</sub> ∈ R<sup>n</sup> and w<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K and c<sub>k</sub> ∈ R<sub>++</sub> for k = 0, . . . , K − 1. All of the extensions (exact and inexact) discussed above can be discretized as well, but we do not give the details here.",
+   "tags": []
+  },
+  {
+   "id": 105,
+   "type": "body",
+   "page": 13,
+   "text": "The discretized certainty equivalent problem (11) is a (finite-dimensional) convex optimization problem, and can therefore be easily expressed in a domain-specific language for convex optimization, such as cvxpy. As an example, we give a cvxpy implementation of (11) in listing 1 when Θ is given by (10).",
+   "original_text": "The discretized certainty equivalent problem (11) is a (finite-dimensional) convex optimization problem, and can therefore be easily expressed in a domain-specific language for convex optimization, such as cvxpy. As an example, we give a cvxpy implementation of (11) in listing 1 when Θ is given by (10).",
+   "unchanged": true,
+   "paragraphs": [
+    176,
+    176
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "The discretized certainty equivalent problem (11) is a (finite-dimensional) convex optimization problem, and can therefore be easily expressed in a domain-specific language for convex optimization, such as cvxpy. As an example, we give a cvxpy implementation of (11) in listing 1 when Θ is given by (10)."
+    }
+   ],
+   "summary": "The discretized certainty equivalent problem (11) is a (finite-dimensional) convex optimization problem, and can therefore be easily expressed in a domain-specific language for convex optimization, such as cvxpy. As an example, we give a cvxpy implementation of (11) in listing 1 when Θ is given by (10).",
+   "tags": []
+  },
+  {
+   "id": 106,
+   "type": "body",
+   "page": 13,
+   "text": "For most practical portfolio construction problems, Θ is SOCP representable, which means that problem (11) is an SOCP [Lob+98]. To see this, note that the power utility c<sup>γ</sup> k<sup>and the quadratic-over-linear functions are SOCP representable;see [AG03,</sup> §2.2.f] and [Lob+98, §2.4], respectively. The perspective of Θ can be represented using the same cones used to represent Θ [MB15, §2].",
+   "original_text": "For most practical portfolio construction problems, Θ is SOCP representable, which means that problem (11) is an SOCP [Lob+98]. To see this, note that the power utility c<sup>γ</sup> k<sup>and the quadratic-over-linear functions are SOCP representable;see [AG03,</sup> §2.2.f] and [Lob+98, §2.4], respectively. The perspective of Θ can be represented using the same cones used to represent Θ [MB15, §2].",
+   "unchanged": true,
+   "paragraphs": [
+    177,
+    177
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 13,
+     "text": "For most practical portfolio construction problems, Θ is SOCP representable, which means that problem (11) is an SOCP [Lob+98]. To see this, note that the power utility c<sup>γ</sup> k<sup>and the quadratic-over-linear functions are SOCP representable;see [AG03,</sup> §2.2.f] and [Lob+98, §2.4], respectively. The perspective of Θ can be represented using the same cones used to represent Θ [MB15, §2]."
+    }
+   ],
+   "summary": "For most practical portfolio construction problems, Θ is SOCP representable, which means that problem (11) is an SOCP [Lob+98]. To see this, note that the power utility c<sup>γ</sup> k<sup>and the quadratic-over-linear functions are SOCP representable;see [AG03,</sup> §2.2.f] and [Lob+98, §2.4], respectively. The perspective of Θ can be represented using the same cones used to represent Θ [MB15, §2].",
+   "tags": []
+  },
+  {
+   "id": 107,
+   "type": "body",
+   "page": 14,
+   "text": "```\nw = Variable (K+1)\nx = Variable (n, K+1)\nc = Variable (K)\nSigma_half = numpy.linalg.cholesky (Sigma)\nU = beta/gamma * power(w[K], gamma) + h/gamma * sum(power(c,\n   gamma))\nconstr = [w == sum(x, axis=0), w[0] == w_init]\nfor k in range(K):\n    constr += [diff(w[k+1] - w[k])/h <= mu @ x[:, k] - c[k] +\n       (gamma - 1)/2 * quad_over_lin(Sigma_half @ x[:, k], w[k\n       ])]\n]\nproblem = Problem(Maximize (U), constr)\nproblem .solve()\n```",
+   "original_text": "```\nw = Variable (K+1)\nx = Variable (n, K+1)\nc = Variable (K)\nSigma_half = numpy.linalg.cholesky (Sigma)\nU = beta/gamma * power(w[K], gamma) + h/gamma * sum(power(c,\n   gamma))\nconstr = [w == sum(x, axis=0), w[0] == w_init]\nfor k in range(K):\n    constr += [diff(w[k+1] - w[k])/h <= mu @ x[:, k] - c[k] +\n       (gamma - 1)/2 * quad_over_lin(Sigma_half @ x[:, k], w[k\n       ])]\n]\nproblem = Problem(Maximize (U), constr)\nproblem .solve()\n```",
+   "unchanged": true,
+   "paragraphs": [
+    178,
+    178
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 14,
+     "text": "```\nw = Variable (K+1)\nx = Variable (n, K+1)\nc = Variable (K)\nSigma_half = numpy.linalg.cholesky (Sigma)\nU = beta/gamma * power(w[K], gamma) + h/gamma * sum(power(c,\n   gamma))\nconstr = [w == sum(x, axis=0), w[0] == w_init]\nfor k in range(K):\n    constr += [diff(w[k+1] - w[k])/h <= mu @ x[:, k] - c[k] +\n       (gamma - 1)/2 * quad_over_lin(Sigma_half @ x[:, k], w[k\n       ])]\n]\nproblem = Problem(Maximize (U), constr)\nproblem .solve()\n```"
+    }
+   ],
+   "summary": "``` w = Variable (K+1) x = Variable (n, K+1) c = Variable (K) Sigma_half = numpy.linalg.cholesky (Sigma) U = beta/gamma * power(w[K], gamma) + h/gamma * sum(power(c, gamma)) constr = [w == sum(x, axis=0), w[0] == w_init] for k in range(K): constr += [diff(w[k+1] - w[k])/h <= mu @ x[:, k] - c[k] + (gamma - 1)/2 * quad_over_lin(Sigma_half @ x[:, k], w[k ])] ] problem = Problem(Maximize (U), constr) problem .solve() ```",
+   "tags": []
+  },
+  {
+   "id": 108,
+   "type": "body",
+   "page": 14,
+   "text": "Listing 1: An implementation of the discretized certainty equivalent problem (11) using cvxpy.",
+   "original_text": "Listing 1: An implementation of the discretized certainty equivalent problem (11) using cvxpy.",
+   "unchanged": true,
+   "paragraphs": [
+    179,
+    179
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 14,
+     "text": "Listing 1: An implementation of the discretized certainty equivalent problem (11) using cvxpy."
+    }
+   ],
+   "summary": "Listing 1: An implementation of the discretized certainty equivalent problem (11) using cvxpy.",
+   "tags": []
+  },
+  {
+   "id": 109,
+   "type": "body",
+   "page": 14,
+   "text": "To give some idea of the speed at which current solvers can solve the discretized problem (11) (and its extensions), consider a problem with n = 500 assets, K = 50 periods, and covariance matrix Σ given as a typical factor model, with 25 factors. This problem has more than 100000 optimization variables. With just a small modification of the code given in listing 1 to exploit the low rank plus diagonal structure of the covariance matrix, the open-source solver ECOS [DCB13] solve the problem in around two seconds, on a single thread.",
+   "original_text": "To give some idea of the speed at which current solvers can solve the discretized problem (11) (and its extensions), consider a problem with n = 500 assets, K = 50 periods, and covariance matrix Σ given as a typical factor model, with 25 factors. This problem has more than 100000 optimization variables. With just a small modification of the code given in listing 1 to exploit the low rank plus diagonal structure of the covariance matrix, the open-source solver ECOS [DCB13] solve the problem in around two seconds, on a single thread.",
+   "unchanged": true,
+   "paragraphs": [
+    180,
+    180
+   ],
+   "sources": [
+    {
+     "type": "body",
+     "page": 14,
+     "text": "To give some idea of the speed at which current solvers can solve the discretized problem (11) (and its extensions), consider a problem with n = 500 assets, K = 50 periods, and covariance matrix Σ given as a typical factor model, with 25 factors. This problem has more than 100000 optimization variables. With just a small modification of the code given in listing 1 to exploit the low rank plus diagonal structure of the covariance matrix, the open-source solver ECOS [DCB13] solve the problem in around two seconds, on a single thread."
+    }
+   ],
+   "summary": "To give some idea of the speed at which current solvers can solve the discretized problem (11) (and its extensions), consider a problem with n = 500 assets, K = 50 periods, and covariance matrix Σ given as a typical factor model, with 25 factors. This problem has more than 100000 optimization variables. With just a small modification of the code given in listing 1 to exploit the low rank plus diagonal structure of the covariance matrix, the open-source solver ECOS [DCB13] solve the problem in around two seconds, on a single thread.",
+   "tags": []
+  }
+ ]
+}

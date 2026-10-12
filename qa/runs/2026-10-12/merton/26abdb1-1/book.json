@@ -1,0 +1,12 @@
+{
+  "descriptions_only": true,
+  "source_sha256": "fc5e46a761d9560ceca520eaf620a68f553dd3a3d1e942f7013ea7886867f0f9",
+  "source_file": "merton.pdf",
+  "git_commit": "26abdb132ca290d53a747d56c90e9d28a00148ea",
+  "model": "lm-studio/gemma-4-31B-it",
+  "local_vision": true,
+  "prompt_hash": "4dc955a5b0e63c3c4b8b120033f405172e630de48288e47fe20e9836489cd662",
+  "narration_sha256": "1212510ba8c4eba4b10bb48a867d879008ede3343ddb5e4b64f7a0027ba8806b",
+  "created_at": "2026-10-12T13:46:16Z",
+  "seconds": 52
+}
