@@ -431,7 +431,9 @@ PDF work is page-addressable:
    hangs from one ending in an operator, separator, or opening bracket
    (`SCRIPTLESS`), from a base more than 0.6 text heights off its baseline, or
    across a full-size glyph between them, so a small stacked ½ after "C_attn
-   [" is a fraction, not "C_attn₂ … +₂¹"; glyphs of a math-extension font
+   [" is a fraction, not "C_attn₂ … +₂¹"; a superscript stacked over a
+   subscript, too far above the subscript, hangs from their base, so RRSI's
+   "𝐻<sub>𝑡</sub><sup>(1)</sup>" is neither flat nor nested; glyphs of a math-extension font
    (`EXTENSION_FONT`: cmex, txex, pxex) are decoded from their codes
    (`EXTENSION_GLYPHS`), private-use bracket pieces (`BRACKET_PIECES`) become
    the bracket they build, and brace pieces are dropped, so CLM's tall

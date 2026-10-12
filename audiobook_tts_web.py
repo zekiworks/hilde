@@ -874,6 +874,10 @@ def script_tree(sheet, rect):
             roots.append(span)
             continue
         parent = max(before, key=lambda other: (other["x1"], -abs(other["y"] - span["y"])))
+        # A superscript stacked over a subscript, "𝐻<sub>𝑡</sub><sup>(1)</sup>",
+        # hangs from the base, not from the subscript it sits far above.
+        if parent["script"] and abs(span["y"] - parent["y"]) > 0.6 * parent["size"]:
+            parent = parent["parent"]
         # An operator or an opening bracket never takes a script, and a script
         # sits at most about 0.4 of a text height from its base: a small span
         # beyond either is part of something else, such as the stacked 1 over 2
