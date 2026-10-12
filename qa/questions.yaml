@@ -61,3 +61,13 @@ questions:
       Yes for prompts and command names (Ümit, 2026-10-08; D16): a printed prompt is read word for word, a
       command with its exact name and option names; code is still described.
 
+  - id: Q08
+    asked: 2026-10-12
+    by: claude
+    question: >
+      Should Hilde send figures as images to a local model that accepts them by default, rather than only when
+      "This model sees images" is ticked? Removing a local server clears the tick. Without images, Gemma 4 misread
+      CLM's Figures 5, 9 and 11 in 3 of 3 runs (R24-03, R24-05, R24-06); with them it read all three right in 3 of
+      3. The cost is a slower request per figure and a server that must accept images.
+    status: open
+

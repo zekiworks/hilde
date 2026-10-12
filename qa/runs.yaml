@@ -262,3 +262,17 @@ runs:
       Descriptions-only runs (qa/describe.py), 3 per paper and commit; DeLM has no 5872402 runs. Scored with the
       fact sets of workspace/bunch/hilde-factsets-2026-10-09.md: 255/346 facts right in all 3 runs at 9a70f65,
       287/346 at f0c29d9.
+
+  - id: R24
+    date: 2026-10-12
+    papers: [clm, procedural-graphs, merton]
+    hilde_commit: 26abdb1 (7591bb9 with call records), efc7009, 6d733e7
+    model: lm-studio/gemma-4-31B-it (images on)
+    voice: null
+    output_file: null   # branch qa/runs-2026-10-12, qa/runs/2026-10-12/<paper>/<commit>-<n>/
+    reviewers: [claude]
+    notes: >
+      Repair of the 12 Oct CLM book (7591bb9) against 9a70f65. Descriptions-only runs, 3 per paper at 26abdb1 and
+      at the fix (CLM at efc7009, whose CLM extraction equals 6d733e7's; PG and Merton at 6d733e7); Merton also
+      as full adaptations, 3 per side. Per-block model experiments (request x prompt x images, 3 repeats each)
+      located each case's first wrong stage; see the findings.

@@ -131,6 +131,13 @@ visuals:
         source: §4.1, Eq. 3
         verified: pdf
         seen: {2026-10-08: right}
+      - id: CLM-F113
+        what: The two terms are added; neither FLOPs term is multiplied by its token count
+        not: ['(?i)(prefill|decode) FLOPs[^.;]{0,20}(multiplied by|times)']
+        severity: critical
+        source: §4.1, Eq. 3
+        verified: pdf
+        seen: {2026-10-11: wrong, 2026-10-12: right}
 
   - name: Equation 4
     facts:
@@ -210,6 +217,14 @@ visuals:
         source: App. C, Eq. 9
         verified: pdf
         seen: {2026-10-01: wrong, 2026-10-08: right}
+      - id: CLM-F114
+        what: The prefill term and the last decode term each carry one half; C_attn is not squared
+        says: ['(?i)\bhalf\b']
+        not: ['(?i)\battn squared|attention (cost|constant) squared', '(?i)\bh (1|one)\b']
+        severity: important
+        source: App. C, Eq. 9
+        verified: pdf
+        seen: {2026-10-11: wrong, 2026-10-12: right}
 
   # ---------------------------------------------------------------- Figures 3, 4
   - name: Figure 3
@@ -407,6 +422,13 @@ visuals:
         source: Fig. 9 right
         verified: pdf
         seen: {2026-10-08: right}
+      - id: CLM-F115
+        what: 72.9, 73.9 and 27.1 are shares of prompt tokens, not accuracy or PFLOPs
+        not: ['(?i)(accuracy|score)[^.;]{0,40}\b7[23]\.9', '(?i)\b27\.1 PFLOPs']
+        severity: critical
+        source: Fig. 9 right
+        verified: image
+        seen: {2026-10-11: wrong, 2026-10-12: right}
 
   - name: Figure 10
     caption: 'for full attention layers and linear attention layers'
@@ -444,6 +466,14 @@ visuals:
         source: App. B ("robust across K", gains "saturate by K = 6")
         verified: pdf (text only)
         seen: {2026-10-08: wrong}
+      - id: CLM-F116
+        what: Relocated tokens per edited request rise as K grows
+        says: ['(?i)relocated tokens[^.;]{0,120}(increas|rises|rising|grows|growing)']
+        not: ['(?i)relocated tokens[^.;]{0,80}decreas']
+        severity: critical
+        source: Fig. 11 right
+        verified: image
+        seen: {2026-10-11: wrong, 2026-10-12: right}
 
   - name: Figure 12
     caption: 'also benefits standard chat serving'
@@ -537,6 +567,14 @@ visuals:
         seen: {2026-10-07: wrong, 2026-10-08: right}
       - {id: CLM-F103, what: 'ACM: compress when the gauge is above 22,000', value: '22,?000', holder: ACM, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F104, what: 'Summary: compacts at about 24.6K of 32,768 tokens', value: '24\.6 ?K', holder: Summary, severity: important, source: Table 4, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F117
+        what: 'CLM check: no note, or a token count that did not drop, means the batch is still in context'
+        says: ['(?i)\bno note\b|without a note|note is (absent|missing)']
+        not: ['(?i)(success|confirmed)[^.;]{0,40}\bif a note appears\b', '(?i)\bis a note or\b']
+        severity: critical
+        source: Table 4, CLM row
+        verified: pdf
+        seen: {2026-10-11: wrong, 2026-10-12: right}
 
   - name: Table 5
     caption: 'scores are rescaled to 0'

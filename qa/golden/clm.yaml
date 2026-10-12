@@ -102,6 +102,11 @@ asserts:
     about: Source quirks stay as printed (five vs six subagents, 64 turns vs 100-turn cap, 39.9% vs 28.8%)
     must_contain: ['(?i)five concurrent subagents', '(?i)six concurrent subagents', '(?i)64 turns', '(?i)100-turn cap', '39\.9']
 
+  - id: CLM-27
+    bug: B40
+    about: The 5 pt link logo on page 1 is not described as a figure (it had the model invent a system diagram)
+    must_not_contain: '(?i)query analy[sz]er|document ranker'
+
 manual:
   - bug: B03
     check: Figure 5 and Table 1 (same page) each get one description and one caption, in order.

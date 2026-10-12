@@ -409,3 +409,42 @@ bugs:
       ask-again for short narration never fires. Compare negations, quantifiers, numbers and symbols between
       source and narration separately and flag any change.
     test: prose_kept() of a sentence and its copy without "not" is below 1.0, or a separate check names it.
+
+  - id: B40
+    slug: icon-sent-as-figure
+    title: A logo or icon set in a line of text reaches the model as a figure, and the model invents one
+    priority: P1
+    layer: extract
+    status: fixed
+    fix: >
+      Partly fixed in efc7009: book.json records local_vision, and the docs say to tick "This model sees images"
+      again after removing a local server, which clears it. Whether Hilde should send images by default to a
+      local model that accepts them is Q08. Without images, Gemma 4 misread CLM's Figures 5, 9 and 11 in 3 of 3
+      runs at both 9a70f65 and 7591bb9 and with both prompts; with images it read them right in 3 of 3. The
+      8 Oct books (9a70f65) were made with images: RRSI's says "The figure shows the Google logo" for a page-1
+      picture that reached the model with no text. The 12 Oct CLM book was not: it invents a system diagram for
+      a logo, as Gemma does without images in 3 of 3 runs and never with them.
+    slug: figures-without-images
+    title: A local model describes figures from their labels alone, and nothing records it
+    priority: P1
+    layer: adapt
+    status: open
+    fix: >
+      Partly fixed in efc7009: book.json records local_vision, and the docs say to tick "This model sees images"
+      again after removing a local server, which clears it. Whether Hilde should send images by default to a
+      local model that accepts them is Q08. Without images, Gemma 4 misread CLM's Figures 5, 9 and 11 in 3 of 3
+      runs at both 9a70f65 and 7591bb9 and with both prompts; with images it read them right in 3 of 3.
+    test: The figure facts of CLM (F71-F73, F115, F116, Figure 5) on runs with images on.
+
+  - id: B42
+    slug: merged-figure-pictures
+    title: The layout merges two stacked figures and the caption between them into one picture
+    priority: P2
+    layer: extract
+    status: proposed
+    fix: >
+      Proposed. On CLM's page 25 one picture box (70,63)-(542,477) holds Figures 18 and 19 and Figure 18's
+      caption, which becomes picture labels; page 26 does the same with Figure 20 and Figure 21's image. Split a
+      picture box at a caption line inside it, and place the lower part after any text box the layout puts in
+      between. Seen in CLM only among 11 papers.
+    test: Figures 18 and 19 of CLM each get their caption and their own description.
