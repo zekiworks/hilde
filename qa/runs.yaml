@@ -335,3 +335,22 @@ runs:
       Attention: no figure is a chart once connected labels are excluded, so its requests are unchanged; with the
       attention figures as charts, ATT-21 failed 3 of 3. Before the fixes in 750e8ea, Figure 14 lost its opening
       sentence to "20 _,_ 000" read as 20 and 000, and Figure 15 was flagged for the task names on its labels.
+
+  - id: R28
+    date: 2026-10-13
+    papers: [clm]
+    hilde_commit: 08e672e (descriptions-only, --interpret)
+    model: lm-studio/gemma-4-31B-it text model; figure model openai-codex/gpt-6-astra, then claude-code/opus (claude-opus-5-5)
+    voice: null
+    output_file: null   # hilde-wt/chart-runs/<clm-figmodel|clm-opus>/run-N, not kept in git
+    reviewers: [claude]
+    notes: >
+      Interpret and narrate figures (D20), 3 runs per figure model; every figure, table, and equation call went to the
+      figure model and no chart question was asked. Facts per run (right / scored wrong): GPT Astra 66-70 / 2-5, Opus
+      5.5 75-79 / 5-7. Read against the figures, most scored-wrong facts are scorer misattributions, a value given to
+      the nearest name though the sentence's subject is another ("the run without the instruction 0.40" scored as the
+      instructed run's; F50, F51, F54, F60, F86, F87, F88); F109 and F110 are Figure 19's merged picture (B42), F112
+      a number-format artifact. Real errors left: Astra none beyond F10's "at or near perfect" (2 of 6 runs);
+      Opus 1 to 3 per run: Figure 17's CLM at "7.0 PFLOPs" in 3 of 3 (the point sits on the 7.0 tick after the axis
+      break, so arguable), Figure 20's tick range given as costs, Figure 11 "best at K equals 6", F10 once. On the five
+      review figures read from pictures, Opus was right on 18 of 27 checks with 3 wrong (all F123); Astra 24 right, 0 wrong.
