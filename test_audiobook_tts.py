@@ -191,8 +191,8 @@ class PaperWorkflowTests(unittest.TestCase):
             normalize({"audiobook": {"step": "publish"}})["audiobook"]["step"], "book"
         )
 
-    def test_error_correction_is_on_unless_unticked(self):
-        self.assertIs(normalize({})["audiobook"]["verify"], True)
+    def test_error_correction_is_off_unless_ticked(self):
+        self.assertIs(normalize({})["audiobook"]["verify"], False)
         self.assertEqual(normalize({})["audiobook"]["verify_model"], "")
         unticked = normalize({"audiobook": {"verify": False, "verify_model": "lm-studio/checker"}})
         self.assertIs(unticked["audiobook"]["verify"], False)
@@ -2830,6 +2830,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
 
         class StubPaperRun(PaperRun):
             def model_response(self, request_path, system_prompt, attachments=()):
+                if request_path.stem.endswith("-kind"):
+                    return "OTHER"
                 attached.extend(attachments)
                 return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
 
@@ -2877,6 +2879,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
 
         class StubPaperRun(PaperRun):
             def model_response(self, request_path, system_prompt, attachments=()):
+                if request_path.stem.endswith("-kind"):
+                    return "OTHER"
                 requests.append((request_path.read_text(encoding="utf-8"), attachments))
                 return "<NARRATION>Narrated.</NARRATION><SUMMARY>Summary.</SUMMARY>"
 
@@ -3099,6 +3103,8 @@ class UnifiedWorkflowTests(unittest.TestCase):
 
         class StubPaperRun(PaperRun):
             def model_response(self, request_path, system_prompt, attachments=()):
+                if request_path.stem.endswith("-kind"):
+                    return "OTHER"
                 narration = answers[request_path.stem]
                 return f"<NARRATION>{narration}</NARRATION><SUMMARY>Summary.</SUMMARY>"
 
@@ -3957,6 +3963,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         [figure] = [
             body["messages"][1]["content"] for _, body in image_requests
             if isinstance(body["messages"][1]["content"], list)
+            and not body["messages"][0]["content"].startswith("You sort figures")
         ]
         image = next(part for part in figure if part["type"] == "image_url")
         self.assertTrue(image["image_url"]["url"].startswith("data:image/png;base64,"))
@@ -4193,6 +4200,7 @@ class OpenAISignInTests(unittest.TestCase):
         request = next(
             body for body in self.responses
             if any(part["type"] == "input_image" for part in body["input"][0]["content"])
+            and not body["instructions"].startswith("You sort figures")
         )
         self.assertEqual((request["model"], request["stream"], request["store"]), ("gpt-a", True, False))
         self.assertIn("Adapt every paragraph.", request["instructions"])
@@ -4462,6 +4470,7 @@ class AnthropicProviderTests(unittest.TestCase):
         request = next(
             body for body in messages
             if any(part["type"] == "image" for part in body["messages"][0]["content"])
+            and not str(body["system"]).startswith("You sort figures")
         )
         self.assertEqual((request["model"], request["stream"]), ("claude-new", True))
         self.assertIn("Adapt every paragraph.", request["system"])
@@ -4558,6 +4567,7 @@ class ClaudeCodeProviderTests(unittest.TestCase):
         call = next(
             call for call in calls
             if any(part["type"] == "image" for part in call["message"]["message"]["content"])
+            and not call["argv"][call["argv"].index("--system-prompt") + 1].startswith("You sort figures")
         )
         argv = call["argv"]
         # One answer and no actions: Hilde's instructions, every tool off,
@@ -5510,6 +5520,8 @@ class PaperResponseTests(unittest.TestCase):
 
         class StubPaperRun(PaperRun):
             def model_response(self, request_path, system_prompt, attachments=()):
+                if request_path.stem.endswith("-kind"):
+                    return "OTHER"
                 start = int(request_path.stem.split("-")[1])
                 requested.append(start)
                 return (
@@ -6319,6 +6331,8 @@ class GroundingTests(unittest.TestCase):
 
         class StubPaperRun(PaperRun):
             def model_response(self, request_path, system_prompt, attachments=()):
+                if request_path.stem.endswith("-kind"):
+                    return "OTHER"
                 asked.append(request_path.read_text(encoding="utf-8"))
                 return "<NARRATION>Figure 1 shows accuracy against compute.</NARRATION><SUMMARY>S.</SUMMARY>"
 
@@ -6334,6 +6348,81 @@ class GroundingTests(unittest.TestCase):
             (root / "out.txt").read_text(encoding="utf-8"),
             "The method does not improve accuracy.\n\nFigure 1 shows accuracy against compute.\n\n"
             "We conclude with a summary.",
+        )
+
+    def test_a_chart_is_described_from_its_caption_and_the_authors_text(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "With more compute, CLM reaches 73.7% (Figure 3).\n\n"
+            "![](images/plot.png)\n\n<!-- Start of picture text -->\n0 20 40 60 80<br>Accuracy<br>PFLOPs<br>"
+            "Needle Retention<br>Log Triage\n<!-- End of picture text -->\n\n"
+            # Extraction's emphasis around a thousands separator, as CLM's Figure 14 caption.
+            "**Figure 3:** Accuracy against compute, at 20 _,_ 000 tokens.\n\n"
+            "![](images/flow.png)\n\n**Figure 4:** The pipeline, in 60 steps.\n\n"
+            "We conclude with a summary.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        asked = {}
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=()):
+                text = request_path.read_text(encoding="utf-8")
+                if request_path.stem.endswith("-kind"):
+                    return "CHART a line plot." if "plot.png" in text else "OTHER a flowchart."
+                asked.setdefault(request_path.stem, []).append(text)
+                if "Figure 3:" in text:
+                    # Values read off the plot: its ticks, said as results.
+                    # The second answer names the tasks the chart's labels print.
+                    narration = (
+                        "Figure 3 plots accuracy against compute at 20,000 tokens, on Needle Retention "
+                        "and Log Triage. Accuracy reaches 73.7 percent. One point sits at 80 percent."
+                        if "A check of your narration" in text else
+                        "Figure 3 plots accuracy against compute. It rises from 40 to 60 percent."
+                    )
+                elif "Figure 4:" in text:
+                    narration = "Figure 4 shows the pipeline, in 60 steps."
+                else:
+                    narration = text.split("<SOURCE_PARAGRAPH>\n")[1].split("\n</SOURCE_PARAGRAPH>")[0]
+                return f"<NARRATION>{narration}</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        run = StubPaperRun(source, root / "out.txt", "utf-8", in_flight=1, paragraphs_per_worker=1,
+                           prompt_path=prompt, scratch_path=root / "stage")
+        run.publish = lambda event, data: None
+        run.pump()
+        self.assertEqual(run.code, 0)
+        [chart] = [requests for requests in asked.values() if "Figure 3:" in requests[0]]
+        [diagram] = [requests for requests in asked.values() if "Figure 4:" in requests[0]]
+        # The chart is asked from text, with the author's result; the diagram as before.
+        self.assertIn("This batch is a chart", chart[0])
+        self.assertIn("CLM reaches 73.7%", chart[0])
+        self.assertNotIn("This batch is a chart", diagram[0])
+        # Numbers printed only inside the chart are not grounds: asked again,
+        # the answer with fewer is kept, and a sentence still saying one goes.
+        self.assertEqual(len(chart), 2)
+        self.assertEqual(len(diagram), 1)
+        text = (root / "out.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            "Figure 3 plots accuracy against compute at 20,000 tokens, on Needle Retention and Log Triage. "
+            "Accuracy reaches 73.7 percent.", text,
+        )
+        self.assertNotIn("80 percent", text)
+        self.assertIn("Figure 4 shows the pipeline, in 60 steps.", text)
+        checkpoints = {
+            json.loads(path.read_text())["narration"].split()[1]: json.loads(path.read_text())
+            for path in (root / "stage" / "paragraph-checkpoints").glob("*.json")
+            if json.loads(path.read_text())["narration"].startswith("Figure")
+        }
+        self.assertEqual((checkpoints["3"]["chart"], checkpoints["4"]["chart"]), (True, False))
+        self.assertEqual(checkpoints["3"]["flags"], [])
+        # The opening sentence names the figure, so it stays even with such a number.
+        self.assertEqual(
+            web.without_unprinted_sentences("Figure 5 shows 99 runs. It peaks at 80.", ["Figure 5: Runs."]),
+            ("Figure 5 shows 99 runs.", ["It peaks at 80."]),
         )
 
     def test_a_narration_stating_what_its_source_does_not_is_asked_about_once_then_marked(self):

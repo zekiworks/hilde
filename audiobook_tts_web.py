@@ -95,6 +95,9 @@ PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
 VERIFY_PROMPT_PATH = ROOT / "prompts" / "PAPER-VERIFY.md"
 REPAIR_PROMPT_PATH = ROOT / "prompts" / "PAPER-REPAIR.md"
 RECHECK_PROMPT_PATH = ROOT / "prompts" / "PAPER-RECHECK.md"
+# Whether a figure is a chart, which is described from its caption and the
+# author's text, never from values read off the picture (paper_request()).
+FIGURE_KIND_PROMPT_PATH = ROOT / "prompts" / "PAPER-FIGURE-KIND.md"
 INSTALL_SCRIPT_PATH = ROOT / "install.sh"
 # Hilde's release, recorded in every book; git checkouts also record the commit.
 HILDE_VERSION = "0.1.0"
@@ -106,7 +109,7 @@ BOOK_SCHEMA = 1
 # what a request carries changes, through resolve_citations() or the
 # summaries a figure, table, or equation goes without, so checkpoints made
 # from the old requests are redone.
-EXTRACTION_SCHEMA = 16
+EXTRACTION_SCHEMA = 17
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
 # Listen keeps this many unsaved voice drafts before removing the oldest.
@@ -6230,12 +6233,13 @@ PRINTED_EQUATION_NUMBER = re.compile(r"\((\d+)[a-z]?\)\s*$")
 
 def _numbers(text):
     """The numbers a text prints, as written once thousands separators, the
-    emphasis extraction leaves inside a decimal ("3 _._ 5"), and a thousands
+    emphasis extraction leaves inside a decimal ("3 _._ 5") or around a
+    thousands separator ("20 _,_ 000", CLM's Figure 14 caption), and a thousands
     suffix ("100K" steps, said "100,000"; "30.9K", 30,900) are gone. OCR
     spaces a separator, "1 , 000" on BERT's Figure 9 axis; a list never puts
     a space before its comma ("16, 32, 128")."""
     text = re.sub(r"(?<=\d)[\s_*]*\.[\s_*]*(?=\d)", ".", text)
-    text = re.sub(r"(?<=\d)(?:,| ,\s?)(?=\d{3}\b)", "", text)
+    text = re.sub(r"(?<=\d)(?:,| ,\s?| ?[_*]+,[_*]+ ?)(?=\d{3}\b)", "", text)
     text = re.sub(
         r"(?<![\d.])(\d+(?:\.\d+)?)K\b",
         lambda match: f"{float(match.group(1)) * 1000:g}" if "." in match.group(1)
@@ -6428,7 +6432,7 @@ def equation_label_problems(narration, sources):
     return problems
 
 
-def grounding_problems(narration, sources, describes=False, known_names=()):
+def grounding_problems(narration, sources, describes=False, known_names=(), number_sources=None):
     """What a batch's narration states that its source does not.
 
     A name its own request never mentions, though the paper names it
@@ -6436,7 +6440,8 @@ def grounding_problems(narration, sources, describes=False, known_names=()):
     authors (known_names), as "Vaswani" in the author block, and any name the
     narration credits work to ("Press and Wolf", "Vaswani et al."), case
     aside, so "Encoder and Decoder" passes beside "encoder". Also a number
-    with two or more digits, or a decimal, that its source does not print,
+    with two or more digits, or a decimal, that its source (`number_sources`
+    when given: a chart's, without its labels) does not print,
     rounding allowed, in a description of a figure, table, or equation and in
     prose alike. These only point at a passage worth a look: the narration is
     kept as written.
@@ -6451,7 +6456,8 @@ def grounding_problems(narration, sources, describes=False, known_names=()):
     for name in dict.fromkeys(credited + named):
         if not re.search(rf"\b{re.escape(name)}\b", source, flags=re.IGNORECASE):
             problems.append(f"the narration names {name}, whom its source never names")
-    printed, run_in = set(_numbers(source)), _run_in_numbers(source)
+    numbers = source if number_sources is None else "\n\n".join(number_sources)
+    printed, run_in = set(_numbers(numbers)), _run_in_numbers(numbers)
     unprinted = dict.fromkeys(
         number for number in _numbers(narration)
         if (len(number) > 1 or "." in number) and not _printed(number, printed, run_in)
@@ -6868,6 +6874,8 @@ def caption_number_problems(narration, captions):
     problems = []
     for caption in captions:
         text = re.sub(r"<sup>.*?</sup>", " ", caption)
+        # Extraction's emphasis inside a number, "20 _,_ 000" or "3 _._ 5", as _numbers() reads it.
+        text = re.sub(r"(?<=\d) ?[_*]+([.,])[_*]+ ?(?=\d)", r"\1", text)
         text = EQUATION_NAME_PATTERN.sub(" ", text)
         text = re.sub(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", " ", text)
         for match in CAPTION_VALUE_PATTERN.finditer(text):
@@ -6974,15 +6982,75 @@ def correction_holds(response):
     return bool(fixed) and not new
 
 
+# What a chart's request says in place of "Describe it from what it carries".
+CHART_REQUEST = """This batch is a chart on its own: a figure that plots data. Describe it from
+text, never from the picture: values read off a chart are often wrong, and a
+listener cannot check them. First say what it plots, from its caption and its
+labels: what each axis, line, bar, or point stands for, and its panels if it
+has several. Then give the results the author's text states about it, with the
+author's numbers, in a sentence or two. Never give a value, a trend, or a
+comparison that only the picture shows: no number read off an axis, a bar, or
+a point, and no "rises", "higher", or "best" that the caption or the author's
+text does not state. Every number you say must be printed in the caption or in
+the author's text; a number printed only inside the chart is not enough."""
+
+
+def is_chart(response):
+    """Whether an answer to prompts/PAPER-FIGURE-KIND.md calls the figure a
+    chart: its first CHART or OTHER. Asked of Gemma about the 76 captioned
+    figures of eleven papers, it named every plot and no diagram; a rule
+    that looked for axis ticks in the picture text got 15 of them wrong,
+    calling numbered flowchart steps an axis and missing plots whose labels
+    extraction never read."""
+    match = re.search(r"\b(CHART|OTHER)\b", response or "")
+    return bool(match) and match.group(1) == "CHART"
+
+
+def chart_sources(sources):
+    """A chart's sources without the labels read from inside it: a number a
+    chart prints is a tick or a point whose meaning only the picture shows,
+    so a description may only say the numbers its caption or the author's
+    text prints."""
+    return [PICTURE_TEXT_PATTERN.sub(" ", source) for source in sources]
+
+
+def without_unprinted_sentences(narration, sources):
+    """The narration less each sentence that says a number its sources do
+    not print (as grounding_problems() counts them), and those sentences:
+    what a chart's description loses when asking again did not fix it. The
+    opening sentence stays, marked by its flag instead: it names the figure,
+    and without it a listener hears no border between the author's text and
+    the description."""
+    source = "\n\n".join(sources)
+    printed, run_in = set(_numbers(source)), _run_in_numbers(source)
+    kept, dropped = [], []
+    for paragraph in narration.split("\n\n"):
+        sentences = []
+        for sentence in re.split(r"(?<=[.?!])\s+(?=[A-Z])", paragraph.strip()):
+            unprinted = [
+                number for number in _numbers(sentence)
+                if (len(number) > 1 or "." in number) and not _printed(number, printed, run_in)
+            ]
+            (dropped if unprinted and (kept or sentences) else sentences).append(sentence)
+        if sentences:
+            kept.append(" ".join(sentences))
+    return "\n\n".join(kept), dropped
+
+
 def paper_request(
-    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None, cited=(),
+    paragraphs, summaries, start, end, total, attempt=1, acronyms=(), note=None, cited=(), chart=False,
 ):
     """One batch's request. A batch that is only a figure, table, or equation
     has no summaries (None): it goes alone, so its request is the same on
     every run, with what the author writes about it elsewhere (`cited`,
-    from visual_context()) to give it meaning. A note asks again for a batch
-    the model left out whole (LEFT_OUT_NOTES) or narrated with sentences
-    missing (condensed_note()).
+    from visual_context()) to give it meaning. A figure that is a `chart`
+    (PaperRun.figure_is_chart()) is described from its caption and the
+    author's text instead: on CLM's Figures 2, 13, 15, 17, and 20, described
+    from their pictures, 6 of 27 checked facts were wrong in Gemma's answers,
+    tick values said as results; described this way, none of 27 were, and
+    no answer said a number printed only inside the chart (R26). A note asks
+    again for a batch the model left out whole (LEFT_OUT_NOTES) or narrated
+    with sentences missing (condensed_note()).
 
     The batch's place in the book (start, end, total) is not shown: given
     "paragraphs 81-82", a model labeled a figure without a caption "Figure 81
@@ -7005,7 +7073,19 @@ element. Do not discuss the retry or add text outside those elements."""
         "Acronyms the author already spelled out in earlier paragraphs; never "
         f"expand them again: {', '.join(acronyms)}.\n\n" if acronyms else ""
     )
-    if summaries is None:
+    if summaries is None and chart:
+        background = CHART_REQUEST
+        if cited:
+            author = "\n\n".join(f"<AUTHOR_CONTEXT>\n{text}\n</AUTHOR_CONTEXT>" for text in cited)
+            background += f"""
+
+What the author writes about it elsewhere follows. Take the results you give
+from it; say them once, briefly, in the author's voice, without the
+surrounding argument.
+{author}"""
+        else:
+            background += "\n\nThe author's text says nothing more about it: say only what the chart plots."
+    elif summaries is None:
         background = """This batch is a figure, table, or equation on its own. Describe it from
 what it carries: its caption, its labels or cells, and its picture."""
         if cited:
@@ -7620,9 +7700,10 @@ def normalize(state):
             ),
             # Set in Add local: send figures to the local model as images.
             "local_vision": audiobook.get("local_vision") is True,
-            # Error correction of descriptions: on unless unticked; its checking
-            # model, the text model when empty.
-            "verify": audiobook.get("verify") is not False,
+            # Error correction of descriptions: off unless ticked, since a
+            # checker of the writer's own model fixed none of the review's
+            # wrong descriptions (R26); its checking model, the text model when empty.
+            "verify": audiobook.get("verify") is True,
             "verify_model": stored_text(audiobook, "verify_model"),
             "in_flight": stored_text(
                 audiobook, "in_flight", str(PAPER_DEFAULT_IN_FLIGHT)
@@ -10016,10 +10097,12 @@ class PaperRun(Run):
         # Error correction: each description of a figure, table, or equation
         # is checked against its source by verify_model (the text model when
         # empty), corrected, and the correction checked again. The job turns
-        # it on unless the user unticks it.
+        # it on only when the user ticks it.
         self.verify = bool(verify)
         self.verify_model = str(verify_model or "").strip()
         self.verify_prompts = None
+        # prompts/PAPER-FIGURE-KIND.md, which asks whether a figure is a chart.
+        self.figure_kind_prompt = None
         # What the checks did, for book.json.
         self.verification = {"checked": 0, "flagged": 0, "corrected": 0}
         self.verification_lock = threading.Lock()
@@ -10361,7 +10444,10 @@ class PaperRun(Run):
         cited=(),
         review=None,
         verify=False,
+        figure=False,
     ):
+        """Narrate one batch: (narration, summary, tags, chart), chart saying
+        whether the batch is a figure described as a chart."""
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
         request_path = scratch / f"paragraphs-{start}-{end}.txt"
@@ -10388,6 +10474,12 @@ class PaperRun(Run):
             "log",
             f"Processing {batch_label}/{total}{figure_note}…\n",
         )
+        chart = figure and self.figure_is_chart(scratch, request_path.stem, paragraphs, attachments)
+        if chart:
+            self.publish(
+                "log",
+                f"{batch_label.capitalize()}/{total} is a chart: described from its caption and the author's text.\n",
+            )
         def ask(note):
             for attempt in range(1, PAPER_RESPONSE_ATTEMPTS + 1):
                 request_path.write_text(
@@ -10401,6 +10493,7 @@ class PaperRun(Run):
                         acronyms,
                         note,
                         cited,
+                        chart,
                     ),
                     encoding="utf-8",
                 )
@@ -10499,26 +10592,51 @@ class PaperRun(Run):
         # answer with fewer such findings is kept; what remains is marked on
         # the passage by the caller.
         if narration and review is not None:
-            flags = review(narration)
+            flags = review(narration, chart)
             if flags:
                 self.publish(
                     "log",
                     f"{batch_label.capitalize()}/{total}: asking again, since {'; '.join(flags[:4])}.\n",
                 )
                 second, second_summary, second_tags = ask(flagged_note(flags))
-                if second and len(review(second)) < len(flags):
+                if second and len(review(second, chart)) < len(flags):
                     narration, summary, tags = second, second_summary, second_tags
         # Error correction: a description checked against its source, then
         # corrected and the correction checked again (check_description()).
         if narration and verify:
             corrected = self.check_description(
                 scratch, request_path.stem,
-                paper_request(paragraphs, context, start, end, total, 1, acronyms, None, cited),
+                paper_request(paragraphs, context, start, end, total, 1, acronyms, None, cited, chart),
                 batch_images, narration, ask, f"{batch_label.capitalize()}/{total}",
             )
             if corrected is not None:
                 narration, summary, tags = corrected
-        return narration, summary, tags
+        # A chart's description that still says a number neither its caption
+        # nor the author's text prints loses the sentences that say one.
+        if narration and chart:
+            kept, dropped = without_unprinted_sentences(narration, chart_sources(paragraphs) + list(cited))
+            if dropped and kept:
+                narration = kept
+                self.publish(
+                    "log",
+                    f"{batch_label.capitalize()}/{total}: left out {len(dropped)} sentence"
+                    f"{'s' if len(dropped) != 1 else ''} saying a number the chart's caption and the "
+                    f"author's text do not print: \"{dropped[0][:200]}\".\n",
+                )
+        return narration, summary, tags, chart
+
+    def figure_is_chart(self, scratch, stem, paragraphs, attachments):
+        """Ask the text model whether a figure is a chart (is_chart()), shown
+        what its description will be written from: its image when the model
+        sees images, its picture text, and its caption."""
+        path = scratch / f"{stem}-kind.txt"
+        path.write_text("\n\n".join(paragraphs), encoding="utf-8")
+        try:
+            response = self.model_response(path, self.figure_kind_prompt, attachments)
+        except ModelRanOn:
+            return False
+        self.record_block(scratch, path, self.figure_kind_prompt, attachments, response)
+        return is_chart(response)
 
     def sees_images(self, model):
         """Whether a model gets figures as images: a cloud model always, a
@@ -10616,12 +10734,13 @@ class PaperRun(Run):
                 equation=_visual_type(paragraphs[start - 1:end], batch_kinds) == "equation",
             )
 
-        def finish(start, end, narration, saved=False):
+        def finish(start, end, narration, saved=False, chart=False):
             """Name a batch's figure, table, or equation in code, then run the
             checks on it; for a saved batch too, so a fix to either reaches a
             resumed book. Return the narration, the log lines, and the hard
             flags (hard_flags()) a passage is marked with; the narration is
-            kept as written."""
+            kept as written. A chart's numbers are held to its caption and
+            the author's text, not the labels inside it (chart_sources())."""
             batch_paragraphs, batch_kinds = paragraphs[start - 1:end], kinds[start - 1:end]
             sources = requested[start - 1:end]
             describes = _describes_visual(set(batch_kinds))
@@ -10664,7 +10783,10 @@ class PaperRun(Run):
             grounded = sources + list(cited.get(start, ())) + [
                 requested[citers[index]] for index in range(start - 1, end) if index in citers
             ]
-            problems = grounding_problems(narration, grounded, describes, known_names)
+            problems = grounding_problems(
+                narration, grounded, describes, known_names,
+                chart_sources(grounded) if chart else None,
+            )
             problems += math_and_magnitude_problems(narration, grounded)
             if describes:
                 captions = [source for source, kind in zip(sources, batch_kinds) if kind == "caption"]
@@ -10691,7 +10813,7 @@ class PaperRun(Run):
                 continue
             if not isinstance(summary, str) or not summary.strip():
                 continue
-            narration, lines, flags = finish(start, end, narration.strip(), saved=True)
+            narration, lines, flags = finish(start, end, narration.strip(), saved=True, chart=checkpoint.get("chart") is True)
             if narration != checkpoint["narration"].strip() or (checkpoint.get("flags") or []) != flags:
                 write_json_atomic(
                     checkpoint_dir / f"{start:06d}-{end:06d}.json",
@@ -10775,9 +10897,12 @@ class PaperRun(Run):
                 left_out_note(start, end),
                 cited.get(start, ()),
                 # The flags a narration would be marked with, for asking again.
-                lambda narration, start=start, end=end: finish(start, end, narration)[2],
+                lambda narration, chart, start=start, end=end: finish(start, end, narration, chart=chart)[2],
                 # Error correction, for descriptions only.
                 self.verify and _describes_visual(set(kinds[start - 1:end])),
+                # A figure is asked whether it is a chart.
+                _describes_visual(set(kinds[start - 1:end]))
+                and _visual_type(paragraphs[start - 1:end], kinds[start - 1:end]) == "figure",
             )
             futures[future] = (start, end)
 
@@ -10832,8 +10957,8 @@ class PaperRun(Run):
                         completed, key=lambda item: futures[item][0]
                     ):
                         start, end = futures.pop(future)
-                        narration, summary, tags = future.result()
-                        narration, lines, flags = finish(start, end, narration)
+                        narration, summary, tags, chart = future.result()
+                        narration, lines, flags = finish(start, end, narration, chart=chart)
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
                             {
@@ -10843,6 +10968,8 @@ class PaperRun(Run):
                                 "tags": tags,
                                 # Kept though asked about once more: marked on the passage.
                                 "flags": flags,
+                                # Described as a chart: its checks on resume hold it to that.
+                                "chart": chart,
                             },
                         )
                         results[start] = (end, narration, summary)
@@ -10919,6 +11046,8 @@ class PaperRun(Run):
                 path.read_text(encoding="utf-8")
                 for path in (VERIFY_PROMPT_PATH, REPAIR_PROMPT_PATH, RECHECK_PROMPT_PATH)
             )
+        if self.adapt:
+            self.figure_kind_prompt = FIGURE_KIND_PROMPT_PATH.read_text(encoding="utf-8")
         identity = {
             "schema": EXTRACTION_SCHEMA,
             "input_version": file_version(input_path),
@@ -10956,6 +11085,12 @@ class PaperRun(Run):
                     "prompts": hashlib.sha256("\n".join(self.verify_prompts).encode("utf-8")).hexdigest(),
                 }
                 if self.adapt and self.verify
+                else None
+            ),
+            # Which figures are described as charts.
+            "figure_kind_prompt": (
+                hashlib.sha256(self.figure_kind_prompt.encode("utf-8")).hexdigest()
+                if self.adapt
                 else None
             ),
         }

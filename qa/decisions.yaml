@@ -143,3 +143,23 @@ decisions:
       On CLM's 114 descriptions written with images, Gemma checking Gemma this way fixed 16 of 21 wrong ones and
       broke 3 of 93 right ones; a checker with the image and no printed-text rule fixed 18 and broke 5, a checker
       without the image fixed 14 and dropped values from about 15 right ones. Of the three, this was chosen.
+
+  - id: D19
+    date: 2026-10-13
+    by: [umit]
+    decision: >
+      A chart is described from text, never from the picture. Each figure is first asked about (the text model,
+      prompts/PAPER-FIGURE-KIND.md); a chart's request asks for what it plots, from its caption and labels, then
+      the results the author's text states about it, and never a value, trend, or comparison only the picture
+      shows. Its image still goes with it. Its numbers must be printed in its caption or the author's text: labels
+      inside the chart do not count; one that is not is asked about once more, then its sentence is left out.
+      Tables, diagrams, equations, and figures of lines joining labeled items (Attention's attention figures) are
+      described as before. Error correction (D18) becomes off by default.
+    why: >
+      R26's wrong descriptions were all values or trends read off plots. On CLM's Figures 2, 13, 15, 17, and 20,
+      neither larger images (16 to 20 of 45 drafts right on three models), a same-model check (fixed none), nor a
+      second model filling in blanked numbers (about two right flags per wrong one, blind to overclaims and
+      omissions) fixed that; described as charts, Gemma got 0 of 27 checked facts wrong (6 before) and said no
+      number printed only inside the chart. In the eleven papers' text, 48 to 76% of figures have results the
+      author states. Asked "chart or not", Gemma sorted all 76 captioned figures right; an axis-tick rule got 15
+      wrong. The user chose this over flagging likely-wrong figures.

@@ -51,10 +51,12 @@ or it waits in the shared queue:
    joined back together. Text and Markdown skip extraction unless
    **Adapt the text for listening** is selected.
 2. Optional adaptation runs the language model chosen under **Adapt the text for
-   listening** in bounded concurrent paragraph batches; with **Check and correct
-   descriptions** (on by default), each figure, table, and equation description
-   is checked by the **Checking model** and corrected when a check finds a
-   problem. See [Text adaptation](text-adaptation.md).
+   listening** in bounded concurrent paragraph batches; a chart is described
+   from its caption and the author's text, never from values read off the
+   picture. With **Check and correct descriptions** (off unless ticked), each
+   figure, table, and equation description is checked by the **Checking
+   model** and corrected when a check finds a problem. See
+   [Text adaptation](text-adaptation.md).
 3. Narration reads the text in the chosen voice.
 4. The finished book appears in **Listen**: its text, its follow-along view,
    and the voice's audio, kept together in one folder per book (see

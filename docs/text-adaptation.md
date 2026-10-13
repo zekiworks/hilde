@@ -56,7 +56,7 @@ adaptation**:
   the labels read from inside it, and its caption always go to the model
   together, so it is described once. A figure or table with a caption is
   always a passage of its own in the book's text.
-- **Check and correct descriptions** (on by default) checks each description
+- **Check and correct descriptions** (off unless ticked) checks each description
   of a figure, table, or equation against the paper. One with a problem, such
   as a value given to the wrong method or a condition turned around, is written
   again, and the new description replaces the first only if a second check
@@ -68,7 +68,23 @@ adaptation**:
   check found and whether the correction was kept, and the book records the
   checking model and the counts. A check can be wrong too: on one test paper
   it fixed 16 of 21 wrong descriptions and made 3 of 93 right ones wrong, by
-  misreading where a plot's points sit.
+  misreading where a plot's points sit. On another, a model checking its own
+  chart descriptions fixed none of the wrong ones, which is why it is off by
+  default.
+
+Charts are described from text, never from the picture. Before describing a
+figure, the model is asked whether it is a chart: a plot, bar chart, or
+anything else that shows values by position, length, or color. A chart's
+description says what it plots, from its caption and labels, then what the
+author's text says it shows, with the author's numbers. It never gives a
+value, a trend, or a comparison that only the picture shows, because models
+often misread plots: tick marks taken for results, two series swapped, a
+falling line called rising. Every number in a chart's description must be
+printed in its caption or in the author's text about it. A description that
+says another is asked for again, and a sentence that still does is left out;
+the job log names both. A chart the paper says nothing about is described by
+what it plots alone. Diagrams, illustrations, and tables are described as
+before.
 
 Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
