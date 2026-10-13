@@ -315,3 +315,23 @@ runs:
       descriptions-only Gemma runs with images from 12 Oct, F121, F123, F124 and F120 were right in 5 of 6, F125 in 4 of
       6, F119 in 0 of 6; this book got all but F120 wrong, so one book does not yet show a regression. The job's call
       records were removed with its working folder.
+
+  - id: R27
+    date: 2026-10-13
+    papers: [clm, attention]
+    hilde_commit: 72c0995 (baseline), 750e8ea (chart rule; CLM runs at its tree before the figure-kind prompt's
+      line on connected labels, which changes no CLM figure's kind)
+    model: lm-studio/gemma-4-31B-it on spark (images on, error correction off); openai-codex/gpt-6-astra at 72c0995
+    voice: null
+    output_file: null   # hilde-wt/chart-runs/<clm-base|clm2|clm-astra|att2>/run-N, not kept in git
+    reviewers: [claude]
+    notes: >
+      Descriptions-only runs, 3 per side, for D19. CLM facts per run (right / wrong / left out): Gemma reading
+      pictures 82-87 / 7-11 / 15-16; Gemma with the chart rule 52-54 / 3 / 52-54, every chart error of R26 gone, the
+      3 left being Figure 19's merged picture (F109, F110, B42) and F50; GPT Astra reading pictures 68-74 / 2-3 /
+      33-38, the same Figure 19 pair plus one of F86 or F10. Most values the chart rule leaves out are labels
+      printed inside the charts (Figures 7, 9, 12, 14, 15). Read against the figures, Astra's descriptions of Figures
+      2, 13, 15, and 17 were right in every run; its Figure 20 also describes Figure 21, which the crop holds.
+      Attention: no figure is a chart once connected labels are excluded, so its requests are unchanged; with the
+      attention figures as charts, ATT-21 failed 3 of 3. Before the fixes in 750e8ea, Figure 14 lost its opening
+      sentence to "20 _,_ 000" read as 20 and 000, and Figure 15 was flagged for the task names on its labels.
