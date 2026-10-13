@@ -13648,8 +13648,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="existing-book-detail"></span></p>
             <div class="line">
               <button type="button" onclick="openAudiobook(facts.existing_book.id, true)">Open</button>
+              <button id="existing-book-overwrite" type="button" onclick="overwriteBook()">Overwrite</button>
               <button id="existing-book-voice" class="primary" type="button"
-                onclick="continueFromBook()">Change voice</button>
+                onclick="addVoiceToBook()">Change voice</button>
             </div>
           </div>
           <div class="actions">
@@ -14112,6 +14113,10 @@ let advancedOpen = false, voiceFormOpen = false;
 let submitting = false, resultShown = false, stopping = false, waitingJobId = "";
 // How step 1 adds a document: from a link ("url", first) or a file ("file").
 let addVia = "url";
+// The book Overwrite chose in step 1: Create then makes it again from its
+// document with the step 3 settings, as Recreate does on Listen. A document
+// that is another book's, or none, clears it.
+let overwriting = "";
 let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
 // A draft is the clip Listen made; Save stores exactly that clip.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
@@ -15741,6 +15746,17 @@ async function continueFromBook() {
   }
   if (bookReady()) setStep("voice");
 }
+// Overwrite: the existing book is made again, so steps 2 and 3 run as for a
+// new book, with its adaptation settings.
+function overwriteBook() {
+  if (!facts.existing_book) return;
+  overwriting = facts.existing_book.id;
+  continueFromBook();
+}
+function addVoiceToBook() {
+  overwriting = "";
+  continueFromBook();
+}
 function continueFromVoice() {
   collect();
   if (voiceReady()) setStep("create");
@@ -15749,6 +15765,7 @@ function continueFromVoice() {
 // first step starts empty, with no document chosen and no link typed.
 function clearBookChoice() {
   state.audiobook.document = "";
+  overwriting = "";
   state.audiobook.source_url = ""; state.audiobook.download_name = "";
   $("source-url").value = ""; $("download-name").value = "";
   populateAssets();
@@ -15866,7 +15883,8 @@ function renderCreate() {
   // A typed link is the next book, whatever the dropdown still shows.
   const existing = state.tab === "audiobook" && facts.tab === "audiobook" && bookReady()
     && !state.audiobook.source_url.trim() ? facts.existing_book : null;
-  const voiceOnly = !!(existing && existing.has_text);
+  const overwrite = !!(existing && existing.has_text && overwriting === existing.id);
+  const voiceOnly = !!(existing && existing.has_text) && !overwrite;
   $("existing-book").classList.toggle("hidden", !existing || step !== "book");
   if (existing) {
     $("existing-book-title").textContent = existing.title;
@@ -15874,8 +15892,9 @@ function renderCreate() {
       ? (existing.voices.length ? `Read by ${existing.voices.join(", ")}.` : "")
       : "It was made before Hilde kept a book's text, so a new voice writes the text again.";
   }
-  $("existing-book-voice").classList.toggle("hidden", !voiceOnly);
-  $("book-continue").classList.toggle("hidden", voiceOnly && step === "book");
+  $("existing-book-voice").classList.toggle("hidden", !(existing && existing.has_text));
+  $("existing-book-overwrite").classList.toggle("hidden", !(existing && existing.has_text));
+  $("book-continue").classList.toggle("hidden", !!(existing && existing.has_text) && step === "book");
   $("book-continue").disabled =
     submitting || !(done.book || state.audiobook.source_url.trim());
   $("adapt").closest(".field").classList.toggle("hidden", voiceOnly);
@@ -15887,7 +15906,7 @@ function renderCreate() {
   // Figures are read from their pictures only when ticked; the figure model only matters then.
   $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   $("figure-model-row").classList.toggle("hidden", !state.audiobook.interpret_figures);
-  $("run").textContent = voiceOnly ? "Add this voice" : "Create audiobook";
+  $("run").textContent = voiceOnly ? "Add this voice" : overwrite ? "Overwrite audiobook" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
   $("clone-voice-row").classList.toggle("hidden", !facts.clone_server);
@@ -15899,7 +15918,10 @@ function renderCreate() {
   $("create-problem").classList.toggle("hidden", !problem);
   $("run").disabled = submitting || !current || !!facts.problem;
   $("create-note").textContent = voiceOnly
-    ? `Reads ${existing.title} in this voice, from the book's own text; no model is used.` : "";
+    ? `Reads ${existing.title} in this voice, from the book's own text; no model is used.`
+    : overwrite
+      ? `Makes ${existing.title} again from this document with these settings, in place of the book you have.`
+      : "";
   renderSelectedVoice();
 }
 
@@ -16245,7 +16267,15 @@ async function startAudiobook() {
     state.tab = "audiobook";
     if (!(await materializeUrl())) return;
     collect();
-    const answer = await requestRun(false);
+    // Overwrite names the existing book, as Recreate on Listen does.
+    const existing = facts.existing_book;
+    const overwrite = existing && existing.has_text && overwriting === existing.id;
+    if (overwrite && !window.confirm(
+      `Overwrite ${existing.title}? Its text and descriptions are written again from this `
+      + "document with these settings, and its other voices will need to be made again."
+    )) return;
+    const voice = facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice;
+    const answer = await requestRun(false, overwrite ? { book: existing.id, mode: "recreate", voice } : undefined);
     if (!answer) return;
     // The form is free for the next book as soon as this one is queued.
     resultShown = false;

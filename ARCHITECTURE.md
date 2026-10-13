@@ -847,9 +847,13 @@ The run log shows below every page but **Listen**. Each page:
   voice** lists the saved voices the book does not have yet. **Recreate** asks
   first. Both start a job whose progress shows on **Progress**.
 - On **Create**, a document whose content is already a book shows **You
-  already have this one** with **Open** and **Change voice** in step 1. For a
-  book with its own text, step 3 hides adaptation and offers **Add this
-  voice**, which reads the book's text without any model.
+  already have this one** with **Open**, **Overwrite**, and **Change voice**
+  in step 1. For a book with its own text, Change voice makes step 3 hide
+  adaptation and offer **Add this voice**, which reads the book's text without
+  any model. Overwrite (`overwriting`, page-local, the book's ID; another
+  document or a queued book clears it) keeps adaptation in step 3, whose
+  **Overwrite audiobook** confirms, then sends the book with mode `recreate`
+  and the step 2 voice, the request Listen's **Recreate** sends.
 
 Document names and book titles wrap to at most two lines, the second ending in
 an ellipsis when cut (the `.clamp` class, which also breaks a name with no

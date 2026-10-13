@@ -32,11 +32,15 @@ and the **Listen** table. Hover over one in the step summary, the list, or the
 table to see the full name.
 
 A document whose content is already a book, under any file name, shows **You
-already have this one** with **Open** and **Change voice**. Change voice
-continues to the voice step, and **Add this voice** reads the book's own text
-in that voice: no model runs and nothing is written again. A link typed under
-**URL** is the next book whatever the dropdown shows, so that notice gives way
-to **Continue**.
+already have this one** with **Open**, **Overwrite**, and **Change voice**.
+Change voice continues to the voice step, and **Add this voice** reads the
+book's own text in that voice: no model runs and nothing is written again.
+Overwrite continues through the voice and adaptation steps as for a new book,
+and **Overwrite audiobook** asks, then makes the book again from this document
+with those settings, as **Recreate with the latest Hilde** does on Listen: its
+text is written again, and its other voices will need to be made again. A link
+typed under **URL** is the next book whatever the dropdown shows, so that
+notice gives way to **Continue**.
 
 Once **Create audiobook** has queued a book, the first step is empty again,
 ready for the next one; **Start listening** empties it too. You can queue as
