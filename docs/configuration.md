@@ -101,7 +101,8 @@ alone. The server creates and owns this fixed layout:
     under, the Hilde version and git commit, the prompt, extraction schema, and
     model that wrote its text, whether a local model saw its figures as images
     (`local_vision`), the checking model of error correction and what it
-    checked and corrected (`verification`), how much of the author's prose the text kept,
+    checked and corrected (`verification`), the model that read its figures
+    from their pictures (`figure_model`), how much of the author's prose the text kept,
     and each voice with when it was made, its length, and whether it reads the
     book's current text (`ready`) or an earlier one (`stale`);
   - `source.pdf` (or `.md`, `.txt`) is a copy of the document;

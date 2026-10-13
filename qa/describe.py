@@ -2,7 +2,8 @@
 """Descriptions-only runs of one paper, for fact-set scoring. Read AGENTS.md first.
 
   python qa/describe.py PDF --model lm-studio/gemma-4-31B-it --local-server 127.0.0.1:8010 \
-      [--local-vision] [--verify [--verify-model M]] [--runs 3] [--in-flight 3] [--hilde DIR] --out DIR
+      [--local-vision] [--verify [--verify-model M]] [--interpret [--figure-model M]] [--runs 3] [--in-flight 3] \
+      [--hilde DIR] --out DIR
 
 Each run adapts only the paper's figure, table, and equation batches with Hilde's own pipeline
 (PaperRun with descriptions_only): the same extraction, requests, naming, checks, and second
@@ -64,6 +65,9 @@ def run_once(web, args, pdf, folder, extraction):
     prepared = folder / "prepared.txt"
     # Error correction only when asked, so an older checkout without it still runs.
     checked = {"verify": True, "verify_model": args.verify_model} if args.verify else {}
+    # Figures read from their pictures only when asked, for the same reason.
+    if args.interpret:
+        checked.update(interpret_figures=True, figure_model=args.figure_model)
     run = web.PaperRun(
         pdf, prepared, "utf-8", args.model, args.local_server, in_flight=args.in_flight,
         local_vision=args.local_vision, descriptions_only=True, scratch_path=scratch, **checked,
@@ -84,6 +88,7 @@ def run_once(web, args, pdf, folder, extraction):
         "model": args.model,
         "local_vision": args.local_vision,
         "verification": {"model": args.verify_model or args.model, **run.verification} if args.verify else None,
+        "figure_model": (args.figure_model or args.model) if args.interpret else None,
         "prompt_hash": run.prompt_version,
         "narration_sha256": hashlib.sha256(data).hexdigest(),
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -100,6 +105,9 @@ def main():
     p.add_argument("--local-vision", action="store_true", help="the local model sees images")
     p.add_argument("--verify", action="store_true", help="error correction: check, correct, and check again each description")
     p.add_argument("--verify-model", default="", help="the checking model (default: --model)")
+    p.add_argument("--interpret", action="store_true",
+                   help="interpret and narrate figures: read every figure from its picture, no chart rule")
+    p.add_argument("--figure-model", default="", help="the model that describes figures (default: --model)")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--in-flight", type=int, default=3)
     p.add_argument("--hilde", type=Path, default=ROOT.parent, help="Hilde checkout to run (default: this one)")

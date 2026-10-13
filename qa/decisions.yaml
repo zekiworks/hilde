@@ -163,3 +163,16 @@ decisions:
       number printed only inside the chart. In the eleven papers' text, 48 to 76% of figures have results the
       author states. Asked "chart or not", Gemma sorted all 76 captioned figures right; an axis-tick rule got 15
       wrong. The user chose this over flagging likely-wrong figures.
+
+  - id: D20
+    date: 2026-10-13
+    by: [umit]
+    decision: >
+      "Interpret and narrate figures/charts (Experimental)", unticked by default: ticked, every figure, table, and
+      equation description is written by a figure model of the user's choice (the text model unless one is
+      chosen), from the picture, with no chart rule (D19). Unticked, D19 holds.
+    why: >
+      GPT Astra reading CLM's pictures got 2 to 3 checked facts wrong per run, as few as Gemma under the chart rule,
+      and 68 to 74 right against 52 to 54, and described Figures 2, 13, 15, and 17 right in every run (R27). Which
+      model reads plots well is the user's call, and a cloud model sends the figures out; the safe default stays.
+      The user proposed the setting and its default.

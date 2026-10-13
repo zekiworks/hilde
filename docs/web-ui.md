@@ -53,10 +53,11 @@ or it waits in the shared queue:
 2. Optional adaptation runs the language model chosen under **Adapt the text for
    listening** in bounded concurrent paragraph batches; a chart is described
    from its caption and the author's text, never from values read off the
-   picture. With **Check and correct descriptions** (off unless ticked), each
-   figure, table, and equation description is checked by the **Checking
-   model** and corrected when a check finds a problem. See
-   [Text adaptation](text-adaptation.md).
+   picture, unless **Interpret and narrate figures/charts (Experimental)** is
+   ticked, when the **Figure model** reads every figure from its picture. With
+   **Check and correct descriptions** (off unless ticked), each figure, table,
+   and equation description is checked by the **Checking model** and corrected
+   when a check finds a problem. See [Text adaptation](text-adaptation.md).
 3. Narration reads the text in the chosen voice.
 4. The finished book appears in **Listen**: its text, its follow-along view,
    and the voice's audio, kept together in one folder per book (see

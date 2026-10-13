@@ -2694,6 +2694,7 @@ def _migrate_book(storage, key, known_source, items):
                     "prompt_hash": None,
                     "local_vision": None,
                     "verification": None,
+                    "figure_model": None,
                     "schema_version": None,
                     "model": adaptation.get("model"),
                     "adapted": bool(adaptation),
@@ -7705,6 +7706,11 @@ def normalize(state):
             # wrong descriptions (R26); its checking model, the text model when empty.
             "verify": audiobook.get("verify") is True,
             "verify_model": stored_text(audiobook, "verify_model"),
+            # Interpret and narrate figures (experimental): figures read from
+            # their pictures by the figure model, the text model when empty;
+            # unticked, charts are described from text (D19).
+            "interpret_figures": audiobook.get("interpret_figures") is True,
+            "figure_model": stored_text(audiobook, "figure_model"),
             "in_flight": stored_text(
                 audiobook, "in_flight", str(PAPER_DEFAULT_IN_FLIGHT)
             ),
@@ -7785,6 +7791,8 @@ def values_of(state, tts_models, storage):
         "local_vision": audiobook["local_vision"],
         "verify": audiobook["verify"],
         "verify_model": audiobook["verify_model"].strip(),
+        "interpret_figures": audiobook["interpret_figures"],
+        "figure_model": audiobook["figure_model"].strip(),
         "in_flight": audiobook["in_flight"].strip(),
         "paragraphs_per_worker": audiobook["paragraphs_per_worker"].strip(),
         "chunk_max_chars": audiobook["chunk_max_chars"].strip(),
@@ -10064,6 +10072,8 @@ class PaperRun(Run):
         descriptions_only=False,
         verify=False,
         verify_model="",
+        interpret_figures=False,
+        figure_model="",
     ):
         super().__init__(
             [], "paper", str(output_path), on_success=on_success
@@ -10103,6 +10113,12 @@ class PaperRun(Run):
         self.verify_prompts = None
         # prompts/PAPER-FIGURE-KIND.md, which asks whether a figure is a chart.
         self.figure_kind_prompt = None
+        # Interpret and narrate figures (experimental): each figure, table,
+        # or equation batch is described from its picture by figure_model
+        # (the text model when empty), with no chart rule. Off, figures go to
+        # the text model and charts are described from text.
+        self.interpret_figures = bool(interpret_figures)
+        self.figure_model = str(figure_model or "").strip()
         # What the checks did, for book.json.
         self.verification = {"checked": 0, "flagged": 0, "corrected": 0}
         self.verification_lock = threading.Lock()
@@ -10445,9 +10461,11 @@ class PaperRun(Run):
         review=None,
         verify=False,
         figure=False,
+        model=None,
     ):
         """Narrate one batch: (narration, summary, tags, chart), chart saying
-        whether the batch is a figure described as a chart."""
+        whether the batch is a figure described as a chart. `model` writes it
+        instead of the text model: the figure model."""
         if self.stop_requested.is_set():
             raise InterruptedError("document processing stopped")
         request_path = scratch / f"paragraphs-{start}-{end}.txt"
@@ -10460,12 +10478,15 @@ class PaperRun(Run):
         # A local server may run a text-only model, which refuses images; it
         # reads the text extracted from each figure instead, unless the user
         # says the model sees images.
-        attachments = batch_images if self.sees_images(self.model) else ()
+        attachments = batch_images if self.sees_images(model or self.model) else ()
+        # Only the figure model's calls name their model, so a provider
+        # without per-call models is asked as before.
+        chosen = {"model": model} if model else {}
         figure_note = (
             f" with {len(attachments)} figure attachment"
             f"{'s' if len(attachments) != 1 else ''}"
             if attachments else ""
-        )
+        ) + (f", by {model}" if model else "")
         batch_label = (
             f"paragraph {start}" if start == end
             else f"paragraphs {start}-{end}"
@@ -10499,7 +10520,7 @@ class PaperRun(Run):
                 )
                 try:
                     response = self.model_response(
-                        request_path, system_prompt, attachments
+                        request_path, system_prompt, attachments, **chosen
                     )
                 except ModelRanOn as error:
                     if attempt == PAPER_RESPONSE_ATTEMPTS:
@@ -10514,7 +10535,7 @@ class PaperRun(Run):
                     )
                     continue
                 # What went in and what came back, before any parsing or naming.
-                self.record_block(scratch, request_path, system_prompt, attachments, response)
+                self.record_block(scratch, request_path, system_prompt, attachments, response, model)
                 try:
                     narration, summary, tags = parse_paper_response(response)
                 except ValueError:
@@ -10900,9 +10921,15 @@ class PaperRun(Run):
                 lambda narration, chart, start=start, end=end: finish(start, end, narration, chart=chart)[2],
                 # Error correction, for descriptions only.
                 self.verify and _describes_visual(set(kinds[start - 1:end])),
-                # A figure is asked whether it is a chart.
-                _describes_visual(set(kinds[start - 1:end]))
+                # A figure is asked whether it is a chart, unless figures are
+                # interpreted from their pictures.
+                not self.interpret_figures
+                and _describes_visual(set(kinds[start - 1:end]))
                 and _visual_type(paragraphs[start - 1:end], kinds[start - 1:end]) == "figure",
+                # The figure model writes descriptions when figures are interpreted.
+                self.figure_model or None
+                if self.interpret_figures and _describes_visual(set(kinds[start - 1:end]))
+                else None,
             )
             futures[future] = (start, end)
 
@@ -11091,6 +11118,12 @@ class PaperRun(Run):
             "figure_kind_prompt": (
                 hashlib.sha256(self.figure_kind_prompt.encode("utf-8")).hexdigest()
                 if self.adapt
+                else None
+            ),
+            # Figures read from their pictures, and by which model.
+            "interpret_figures": (
+                {"model": self.figure_model or self.model}
+                if self.adapt and self.interpret_figures
                 else None
             ),
         }
@@ -11573,6 +11606,8 @@ class AudiobookRun(Run):
                 local_vision=self.values["local_vision"],
                 verify=self.values["verify"],
                 verify_model=self.values["verify_model"],
+                interpret_figures=self.values["interpret_figures"],
+                figure_model=self.values["figure_model"],
             )
             self.paper_run.publish = self.publish
             self.paper_run.stop_requested = self.stop_requested
@@ -11623,6 +11658,13 @@ class AudiobookRun(Run):
                     **self.paper_run.verification,
                 }
                 if adapted and self.paper_run.verify
+                else None
+            ),
+            # Interpret and narrate figures: the figure model, or null when
+            # charts were described from text.
+            "figure_model": (
+                self.paper_run.figure_model or self.paper_run.model
+                if adapted and self.paper_run.interpret_figures
                 else None
             ),
             "adapted": adapted,
@@ -13665,6 +13707,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="paper-model-status" class="note"></span>
             </div>
           </div>
+          <div id="figure-interpretation" class="field">
+            <label class="check"><input id="paper-interpret" type="checkbox"> Interpret and narrate figures/charts (Experimental)</label>
+            <span class="note">Unticked, a chart is described from its caption and what the paper's
+              text says about it, never from values read off the picture. Ticked, the figure model
+              reads every figure, chart, and table from its picture: more detail, and mistakes when
+              the model misreads a plot. A strong vision model reads plots far better than a small
+              local one.</span>
+            <div id="figure-model-row" class="field">
+              <label for="paper-figure-model">Figure model</label>
+              <div class="line">
+                <select id="paper-figure-model"><option value="">Same as the text model</option></select>
+              </div>
+            </div>
+          </div>
           <div id="error-correction" class="field">
             <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
             <span class="note">Each description of a figure, table, or equation is checked against
@@ -14081,6 +14137,7 @@ const FIELDS = [
   ["shared-voice", "audiobook.voice"], ["document", "audiobook.document"],
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
   ["paper-model", "audiobook.model"], ["paper-verify-model", "audiobook.verify_model"],
+  ["paper-figure-model", "audiobook.figure_model"],
   ["paper-local-server", "audiobook.local_server"],
   ["paper-local-provider", "audiobook.local_provider"],
   ["paper-in-flight", "audiobook.in_flight"],
@@ -14088,7 +14145,10 @@ const FIELDS = [
   ["chunk-max-chars", "audiobook.chunk_max_chars"], ["batch-size", "audiobook.batch_size"],
   ["mp3-level", "audiobook.mp3_level"],
 ];
-const FLAGS = [["adapt", "audiobook.adapt"], ["paper-verify", "audiobook.verify"]];
+const FLAGS = [
+  ["adapt", "audiobook.adapt"], ["paper-verify", "audiobook.verify"],
+  ["paper-interpret", "audiobook.interpret_figures"],
+];
 
 function at(path) { const [group, key] = path.split("."); return state[group][key]; }
 function put(path, value) { const [group, key] = path.split("."); state[group][key] = value; }
@@ -14131,7 +14191,9 @@ function load(data) {
   configuration = data.configuration || configuration;
   runs = data.runs || []; consumers = data.consumers || [];
   // A saved model stays chosen until the catalog says whether it is still there.
-  for (const [id, key] of [["paper-model", "model"], ["paper-verify-model", "verify_model"]]) {
+  for (const [id, key] of [
+    ["paper-model", "model"], ["paper-verify-model", "verify_model"], ["paper-figure-model", "figure_model"],
+  ]) {
     const select = $(id), saved = state.audiobook[key];
     if (saved && ![...select.options].some((option) => option.value === saved)) {
       const option = document.createElement("option");
@@ -15822,6 +15884,9 @@ function renderCreate() {
   // Error correction checks what adapting writes; its model only matters when on.
   $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   $("verify-model-row").classList.toggle("hidden", !state.audiobook.verify);
+  // Figures are read from their pictures only when ticked; the figure model only matters then.
+  $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
+  $("figure-model-row").classList.toggle("hidden", !state.audiobook.interpret_figures);
   $("run").textContent = voiceOnly ? "Add this voice" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
@@ -16465,6 +16530,8 @@ function applyPaperCatalog(catalog) {
       : "No model yet: connect a provider or add a local server",
     catalog);
   fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
+    "Same as the text model", catalog);
+  fillModelSelect($("paper-figure-model"), state.audiobook.figure_model,
     "Same as the text model", catalog);
   paperOpenAIConnected = !!catalog.openai_connected;
   paperAnthropicConnected = !!catalog.anthropic_connected;

@@ -72,19 +72,30 @@ adaptation**:
   chart descriptions fixed none of the wrong ones, which is why it is off by
   default.
 
-Charts are described from text, never from the picture. Before describing a
-figure, the model is asked whether it is a chart: a plot, bar chart, or
-anything else that shows values by position, length, or color. A chart's
-description says what it plots, from its caption and labels, then what the
-author's text says it shows, with the author's numbers. It never gives a
-value, a trend, or a comparison that only the picture shows, because models
-often misread plots: tick marks taken for results, two series swapped, a
-falling line called rising. Every number in a chart's description must be
-printed in its caption or in the author's text about it. A description that
-says another is asked for again, and a sentence that still does is left out;
-the job log names both. A chart the paper says nothing about is described by
-what it plots alone. Diagrams, illustrations, and tables are described as
-before.
+Unless **Interpret and narrate figures/charts** is ticked, charts are described
+from text, never from the picture. Before describing a figure, the model is
+asked whether it is a chart: a plot, bar chart, or anything else that shows
+values by position, length, or color. A chart's description says what it
+plots, from its caption and labels, then what the author's text says it shows,
+with the author's numbers. It never gives a value, a trend, or a comparison
+that only the picture shows, because models often misread plots: tick marks
+taken for results, two series swapped, a falling line called rising. Every
+number in a chart's description must be printed in its caption or in the
+author's text about it. A description that says another is asked for again,
+and a sentence that still does is left out; the job log names both. A chart
+the paper says nothing about is described by what it plots alone. Diagrams,
+illustrations, and tables are described as before.
+
+**Interpret and narrate figures/charts (Experimental)**, off unless ticked,
+reads every figure, chart, and table from its picture instead, with no chart
+rule, and **Figure model** picks the model that does it: the text model unless
+you choose another. A strong vision model reads plots far better than a small
+local one: on one test paper, GPT Astra read from the pictures got 2 or 3
+checked values wrong per run, as few as Gemma 4 describing charts from text,
+and kept about 20 more right ones. With a cloud figure model and a local text
+model, the figures, tables, and equations go to that provider, with their
+captions, the text read from them, and the author's text about each; the rest
+of the paper stays on your network. The book records the figure model.
 
 Figures reach OpenAI and Claude models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text

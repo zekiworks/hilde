@@ -198,6 +198,18 @@ class PaperWorkflowTests(unittest.TestCase):
         self.assertIs(unticked["audiobook"]["verify"], False)
         self.assertEqual(unticked["audiobook"]["verify_model"], "lm-studio/checker")
 
+    def test_figures_are_interpreted_only_when_ticked(self):
+        self.assertIs(normalize({})["audiobook"]["interpret_figures"], False)
+        self.assertEqual(normalize({})["audiobook"]["figure_model"], "")
+        for stored, kept in ((True, True), ("yes", False), (None, False)):
+            self.assertIs(
+                normalize({"audiobook": {"interpret_figures": stored}})["audiobook"]["interpret_figures"], kept
+            )
+        self.assertEqual(
+            normalize({"audiobook": {"figure_model": "openai-codex/gpt-a"}})["audiobook"]["figure_model"],
+            "openai-codex/gpt-a",
+        )
+
     def test_a_check_reports_only_problems_and_a_correction_needs_a_fix_and_nothing_new(self):
         # Gemma lists statements it found right too, with "Problem: none".
         self.assertEqual(web.verification_problems(
@@ -6424,6 +6436,51 @@ class GroundingTests(unittest.TestCase):
             web.without_unprinted_sentences("Figure 5 shows 99 runs. It peaks at 80.", ["Figure 5: Runs."]),
             ("Figure 5 shows 99 runs.", ["It peaks at 80."]),
         )
+
+    def test_interpreted_figures_go_to_the_figure_model_from_their_pictures(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "paper.md"
+        source.write_text(
+            "With more compute, CLM reaches 73.7% (Figure 3).\n\n"
+            "![](images/plot.png)\n\n<!-- Start of picture text -->\n0 20 40 60 80<br>Accuracy\n"
+            "<!-- End of picture text -->\n\n**Figure 3:** Accuracy against compute.\n\n"
+            "We conclude with a summary.",
+            encoding="utf-8",
+        )
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        calls = []
+
+        class StubPaperRun(PaperRun):
+            def model_response(self, request_path, system_prompt, attachments=(), model=None):
+                text = request_path.read_text(encoding="utf-8")
+                calls.append((request_path.stem, model, text))
+                narration = (
+                    "Figure 3 plots accuracy against compute; it rises from 40 to 60 percent."
+                    if "Figure 3:" in text else "Narrated prose."
+                )
+                return f"<NARRATION>{narration}</NARRATION><SUMMARY>S.</SUMMARY>"
+
+        run = StubPaperRun(
+            source, root / "out.txt", "utf-8", "lm-studio/writer", in_flight=1, paragraphs_per_worker=1,
+            prompt_path=prompt, scratch_path=root / "stage",
+            interpret_figures=True, figure_model="openai-codex/figure-reader",
+        )
+        run.publish = lambda event, data: None
+        run.pump()
+        self.assertEqual(run.code, 0)
+        figure = [(model, text) for stem, model, text in calls if "Figure 3:" in text]
+        prose = [model for stem, model, text in calls if "Figure 3:" not in text]
+        # The figure model reads the figure, never asked whether it is a chart
+        # and never told to describe it from text; prose stays with the text model.
+        self.assertEqual({model for model, _ in figure}, {"openai-codex/figure-reader"})
+        self.assertFalse(any("This batch is a chart" in text for _, text in figure))
+        self.assertFalse([stem for stem, _, _ in calls if stem.endswith("-kind")])
+        self.assertEqual(set(prose), {None})
+        # Values read off the plot are its to give: the description stays.
+        self.assertIn("it rises from 40 to 60 percent", (root / "out.txt").read_text(encoding="utf-8"))
 
     def test_a_narration_stating_what_its_source_does_not_is_asked_about_once_then_marked(self):
         temporary = tempfile.TemporaryDirectory()
