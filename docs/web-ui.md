@@ -227,7 +227,13 @@ network, seeking included. Each sentence cue takes precedence over a stray word 
 so a word alignment error never outlives its sentence. **Follow along** turns
 the text like pages: it scrolls only once the playing sentence leaves the
 screen, bringing it a quarter of the way down, so a figure stays in view while
-its description is read. The web shell is served with `Cache-Control:
+its description is read. While a book is open, the player takes YouTube's
+keyboard shortcuts: Space or K plays or pauses, J and L go back and forward
+10 seconds, ← and → 5 seconds, ↑ and ↓ change the volume while the player has
+focus, M mutes, 0 to 9 jump to that tenth of the book, Home and End go to its
+start and end, < and > slow it down and speed it up (0.25× to 2×), and ?
+opens the list under **Keyboard shortcuts**. Typing in a text field, such as
+the chat, never triggers them. The web shell is served with `Cache-Control:
 no-store`, so subsequent ordinary refreshes load
 the current player code. A table in a PDF shows as printed, a picture cut from
 its page, because the cells PDF extraction rebuilds can split words and carry

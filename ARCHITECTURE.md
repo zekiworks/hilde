@@ -845,7 +845,16 @@ The run log shows below every page but **Listen**. Each page:
   **Listen** tab when pressed while Listen is shown (`chooseListen()`); from
   another page it opens Listen as it was left, with its book. **Change
   voice** lists the saved voices the book does not have yet. **Recreate** asks
-  first. Both start a job whose progress shows on **Progress**.
+  first. Both start a job whose progress shows on **Progress**. While a book is
+  open, `playerKey()`, a capturing `keydown` listener on the document, gives
+  the player YouTube's shortcuts (Space or K, J and L 10 seconds, ← and → 5,
+  ↑ and ↓ volume only while focus is in `#artifact-player`, M, 0 to 9, Home
+  and End, < and > through `PLAYER_SPEEDS`, ? toggling **Keyboard shortcuts**)
+  and announces volume and speed in `#player-key-status`. Text inputs,
+  selects, and tab strips keep their keys, Space still presses a focused
+  button, link, summary, or box, and a key with Ctrl, Alt, or Meta is left
+  alone. Speed is set as `defaultPlaybackRate` too, since moving playback to
+  the downloaded book reloads the audio, which resets the rate to the default.
 - On **Create**, a document whose content is already a book shows **You
   already have this one** with **Open**, **Overwrite**, and **Change voice**
   in step 1. For a book with its own text, Change voice makes step 3 hide

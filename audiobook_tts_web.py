@@ -13889,6 +13889,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
             <span id="reader-meta" class="note"></span>
             <span id="reader-download" class="note" aria-live="polite"></span>
+            <span id="player-key-status" class="note" aria-live="polite"></span>
           </div>
           <div class="player-actions">
             <label class="check note"><input id="reader-follow" type="checkbox" checked>
@@ -13923,6 +13924,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <div class="line">
           <button id="reader-recreate" class="link" type="button"
             onclick="recreateBook()">Recreate with the latest Hilde</button>
+          <details id="player-keys" class="note">
+            <summary>Keyboard shortcuts</summary>
+            <p>Space or K: play or pause. J and L: back and forward 10 seconds. ← and →: 5
+              seconds. ↑ and ↓, with the player focused: volume. M: mute. 0 to 9: jump to that
+              tenth of the book. Home and End: start and end. &lt; and &gt;: slower and faster.
+              ?: this list.</p>
+          </details>
         </div>
       </section>
       <div id="artifact-player" class="player-controls"></div>
@@ -17021,6 +17029,62 @@ $("chat-input").addEventListener("keydown", (event) => {
   // Enter sends; Shift+Enter starts a new line.
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) sendChat(event);
 });
+// YouTube's keyboard shortcuts for the open book's player, anywhere in the
+// book view. A text field, a list, and a tab strip keep their own keys, and
+// Space still presses a focused button or box. As on YouTube, ↑ and ↓ change
+// the volume only while the player has focus, so elsewhere they scroll the text.
+const PLAYER_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+function playerKey(event) {
+  const audio = readerAudio, target = event.target;
+  if (!audio || state.tab !== "player" || !state.player.book) return;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  if (target.closest?.(
+    "textarea, select, [contenteditable], [role=tab], [role=tablist], "
+    + "input:not([type=checkbox]):not([type=radio])"
+  )) return;
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  const presses = target.closest?.("button, a, summary, input");
+  const inPlayer = !!target.closest?.("#artifact-player");
+  const seek = (time) => {
+    audio.currentTime = Math.max(0, Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time);
+  };
+  const say = (text) => setText($("player-key-status"), text);
+  if (key === "k" || (key === " " && !presses)) {
+    if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+  } else if (key === "j" || key === "l") {
+    seek(audio.currentTime + (key === "l" ? 10 : -10));
+  } else if (key === "ArrowLeft" || key === "ArrowRight") {
+    seek(audio.currentTime + (key === "ArrowRight" ? 5 : -5));
+  } else if ((key === "ArrowUp" || key === "ArrowDown") && inPlayer) {
+    audio.muted = false;
+    audio.volume = Math.round(Math.min(1, Math.max(0, audio.volume + (key === "ArrowUp" ? 0.05 : -0.05))) * 100) / 100;
+    say(`Volume ${Math.round(audio.volume * 100)}%`);
+  } else if (key === "m") {
+    audio.muted = !audio.muted;
+    say(audio.muted ? "Muted" : "Sound on");
+  } else if (/^[0-9]$/.test(key)) {
+    if (Number.isFinite(audio.duration)) seek(audio.duration * Number(key) / 10);
+  } else if (key === "Home") {
+    seek(0);
+  } else if (key === "End") {
+    if (Number.isFinite(audio.duration)) seek(audio.duration);
+  } else if (key === "<" || key === ">") {
+    const rate = audio.playbackRate;
+    const next = key === ">"
+      ? PLAYER_SPEEDS.find((speed) => speed > rate + 1e-9) ?? PLAYER_SPEEDS.at(-1)
+      : PLAYER_SPEEDS.findLast((speed) => speed < rate - 1e-9) ?? PLAYER_SPEEDS[0];
+    // Loading the downloaded book resets playbackRate to the default one.
+    audio.defaultPlaybackRate = next; audio.playbackRate = next;
+    say(`Speed ${next}×`);
+  } else if (key === "?") {
+    $("player-keys").open = !$("player-keys").open;
+  } else {
+    return;
+  }
+  event.preventDefault();
+}
+// Capturing, so the player's own controls do not handle the same key again.
+document.addEventListener("keydown", playerKey, true);
 $("chat-log").addEventListener("click", (event) => {
   const listen = event.target.closest(".chat-listen");
   if (listen) { speakAnswer(listen); return; }
