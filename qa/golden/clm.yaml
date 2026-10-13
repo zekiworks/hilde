@@ -107,6 +107,35 @@ asserts:
     about: The 5 pt link logo on page 1 is not described as a figure (it had the model invent a system diagram)
     must_not_contain: '(?i)query analy[sz]er|document ranker'
 
+  - id: CLM-28
+    bug: B06
+    about: >
+      "Each level is run with four seeds" is read as one sentence; on 13 Oct the task examples were read inside
+      it and its end was rewritten "The run was conducted with four seeds"
+    must_contain: '(?i)each level is run with four seeds'
+
+  - id: CLM-29
+    bug: B13
+    about: The Log Triage example (a log batch and the query on billing [ERROR] lines, answered 4) is read; lost on 13 Oct
+    must_contain: '(?i)billing'
+
+  - id: CLM-30
+    bug: B02
+    about: >
+      §1 defines c t by what it is; the symbol is never replaced by its own definition ("where the context at
+      turn t is the context at turn t", 13 Oct)
+    must_not_contain: '(?i)\b(the )?context at turn t is (the )?context at turn t\b'
+
+  - id: CLM-31
+    bug: B08
+    about: d ff = 17,408 is one number, never "17, 408"
+    must_not_contain: '\b17, 408\b'
+
+  - id: CLM-32
+    bug: B20
+    about: The model name Qwen3.6-27B keeps its hyphen across the line break in Figure 8's caption ("Qwen3.627B", 13 Oct)
+    must_not_contain: 'Qwen3\.627B'
+
 manual:
   - bug: B03
     check: Figure 5 and Table 1 (same page) each get one description and one caption, in order.

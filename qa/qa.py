@@ -302,6 +302,58 @@ def sha256_hex(data):
     return hashlib.sha256(data).hexdigest()
 
 
+
+def _number(text):
+    try:
+        return round(float(text.replace(",", "")), 6)
+    except ValueError:
+        return None
+
+
+def _shown(number):
+    return f"{number:g}"
+
+
+def axis_ticks(sources):
+    """The tick values of a figure's axes, from its picture text, and every
+    number its sources print outside them. A tick run is three or more
+    numbers in a row, within one line of picture text, that step evenly
+    (0.21 0.24 0.27; 0 25 50 75 100) or by a constant ratio (1 4 16)."""
+    ticks, printed = set(), set()
+    for s in sources:
+        text = s.get("text", "")
+        blocks = re.findall(r"<!-- Start of picture text -->(.*?)(?:<!-- End of picture text -->|$)", text, re.S)
+        if not blocks:
+            printed.update(n for n in map(_number, re.findall(r"\d+(?:[.,]\d+)*", text)) if n is not None)
+            continue
+        for block in blocks:
+            for line in re.split(r"<br>|\n", block):
+                values = [_number(n) for n in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w.]*\d)", line)]
+                values = [v for v in values if v is not None]
+                in_run = [False] * len(values)
+                # A line of numbers and nothing else that holds an evenly
+                # stepped run is an axis line, and every number on it a tick:
+                # one line can hold several panels' axes, "0.0 1.5 3.0 7.0 1 2 3".
+                # A line of point labels ("4 24 60 192") steps unevenly.
+                axis_line = len(values) >= 3 and not re.search(r"[A-Za-z]", line)
+                for start in range(len(values) - 2):
+                    end = start + 1
+                    step = values[end] - values[start]
+                    ratio = values[end] / values[start] if values[start] else None
+                    while end + 1 < len(values) and (
+                        step > 0 and abs((values[end + 1] - values[end]) - step) <= 0.01 * abs(step)
+                        or ratio and ratio > 1 and abs(values[end + 1] / values[end] - ratio) <= 0.01 * ratio
+                    ):
+                        end += 1
+                    if end - start >= 2:
+                        for k in range(start, end + 1):
+                            in_run[k] = True
+                if axis_line and any(in_run):
+                    in_run = [True] * len(values)
+                for value, tick in zip(values, in_run):
+                    (ticks if tick else printed).add(value)
+    return ticks, printed
+
 def generic_checks(t: Target):
     """Paper-independent checks. Each returns (id, bug, about, hits[(where, snippet)])."""
     text = t.text
@@ -450,6 +502,68 @@ def generic_checks(t: Target):
         for p in t.passages if p.get("flags")
     ]
     results.append(("G13", "B02", "Passage kept and marked after asking the model again", hits))
+
+    # G14: the author's sentence broken by something read inside or between its
+    # halves: a body passage that stops mid-sentence before a heading, figure,
+    # table, or caption (any length, unlike G06), a body passage that carries a
+    # figure or table picture (described inside the sentence), or a body passage
+    # that goes on in lowercase right after one. CLM, 13 Oct: task examples read
+    # inside "Each level is … run with four seeds", and Figures 18 and 19 inside
+    # "CLM with and without … subagents".
+    hits = []
+    spoken = [p for p in t.passages if p.get("text", "").strip()]
+    for i, p in enumerate(spoken):
+        where = f"passage {p.get('id')} (p. {p.get('page')})"
+        if p.get("type") != "body":
+            continue
+        s = p["text"].strip()
+        nxt = spoken[i + 1] if i + 1 < len(spoken) else None
+        if nxt is not None and nxt.get("type") in ("heading", "figure", "table", "caption") and not s.endswith(TERMINAL):
+            hits.append((where, f"stops mid-sentence before a {nxt.get('type')}: …{s[-50:]}"))
+        pictures = [x for x in p.get("sources", []) if x.get("type") in ("figure", "table")]
+        if pictures:
+            hits.append((where, f"a {pictures[0]['type']} is read inside the author's text: {pictures[0]['text'][:50]}"))
+        prev = spoken[i - 1] if i else None
+        if prev is not None and prev.get("type") in ("figure", "table", "caption") and re.match(r"[a-z]", s):
+            hits.append((where, f"goes on in lowercase after a {prev.get('type')}: {s[:50]}…"))
+    results.append(("G14", "B06", "The author's sentence is broken by a description or heading read inside it", hits))
+
+    # G15: body text that is not the author's: a passage keeping under half of
+    # its source paragraphs' content words. The prompt allows speech edits
+    # (math in words, citations out), never rewriting or replacing the text;
+    # CLM, 13 Oct: the Log Triage example became "The run was conducted with
+    # four seeds…", the rewritten end of another sentence.
+    hits = []
+    for p in t.passages:
+        if p.get("type") != "body" or not p.get("text"):
+            continue
+        source = " ".join(x.get("text", "") for x in p.get("sources", []) if x.get("type") == "body")
+        words = content_words(source)
+        if len(words) < 8:
+            continue
+        kept = len(words & content_words(p["text"])) / len(words)
+        if kept < 0.5:
+            hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
+                         f"{kept:.0%} of the author's words kept; says: {p['text'].strip()[:60]}…"))
+    results.append(("G15", "B07", "Body text replaced or rewritten (under half of the author's words kept)", hits))
+
+    # G16: a figure's axis tick read as a result. Ticks are printed, so the
+    # app's number check sees them as grounded; read as values they gave CLM's
+    # Figure 20 its cost "ranges" and Figure 17 its PFLOPs. A tick is a number
+    # in a run of three or more, inside a figure's picture text, that steps
+    # evenly; a number printed elsewhere in the sources (a data label, the
+    # caption, the author's text) is not counted. A heuristic: review each hit.
+    hits = []
+    for p in t.passages:
+        if p.get("type") not in ("figure", "table"):
+            continue
+        ticks, printed = axis_ticks(p.get("sources", []))
+        said = {_number(n) for n in re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.]*\d)", p.get("text", ""))}
+        read = sorted(n for n in said - {None} if n in ticks and n not in printed)
+        if read:
+            hits.append((f"passage {p.get('id')} (p. {p.get('page')})",
+                         f"axis ticks given as values: {', '.join(_shown(n) for n in read[:6])}"))
+    results.append(("G16", "B02", "A figure's axis ticks read as results (heuristic)", hits))
 
     # G10: book folder integrity (only for book folders)
     if t.book is not None:

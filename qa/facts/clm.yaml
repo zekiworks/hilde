@@ -97,6 +97,13 @@ visuals:
         source: Fig. 2
         verified: figure (R6-02)
         seen: {2026-10-01: wrong, 2026-10-07: wrong, 2026-10-08: wrong}
+      - id: CLM-F118
+        what: 'Needle Retention: Base starts near 1.0 at low pressure, then drops; it does not stay at 0'
+        not: ['(?i)\bBase\b[^.;]{0,60}(stays?|remains?|is|at) (at )?(0|zero)\b(?!\.\d)', '(?i)\bBase\b[^.;]{0,40}(fails|scores? (0|zero)) (at|on) every']
+        severity: important
+        source: Fig. 2 (Needle Retention panel)
+        verified: image
+        seen: {2026-10-13: wrong}
 
   # ---------------------------------------------------------------- Equations
   - name: Equation 1
@@ -510,6 +517,14 @@ visuals:
       - {id: CLM-F86, what: 'Edited turns, standard: prefilled unchanged prefix', value: '29\.5', holder: prefix, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F87, what: 'Edited turns, standard: prefilled unchanged suffix', value: '31\.1', holder: suffix, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F88, what: 'Edited turns, SCR: reused', value: '28\.2', holder: reused, severity: important, source: Fig. 13, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F119
+        what: 'Edited turns: unchanged-suffix re-prefill falls from 31.1% to 5.0%; 22.7% is the unchanged prefix'
+        says: ['(?i)suffix[^.;]{0,80}31\.1[^.;]{0,80}\b5(\.0)?\b|31\.1[^.;]{0,80}\b5(\.0)? ?(%|percent)[^.;]{0,40}suffix']
+        not: ['(?i)suffix[^.;]{0,80}31\.1[^.;]{0,40}22\.7|31\.1[^.;]{0,40}22\.7[^.;]{0,40}suffix', '(?i)22\.7[^.;]{0,30}suffix']
+        severity: important
+        source: Fig. 13 (edited turns, hatched bars)
+        verified: image
+        seen: {2026-10-13: wrong}
 
   - name: Figure 14
     caption: 'FLOPs of one Qwen3.6-27B turn'
@@ -549,6 +564,14 @@ visuals:
       - {id: CLM-F99, what: 'Sudoku Sketchpad: up to 150 moves', value: '150', holder: Sudoku, region: sudoku, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F100, what: 'KV Store: up to 16k records', value: '16 ?k|16,000', holder: KV, region: kv, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
       - {id: CLM-F101, what: 'Log Triage: up to 12,800 log lines', value: '12,?800', holder: Log, region: log, severity: important, source: Fig. 15, verified: pdf, seen: {2026-10-08: right}}
+      - id: CLM-F120
+        what: 'Needle Retention has 8 levels: 4, 8, 24, 48, 60, 96, 192, 224 chunks'
+        says: ['(?s)\b4\b(?=.*\b8\b)(?=.*\b48\b)(?=.*\b96\b)(?=.*\b224\b).*chunks|chunks(?=.*\b48\b)(?=.*\b96\b)(?=.*\b224\b)']
+        not: ['(?i)Sudoku[^.;]{0,80}\b8, 30, 100\b', '(?i)Sudoku[^.;]{0,40}\b4, 15, 60, 150, 8\b']
+        severity: important
+        source: Fig. 15
+        verified: pdf
+        seen: {2026-10-13: wrong}
 
   # ---------------------------------------------------------------- Tables 4, 5
   - name: Table 4
@@ -589,6 +612,28 @@ visuals:
   # ---------------------------------------------------------------- Appendix F, G figures
   - name: Figure 17
     caption: 'accuracy against compute for Qwen3.5-9B'
+    facts:
+      - id: CLM-F121
+        what: 'Qwen3.6-27B on TBLite: CLM reaches 73.7%, not 80% (80 is the top tick)'
+        not: ['(?i)TBLite[^.;]{0,80}\b80 ?(%|percent)', '(?i)\b80 ?(%|percent)[^.;]{0,60}TBLite']
+        severity: critical
+        source: '§5.1.1 ("73.7% against 67.0%"), Fig. 17'
+        verified: pdf
+        seen: {2026-10-13: wrong}
+      - id: CLM-F122
+        what: 'Qwen3.6-27B on TerminalBench 2.1: CLM matches Summary, does not beat it'
+        not: ['(?i)TerminalBench[^.;]{0,160}CLM[^.;]{0,60}(outperform|beats?|surpass|exceeds?)[^.;]{0,30}Summary']
+        severity: important
+        source: '§5.1.1 ("CLMs match the strongest baseline … on TB2.1")'
+        verified: pdf
+        seen: {2026-10-13: wrong}
+      - id: CLM-F123
+        what: 'PFLOPs are read off the plot, never given as an axis tick (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5.0, 7.0, 7.5)'
+        not: ['(?i)\b(0\.5|1\.0|1\.5|2\.0|2\.5|3\.0|5\.0|7\.0|7\.5) PFLOPs']
+        severity: important
+        source: Fig. 17 (no point carries a printed PFLOPs value)
+        verified: image
+        seen: {2026-10-13: wrong}
 
   - name: Figure 18
     caption: 'best-so-far score versus evaluator-scored attempts'
@@ -608,6 +653,21 @@ visuals:
 
   - name: Figure 20
     caption: 'never use the held-out evaluation set'
+    facts:
+      - id: CLM-F124
+        what: 'Self-evolution: cost falls from the starting skill to the selected one (Needle about $0.28 to $0.22, Sudoku about $1.66 to $1.38)'
+        not: ['(?i)(Needle|Sudoku)[^.;]{0,80}\b(cost|USD)\b[^.;]{0,20}(rises?|increases?|grows?|goes up)[^.;]{0,40}(\b(USD|dollars?|cents?)\b|\$)', '(?i)(Needle|Sudoku)[^.;]{0,80}(\b(USD|dollars?|cents?)\b|\$)[^.;]{0,30}(rises?|increases?|grows?|goes up)', '(?i)(rises?|increases?) from[^.;]{0,20}0\.21[^.;]{0,20}0\.27', '(?i)(rises?|increases?) from[^.;]{0,20}1\.35[^.;]{0,20}1\.65']
+        severity: critical
+        source: Fig. 20 (bottom row)
+        verified: image
+        seen: {2026-10-13: wrong}
+      - id: CLM-F125
+        what: 'Costs are read off the plot, never given as the axis tick range (0.21–0.27, 1.35–1.65, 0.68–0.76)'
+        not: ['0\.21[^.;]{0,30}0\.27', '1\.35[^.;]{0,30}1\.65', '0\.68[^.;]{0,30}0\.76']
+        severity: important
+        source: Fig. 20 (bottom row ticks)
+        verified: image
+        seen: {2026-10-13: wrong}
 
   - name: Figure 22
     caption: 'each point compares a model'

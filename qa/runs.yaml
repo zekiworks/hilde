@@ -281,3 +281,37 @@ runs:
       value present (F49, F57, F73), F112 a number-format artifact. PG: 1 gained, none regressed, labels 10/10.
       Merton: identifiers 51/51 both sides; integrals and sums fixed (R24-11); inline-equation splices fixed in
       f0d7dc6 (R24-15).
+
+  - id: R25
+    date: 2026-10-13
+    papers: [attention]
+    hilde_commit: a777171
+    model: lm-studio/deepseek-v4.1-flash (images on, error correction on)
+    voice: Hilde, Balder
+    output_file: null   # library book attention-is-all-you-need--bdfaa68d8984
+    pdf_sha256: bdfaa68d8984
+    reviewers: [claude, astra]
+    notes: >
+      The recreated Attention book, compared with the paper (arXiv 1706.03762 v7) and the 8 Oct book (R21). Written by
+      DeepSeek V4.1 Flash, not Gemma, so differences from R21 mix a model change with the code changes. Golden 43/44
+      at review, only ATT-35 failing. Fixed since R21: R21-01, R21-02, R21-03, R21-04, R21-05, R21-07. R21-09 passes
+      for the first time: the base model's 27.3 and 38.1 are both read. R21-06's invented Figure 5 word pairs are
+      gone. Regressed: R25-01, R25-02. New: R25-03. The job's call records were removed with its working folder.
+
+  - id: R26
+    date: 2026-10-13
+    papers: [clm]
+    hilde_commit: a777171
+    model: lm-studio/gemma-4-31B-it on this machine (images on, error correction on; 10 of 28 descriptions corrected)
+    voice: Eir
+    output_file: null   # library book context-language-models--ac5c92681443
+    pdf_sha256: ac5c926814434d8ad2f499183cd2a81e53b4c14f327587f99980ade9157db01b
+    reviewers: [user]
+    notes: >
+      Reviewed against the PDF and the 12 Oct output; not accepted. Fixed since 12 Oct: Figure 6 (repository results,
+      panels apart), Figure 12 number and categories, Table 4 identity and its "No", every figure and table
+      identifier (12 Oct: 3 of 24), Figure 8 units, Figures 9 and 11, equation descriptions (no invented diagrams,
+      Appendix C formula). Remaining: R26-01..R26-13. Scored with facts CLM-F118..F125 and golden CLM-28..32: on six
+      descriptions-only Gemma runs with images from 12 Oct, F121, F123, F124 and F120 were right in 5 of 6, F125 in 4 of
+      6, F119 in 0 of 6; this book got all but F120 wrong, so one book does not yet show a regression. The job's call
+      records were removed with its working folder.

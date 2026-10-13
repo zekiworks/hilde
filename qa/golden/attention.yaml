@@ -253,6 +253,20 @@ asserts:
       points show no such lines (R21-06, T6, checked by Astra)
     must_not_contain: '(?i)between "?Law"? and "?perfect"?|"?application"? and "?just"?'
 
+  - id: ATT-40
+    bug: B13
+    about: >
+      §3.5: "where pos is the position and i is the dimension" is read, in either order; dropped in the
+      13 Oct book, which then said "divide pos by the result" without saying what pos is (R25-02)
+    must_contain: '(?is)\bpos\b[^.;]{0,30}\bposition\b[^.;]{0,80}\bi\b[^.;]{0,30}\bdimension|\bi\b[^.;]{0,30}\bdimension\b[^.;]{0,80}\bpos\b[^.;]{0,30}\bposition'
+
+  - id: ATT-41
+    bug: B02
+    about: >
+      Table 1: a shorter path length is not about waiting on the step before; §4 ties it to learning
+      long-range dependencies (R25-03). Catches only the 13 Oct wording; a reviewer reads Table 1 once.
+    must_not_contain: '(?i)path lengths?[^.]{0,120}(wait|waiting) on the (step|operation) before'
+
 manual:
   - bug: B15
     check: Equations 1, 2 and 3, multi-head attention and the positional encoding are spoken as ordered steps, innermost first (ATT-33 is only a heuristic).
