@@ -210,6 +210,41 @@ deployment needs an authenticated TLS reverse proxy plus request/rate limits;
 with the proxy on the same machine, keep the default host. Cross-origin POST
 rejection is CSRF hardening, not access control.
 
+### HTTPS
+
+Browsers warn about downloads from a page served over plain HTTP, except from
+this machine (`localhost`, which they treat as secure). To use Hilde from other
+devices without those warnings, start it with `--host 0.0.0.0 --https`. On
+first start Hilde makes its own small certificate authority in `~/.hilde/tls`
+and, with it, a certificate for this machine's names and private network
+addresses; it makes the certificate again when it nears expiry or the
+address changes. The authority may vouch only for private networks and this
+machine's names, never for another website, and its key stays in
+`~/.hilde/tls`, readable only by you. An address typed with `http://` is sent
+to the `https://` one.
+
+Each device trusts the authority once: open Hilde (the browser warns the first
+time; continue to the page), choose **Advanced**, then under **This server**
+**Download Hilde's certificate**, and install it:
+
+- **macOS**: open the file, add it to the System keychain, then in Keychain
+  Access open "Hilde on …", and under **Trust** set **When using this
+  certificate** to **Always Trust**.
+- **Windows**: open the file, **Install Certificate**, **Local Machine**, and
+  place it in **Trusted Root Certification Authorities**.
+- **iPhone and iPad**: open the download in Safari, install the profile under
+  **Settings › General › VPN & Device Management**, then turn it on under
+  **Settings › General › About › Certificate Trust Settings**.
+- **Android**: **Settings › Security › Encryption & credentials › Install a
+  certificate › CA certificate**, then choose the file.
+- **Linux**: Chrome and Firefox keep their own lists: add it under their
+  certificate settings as an authority trusted for websites.
+
+Then restart the browser. If you have a certificate of your own, for a domain
+or from Tailscale, pass `--tls-cert` and `--tls-key` instead; nothing needs
+installing then. Deleting `~/.hilde/tls` makes a new authority, which each
+device must install again.
+
 ## Web UI
 
 **Create** turns a document into an audiobook, **Listen** plays it with its

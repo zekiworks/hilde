@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Start the Hilde web server for this machine: both local Qwen3-TTS models,
 # the library in ~/.hilde/library, and port 8800 on this machine only.
-# To reach it from other devices, add --host 0.0.0.0. It has no login, so
-# anyone who can then reach port 8800 can use it.
+# To reach it from other devices, add --host 0.0.0.0, and --https so their
+# browsers do not flag downloads (README: HTTPS). It has no login, so anyone
+# who can then reach port 8800 can use it.
 #
 # Narration uses every GPU that CUDA can open. A book starts on the GPUs with
 # 6 GiB free and adds the others, checked every minute, once they have room.
