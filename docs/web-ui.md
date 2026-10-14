@@ -331,10 +331,6 @@ button reads **Simple** and hides them again. On **Progress** it shows only
   [Narration workers on other machines](ssh-workers.md). Only a browser on
   the server's own machine sees the hosts and may change them. It also names
   the narration and voice-design models and the device voice creation uses.
-  **Connection** says whether this browser will warn about downloads (plain
-  HTTP from another device does) and, when the server runs with `--https`,
-  offers **Download Hilde's certificate** to install once on this device; see
-  [HTTPS](../README.md#https).
 - **Speech tuning**: precision and attention implementation, language, text
   encoding, and an optional seed.
 - **Narration**, on **Create**: **Chunking**, the longest chunk in characters;

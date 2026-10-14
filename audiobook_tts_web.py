@@ -31,7 +31,6 @@ import collections
 import concurrent.futures
 import contextlib
 import difflib
-import datetime
 import io
 import json
 import hashlib
@@ -7610,9 +7609,8 @@ def read_state_cookie(header):
     return data if isinstance(data, dict) else {}
 
 
-def state_cookie_headers(state, previous_header="", secure=False):
-    """Return Set-Cookie headers for one normalized state, expiring stale
-    chunks; over HTTPS (`secure`) the browser sends them over HTTPS only."""
+def state_cookie_headers(state, previous_header=""):
+    """Return Set-Cookie headers for one normalized state, expiring stale chunks."""
     payload = json.dumps(
         state, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
@@ -7632,7 +7630,6 @@ def state_cookie_headers(state, previous_header="", secure=False):
 
     attributes = (
         f"; Path=/; Max-Age={STATE_COOKIE_MAX_AGE}; HttpOnly; SameSite=Strict"
-        + ("; Secure" if secure else "")
     )
     headers = [
         ("Set-Cookie", f"{STATE_COOKIE_COUNT}={len(chunks)}{attributes}")
@@ -7642,7 +7639,7 @@ def state_cookie_headers(state, previous_header="", secure=False):
         for index, chunk in enumerate(chunks)
     )
     previous_count = _state_cookie_count(_state_cookie_jar(previous_header))
-    expired = "; Path=/; Max-Age=0; HttpOnly; SameSite=Strict" + ("; Secure" if secure else "")
+    expired = "; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"
     headers.extend(
         ("Set-Cookie", f"{STATE_COOKIE_PREFIX}_{index}={expired}")
         for index in range(len(chunks), previous_count)
@@ -11896,15 +11893,6 @@ class Handler(BaseHTTPRequestHandler):
         """Whether this request comes from a browser on the server's machine."""
         return is_loopback_address(self.client_address[0])
 
-    def secure(self):
-        """Whether this request came over HTTPS."""
-        return isinstance(self.connection, ssl.SSLSocket)
-
-    def authority(self):
-        """Hilde's own certificate authority's certificate, when it serves
-        HTTPS with one (HildeServer.tls_authority), or None."""
-        return getattr(self.server, "tls_authority", None)
-
     def cross_origin(self):
         origin = self.headers.get("Origin")
         if not origin:
@@ -11986,8 +11974,6 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "airdrop": airdrop_available(),
                         "manage_workers": self.local_client(),
-                        # Hilde's own certificate authority, to install on a device.
-                        "certificate": self.authority() is not None,
                     },
                 },
                 extra=(("Cache-Control", "no-store"),),
@@ -12095,19 +12081,6 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("container", [""])[0] == "mp4":
                 return self.send_mp3_as_mp4(target)
             return self.send_file(str(target), False)
-        if route == "/api/certificate":
-            # Hilde's certificate authority, installed once on each device.
-            authority = self.authority()
-            if authority is None:
-                return self.fail(HTTPStatus.NOT_FOUND, "This server has no certificate of its own.")
-            body = authority.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/x-x509-ca-cert")
-            self.send_header("Content-Disposition", 'attachment; filename="hilde-certificate.crt"')
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return None
         if route == "/api/source":
             # The book's document, under the name it was added with.
             book = query.get("book", [""])[0]
@@ -12197,7 +12170,7 @@ class Handler(BaseHTTPRequestHandler):
             state = normalize(body.get("state", {}))
             try:
                 headers = state_cookie_headers(
-                    state, self.headers.get("Cookie", ""), self.secure()
+                    state, self.headers.get("Cookie", "")
                 )
             except ValueError as exc:
                 return self.fail(
@@ -12218,7 +12191,7 @@ class Handler(BaseHTTPRequestHandler):
             state = normalize(body.get("state", {}))
             try:
                 headers = state_cookie_headers(
-                    state, self.headers.get("Cookie", ""), self.secure()
+                    state, self.headers.get("Cookie", "")
                 )
             except ValueError as exc:
                 return self.fail(
@@ -13580,10 +13553,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div></div></div>
       <div class="row"><span class="row-label">Models</span>
         <span id="compute-models"></span></div>
-      <div class="row"><span class="row-label">Connection</span>
-        <div class="stack"><span id="connection-note" class="note"></span>
-          <a id="certificate-download" class="hidden" href="/api/certificate"
-            download="hilde-certificate.crt">Download Hilde's certificate</a></div></div>
     </fieldset>
     <fieldset id="speech-advanced">
       <legend>Speech tuning</legend>
@@ -17161,24 +17130,9 @@ $("chat-speak").addEventListener("change", (event) => {
   if (!event.target.checked) stopSpeaking();
 });
 
-
-// Whether downloads will warn here, and Hilde's certificate when it has one.
-// Browsers treat this machine (localhost) as secure, so only other devices
-// on plain HTTP warn.
-function renderConnection() {
-  const here = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
-  $("certificate-download").classList.toggle("hidden", !caps.certificate);
-  $("connection-note").textContent = caps.certificate
-    ? "HTTPS with Hilde's own certificate. Install it once on each device you browse "
-      + "from, and its browser stops warning."
-    : location.protocol === "https:" ? "HTTPS."
-    : here ? "This machine: browsers treat it as secure."
-    : "Plain HTTP: browsers on this device flag downloads. Start the server with --https.";
-}
 fetch("/api/state").then((response) => response.json()).then((data) => {
   load(data);
   if (!caps.airdrop) $("airdrop").title = "AirDrop requires a macOS server";
-  renderConnection();
   refreshPaperModels();
   refreshWorkers();
   setInterval(refreshJobs, 2000);
@@ -17187,200 +17141,6 @@ fetch("/api/state").then((response) => response.json()).then((data) => {
 </body>
 </html>
 """
-
-# HTTPS (--https): browsers flag downloads from a page served over plain HTTP,
-# except from this machine (localhost), and no public authority certifies a
-# private address such as 192.168.1.10. So Hilde keeps its own certificate
-# authority here, which a user installs once on each device; it may vouch only
-# for private networks and this machine's names, never for another site.
-TLS_HOME = HILDE_HOME / "tls"
-TLS_CA_DAYS = 3650
-# Apple accepts a server certificate under a user-installed authority only
-# when it is valid for at most 825 days; 397 is under every browser's limit.
-TLS_SERVER_DAYS = 397
-TLS_RENEW_DAYS = 30
-TLS_PRIVATE_NETWORKS = (
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16",
-    "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10",
-)
-
-
-def machine_names():
-    """The names and private addresses this machine answers to: localhost,
-    its host name with and without ".local", and its addresses on private
-    networks (the one it reaches the network by, and its host name's)."""
-    host = socket.gethostname()
-    short = host.split(".")[0]
-    names = {"localhost", short, f"{short}.local", host.lower()}
-    addresses = {"127.0.0.1", "::1"}
-    with contextlib.suppress(OSError), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        # Connecting a datagram socket sends nothing; it only picks the route.
-        probe.connect(("192.0.2.1", 9))
-        addresses.add(probe.getsockname()[0])
-    with contextlib.suppress(OSError):
-        addresses.update(info[4][0] for info in socket.getaddrinfo(host, None))
-    networks = [ipaddress.ip_network(network) for network in TLS_PRIVATE_NETWORKS]
-    private = {
-        address for address in addresses
-        if any(ipaddress.ip_address(address.split("%")[0]) in network for network in networks)
-    }
-    return sorted(names), sorted(private)
-
-
-def ensure_tls_files(home=TLS_HOME, names=None, now=None):
-    """Hilde's certificate authority and this machine's certificate under
-    `home`, made on first use and the certificate made again when it nears
-    expiry or the machine's names or addresses change; the authority stays,
-    so devices that installed it keep trusting the server. Return the
-    certificate and key paths. `names` is (DNS names, IP addresses)."""
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-    dns, ips = names or machine_names()
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    home = Path(home)
-    home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ca_path, ca_key_path = home / "ca.pem", home / "ca-key.pem"
-    cert_path, key_path = home / "server.pem", home / "server-key.pem"
-
-    def private_write(path, data):
-        temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_bytes(data)
-        temporary.chmod(0o600)
-        temporary.replace(path)
-
-    def pem_key(key):
-        return key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-        )
-
-    def wanted_names(certificate):
-        alternative = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        return (
-            sorted(alternative.get_values_for_type(x509.DNSName)),
-            sorted(str(address) for address in alternative.get_values_for_type(x509.IPAddress)),
-        )
-
-    if ca_path.is_file() and ca_key_path.is_file():
-        ca = x509.load_pem_x509_certificate(ca_path.read_bytes())
-        ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), None)
-    else:
-        ca_key = ec.generate_private_key(ec.SECP256R1())
-        subject = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, f"Hilde on {socket.gethostname().split('.')[0]}"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Hilde local certificate authority"),
-        ])
-        permitted = [x509.DNSName(name) for name in dns] + [
-            x509.IPAddress(ipaddress.ip_network(network)) for network in TLS_PRIVATE_NETWORKS
-        ]
-        ca = (
-            x509.CertificateBuilder()
-            .subject_name(subject).issuer_name(subject)
-            .public_key(ca_key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(now - datetime.timedelta(days=1))
-            .not_valid_after(now + datetime.timedelta(days=TLS_CA_DAYS))
-            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-            .add_extension(x509.KeyUsage(
-                digital_signature=True, content_commitment=False, key_encipherment=False,
-                data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True,
-                encipher_only=False, decipher_only=False,
-            ), critical=True)
-            # What the authority may vouch for: private networks and this machine's names.
-            .add_extension(x509.NameConstraints(permitted_subtrees=permitted, excluded_subtrees=None), critical=True)
-            .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
-            .sign(ca_key, hashes.SHA256())
-        )
-        private_write(ca_key_path, pem_key(ca_key))
-        private_write(ca_path, ca.public_bytes(serialization.Encoding.PEM))
-
-    if cert_path.is_file() and key_path.is_file():
-        current = x509.load_pem_x509_certificate(cert_path.read_bytes())
-        if (
-            current.issuer == ca.subject
-            and current.not_valid_after_utc - now > datetime.timedelta(days=TLS_RENEW_DAYS)
-            and wanted_names(current) == (sorted(dns), sorted(ips))
-        ):
-            return cert_path, key_path
-    key = ec.generate_private_key(ec.SECP256R1())
-    certificate = (
-        x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, dns[0] if dns else "localhost")]))
-        .issuer_name(ca.subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=TLS_SERVER_DAYS))
-        .add_extension(x509.SubjectAlternativeName(
-            [x509.DNSName(name) for name in dns] + [x509.IPAddress(ipaddress.ip_address(ip)) for ip in ips]
-        ), critical=False)
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .add_extension(x509.KeyUsage(
-            digital_signature=True, content_commitment=False, key_encipherment=False,
-            data_encipherment=False, key_agreement=False, key_cert_sign=False, crl_sign=False,
-            encipher_only=False, decipher_only=False,
-        ), critical=True)
-        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
-        .sign(ca_key, hashes.SHA256())
-    )
-    private_write(key_path, pem_key(key))
-    private_write(cert_path, certificate.public_bytes(serialization.Encoding.PEM))
-    return cert_path, key_path
-
-
-class HildeServer(ThreadingHTTPServer):
-    """The web server, over HTTPS when `tls` holds an SSL context. A plain
-    HTTP request to an HTTPS server is sent to the same address over HTTPS,
-    so an old bookmark still opens the page."""
-
-    tls = None
-    # Hilde's own certificate authority, offered at /api/certificate.
-    tls_authority = None
-
-    def finish_request(self, request, client_address):
-        if self.tls is None:
-            return super().finish_request(request, client_address)
-        request.settimeout(15)
-        try:
-            first = request.recv(1, socket.MSG_PEEK)
-            if first != b"\x16":  # not a TLS handshake: plain HTTP
-                return self.redirect_to_https(request)
-            secure = self.tls.wrap_socket(request, server_side=True)
-        except (OSError, ssl.SSLError):
-            # A browser that refuses the certificate ends the handshake.
-            return None
-        secure.settimeout(None)
-        try:
-            self.RequestHandlerClass(secure, client_address, self)
-        finally:
-            with contextlib.suppress(OSError):
-                secure.close()
-        return None
-
-    def redirect_to_https(self, request):
-        head = b""
-        while b"\r\n\r\n" not in head and len(head) < 16384:
-            chunk = request.recv(4096)
-            if not chunk:
-                break
-            head += chunk
-        lines = head.decode("latin-1").split("\r\n")
-        parts = lines[0].split(" ")
-        path = parts[1] if len(parts) > 1 and parts[1].startswith("/") else "/"
-        host = next(
-            (line.split(":", 1)[1].strip() for line in lines[1:] if line.lower().startswith("host:")),
-            f"localhost:{self.server_port}",
-        )
-        if not re.fullmatch(r"[A-Za-z0-9.\-]+(?::\d+)?|\[[0-9A-Fa-f:.]+\](?::\d+)?", host):
-            host = f"localhost:{self.server_port}"
-        request.sendall((
-            f"HTTP/1.1 301 Moved Permanently\r\nLocation: https://{host}{path}\r\n"
-            "Content-Length: 0\r\nConnection: close\r\n\r\n"
-        ).encode("latin-1"))
-
 
 
 def main():
@@ -17392,17 +17152,6 @@ def main():
     parser.add_argument("--port", type=int, default=8800, help="Port to bind (default: 8800).")
     parser.add_argument("--open", action="store_true", help="Open the page in a browser.")
     parser.add_argument("--verbose", action="store_true", help="Log every request to stderr.")
-    secure = parser.add_argument_group("HTTPS")
-    secure.add_argument(
-        "--https", action="store_true",
-        help=(
-            "Serve over HTTPS with Hilde's own certificate authority, kept in ~/.hilde/tls. "
-            "Install it once on each device you browse from (Advanced › This server)."
-        ),
-    )
-    secure.add_argument("--tls-cert", type=Path, metavar="FILE",
-                        help="Serve over HTTPS with this certificate (PEM, chain included) instead.")
-    secure.add_argument("--tls-key", type=Path, metavar="FILE", help="The private key of --tls-cert.")
     parser.add_argument(
         "--storage-root",
         type=Path,
@@ -17507,31 +17256,7 @@ def main():
     except (OSError, ValueError) as exc:
         parser.error(f"{workers_path}: {exc}")
 
-    # HTTPS with the user's own certificate, or with Hilde's authority's.
-    tls, authority = None, None
-    if args.https and args.tls_cert:
-        parser.error("use --https or --tls-cert, not both")
-    if bool(args.tls_cert) != bool(args.tls_key):
-        parser.error("--tls-cert and --tls-key go together")
-    if args.https or args.tls_cert:
-        if args.https:
-            try:
-                cert, key = ensure_tls_files()
-            except ImportError:
-                parser.error("--https needs the cryptography package: pip install -r requirements.txt")
-            except (OSError, ValueError) as exc:
-                parser.error(f"cannot make Hilde's certificate in {TLS_HOME}: {exc}")
-            authority = TLS_HOME / "ca.pem"
-        else:
-            cert, key = args.tls_cert, args.tls_key
-        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        tls.minimum_version = ssl.TLSVersion.TLSv1_2
-        try:
-            tls.load_cert_chain(cert, key)
-        except (OSError, ssl.SSLError) as exc:
-            parser.error(f"cannot load the certificate {cert}: {exc}")
-    server = HildeServer((args.host, args.port), Handler)
-    server.tls, server.tls_authority = tls, authority
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     server.jobs = JobQueue(audiobook_consumers(tts_models["clone"], nodes=nodes))
     try:
@@ -17557,15 +17282,9 @@ def main():
             flush=True,
         )
     browser_host = "127.0.0.1" if loopback or args.host in ("0.0.0.0", "::") else args.host
-    url = f"{'https' if tls else 'http'}://{browser_host}:{server.server_port}/"
+    url = f"http://{browser_host}:{server.server_port}/"
     print(f"Hilde listening on {args.host}:{server.server_port}", flush=True)
     print(f"Open: {url}", flush=True)
-    if authority:
-        print(
-            f"HTTPS: install Hilde's certificate authority ({authority}) once on each device "
-            "you browse from: Advanced › This server › Download Hilde's certificate.",
-            flush=True,
-        )
     print("State: per-browser cookies", flush=True)
     print(f"Shared storage: {storage.root}", flush=True)
     print(f"Web search for Chat: {args.search_server or 'off'}", flush=True)
@@ -17581,8 +17300,6 @@ def main():
     )
     if not loopback:
         print("Remote access enabled: paths and runs act as this user.", flush=True)
-        if not tls:
-            print("Plain HTTP: browsers on other devices flag downloads; --https serves HTTPS.", flush=True)
     if args.open:
         webbrowser.open(url)
     try:

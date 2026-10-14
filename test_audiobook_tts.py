@@ -1,6 +1,5 @@
 import argparse
 import base64
-import datetime
 import hashlib
 import io
 import http.client
@@ -10,7 +9,6 @@ import os
 import re
 import shlex
 import socket
-import ssl
 import stat
 import struct
 import subprocess
@@ -4779,94 +4777,6 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
         self.assertEqual(refused.exception.code, 400)
         self.assertEqual(missing.exception.code, 404)
         self.assertIs(web.library_catalog(storage)[0]["has_source"], False)
-
-
-class HttpsTests(unittest.TestCase):
-    def test_hildes_certificate_authority_vouches_for_this_machine_only_and_lasts(self):
-        from cryptography import x509
-
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        home = Path(temporary.name) / "tls"
-        names = (["hilde-box", "hilde-box.local", "localhost"], ["127.0.0.1", "192.168.1.20"])
-        cert, key = web.ensure_tls_files(home, names)
-        authority = x509.load_pem_x509_certificate((home / "ca.pem").read_bytes())
-        server = x509.load_pem_x509_certificate(cert.read_bytes())
-        # The certificate is the authority's and names this machine's names and addresses.
-        server.verify_directly_issued_by(authority)
-        alternative = server.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        self.assertEqual(sorted(alternative.get_values_for_type(x509.DNSName)), names[0])
-        self.assertEqual(sorted(str(ip) for ip in alternative.get_values_for_type(x509.IPAddress)), names[1])
-        # The authority may vouch only for private networks and these names.
-        constraints = authority.extensions.get_extension_for_class(x509.NameConstraints)
-        self.assertTrue(constraints.critical)
-        permitted = {str(name.value) for name in constraints.value.permitted_subtrees}
-        self.assertIn("192.168.0.0/16", permitted)
-        self.assertNotIn("0.0.0.0/0", permitted)
-        self.assertEqual((home / "ca-key.pem").stat().st_mode & 0o777, 0o600)
-        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
-        # Started again, nothing changes; a new address or a near expiry makes a
-        # new certificate under the same authority, so devices keep trusting it.
-        before = cert.read_bytes()
-        web.ensure_tls_files(home, names)
-        self.assertEqual(cert.read_bytes(), before)
-        moved = (names[0], ["127.0.0.1", "192.168.1.31"])
-        web.ensure_tls_files(home, moved)
-        self.assertNotEqual(cert.read_bytes(), before)
-        later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=web.TLS_SERVER_DAYS - 5)
-        renewed_before = cert.read_bytes()
-        web.ensure_tls_files(home, moved, now=later)
-        renewed = x509.load_pem_x509_certificate(cert.read_bytes())
-        self.assertNotEqual(cert.read_bytes(), renewed_before)
-        renewed.verify_directly_issued_by(authority)
-        self.assertEqual(x509.load_pem_x509_certificate((home / "ca.pem").read_bytes()), authority)
-
-    def test_https_serves_the_page_redirects_plain_http_and_offers_the_authority(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        storage = web.SharedStorage(root / "library")
-        storage.ensure()
-        cert, key = web.ensure_tls_files(root / "tls", (["localhost"], ["127.0.0.1"]))
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(cert, key)
-        server = web.HildeServer(("127.0.0.1", 0), Handler)
-        server.tls, server.tls_authority = context, root / "tls" / "ca.pem"
-        server.daemon_threads = True
-        server.storage = storage
-        server.jobs = web.JobQueue()
-        server.tts_models = web.unconfigured_tts_models()
-        server.verbose = False
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(lambda: (server.shutdown(), thread.join(), server.server_close()))
-        port = server.server_port
-        trusting = ssl.create_default_context(cafile=str(root / "tls" / "ca.pem"))
-
-        # A browser that trusts Hilde's authority gets the page, and its
-        # settings cookies are sent over HTTPS only.
-        with urllib.request.urlopen(f"https://localhost:{port}/api/state", context=trusting) as response:
-            self.assertIs(json.load(response)["capabilities"]["certificate"], True)
-        request = urllib.request.Request(
-            f"https://localhost:{port}/api/sync", data=json.dumps({"state": {}}).encode(),
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with urllib.request.urlopen(request, context=trusting) as response:
-            cookies = response.headers.get_all("Set-Cookie")
-        self.assertTrue(cookies and all("; Secure" in cookie for cookie in cookies))
-        with urllib.request.urlopen(f"https://localhost:{port}/api/certificate", context=trusting) as response:
-            self.assertEqual(response.read(), (root / "tls" / "ca.pem").read_bytes())
-            self.assertEqual(response.headers["Content-Type"], "application/x-x509-ca-cert")
-        # One that does not trust it is refused by its own check, never served.
-        with self.assertRaises(urllib.error.URLError):
-            urllib.request.urlopen(f"https://localhost:{port}/api/state", context=ssl.create_default_context())
-        # An old plain-HTTP bookmark is sent to the same page over HTTPS.
-        connection = http.client.HTTPConnection("localhost", port, timeout=10)
-        connection.request("GET", "/?tab=player")
-        answer = connection.getresponse()
-        self.assertEqual(answer.status, 301)
-        self.assertEqual(answer.getheader("Location"), f"https://localhost:{port}/?tab=player")
-        connection.close()
 
 
 class VoiceAndLibraryCatalogTests(unittest.TestCase):
