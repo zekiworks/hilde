@@ -17835,9 +17835,11 @@ class HildeServer(ThreadingHTTPServer):
         )
         if not re.fullmatch(r"[A-Za-z0-9.\-]+(?::\d+)?|\[[0-9A-Fa-f:.]+\](?::\d+)?", host):
             host = f"localhost:{self.server_port}"
+        # Temporary and never cached: a permanent one stays in the browser,
+        # which then cannot reach the server once it serves plain HTTP again.
         request.sendall((
-            f"HTTP/1.1 301 Moved Permanently\r\nLocation: https://{host}{path}\r\n"
-            "Content-Length: 0\r\nConnection: close\r\n\r\n"
+            f"HTTP/1.1 307 Temporary Redirect\r\nLocation: https://{host}{path}\r\n"
+            "Cache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         ).encode("latin-1"))
 
 

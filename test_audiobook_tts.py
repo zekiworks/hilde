@@ -5184,7 +5184,9 @@ class HttpsTests(unittest.TestCase):
         connection = http.client.HTTPConnection("localhost", port, timeout=10)
         connection.request("GET", "/?tab=player")
         answer = connection.getresponse()
-        self.assertEqual(answer.status, 301)
+        # Temporary and uncached, so turning HTTPS off later strands no browser.
+        self.assertEqual(answer.status, 307)
+        self.assertEqual(answer.getheader("Cache-Control"), "no-store")
         self.assertEqual(answer.getheader("Location"), f"https://localhost:{port}/?tab=player")
         connection.close()
 
