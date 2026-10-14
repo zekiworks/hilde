@@ -31,10 +31,14 @@ adaptation**:
     Hilde and sign in by running `claude` once in a terminal. Hilde then runs
     `claude` for each passage, with its tools turned off and Hilde's
     instructions in place of Claude Code's, and offers `sonnet`, `opus`, and
-    `haiku`. Hilde never sees the sign-in, which Anthropic permits only
+    `haiku`, each shown by the model it runs today, such as "Claude Opus 5.5
+    (opus)": Hilde asks Claude Code and remembers the answer for six hours.
+    Choosing a nickname keeps that family's latest model. Hilde never sees the
+    sign-in, which Anthropic permits only
     inside its own apps, and passages count against your plan's usage limits;
     a limit reached ends the job with Claude Code's message. **Check again**
-    looks for Claude Code after you install it or sign in. Connecting any
+    looks for Claude Code after you install it or sign in, and asks again what
+    each nickname runs. Connecting any
     provider updates **Create** at once: a "needs a model" message goes away
     without choosing another model.
   - **Anthropic API** takes an API key from the

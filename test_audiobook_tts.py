@@ -3832,7 +3832,8 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
-                mock.patch.object(web, "read_gemini_key", return_value=None):
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
             with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
                 catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
             self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
@@ -4207,7 +4208,8 @@ class OpenAISignInTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((home / "openai.json").stat().st_mode), 0o600)
 
         # The sign-in has already expired, so listing the models renews it.
-        catalog = web.paper_model_catalog()
+        with mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            catalog = web.paper_model_catalog()
         self.assertEqual(
             [model["selector"] for model in catalog["models"]],
             ["openai-codex/gpt-a", "openai-codex/gpt-b"],
@@ -4471,7 +4473,8 @@ class AnthropicProviderTests(unittest.TestCase):
             try:
                 with mock.patch.object(
                     web, "ANTHROPIC_API_URL", f"http://127.0.0.1:{server.server_port}"
-                ), mock.patch.object(web, "HILDE_HOME", home):
+                ), mock.patch.object(web, "HILDE_HOME", home), \
+                        mock.patch.object(web, "claude_code_status", return_value=(False, "")):
                     with self.assertRaises(RuntimeError):
                         web.connect_anthropic("sk-ant-wrong")
                     self.assertFalse(web.anthropic_key_path().exists())
@@ -4828,7 +4831,8 @@ if sys.argv[1:3] == ["auth", "status"]:
 message = json.loads(sys.stdin.readline())
 with (state / "calls.jsonl").open("a") as calls:
     calls.write(json.dumps({{"argv": sys.argv[1:], "cwd": os.getcwd(), "message": message}}) + "\\n")
-print(json.dumps({{"type": "system", "subtype": "init", "model": "claude-sonnet"}}))
+model = sys.argv[sys.argv.index("--model") + 1]
+print(json.dumps({{"type": "system", "subtype": "init", "model": "claude-" + model + "-9-1"}}))
 if (state / "limit").exists():
     print(json.dumps({{"type": "result", "subtype": "success", "is_error": True,
                       "result": "You've hit your limit · resets 5pm"}}))
@@ -4881,7 +4885,15 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             self.assertIsNotNone(web._adaptation_problem(values))
 
             (state / "signed-in").touch()
+            # Each nickname is shown by the model it runs, asked of Claude Code
+            # once and remembered until Check again.
+            web._CLAUDE_CODE_RESOLVED.update(at=0.0, models={})
             catalog = web.paper_model_catalog()
+            asked = len((state / "calls.jsonl").read_text().splitlines())
+            web.paper_model_catalog()
+            self.assertEqual(len((state / "calls.jsonl").read_text().splitlines()), asked)
+            web.paper_model_catalog(refresh=True)
+            self.assertEqual(len((state / "calls.jsonl").read_text().splitlines()), asked + 3)
             self.assertIsNone(web._adaptation_problem(values))
             finished = run(root / "extraction")
             (state / "limit").touch()
@@ -4891,6 +4903,10 @@ class ClaudeCodeProviderTests(unittest.TestCase):
         self.assertEqual(
             [model["selector"] for model in catalog["models"]],
             ["claude-code/sonnet", "claude-code/opus", "claude-code/haiku"],
+        )
+        self.assertEqual(
+            [model["label"] for model in catalog["models"]],
+            ["Claude Sonnet 9.1 (sonnet)", "Claude Opus 9.1 (opus)", "Claude Haiku 9.1 (haiku)"],
         )
         self.assertEqual(finished.code, 0)
         self.assertIn(

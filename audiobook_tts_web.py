@@ -45,6 +45,7 @@ import os
 import platform
 import queue
 import re
+import select
 import shlex
 import shutil
 import socket
@@ -5184,6 +5185,78 @@ def claude_code_status():
     )
 
 
+# What each Claude Code nickname runs, read from Claude Code itself: it has no
+# model list, and Hilde never reads its sign-in to ask Anthropic for one.
+CLAUDE_CODE_RESOLVE_SECONDS = 6 * 3600
+CLAUDE_CODE_RESOLVE_TIMEOUT = 20
+_CLAUDE_CODE_RESOLVED = {"at": 0.0, "models": {}}
+_CLAUDE_CODE_RESOLVE_LOCK = threading.Lock()
+
+
+def _claude_code_model(alias):
+    """The model a nickname runs, from the first line Claude Code writes for a
+    prompt (its `init` event names the model, about half a second in); Claude
+    Code is stopped right there, before it answers. None when it names none."""
+    command, message = claude_code_request(alias, "Reply OK.", "OK", ())
+    try:
+        child = subprocess.Popen(
+            command, cwd=HILDE_HOME if HILDE_HOME.is_dir() else None, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except OSError:
+        return None
+    try:
+        child.stdin.write(message)
+        child.stdin.flush()
+        deadline = time.monotonic() + CLAUDE_CODE_RESOLVE_TIMEOUT
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([child.stdout], [], [], 1)
+            if not ready:
+                continue
+            line = child.stdout.readline()
+            if not line:
+                return None
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "system" and event.get("subtype") == "init":
+                model = event.get("model")
+                return model if isinstance(model, str) and model else None
+        return None
+    except OSError:
+        return None
+    finally:
+        child.kill()
+        child.wait()
+
+
+def claude_code_model_names(refresh=False):
+    """{nickname: model} for CLAUDE_CODE_MODELS, asked of Claude Code in
+    parallel and remembered CLAUDE_CODE_RESOLVE_SECONDS, or again when
+    `refresh` (Check again); a nickname it does not resolve is left out."""
+    with _CLAUDE_CODE_RESOLVE_LOCK:
+        fresh = time.monotonic() - _CLAUDE_CODE_RESOLVED["at"] < CLAUDE_CODE_RESOLVE_SECONDS
+        if fresh and not refresh and _CLAUDE_CODE_RESOLVED["models"]:
+            return dict(_CLAUDE_CODE_RESOLVED["models"])
+        with concurrent.futures.ThreadPoolExecutor(len(CLAUDE_CODE_MODELS)) as pool:
+            found = dict(zip(CLAUDE_CODE_MODELS, pool.map(_claude_code_model, CLAUDE_CODE_MODELS)))
+        models = {alias: model for alias, model in found.items() if model}
+        _CLAUDE_CODE_RESOLVED.update(at=time.monotonic(), models=models)
+        return dict(models)
+
+
+def claude_model_label(model):
+    """A Claude model's name as Anthropic writes it: "claude-opus-5-5" is
+    "Claude Opus 5.5", "claude-haiku-4-5-20251001" "Claude Haiku 4.5"; any
+    other id stays as it is."""
+    match = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", model)
+    if not match:
+        return model
+    family, major, minor = match.groups()
+    return f"Claude {family.capitalize()} {major}{f'.{minor}' if minor else ''}"
+
+
 def claude_code_request(model, system_prompt, text, images):
     """The command line and standard input that adapt one batch with Claude Code.
 
@@ -5313,7 +5386,7 @@ def local_model_names(local_server, provider):
     raise RuntimeError("Choose the local server's type under Add local.")
 
 
-def paper_model_catalog(local_server="", local_provider=""):
+def paper_model_catalog(local_server="", local_provider="", refresh=False):
     """List the local server's models, then those of this server's providers."""
     local_server = normalize_local_server(local_server)
     local_models, cloud_models = [], []
@@ -5337,8 +5410,15 @@ def paper_model_catalog(local_server="", local_provider=""):
             openai_error = str(exc)
     claude_code_connected, claude_code_message = claude_code_status()
     if claude_code_connected:
+        # Shown by the model each nickname runs; chosen by nickname, so a
+        # book keeps the family's latest model.
+        resolved = claude_code_model_names(refresh)
         cloud_models += [
-            {"provider": CLAUDE_CODE_MODEL_PROVIDER, "selector": f"{CLAUDE_CODE_MODEL_PROVIDER}/{name}"}
+            {
+                "provider": CLAUDE_CODE_MODEL_PROVIDER,
+                "selector": f"{CLAUDE_CODE_MODEL_PROVIDER}/{name}",
+                "label": f"{claude_model_label(resolved[name])} ({name})" if name in resolved else name,
+            }
             for name in CLAUDE_CODE_MODELS
         ]
     anthropic_connected = read_anthropic_key() is not None
@@ -12454,7 +12534,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/chat/speech":
             return self.chat_speech(query.get("id", [""])[0], query.get("n", ["1"])[0])
         if route == "/api/paper/models":
-            return self.reply_paper_catalog()
+            # Check again asks Claude Code anew what its nicknames run.
+            return self.reply_paper_catalog(refresh=query.get("refresh", [""])[0] == "1")
         if route == "/api/paper/openai/status":
             return self.reply(
                 HTTPStatus.OK, self.server.openai_login.snapshot()
@@ -13125,13 +13206,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
-    def reply_paper_catalog(self):
+    def reply_paper_catalog(self, refresh=False):
         """Answer with the adaptation models this browser can choose from."""
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         try:
             catalog = paper_model_catalog(
                 state["audiobook"]["local_server"],
                 state["audiobook"]["local_provider"],
+                refresh,
             )
         except (RuntimeError, ValueError) as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
@@ -14477,7 +14559,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div></div>
     <div class="footer">
       <span class="grow"></span>
-      <button onclick="refreshPaperModels().then(sync)">Check again</button>
+      <button onclick="refreshPaperModels(true).then(sync)">Check again</button>
     </div>
   </section>
   <section class="provider">
@@ -15726,7 +15808,7 @@ function speakLatestAnswer() {
 function fillChatModels(catalog) {
   const select = $("chat-model");
   const models = catalog.models || [];
-  select.replaceChildren(...models.map((model) => new Option(model.selector, model.selector)));
+  select.replaceChildren(...models.map((model) => new Option(model.label || model.selector, model.selector)));
   const wanted = [state.player.chat_model, state.audiobook.model, catalog.default_model]
     .find((selector) => selector && models.some((model) => model.selector === selector));
   if (wanted) select.value = wanted;
@@ -17062,7 +17144,7 @@ function fillModelSelect(select, selected, first, catalog) {
       groups.set(model.provider, group); select.append(group);
     }
     const option = document.createElement("option");
-    option.value = model.selector; option.textContent = model.selector;
+    option.value = model.selector; option.textContent = model.label || model.selector;
     groups.get(model.provider).append(option);
   }
   if (selected && ![...select.options].some((option) => option.value === selected)) {
@@ -17097,9 +17179,9 @@ function applyPaperCatalog(catalog) {
   $("paper-model-status").classList.toggle("bad", !!problem);
   fillChatModels(catalog);
 }
-async function refreshPaperModels() {
+async function refreshPaperModels(refresh) {
   $("paper-model-status").textContent = "Loading models…";
-  try { applyPaperCatalog(await jsonRequest("/api/paper/models")); }
+  try { applyPaperCatalog(await jsonRequest("/api/paper/models" + (refresh ? "?refresh=1" : ""))); }
   catch (error) {
     $("paper-model-status").textContent = error.message;
     $("paper-model-status").classList.add("bad");
