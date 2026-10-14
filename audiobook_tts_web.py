@@ -163,8 +163,10 @@ PROVIDER_REQUEST_TIMEOUT = 30
 # OpenAI's Cloudflare front refuses urllib's default client name.
 HILDE_USER_AGENT = "hilde/1.0"
 CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex"
-# The Codex backend lists the models it serves to a given client version.
-CODEX_CLIENT_VERSION = "0.144.1"
+# The Codex backend lists only the models a client version can use: at 0.144.1
+# it left out GPT-6 Astra and the other GPT-6 models (they need 0.153 and
+# 0.155). Keep this at the latest stable Codex CLI release.
+CODEX_CLIENT_VERSION = "0.162.1"
 # This server's provider sign-ins and keys live here, readable only by its user.
 HILDE_HOME = Path.home() / ".hilde"
 # The library, outside the project folder, so every checkout finds the same one.
