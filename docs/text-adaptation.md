@@ -15,8 +15,8 @@ appear right under it, and **Workers** under **Advanced** in **Text
 adaptation**:
 
 - **Model** picks the model that rewrites the text. Left on Default, a job uses
-  your local server's first model once you add one under **Add local**; if that
-  server does not answer, the job stops rather than send your document to a
+  the first model of the first local server you added under **Add local** that
+  answers; if none answers, the job stops rather than send your document to a
   cloud provider. Without a local server, Default is OpenAI's first model once
   signed in, then Claude Code's, then the Anthropic API's, the OpenAI API's,
   and the Google Gemini API's. A cloud provider that is busy or has a passing
@@ -58,14 +58,22 @@ adaptation**:
   deletes it. The server keeps the ChatGPT sign-in in `~/.hilde/openai.json`
   and the keys in `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`, and
   `~/.hilde/gemini.json`, readable only by the user running it.
-- **Add local** connects a model server on your network. Choose its type,
-  **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
-  `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
-  Tick **This model sees images** when the model accepts images, as Gemma 4
-  does; figures and equations then go to it as images. Removing the server
-  clears the tick, so check it when you add the server again: from labels
-  alone, Gemma 4 misread chart values and trends that it read right from
-  the image.
+- **Add local** connects model servers on your network, up to eight. It lists
+  the servers you added, each with its type, a **This model sees images** box
+  that is saved as soon as you change it, and **Remove**. To add one, choose its
+  type, **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
+  `host:port`, for example `127.0.0.1:8010`, and press **Check and add**. The
+  models of every added server then appear together in each model list
+  (**Model**, the checking model, the figure model, and Chat with Hilde),
+  grouped by server, so the text model can run on one server and the figure
+  model on another. Each request goes to the server that offers its model; a
+  model two servers offer runs on the one added first. Tick **This model sees
+  images** for a server whose models accept images, as Gemma 4 does; figures
+  and equations then go to them as images. Removing a server clears its tick,
+  so check it when you add the server again: from labels alone, Gemma 4
+  misread chart values and trends that it read right from the image. If a
+  chosen local model is offered by none of your servers when a job starts,
+  the job stops and says so.
 - **Workers** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per worker** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
@@ -114,7 +122,7 @@ captions, the text read from them, and the author's text about each; the rest
 of the paper stays on your network. The book records the figure model.
 
 Figures reach OpenAI, Claude, and Gemini models as images, and a local model too once
-**This model sees images** is ticked. Otherwise a local model receives the text
+**This model sees images** is ticked for its server. Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows
 what it says. Its description opens with the number printed beside it,

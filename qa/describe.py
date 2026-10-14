@@ -2,8 +2,8 @@
 """Descriptions-only runs of one paper, for fact-set scoring. Read AGENTS.md first.
 
   python qa/describe.py PDF --model lm-studio/gemma-4-31B-it --local-server 127.0.0.1:8010 \
-      [--local-vision] [--verify [--verify-model M]] [--interpret [--figure-model M]] [--runs 3] [--in-flight 3] \
-      [--hilde DIR] --out DIR
+      [--local-server HOST:PORT ...] [--local-vision] [--verify [--verify-model M]] \
+      [--interpret [--figure-model M]] [--runs 3] [--in-flight 3] [--hilde DIR] --out DIR
 
 Each run adapts only the paper's figure, table, and equation batches with Hilde's own pipeline
 (PaperRun with descriptions_only): the same extraction, requests, naming, checks, and second
@@ -69,8 +69,8 @@ def run_once(web, args, pdf, folder, extraction):
     if args.interpret:
         checked.update(interpret_figures=True, figure_model=args.figure_model)
     run = web.PaperRun(
-        pdf, prepared, "utf-8", args.model, args.local_server, in_flight=args.in_flight,
-        local_vision=args.local_vision, descriptions_only=True, scratch_path=scratch, **checked,
+        pdf, prepared, "utf-8", args.model, local_servers(args), in_flight=args.in_flight,
+        descriptions_only=True, scratch_path=scratch, **checked,
     )
     run.publish = lambda event, data: event == "log" and (log.write(str(data)), log.flush())
     started = time.monotonic()
@@ -86,7 +86,7 @@ def run_once(web, args, pdf, folder, extraction):
         "source_file": pdf.name,
         "git_commit": commit_of(Path(web.__file__).parent),
         "model": args.model,
-        "local_vision": args.local_vision,
+        "local_vision": run.local_vision(),
         "verification": {"model": args.verify_model or args.model, **run.verification} if args.verify else None,
         "figure_model": (args.figure_model or args.model) if args.interpret else None,
         "prompt_hash": run.prompt_version,
@@ -97,12 +97,24 @@ def run_once(web, args, pdf, folder, extraction):
     return scratch
 
 
+def local_servers(args):
+    """--local-server, each a server of the local type the models name
+    (OpenAI-compatible unless one is ollama/…), all seeing images with --local-vision."""
+    providers = [
+        model.partition("/")[0] for model in (args.model, args.figure_model, args.verify_model)
+        if model.partition("/")[0] in ("ollama", "lm-studio")
+    ]
+    provider = providers[0] if providers else "lm-studio"
+    return [{"server": server, "provider": provider, "vision": args.local_vision} for server in args.local_server]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("pdf", type=Path)
     p.add_argument("--model", required=True)
-    p.add_argument("--local-server", default="")
-    p.add_argument("--local-vision", action="store_true", help="the local model sees images")
+    p.add_argument("--local-server", action="append", default=[],
+                   help="a local model server, host:port; repeat for models on several servers")
+    p.add_argument("--local-vision", action="store_true", help="the local servers' models see images")
     p.add_argument("--verify", action="store_true", help="error correction: check, correct, and check again each description")
     p.add_argument("--verify-model", default="", help="the checking model (default: --model)")
     p.add_argument("--interpret", action="store_true",

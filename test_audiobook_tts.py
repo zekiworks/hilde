@@ -118,8 +118,12 @@ def fake_jwt(claims):
     return f"{encode({'alg': 'none'})}.{encode(claims)}.signature"
 
 
-def write_figure_pdf(path):
-    """Write a one-page PDF with a sentence and a raster figure."""
+# A paragraph below the figure; extraction leaves the line above it out.
+FIGURE_PROSE = "Recurrent models are slow to train because each step waits for the one before it."
+
+
+def write_figure_pdf(path, prose=None):
+    """Write a one-page PDF with a sentence and a raster figure, and `prose` below it."""
     import pymupdf
 
     with pymupdf.open() as pdf:
@@ -128,6 +132,8 @@ def write_figure_pdf(path):
         figure = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 64, 64), False)
         figure.clear_with(200)
         page.insert_image(pymupdf.Rect(72, 120, 372, 420), pixmap=figure)
+        if prose:
+            page.insert_text((72, 460), prose)
         pdf.save(path)
 
 
@@ -2634,12 +2640,13 @@ class UnifiedWorkflowTests(unittest.TestCase):
             }
             values = web.values_of(normalize({"audiobook": {
                 "document": document.name, "server_voice": "alloy", "adapt": True,
-                "model": "lm-studio/faithful", "local_server": "127.0.0.1:9",
-                "local_provider": "lm-studio",
+                "model": "lm-studio/faithful",
+                "local_servers": [{"server": "127.0.0.1:9", "provider": "lm-studio"}],
             }}), models, storage)
             input_version, voice_version = web.audiobook_versions(values)
             try:
                 with mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
+                        mock.patch.object(web, "local_model_names", return_value=("faithful",)), \
                         mock.patch.object(web.PaperRun, "model_response", echo):
                     # The first attempt adapts the book, then narration fails;
                     # Continue reuses the adaptation.
@@ -2667,7 +2674,7 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertRegex(record["prompt_hash"], r"^[0-9a-f]{64}$")
         self.assertIn("git_commit", record)
         self.assertEqual(record["model"], "lm-studio/faithful")
-        self.assertIs(record["local_vision"], False)
+        self.assertEqual(record["local_vision"], {"lm-studio/faithful": False})
         self.assertEqual(record["chunk_max_chars"], 500)
         _, narration_sha256 = web.read_narration(storage.audiobooks / book)
         self.assertEqual(record["narration_sha256"], narration_sha256)
@@ -2741,11 +2748,12 @@ class UnifiedWorkflowTests(unittest.TestCase):
             }
             state = normalize({"tab": "audiobook", "audiobook": {
                 "document": document.name, "server_voice": "alloy", "adapt": True,
-                "model": "lm-studio/faithful", "local_server": "127.0.0.1:9",
-                "local_provider": "lm-studio",
+                "model": "lm-studio/faithful",
+                "local_servers": [{"server": "127.0.0.1:9", "provider": "lm-studio"}],
             }})
             with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, \
                     mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
+                    mock.patch.object(web, "local_model_names", return_value=("faithful",)), \
                     mock.patch.object(web.PaperRun, "model_response", faithful):
                 server.daemon_threads = True
                 server.jobs = web.JobQueue()
@@ -2968,10 +2976,12 @@ class UnifiedWorkflowTests(unittest.TestCase):
 
             stage = root / name
             run = StubPaperRun(
-                source, stage / "prepared.txt", "utf-8", "lm-studio/writer", in_flight=1,
+                source, stage / "prepared.txt", "utf-8", "lm-studio/writer",
+                [{"server": "127.0.0.1:9", "provider": "lm-studio"}], in_flight=1,
                 prompt_path=prompt, scratch_path=stage, verify=verify, verify_model="lm-studio/checker",
             )
-            run.pump()
+            with mock.patch.object(web, "local_model_names", return_value=("checker", "writer")):
+                run.pump()
             self.assertEqual(run.code, 0)
             return (stage / "prepared.txt").read_text(encoding="utf-8"), calls, run.verification
 
@@ -3767,6 +3777,39 @@ class SpeechEndpointTests(unittest.TestCase):
                     speech_endpoint(value)
 
 
+def fake_local_server(test, models, requests):
+    """An OpenAI-compatible server offering `models` that narrates every
+    batch as FIGURE_PROSE and keeps each request's body in `requests`.
+    Return its host:port."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"data": [{"id": model} for model in models]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            delta = {"content": f"<NARRATION>{FIGURE_PROSE}</NARRATION><SUMMARY>S.</SUMMARY>"}
+            self.wfile.write(f"data: {json.dumps({'choices': [{'delta': delta}]})}\n\n".encode())
+            self.wfile.write(b'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\ndata: [DONE]\n\n')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return f"127.0.0.1:{server.server_port}"
+
+
 class LocalPaperProviderTests(unittest.TestCase):
     # SGLang answers Ollama's /api/tags too, but only Ollama answers /api/version.
     SGLANG_ROUTES = {
@@ -3834,8 +3877,9 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
                 mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            added = [{"server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
             with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
-                catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
+                catalog = web.paper_model_catalog(added)
             self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
             self.assertEqual(
                 [model["selector"] for model in catalog["models"]],
@@ -3846,9 +3890,9 @@ class LocalPaperProviderTests(unittest.TestCase):
             with mock.patch.object(
                 web, "local_model_names", side_effect=RuntimeError("Cannot reach it")
             ):
-                catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
+                catalog = web.paper_model_catalog(added)
             self.assertEqual(catalog["default_model"], "")
-            self.assertEqual(catalog["local_error"], "Cannot reach it")
+            self.assertEqual(catalog["local_error"], "127.0.0.1:8010: Cannot reach it")
             # Without a local server, OpenAI is the default once signed in.
             self.assertEqual(web.paper_model_catalog()["default_model"], "openai-codex/gpt-a")
 
@@ -3862,10 +3906,10 @@ class LocalPaperProviderTests(unittest.TestCase):
         prompt.write_text("Adapt the text.", encoding="utf-8")
         home = root / ".hilde"
 
-        def problem(model, local_server="127.0.0.1:8010"):
+        def problem(model, local_server="127.0.0.1:8010", **settings):
             state = normalize({"tab": "audiobook", "audiobook": {
-                "adapt": True, "model": model, "local_server": local_server,
-                "local_provider": "lm-studio" if local_server else "",
+                "adapt": True, "model": model, **settings,
+                "local_servers": [{"server": local_server, "provider": "lm-studio"}] if local_server else [],
             }})
             with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
                 values = web.values_of(state, web.unconfigured_tts_models(), storage)
@@ -3875,6 +3919,14 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         self.assertIsNotNone(problem("ollama/deepseek-v4.1-flash"))
         self.assertIsNone(problem("lm-studio/deepseek-v4.1-flash"))
+        # The checking and figure models need a server of their type too, once used.
+        self.assertEqual(
+            problem("lm-studio/a", verify=True, verify_model="ollama/b"),
+            "Add a local server of this model's type under Add local.",
+        )
+        self.assertIsNone(problem("lm-studio/a", verify_model="ollama/b"))
+        self.assertIsNotNone(problem("lm-studio/a", interpret_figures=True, figure_model="ollama/b"))
+        self.assertIsNotNone(problem("lm-studio/a", local_server=""))
         # A model no backend of this server serves is refused before the job starts.
         self.assertIsNotNone(problem("mistral/large"))
         for model in ("", "openai-codex/gpt-a", "anthropic/claude-a", "openai/gpt-a", "gemini/gemini-a"):
@@ -3910,7 +3962,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIsNone(problem("", local_server=""))
         self.assertIsNotNone(problem("openai/gpt-a", local_server=""))
         self.assertEqual(
-            normalize({"audiobook": {"local_provider": "vllm"}})["audiobook"]["local_provider"], ""
+            normalize({"audiobook": {"local_servers": [{"server": "127.0.0.1:1", "provider": "vllm"}]}})
+            ["audiobook"]["local_servers"], []
         )
 
     def test_local_server_gets_figures_as_images_only_when_it_sees_them(self):
@@ -3966,10 +4019,14 @@ class LocalPaperProviderTests(unittest.TestCase):
                     requests.clear()
                     run = PaperRun(
                         source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
-                        local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
-                        prompt_path=prompt, scratch_path=stage, local_vision=local_vision,
+                        local_servers=[{
+                            "server": f"127.0.0.1:{server.server_port}", "provider": "lm-studio",
+                            "vision": local_vision,
+                        }],
+                        in_flight=1, prompt_path=prompt, scratch_path=stage,
                     )
-                    run.pump()
+                    with mock.patch.object(web, "local_model_names", return_value=("local-model",)):
+                        run.pump()
                     runs.append((run, list(requests)))
             finally:
                 server.shutdown()
@@ -4005,10 +4062,136 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertNotIn("Wrong", prepared)
         # The setting survives only as a real yes.
         for stored, kept in ((True, True), ("yes", False), (None, False)):
-            self.assertIs(
-                normalize({"audiobook": {"local_vision": stored}})["audiobook"]["local_vision"],
-                kept,
+            [entry] = normalize({"audiobook": {"local_servers": [
+                {"server": "127.0.0.1:1", "provider": "lm-studio", "vision": stored},
+            ]}})["audiobook"]["local_servers"]
+            self.assertIs(entry["vision"], kept)
+
+    def test_an_old_single_server_state_becomes_the_first_of_a_list_of_unique_servers(self):
+        audiobook = normalize({"audiobook": {
+            "local_server": "127.0.0.1:8894", "local_provider": "lm-studio", "local_vision": True,
+        }})["audiobook"]
+        self.assertEqual(
+            audiobook["local_servers"],
+            [{"server": "http://127.0.0.1:8894", "provider": "lm-studio", "vision": True}],
+        )
+        self.assertFalse({"local_server", "local_provider", "local_vision"} & set(audiobook))
+        self.assertEqual(normalize({"audiobook": {}})["audiobook"]["local_servers"], [])
+        # One entry a server, the first kept; invalid ones dropped; at most LOCAL_SERVERS_MAX.
+        entries = [{"server": f"127.0.0.1:{8000 + number}", "provider": "lm-studio"} for number in range(12)]
+        servers = normalize({"audiobook": {"local_servers": [
+            {"server": "127.0.0.1:8003", "provider": "ollama", "vision": True},
+            {"server": "127.0.0.1:1/v1", "provider": "lm-studio"},
+            "127.0.0.1:2",
+            *entries,
+        ]}})["audiobook"]["local_servers"]
+        self.assertEqual(len(servers), web.LOCAL_SERVERS_MAX)
+        self.assertEqual(servers[0], {"server": "http://127.0.0.1:8003", "provider": "ollama", "vision": True})
+        self.assertEqual(
+            [entry["server"] for entry in servers[1:]],
+            [f"http://127.0.0.1:{port}" for port in (8000, 8001, 8002, 8004, 8005, 8006, 8007)],
+        )
+
+    def test_models_of_several_local_servers_are_listed_together_and_each_asked_on_its_own(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        gemma_requests, qwen_requests = [], []
+        gemma = fake_local_server(self, ["gemma"], gemma_requests)
+        qwen = fake_local_server(self, ["qwen"], qwen_requests)
+        added = normalize({"audiobook": {"local_servers": [
+            {"server": gemma, "provider": "lm-studio"}, {"server": qwen, "provider": "lm-studio"},
+        ]}})["audiobook"]["local_servers"]
+        with mock.patch.object(web, "read_openai_credentials", return_value={}), \
+                mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            catalog = web.paper_model_catalog(added)
+            # A server that does not answer is named; the others' models stay.
+            unreachable = web.paper_model_catalog([
+                {"server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False}, *added,
+            ])
+        # Local models first, server by server, each with its server; then the cloud's.
+        self.assertEqual(
+            [(model["selector"], model.get("server"), model.get("label")) for model in catalog["models"]],
+            [
+                ("lm-studio/gemma", f"http://{gemma}", f"gemma · {gemma}"),
+                ("lm-studio/qwen", f"http://{qwen}", f"qwen · {qwen}"),
+                ("openai-codex/gpt-a", None, None),
+            ],
+        )
+        self.assertEqual(catalog["default_model"], "lm-studio/gemma")
+        self.assertEqual(catalog["local_error"], "")
+        self.assertEqual(unreachable["default_model"], "lm-studio/gemma")
+        self.assertTrue(unreachable["local_error"].startswith("127.0.0.1:9: "))
+
+        source = root / "paper.pdf"
+        write_figure_pdf(source, prose=FIGURE_PROSE)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        for qwen_sees_images in (True, False):
+            gemma_requests.clear()
+            qwen_requests.clear()
+            stage = root / f"stage-{qwen_sees_images}"
+            # The text model is on the first server, the figure model on the second.
+            run = PaperRun(
+                source, stage / "prepared.txt", "utf-8", "lm-studio/gemma",
+                [
+                    {"server": gemma, "provider": "lm-studio", "vision": True},
+                    {"server": qwen, "provider": "lm-studio", "vision": qwen_sees_images},
+                ],
+                in_flight=1, paragraphs_per_worker=1, prompt_path=prompt, scratch_path=stage,
+                interpret_figures=True, figure_model="lm-studio/qwen",
             )
+            run.pump()
+            self.assertEqual(run.code, 0)
+            # The prose goes to the text model's server, never with an image.
+            self.assertEqual({body["model"] for body in gemma_requests}, {"gemma"})
+            self.assertTrue(any(
+                FIGURE_PROSE in str(body["messages"][1]["content"])
+                for body in gemma_requests
+            ))
+            self.assertFalse(any(isinstance(body["messages"][1]["content"], list) for body in gemma_requests))
+            # The figure goes to the figure model's server, as an image only
+            # when that server's models see images.
+            self.assertEqual({body["model"] for body in qwen_requests}, {"qwen"})
+            self.assertEqual(
+                any(isinstance(body["messages"][1]["content"], list) for body in qwen_requests),
+                qwen_sees_images,
+            )
+            # Which server each model ran on is part of the extraction's identity.
+            manifest = json.loads((stage / "extraction.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["local"], {
+                "lm-studio/gemma": {"server": f"http://{gemma}", "vision": True},
+                "lm-studio/qwen": {"server": f"http://{qwen}", "vision": qwen_sees_images},
+            })
+            self.assertEqual(run.local_vision(), {"lm-studio/gemma": True, "lm-studio/qwen": qwen_sees_images})
+
+    def test_a_local_model_no_added_server_offers_stops_the_job(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+        server = fake_local_server(self, ["gemma"], requests)
+        added = [{"server": server, "provider": "lm-studio", "vision": False}]
+        for selector in ("lm-studio/qwen", "ollama/gemma"):
+            with self.assertRaises(RuntimeError) as caught:
+                web.local_route(selector, added)
+            self.assertEqual(str(caught.exception), f"No local server you added offers {selector.split('/', 1)[1]}.")
+        source = root / "paper.md"
+        source.write_text("Recurrent models are slow to train.", encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        run = PaperRun(
+            source, root / "prepared.txt", "utf-8", "lm-studio/qwen", added,
+            in_flight=1, prompt_path=prompt, scratch_path=root / "stage",
+        )
+        run.pump()
+        self.assertEqual(run.code, 1)
+        self.assertTrue(any("No local server you added offers qwen." in str(data) for _, data in run.history))
+        self.assertEqual(requests, [])
 
     def test_a_model_still_writing_at_its_limit_is_asked_again_and_never_hangs(self):
         temporary = tempfile.TemporaryDirectory()
@@ -4047,10 +4230,11 @@ class LocalPaperProviderTests(unittest.TestCase):
                     stage = root / f"stage-{len(runs)}"
                     run = PaperRun(
                         source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
-                        local_server=f"127.0.0.1:{server.server_port}", in_flight=1,
-                        prompt_path=prompt, scratch_path=stage,
+                        local_servers=[{"server": f"127.0.0.1:{server.server_port}", "provider": "lm-studio"}],
+                        in_flight=1, prompt_path=prompt, scratch_path=stage,
                     )
-                    run.pump()
+                    with mock.patch.object(web, "local_model_names", return_value=("local-model",)):
+                        run.pump()
                     runs.append(run)
             finally:
                 server.shutdown()
@@ -4880,7 +5064,8 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             catalog = web.paper_model_catalog()
             self.assertEqual((catalog["models"], catalog["claude_code_connected"]), ([], False))
             self.assertIn("not signed in", catalog["claude_code_status"])
-            values = {"adapt": True, "model": "claude-code/sonnet", "local_server": "",
+            values = {"adapt": True, "model": "claude-code/sonnet", "local_servers": [],
+                      "verify": False, "verify_model": "", "interpret_figures": False, "figure_model": "",
                       "in_flight": 1, "paragraphs_per_worker": 1}
             self.assertIsNotNone(web._adaptation_problem(values))
 
@@ -6374,9 +6559,13 @@ class PaperConcurrencyTests(unittest.TestCase):
         serving.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
+        patcher = mock.patch.object(web, "local_model_names", return_value=("local-model",))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         run = PaperRun(
             source, output, "utf-8", model="lm-studio/local-model",
-            local_server=f"127.0.0.1:{server.server_port}", in_flight=4, prompt_path=prompt,
+            local_servers=[{"server": f"127.0.0.1:{server.server_port}", "provider": "lm-studio"}],
+            in_flight=4, prompt_path=prompt,
         )
         worker = threading.Thread(target=run.pump)
         worker.start()
@@ -6931,12 +7120,14 @@ class GroundingTests(unittest.TestCase):
                 return f"<NARRATION>{narration}</NARRATION><SUMMARY>S.</SUMMARY>"
 
         run = StubPaperRun(
-            source, root / "out.txt", "utf-8", "lm-studio/writer", in_flight=1, paragraphs_per_worker=1,
+            source, root / "out.txt", "utf-8", "lm-studio/writer",
+            [{"server": "127.0.0.1:9", "provider": "lm-studio"}], in_flight=1, paragraphs_per_worker=1,
             prompt_path=prompt, scratch_path=root / "stage",
             interpret_figures=True, figure_model="openai-codex/figure-reader",
         )
         run.publish = lambda event, data: None
-        run.pump()
+        with mock.patch.object(web, "local_model_names", return_value=("writer",)):
+            run.pump()
         self.assertEqual(run.code, 0)
         figure = [(model, text) for stem, model, text in calls if "Figure 3:" in text]
         prose = [model for stem, model, text in calls if "Figure 3:" not in text]
@@ -7167,6 +7358,11 @@ class FakeChatModel(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
+def local_servers_at(server):
+    """A browser's added local servers: one, the fake model server."""
+    return [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio", "vision": False}]
+
+
 class ChatTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -7280,7 +7476,7 @@ class ChatTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         chats = web.ChatRegistry()
         turn = web.ChatTurn(self.storage, book, "Where are dams?", "lm-studio/fake",
-                            f"http://127.0.0.1:{server.server_port}")
+                            local_servers_at(server))
         self.assertTrue(chats.start(turn))
         events, index = [], 0
         while not (events and events[-1]["type"] == "done"):
@@ -7361,7 +7557,7 @@ class ChatTests(unittest.TestCase):
             mock.patch.object(web, "HILDE_HOME", home),
         )
         web._write_private_json(web.gemini_key_path(), {"api_key": "AIza-good"})
-        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "gemini/gemini-test", ""))
+        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "gemini/gemini-test", []))
 
         first, second = requests
         self.assertIn("¶2 [body] Dams. Tags: tag.", first["systemInstruction"]["parts"][0]["text"])
@@ -7436,7 +7632,7 @@ class ChatTests(unittest.TestCase):
             mock.patch.object(web, "HILDE_HOME", home),
         )
         web._write_private_json(web.openai_api_key_path(), {"api_key": "sk-good"})
-        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "openai/gpt-test", ""))
+        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "openai/gpt-test", []))
 
         first, second = requests
         self.assertEqual((first["model"], first["store"], first["stream"]), ("gpt-test", False, True))
@@ -7458,7 +7654,7 @@ class ChatTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         turn = web.ChatTurn(self.storage, book, 'What does it mean by "trapped"?', "lm-studio/fake",
-                            f"http://127.0.0.1:{server.server_port}", (2, 3))
+                            local_servers_at(server), (2, 3))
         self.assertTrue(web.ChatRegistry().start(turn))
         index = 0
         while not turn.events_from(index, 10)[1]:
@@ -7475,6 +7671,37 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(
             [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]],
             ['What does it mean by "trapped"?', "", "Read ¶2–3", "Dams hold coarse sediment back."],
+        )
+
+    def test_a_local_model_is_asked_on_the_server_that_offers_it(self):
+        book, _ = self.book(chat_narration("Storms.", "Dams."))
+
+        class OtherModel(FakeChatModel):
+            requests, replies = [], []
+
+            def do_GET(self):
+                self.answer(200, {"data": [{"id": "other", "max_model_len": 100_000}]})
+
+        FakeChatModel.requests = []
+        FakeChatModel.replies = [[({"content": "Dams are in ¶2."}, "stop")]]
+        servers = []
+        for handler in (OtherModel, FakeChatModel):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            servers += local_servers_at(server)
+        # The first server added offers another model; the second offers this one.
+        turn = web.ChatTurn(self.storage, book, "Where are dams?", "lm-studio/fake", servers)
+        self.assertTrue(web.ChatRegistry().start(turn))
+        index = 0
+        while not turn.events_from(index, 10)[1]:
+            index = len(turn.events)
+        self.assertEqual([request["model"] for request in FakeChatModel.requests], ["fake"])
+        self.assertEqual(OtherModel.requests, [])
+        self.assertEqual(
+            web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"][-1]["text"],
+            "Dams are in ¶2.",
         )
 
     def long_book(self, count=3000):
@@ -7497,7 +7724,7 @@ class ChatTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        turn = web.ChatTurn(self.storage, book, question, "lm-studio/fake", f"http://127.0.0.1:{server.server_port}")
+        turn = web.ChatTurn(self.storage, book, question, "lm-studio/fake", local_servers_at(server))
         self.assertTrue(web.ChatRegistry().start(turn))
         index = 0
         while not turn.events_from(index, 10)[1]:

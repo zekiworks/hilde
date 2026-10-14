@@ -243,6 +243,8 @@ MODEL_STREAM_TIMEOUT = 30 * 60
 LOCAL_SERVER_TIMEOUT = 5
 PAPER_DOWNLOAD_TIMEOUT = 60
 LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
+# Local model servers one browser may add under Add local.
+LOCAL_SERVERS_MAX = 8
 # Local servers otherwise sample at the model's default, often 1.0, and the
 # same paper then reads differently on every run. Adapting the Attention paper
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
@@ -5386,19 +5388,73 @@ def local_model_names(local_server, provider):
     raise RuntimeError("Choose the local server's type under Add local.")
 
 
-def paper_model_catalog(local_server="", local_provider="", refresh=False):
-    """List the local server's models, then those of this server's providers."""
-    local_server = normalize_local_server(local_server)
-    local_models, cloud_models = [], []
-    openai_error = anthropic_error = openai_api_error = gemini_error = local_error = ""
-    if local_server:
+def normalize_local_servers(entries):
+    """The local servers a browser added: at most LOCAL_SERVERS_MAX
+    {"server", "provider", "vision"}, one per server, in the order added.
+    Invalid entries are dropped."""
+    servers = []
+    for entry in entries if isinstance(entries, list) else ():
+        if not isinstance(entry, dict) or entry.get("provider") not in LOCAL_MODEL_PROVIDERS:
+            continue
         try:
-            local_models = [
-                {"provider": local_provider, "selector": f"{local_provider}/{name}"}
-                for name in local_model_names(local_server, local_provider)
-            ]
+            server = normalize_local_server(stored_text(entry, "server"))
+        except ValueError:
+            continue
+        if not server or any(added["server"] == server for added in servers):
+            continue
+        servers.append({
+            "server": server, "provider": entry["provider"], "vision": entry.get("vision") is True,
+        })
+        if len(servers) == LOCAL_SERVERS_MAX:
+            break
+    return servers
+
+
+def local_server_label(server):
+    """A local server as the user typed it: host:port, no http://."""
+    return server.removeprefix("http://")
+
+
+def local_route(selector, local_servers):
+    """The added local server a local selector's requests go to: the first of
+    its provider that offers the model, as {"server", "provider", "vision"}."""
+    provider, _, model = selector.partition("/")
+    for entry in local_servers:
+        if entry["provider"] != provider:
+            continue
+        try:
+            if model in local_model_names(entry["server"], provider):
+                return dict(entry)
+        except RuntimeError:
+            continue
+    raise RuntimeError(f"No local server you added offers {model}.")
+
+
+def paper_model_catalog(local_servers=(), refresh=False):
+    """List the added local servers' models, server by server, then those of
+    this server's providers."""
+    local_models, cloud_models, local_errors = [], [], []
+    for entry in local_servers:
+        label = local_server_label(entry["server"])
+        try:
+            names = local_model_names(entry["server"], entry["provider"])
         except RuntimeError as exc:
-            local_error = str(exc)
+            local_errors.append(f"{label}: {exc}")
+            continue
+        # A model two servers offer runs on the first (local_route()).
+        listed = {model["selector"] for model in local_models}
+        local_models += [
+            {
+                "provider": entry["provider"],
+                "selector": f"{entry['provider']}/{name}",
+                "server": entry["server"],
+                "label": f"{name} · {label}",
+            }
+            for name in names
+            if f"{entry['provider']}/{name}" not in listed
+        ]
+    local_error = "; ".join(local_errors)
+    openai_error = anthropic_error = openai_api_error = gemini_error = ""
     openai_connected = read_openai_credentials() is not None
     if openai_connected:
         try:
@@ -5448,18 +5504,16 @@ def paper_model_catalog(local_server="", local_provider="", refresh=False):
             ]
         except RuntimeError as exc:
             gemini_error = str(exc)
-    # Without a chosen model a job uses the local server's first model when
-    # this browser added one, and nothing while it does not answer: a
-    # document goes to a cloud provider only when chosen, or when no local
-    # server was added. Then OpenAI's first model once signed in comes first,
-    # then Claude Code's, then those of the API keys, billed per request:
+    # Without a chosen model a job uses the first model of the first added
+    # local server that answers, and nothing while none does: a document
+    # goes to a cloud provider only when chosen, or when no local server was
+    # added. Then OpenAI's first model once signed in comes first, then
+    # Claude Code's, then those of the API keys, billed per request:
     # Anthropic's, OpenAI's, then Gemini's.
-    defaults = local_models if local_server else cloud_models
+    defaults = local_models if local_servers else cloud_models
     return {
         "models": local_models + cloud_models,
         "default_model": defaults[0]["selector"] if defaults else "",
-        "local_server": local_server,
-        "local_provider": local_provider,
         "local_error": local_error,
         "openai_error": openai_error,
         "openai_connected": openai_connected,
@@ -7831,24 +7885,34 @@ def _document_problem(values):
     return None
 
 
+def local_model_problem(selector, local_servers):
+    """What stops a local selector: no added server of its type to ask."""
+    provider = selector.partition("/")[0]
+    if provider in LOCAL_MODEL_PROVIDERS and not any(
+        entry["provider"] == provider for entry in local_servers
+    ):
+        return "Add a local server of this model's type under Add local."
+    return None
+
+
 def _adaptation_problem(values):
     if not values["adapt"]:
         return None
-    try:
-        normalize_local_server(values["local_server"])
-    except ValueError as exc:
-        return str(exc)
-    # A local model's requests go to the saved server, which must be its type.
-    provider = values["model"].partition("/")[0]
-    if (
-        values["local_server"]
-        and provider in LOCAL_MODEL_PROVIDERS
-        and provider != values["local_provider"]
+    for entry in values["local_servers"]:
+        try:
+            normalize_local_server(entry["server"])
+        except ValueError as exc:
+            return str(exc)
+    # Each local model's requests go to an added server of its type: the
+    # text model's, the checking model's, and the figure model's.
+    for key, used in (
+        ("model", True),
+        ("verify_model", values["verify"]),
+        ("figure_model", values["interpret_figures"]),
     ):
-        return (
-            "The adaptation model doesn't match your local server's type. "
-            "Choose one of its models under Adapt the text for listening."
-        )
+        problem = local_model_problem(values[key], values["local_servers"]) if used else None
+        if problem is not None:
+            return problem
     checks = (
         (
             "in_flight",
@@ -7882,7 +7946,7 @@ def _adaptation_problem(values):
             and read_openai_api_key() is None
             and read_gemini_key() is None
             and not claude_code_status()[0]
-            and not values["local_server"]
+            and not values["local_servers"]
         ):
             return (
                 "Text adaptation needs a model: under Adapt the text for listening, "
@@ -7911,8 +7975,6 @@ def _adaptation_problem(values):
     elif provider not in LOCAL_MODEL_PROVIDERS:
         return ("This adaptation model is no longer available; choose one under Adapt the "
                 "text for listening.")
-    elif not values["local_server"]:
-        return "Add the local model server for this model under Adapt the text for listening."
     return None
 
 
@@ -8078,7 +8140,14 @@ def normalize(state):
     step = audiobook.get("step")
     if step not in ("book", "voice", "create"):
         step = "book"
-    local_provider = stored_text(audiobook, "local_provider")
+    local_servers = audiobook.get("local_servers")
+    if not isinstance(local_servers, list):
+        # A browser from before the list kept one server; it becomes the first.
+        local_servers = [{
+            "server": audiobook.get("local_server"),
+            "provider": audiobook.get("local_provider"),
+            "vision": audiobook.get("local_vision"),
+        }]
     return {
         "schema": STATE_SCHEMA_VERSION,
         "tab": tab,
@@ -8104,12 +8173,9 @@ def normalize(state):
             "download_name": stored_text(audiobook, "download_name"),
             "adapt": audiobook.get("adapt") is not False,
             "model": stored_text(audiobook, "model"),
-            "local_server": stored_text(audiobook, "local_server"),
-            "local_provider": (
-                local_provider if local_provider in LOCAL_MODEL_PROVIDERS else ""
-            ),
-            # Set in Add local: send figures to the local model as images.
-            "local_vision": audiobook.get("local_vision") is True,
+            # Added in Add local: each server's address, type, and whether
+            # its models see images, so figures go to them as images.
+            "local_servers": normalize_local_servers(local_servers),
             # Error correction of descriptions: off unless ticked, since a
             # checker of the writer's own model fixed none of the review's
             # wrong descriptions (R26); its checking model, the text model when empty.
@@ -8195,9 +8261,7 @@ def values_of(state, tts_models, storage):
         "download_name": audiobook["download_name"].strip(),
         "adapt": audiobook["adapt"],
         "model": audiobook["model"].strip(),
-        "local_server": audiobook["local_server"].strip(),
-        "local_provider": audiobook["local_provider"],
-        "local_vision": audiobook["local_vision"],
+        "local_servers": audiobook["local_servers"],
         "verify": audiobook["verify"],
         "verify_model": audiobook["verify_model"].strip(),
         "interpret_figures": audiobook["interpret_figures"],
@@ -9140,7 +9204,7 @@ def _chat_gemini_contents(entries):
     return contents
 
 
-def chat_model_reply(selector, local_server, system, entries, tools, on_text, open_stream, pause,
+def chat_model_reply(selector, local_servers, system, entries, tools, on_text, open_stream, pause,
                      max_tokens=CHAT_MAX_OUTPUT_TOKENS):
     """Ask the chosen model for its next message, of at most `max_tokens`.
     Return its text, its tool calls ({"id", "name", "arguments"}), and any
@@ -9150,9 +9214,8 @@ def chat_model_reply(selector, local_server, system, entries, tools, on_text, op
     if not model:
         raise RuntimeError("Choose a model for Chat.")
     if provider in LOCAL_MODEL_PROVIDERS:
-        if not local_server:
-            raise RuntimeError("Add your local server under Add local first.")
-        return (*_chat_local(local_server, model, system, entries, tools, on_text, open_stream, max_tokens), {})
+        server = local_route(selector, local_servers)["server"]
+        return (*_chat_local(server, model, system, entries, tools, on_text, open_stream, max_tokens), {})
     calls, parts = [], []
 
     def read(stream_reader):
@@ -9223,12 +9286,14 @@ class ChatTurn:
     published as events while they happen, until the model answers without
     a tool, CHAT_MAX_TOOL_CALLS is reached, or the listener stops it."""
 
-    def __init__(self, storage, book, text, selector, local_server, context=None, search_server=""):
+    def __init__(self, storage, book, text, selector, local_servers, context=None, search_server=""):
         self.storage = storage
         self.book = book
         self.text = text
         self.selector = selector
-        self.local_server = local_server
+        # The browser's added local servers; a local model runs on the first
+        # that offers it (local_route()).
+        self.local_servers = local_servers
         # The paragraphs the listener was at when asking: (start, end) or None.
         self.context = context
         # A SearXNG origin enables the web tools; empty leaves them out.
@@ -9324,14 +9389,20 @@ class ChatTurn:
             path, record, passages, entries = self.path, self.record, self.passages, self.entries
             web = bool(self.search_server)
             all_tools = CHAT_TOOLS + CHAT_WEB_TOOLS if web else CHAT_TOOLS
-            window = chat_context_window(self.selector, self.local_server)
+            # The server a local model runs on reports its window and counts tokens.
+            server = (
+                local_route(self.selector, self.local_servers)["server"]
+                if self.selector.partition("/")[0] in LOCAL_MODEL_PROVIDERS
+                else ""
+            )
+            window = chat_context_window(self.selector, server)
             budget = max(1_000, window - min(CHAT_MAX_OUTPUT_TOKENS, window // 4))
             # The most detailed outline whose prompt and tools take at most
             # CHAT_OUTLINE_SHARE of the window.
             details = list(CHAT_OUTLINES)
             system = chat_system_prompt(record, passages, web, details[0])
             while len(details) > 1 and chat_input_tokens(
-                self.selector, self.local_server, system, [], all_tools
+                self.selector, server, system, [], all_tools
             ) > CHAT_OUTLINE_SHARE * window:
                 details.pop(0)
                 system = chat_system_prompt(record, passages, web, details[0])
@@ -9344,7 +9415,7 @@ class ChatTurn:
                 if trimmed > trimmed_told:
                     trimmed_told = trimmed
                     self.publish({"type": "trimmed", "count": trimmed})
-                counted = chat_input_tokens(self.selector, self.local_server, system, context, tools)
+                counted = chat_input_tokens(self.selector, server, system, context, tools)
                 max_tokens = min(CHAT_MAX_OUTPUT_TOKENS, window - counted - CHAT_TOKEN_MARGIN)
                 if max_tokens < CHAT_MIN_OUTPUT_TOKENS:
                     if len(details) > 1:
@@ -9355,7 +9426,7 @@ class ChatTurn:
                 self.partial = ""
                 try:
                     text, calls, kept = chat_model_reply(
-                        self.selector, self.local_server, system, context, tools,
+                        self.selector, self.local_servers, system, context, tools,
                         self.on_text, self.model_stream, self.stop_requested.wait, max_tokens,
                     )
                 except RuntimeError as exc:
@@ -10543,7 +10614,7 @@ class PaperRun(Run):
         output_path,
         encoding,
         model="",
-        local_server="",
+        local_servers=(),
         in_flight=PAPER_DEFAULT_IN_FLIGHT,
         paragraphs_per_worker=PAPER_DEFAULT_PARAGRAPHS_PER_WORKER,
         summary_context_chars=None,
@@ -10551,7 +10622,6 @@ class PaperRun(Run):
         on_success=None,
         scratch_path=None,
         adapt=True,
-        local_vision=False,
         descriptions_only=False,
         verify=False,
         verify_model="",
@@ -10567,7 +10637,11 @@ class PaperRun(Run):
         self.output_path = Path(output_path)
         self.encoding = encoding
         self.model = model
-        self.local_server = normalize_local_server(local_server)
+        # The browser's added local servers; each local model the run uses is
+        # routed to the first that offers it, once (route_of()).
+        self.local_servers = normalize_local_servers(list(local_servers))
+        self.local_routes = {}
+        self.route_lock = threading.Lock()
         self.in_flight = int(in_flight)
         self.paragraphs_per_worker = int(paragraphs_per_worker)
         self.summary_context_chars = (
@@ -10582,8 +10656,6 @@ class PaperRun(Run):
         self.stop_requested = threading.Event()
         self.scratch_path = Path(scratch_path) if scratch_path is not None else None
         self.adapt = bool(adapt)
-        # Whether the local server's model sees images, as the user says.
-        self.local_vision = bool(local_vision)
         # QA's descriptions-only runs (qa/describe.py): only figure, table, and
         # equation batches go to the model; prose keeps the author's text.
         self.descriptions_only = bool(descriptions_only)
@@ -10906,9 +10978,9 @@ class PaperRun(Run):
             )
         if provider == CLAUDE_CODE_MODEL_PROVIDER:
             return self.claude_code_response(name, system_prompt, text, attachments)
-        if provider in LOCAL_MODEL_PROVIDERS and self.local_server:
+        if provider in LOCAL_MODEL_PROVIDERS:
             return local_model_response(
-                self.local_server, name, system_prompt, text, attachments,
+                self.route_of(model)["server"], name, system_prompt, text, attachments,
                 self.model_stream,
             )
         raise RuntimeError(
@@ -10930,7 +11002,11 @@ class PaperRun(Run):
             "attachments": [path.relative_to(scratch).as_posix() for path in attachments],
             "model": model or self.model,
             "temperature": LOCAL_MODEL_TEMPERATURE if (model or self.model).partition("/")[0] in LOCAL_MODEL_PROVIDERS else None,
-            "local_vision": self.local_vision,
+            "local_vision": (
+                self.route_of(model or self.model)["vision"]
+                if (model or self.model).partition("/")[0] in LOCAL_MODEL_PROVIDERS
+                else None
+            ),
             "prompt_sha256": hashlib.sha256(system_prompt.encode("utf-8")).hexdigest(),
             "git_commit": git_commit(),
             "response": response,
@@ -11152,10 +11228,38 @@ class PaperRun(Run):
         self.record_block(scratch, path, self.figure_kind_prompt, attachments, response)
         return is_chart(response)
 
+    def local_models(self):
+        """The local models this run asks, each once: the text model, the
+        figure model when figures are interpreted, and the checking model
+        when descriptions are checked."""
+        if not self.adapt:
+            return ()
+        used = [self.model]
+        if self.interpret_figures:
+            used.append(self.figure_model or self.model)
+        if self.verify:
+            used.append(self.verify_model or self.model)
+        return tuple(dict.fromkeys(
+            model for model in used if model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
+        ))
+
+    def route_of(self, model):
+        """The added local server a local model's requests go to
+        ({"server", "provider", "vision"}), resolved once a run."""
+        with self.route_lock:
+            if model not in self.local_routes:
+                self.local_routes[model] = local_route(model, self.local_servers)
+            return self.local_routes[model]
+
+    def local_vision(self):
+        """Whether each local model used got figures as images, for book.json;
+        None when the run used no local model."""
+        return {model: self.route_of(model)["vision"] for model in self.local_models()} or None
+
     def sees_images(self, model):
         """Whether a model gets figures as images: a cloud model always, a
-        local one when the user says it sees them."""
-        return model.partition("/")[0] not in LOCAL_MODEL_PROVIDERS or self.local_vision
+        local one when the user says its server's models see them."""
+        return model.partition("/")[0] not in LOCAL_MODEL_PROVIDERS or self.route_of(model)["vision"]
 
     def check_description(self, scratch, stem, request, images, narration, ask, label):
         """Check a description against its source with the checking model and,
@@ -11549,6 +11653,12 @@ class PaperRun(Run):
 
     def prepare_document(self, scratch):
         scratch.mkdir(mode=0o750, parents=True, exist_ok=True)
+        # Each local model goes to its server for the whole run, found now:
+        # a model no added server offers stops the job before any work.
+        local = {}
+        for model in self.local_models():
+            route = self.route_of(model)
+            local[model] = {"server": route["server"], "vision": route["vision"]}
         started = time.monotonic()
         input_path = (
             self.download_source(scratch)
@@ -11574,14 +11684,10 @@ class PaperRun(Run):
             "adapt": self.adapt,
             "descriptions_only": self.descriptions_only,
             "model": self.model,
-            "local_server": self.local_server,
-            # A figure described from its image differs from one described
-            # from its labels, so the setting redoes the adaptation.
-            "local_vision": (
-                self.local_vision
-                if self.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
-                else None
-            ),
+            # Where each local model ran and whether it saw figures as images:
+            # a figure described from its image differs from one described
+            # from its labels, so either setting redoes the adaptation.
+            "local": local or None,
             "in_flight": self.in_flight,
             "paragraphs_per_worker": self.paragraphs_per_worker,
             # The whole system prompt, so changed harness instructions redo
@@ -12073,13 +12179,11 @@ class AudiobookRun(Run):
             model = self.values["model"]
             if self.values["adapt"] and not model:
                 # No model chosen: the default this browser's settings give.
-                catalog = paper_model_catalog(
-                    self.values["local_server"], self.values["local_provider"]
-                )
+                catalog = paper_model_catalog(self.values["local_servers"])
                 model = catalog["default_model"]
                 if not model:
                     raise RuntimeError(
-                        "Your local model server did not answer, and a document "
+                        "None of your local model servers answered, and a document "
                         "goes to a cloud provider only when you choose one as its "
                         f"model: {catalog['local_error']}"
                         if catalog["local_error"] else
@@ -12091,12 +12195,11 @@ class AudiobookRun(Run):
                 extraction_dir / "prepared.txt",
                 self.values["encoding"],
                 model,
-                self.values["local_server"],
+                self.values["local_servers"],
                 self.values["in_flight"],
                 self.values["paragraphs_per_worker"],
                 scratch_path=extraction_dir,
                 adapt=self.values["adapt"],
-                local_vision=self.values["local_vision"],
                 verify=self.values["verify"],
                 verify_model=self.values["verify_model"],
                 interpret_figures=self.values["interpret_figures"],
@@ -12136,13 +12239,10 @@ class AudiobookRun(Run):
             "prompt_hash": self.paper_run.prompt_version if adapted else None,
             "schema_version": EXTRACTION_SCHEMA,
             "model": self.paper_run.model if adapted else None,
-            # Whether figures reached a local model as images: without them it
-            # reads only their labels, and its descriptions differ (R24).
-            "local_vision": (
-                self.paper_run.local_vision
-                if adapted and self.paper_run.model.partition("/")[0] in LOCAL_MODEL_PROVIDERS
-                else None
-            ),
+            # Whether figures reached each local model as images, by selector:
+            # without them it reads only their labels, and its descriptions
+            # differ (R24).
+            "local_vision": self.paper_run.local_vision() if adapted else None,
             # Error correction: the checking model and what it did, or null
             # when it was off.
             "verification": (
@@ -12679,15 +12779,19 @@ class Handler(BaseHTTPRequestHandler):
             provider = body.get("provider")
             if provider not in LOCAL_MODEL_PROVIDERS:
                 return self.fail(HTTPStatus.BAD_REQUEST, "Choose the server type.")
+            added = normalize(read_state_cookie(self.headers.get("Cookie")))["audiobook"]["local_servers"]
+            if len(added) >= LOCAL_SERVERS_MAX and all(entry["server"] != local_server for entry in added):
+                return self.fail(
+                    HTTPStatus.BAD_REQUEST,
+                    f"Add at most {LOCAL_SERVERS_MAX} local servers; remove one first.",
+                )
+            # Only the server being added is asked; the page then adds it to
+            # the browser's list and asks for the whole catalog.
             try:
-                catalog = paper_model_catalog(local_server, provider)
+                local_model_names(local_server, provider)
             except RuntimeError as exc:
                 return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
-            if catalog["local_error"]:
-                return self.fail(
-                    HTTPStatus.BAD_GATEWAY, catalog["local_error"]
-                )
-            return self.reply(HTTPStatus.OK, catalog)
+            return self.reply(HTTPStatus.OK, {"server": local_server, "provider": provider})
         if route == "/api/sync":
             state = normalize(body.get("state", {}))
             try:
@@ -13142,12 +13246,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
             context = (start, end)
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
-        try:
-            local_server = normalize_local_server(state["audiobook"]["local_server"])
-        except ValueError:
-            local_server = ""
         turn = ChatTurn(
-            self.server.storage, book, text, model, local_server, context, self.server.search_server
+            self.server.storage, book, text, model, state["audiobook"]["local_servers"], context,
+            self.server.search_server,
         )
         try:
             started = self.server.chats.start(turn)
@@ -13210,11 +13311,7 @@ class Handler(BaseHTTPRequestHandler):
         """Answer with the adaptation models this browser can choose from."""
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         try:
-            catalog = paper_model_catalog(
-                state["audiobook"]["local_server"],
-                state["audiobook"]["local_provider"],
-                refresh,
-            )
+            catalog = paper_model_catalog(state["audiobook"]["local_servers"], refresh)
         except (RuntimeError, ValueError) as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, catalog)
@@ -13985,6 +14082,10 @@ dialog h2 { margin:0 0 12px; font-size:16px; }
 dialog h3 { margin:0 0 6px; font-size:15px; }
 .provider + .provider { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
 #paper-providers-dialog { width:min(620px,92vw); }
+/* Add local: one line per added server. */
+.local-server { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 0;
+                border-bottom:1px solid var(--line); }
+.local-server .grow { flex:1; }
 /* One click selects the whole sign-in code. */
 #paper-openai-code { user-select:all; -webkit-user-select:all; font-size:1.1em; }
 @media (max-width:640px) {
@@ -14247,8 +14348,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <select id="paper-model"><option value="">Loading models…</option></select>
               <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
               <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
-              <input id="paper-local-server" type="hidden">
-              <input id="paper-local-provider" type="hidden">
               <span id="paper-model-status" class="note"></span>
             </div>
           </div>
@@ -14618,30 +14717,38 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 </dialog>
 
 <dialog id="paper-local-dialog">
-  <h2>Local model server</h2>
-  <div class="row"><label for="paper-local-type">Server type:</label><div class="line">
-    <select id="paper-local-type">
-      <option value="" disabled>Choose the server type</option>
-      <option value="lm-studio">OpenAI-compatible (SGLang, vLLM, LM Studio)</option>
-      <option value="ollama">Ollama</option>
-    </select>
-  </div></div>
-  <div class="row"><label for="paper-local-url">Server:</label><div class="line">
-    <input id="paper-local-url" type="text" placeholder="host:port">
-  </div></div>
-  <div class="row"><span></span><div class="line">
-    <div class="field">
-      <label class="check"><input id="paper-local-vision" type="checkbox"> This model sees images</label>
-      <span class="note">Figures and equations go to it as images. Leave this off for a
-        text-only model: it reads the text extracted from each figure instead.</span>
+  <h2>Local model servers</h2>
+  <p class="note">The models of every server added here appear in each model list. A
+    model two servers offer runs on the one added first.</p>
+  <div id="paper-local-list"></div>
+  <section class="provider">
+    <h3>Add a server</h3>
+    <div class="row"><label for="paper-local-type">Server type:</label><div class="line">
+      <select id="paper-local-type">
+        <option value="" disabled>Choose the server type</option>
+        <option value="lm-studio">OpenAI-compatible (SGLang, vLLM, LM Studio)</option>
+        <option value="ollama">Ollama</option>
+      </select>
+    </div></div>
+    <div class="row"><label for="paper-local-url">Server:</label><div class="line">
+      <input id="paper-local-url" type="text" placeholder="host:port">
+    </div></div>
+    <div class="row"><span></span><div class="line">
+      <div class="field">
+        <label class="check"><input id="paper-local-vision" type="checkbox"> This model sees images</label>
+        <span class="note">Figures and equations go to its models as images. Leave this off
+          for a text-only model: it reads the text extracted from each figure instead.</span>
+      </div>
+    </div></div>
+    <div id="paper-local-status" class="note"></div>
+    <div class="footer">
+      <span class="grow"></span>
+      <button id="paper-local-save" class="primary" onclick="savePaperLocal()">Check and add</button>
     </div>
-  </div></div>
-  <div id="paper-local-status" class="note"></div>
+  </section>
   <div class="footer">
-    <button id="paper-local-remove" onclick="removePaperLocal()">Remove</button>
     <span class="grow"></span>
-    <button onclick="closePaperLocal()">Cancel</button>
-    <button id="paper-local-save" class="primary" onclick="savePaperLocal()">Use server</button>
+    <button onclick="closePaperLocal()">Close</button>
   </div>
 </dialog>
 
@@ -14738,8 +14845,6 @@ const FIELDS = [
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
   ["paper-model", "audiobook.model"], ["paper-verify-model", "audiobook.verify_model"],
   ["paper-figure-model", "audiobook.figure_model"],
-  ["paper-local-server", "audiobook.local_server"],
-  ["paper-local-provider", "audiobook.local_provider"],
   ["paper-in-flight", "audiobook.in_flight"],
   ["paper-paragraphs-per-worker", "audiobook.paragraphs_per_worker"],
   ["chunk-max-chars", "audiobook.chunk_max_chars"], ["batch-size", "audiobook.batch_size"],
@@ -17129,8 +17234,11 @@ async function sendAirdrop() {
   } catch (error) { setStatus(error.message, true); }
 }
 
+// A local server as the user typed it: host:port, no http://.
+function localServerLabel(server) { return server.replace(/^http:\/\//, ""); }
 // One model picker: its first choice, then the catalog's models by provider,
-// and a saved choice the catalog no longer lists, marked unavailable.
+// a local server's under its own group, and a saved choice the catalog no
+// longer lists, marked unavailable.
 function fillModelSelect(select, selected, first, catalog) {
   select.replaceChildren();
   const fallback = document.createElement("option");
@@ -17138,14 +17246,16 @@ function fillModelSelect(select, selected, first, catalog) {
   select.append(fallback);
   const groups = new Map();
   for (const model of catalog.models || []) {
-    if (!groups.has(model.provider)) {
+    const name = model.server
+      ? `${model.provider} · ${localServerLabel(model.server)}` : model.provider;
+    if (!groups.has(name)) {
       const group = document.createElement("optgroup");
-      group.label = model.provider;
-      groups.set(model.provider, group); select.append(group);
+      group.label = name;
+      groups.set(name, group); select.append(group);
     }
     const option = document.createElement("option");
     option.value = model.selector; option.textContent = model.label || model.selector;
-    groups.get(model.provider).append(option);
+    groups.get(name).append(option);
   }
   if (selected && ![...select.options].some((option) => option.value === selected)) {
     const unavailable = document.createElement("option");
@@ -17158,7 +17268,7 @@ function fillModelSelect(select, selected, first, catalog) {
 function applyPaperCatalog(catalog) {
   fillModelSelect($("paper-model"), state.audiobook.model,
     catalog.default_model ? `Default — ${catalog.default_model}`
-      : catalog.local_error ? "Default — your local server, once it answers"
+      : catalog.local_error ? "Default — your local servers, once one answers"
       : "No model yet: connect a provider or add a local server",
     catalog);
   fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
@@ -17171,7 +17281,8 @@ function applyPaperCatalog(catalog) {
     renderPaperKey(name, catalog[`${provider.field}_error`]);
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
-  $("paper-local").textContent = state.audiobook.local_server ? "Local" : "Add local";
+  const added = state.audiobook.local_servers.length;
+  $("paper-local").textContent = added ? `Local (${added})` : "Add local";
   const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error
     || catalog.openai_api_error || catalog.gemini_error;
   $("paper-model-status").textContent = problem ||
@@ -17283,13 +17394,48 @@ async function cancelPaperOpenAI() {
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
 
+// Add local: the added servers, each with its type, whether its models see
+// images (saved at once), and Remove; below them the form that adds one.
+function renderPaperLocal() {
+  const servers = state.audiobook.local_servers;
+  $("paper-local-list").replaceChildren(...servers.map((entry) => {
+    const row = document.createElement("div");
+    row.className = "local-server";
+    const name = document.createElement("strong");
+    name.textContent = localServerLabel(entry.server);
+    const type = document.createElement("span");
+    type.className = "note";
+    type.textContent = entry.provider === "ollama" ? "Ollama" : "OpenAI-compatible";
+    const grow = document.createElement("span");
+    grow.className = "grow";
+    const vision = document.createElement("label");
+    vision.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = entry.vision;
+    // A sync replaces the state, so the server is looked up again.
+    box.addEventListener("change", async () => {
+      const saved = state.audiobook.local_servers.find((added) => added.server === entry.server);
+      if (saved) { saved.vision = box.checked; await sync(); }
+    });
+    vision.append(box, " This model sees images");
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.textContent = "Remove";
+    remove.addEventListener("click", () => removePaperLocal(entry.server));
+    row.append(name, type, grow, vision, remove);
+    return row;
+  }));
+  if (!servers.length) {
+    const empty = document.createElement("p");
+    empty.className = "note"; empty.textContent = "No local server added yet.";
+    $("paper-local-list").append(empty);
+  }
+}
 function openPaperLocal() {
-  $("paper-local-type").value = state.audiobook.local_provider;
-  $("paper-local-url").value = state.audiobook.local_server;
-  $("paper-local-vision").checked = !!state.audiobook.local_vision;
-  $("paper-local-status").textContent = state.audiobook.local_server
-    ? `Current server: ${state.audiobook.local_server}` : "";
-  $("paper-local-remove").disabled = !state.audiobook.local_server;
+  $("paper-local-type").value = "";
+  $("paper-local-url").value = "";
+  $("paper-local-vision").checked = false;
+  $("paper-local-status").textContent = "";
+  renderPaperLocal();
   $("paper-local-dialog").showModal();
 }
 function closePaperLocal() { $("paper-local-dialog").close(); }
@@ -17297,27 +17443,26 @@ async function savePaperLocal() {
   $("paper-local-save").disabled = true;
   $("paper-local-status").textContent = "Checking local models…";
   try {
-    const catalog = await jsonRequest("/api/paper/local/check", {
+    const added = await jsonRequest("/api/paper/local/check", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({
         server:$("paper-local-url").value, provider:$("paper-local-type").value,
       }),
     });
-    state.audiobook.local_server = catalog.local_server;
-    state.audiobook.local_provider = catalog.local_provider;
-    state.audiobook.local_vision = $("paper-local-vision").checked;
-    $("paper-local-server").value = catalog.local_server;
-    $("paper-local-provider").value = catalog.local_provider;
-    await sync(); applyPaperCatalog(catalog); closePaperLocal();
+    const entry = { server:added.server, provider:added.provider, vision:$("paper-local-vision").checked };
+    const servers = state.audiobook.local_servers;
+    const index = servers.findIndex((saved) => saved.server === entry.server);
+    if (index >= 0) servers[index] = entry; else servers.push(entry);
+    $("paper-local-url").value = ""; $("paper-local-vision").checked = false;
+    $("paper-local-status").textContent = `Added ${localServerLabel(entry.server)}.`;
+    await sync(); renderPaperLocal(); await refreshPaperModels();
   } catch (error) {
     $("paper-local-status").textContent = error.message;
   } finally { $("paper-local-save").disabled = false; }
 }
-async function removePaperLocal() {
-  state.audiobook.local_server = ""; $("paper-local-server").value = "";
-  state.audiobook.local_provider = ""; $("paper-local-provider").value = "";
-  state.audiobook.local_vision = false;
-  await sync(); closePaperLocal(); await refreshPaperModels();
+async function removePaperLocal(server) {
+  state.audiobook.local_servers = state.audiobook.local_servers.filter((saved) => saved.server !== server);
+  await sync(); renderPaperLocal(); await refreshPaperModels();
 }
 
 // Workers on other machines: only a browser on the server's machine sees

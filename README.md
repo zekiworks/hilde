@@ -152,9 +152,10 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   on Context Language Models, Gemma 4 without images took a bar chart's token
   shares for accuracy, reversed a trend, read a sum as a product, and put a
   wrong value on a panel in every one of three runs, and got each right in
-  every run with images. OpenAI and Claude models, and a local model marked
-  as seeing images, receive figures as images; `book.json` records which a
-  local model's book was made with (`local_vision`).
+  every run with images. OpenAI and Claude models, and a local model whose
+  server is marked as seeing images, receive figures as images; `book.json`
+  records, for each local model a book was made with, whether it did
+  (`local_vision`).
 - **Cloud providers receive your document.** A document goes to OpenAI,
   Anthropic (directly, or through Claude Code), or Google when you choose one of their models, or, with **Model** left on
   Default, when you have added no local server. The text and figures of each

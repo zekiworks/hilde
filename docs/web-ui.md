@@ -179,9 +179,11 @@ is a link that scrolls the book to it. When the server has web search (see
 search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it in the chat, from the
-models you connected under **Providers** or **Add local** on **Create**. With
-none, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and
-Google Gemini API keys, and local models can chat; Claude Code models cannot:
+models you connected under **Providers** or the models of every server you
+added under **Add local** on **Create**; a local model answers from the server
+that offers it. With none, the chat asks you to add one first. ChatGPT, the
+Anthropic, OpenAI, and Google Gemini API keys, and local models can chat;
+Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
 conversation** starts over, and **× Close** closes the chat. A question Ask
@@ -351,7 +353,8 @@ select, pin, or name devices.
 
 ## Browser state
 
-Editable form settings are stored in bounded `HttpOnly; SameSite=Strict`
+Editable form settings, the local model servers added under **Add local**
+among them, are stored in bounded `HttpOnly; SameSite=Strict`
 cookies per browser. Model paths, model IDs, speech-server endpoints, worker
 devices/hosts, credentials, storage paths, and output paths remain
 server-owned; only a browser on the server's machine may add or remove the
