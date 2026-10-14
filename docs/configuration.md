@@ -25,6 +25,8 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | --- | --- |
 | `--host` | `127.0.0.1`, this machine only; pass `0.0.0.0` to reach it from other devices. See [Access and security](../README.md#access-and-security). |
 | `--port` | `8800`. |
+| `--https` | Off. Serves over HTTPS with Hilde's own certificate authority, made on first start in `~/.hilde/tls`; see [HTTPS](../README.md#https). A plain `http://` address is sent to the `https://` one. |
+| `--tls-cert`, `--tls-key` | Serve over HTTPS with your own certificate and key (PEM, chain included), such as one for your domain or from Tailscale, instead of Hilde's. |
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
