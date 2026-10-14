@@ -4739,6 +4739,45 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
         self.assertIn('filename="Kept Book-Eir.mp3"', disposition)
         self.assertEqual(refused.exception.code, 400)
 
+    def test_a_books_document_downloads_from_listen_only_when_kept(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        payload = b"%PDF-1.7\nthe paper\n"
+        # A book without its own copy finds its document in Documents by content.
+        document = storage.documents / "renamed copy.pdf"
+        document.write_bytes(payload)
+        book = store_book(storage, title="Kept Book", source_sha256=web.cached_file_version(document), voice="Eir")
+        self.assertIs(web.library_catalog(storage)[0]["has_source"], True)
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.daemon_threads = True
+            server.storage = storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            origin = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urllib.request.urlopen(f"{origin}/api/source?book={book}") as response:
+                    downloaded = response.read()
+                    disposition = response.headers["Content-Disposition"]
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    urllib.request.urlopen(f"{origin}/api/source?book=..%2F{book}")
+                document.unlink()
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(f"{origin}/api/source?book={book}")
+            finally:
+                server.shutdown()
+                thread.join()
+
+        # Under the name it was added with, not the copy's.
+        self.assertEqual(downloaded, payload)
+        self.assertIn('filename="Kept Book.pdf"', disposition)
+        self.assertEqual(refused.exception.code, 400)
+        self.assertEqual(missing.exception.code, 404)
+        self.assertIs(web.library_catalog(storage)[0]["has_source"], False)
+
 
 class VoiceAndLibraryCatalogTests(unittest.TestCase):
     def setUp(self):

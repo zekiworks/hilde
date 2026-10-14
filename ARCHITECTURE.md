@@ -839,6 +839,7 @@ The run log shows below every page but **Listen**. Each page:
   button, nor one ending a text selection), opens the book view: title, narrator, duration,
   source, **Follow along**, **Original** (adapted books), a voice picker (more
   than one ready voice), **Change voice** (books with their own text), **Download MP3**,
+  **Download source** (books whose document is found: `has_source`),
   **Chat with Hilde**, **Recreate with the latest Hilde**, a notice offering
   **Make <voice> again** for each stale voice, the player, and the
   synchronized reader; **All audiobooks** returns to the table, and so does the
@@ -1238,8 +1239,9 @@ Read answers aloud on, the last answer of a finished turn is read.
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), and `has_text`. |
+| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
+| `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, and its Original view's batches. |
 | `GET /api/paper/models` | Adaptation model catalog: the saved local server's models, then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, with the default a job uses when none is chosen, Claude Code's status line, and per-source errors. |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |

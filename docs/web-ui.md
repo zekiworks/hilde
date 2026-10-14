@@ -144,7 +144,10 @@ appear, in any order and case. **Delete** removes an audiobook, every voice of
 it, and its text after you confirm. **Listen**, or a click anywhere on a book's
 row, opens the book's player and
 narration text, whose audio controls stay on screen while the text scrolls,
-and **Download MP3** retrieves the voice being played. **← All audiobooks**, or
+and **Download MP3** retrieves the voice being played. **Download source**
+saves the document the book was made from, under the name it was added with;
+it shows only when that document is still there: the book's own copy, or a
+document with the same content in **Documents**. **← All audiobooks**, or
 the **Listen** tab pressed while a book is open, goes back to the list; from
 another tab, **Listen** brings back the book you had open. A book read by more
 than one voice shows a voice picker. **Change voice** reads the same text in

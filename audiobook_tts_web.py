@@ -2428,6 +2428,8 @@ def library_catalog(storage):
             "modified": max(voice["modified"] for voice in voices),
             "legacy_names": record.get("legacy_names") or [],
             "has_text": (path / "narration.json").is_file() and bool(record.get("narration_sha256")),
+            # Its document can be downloaded from Listen (book_source()).
+            "has_source": book_source(storage, path, record) is not None,
         })
     books.sort(key=lambda book: book["modified"], reverse=True)
     return books
@@ -12079,6 +12081,21 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("container", [""])[0] == "mp4":
                 return self.send_mp3_as_mp4(target)
             return self.send_file(str(target), False)
+        if route == "/api/source":
+            # The book's document, under the name it was added with.
+            book = query.get("book", [""])[0]
+            try:
+                path, record = read_book(self.server.storage, book)
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            except FileNotFoundError:
+                return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+            source = book_source(self.server.storage, path, record)
+            if source is None:
+                return self.fail(HTTPStatus.NOT_FOUND, "This book's document is not kept.")
+            filenames = record.get("source_filenames") or [record.get("title") or book]
+            name = Path(filenames[0]).stem + source.suffix
+            return self.send_file(str(source), True, name)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
 
     def do_POST(self):
@@ -13904,6 +13921,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <button id="reader-change-voice" type="button" class="hidden"
               onclick="openChangeVoice()">Change voice</button>
             <button type="button" onclick="downloadBook()">Download MP3</button>
+            <button id="reader-source" type="button" class="hidden"
+              onclick="downloadSource()">Download source</button>
             <button id="chat-toggle" type="button" aria-controls="chat-pane" aria-expanded="false"
               onclick="toggleChat()">Chat with Hilde</button>
           </div>
@@ -14487,6 +14506,7 @@ function clearReader() {
   $("reader-original-toggle").classList.add("hidden");
   $("reader-voice").classList.add("hidden");
   $("reader-change-voice").classList.add("hidden");
+  $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
   $("change-voice").classList.add("hidden");
 }
@@ -14813,6 +14833,8 @@ async function openAudiobook(id, focus, voiceName) {
     : [];
   $("reader-title").textContent = book ? book.title : id;
   $("reader-meta").textContent = details.filter(Boolean).join(" · ");
+  // Only a book whose document is kept, or is in Documents, offers it.
+  $("reader-source").classList.toggle("hidden", !(book && book.has_source));
   if (focus) $("reader-title").focus();
   const audio = readerPlayer(id, voice);
   $("artifact-player").replaceChildren(audio, askHildeButton());
@@ -14950,6 +14972,10 @@ function downloadBook() {
   if (state.player.book)
     location.href = "/api/download?book=" + encodeURIComponent(state.player.book)
       + "&voice=" + encodeURIComponent(state.player.voice);
+}
+function downloadSource() {
+  if (state.player.book)
+    location.href = "/api/source?book=" + encodeURIComponent(state.player.book);
 }
 
 // Chat with Hilde: the open book's conversation, below its text. One
