@@ -3830,7 +3830,9 @@ class LocalPaperProviderTests(unittest.TestCase):
     def test_an_added_local_server_is_the_default_and_never_gives_way_to_the_cloud(self):
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
-                mock.patch.object(web, "read_anthropic_key", return_value=None):
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None):
             with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
                 catalog = web.paper_model_catalog("127.0.0.1:8010", "lm-studio")
             self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
@@ -3874,13 +3876,14 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIsNone(problem("lm-studio/deepseek-v4.1-flash"))
         # A model no backend of this server serves is refused before the job starts.
         self.assertIsNotNone(problem("mistral/large"))
-        for model in ("", "openai-codex/gpt-a", "anthropic/claude-a"):
+        for model in ("", "openai-codex/gpt-a", "anthropic/claude-a", "openai/gpt-a", "gemini/gemini-a"):
             self.assertIsNotNone(problem(model, local_server=""))
         with mock.patch.object(web, "HILDE_HOME", home):
             web._write_private_json(web.anthropic_key_path(), {"api_key": "sk-ant-key"})
         self.assertIsNone(problem("anthropic/claude-a", local_server=""))
         self.assertIsNone(problem("", local_server=""))
         self.assertIsNotNone(problem("openai-codex/gpt-a", local_server=""))
+        self.assertIsNotNone(problem("openai/gpt-a", local_server=""))
         with mock.patch.object(web, "HILDE_HOME", home):
             web.anthropic_key_path().unlink()
             web.save_openai_credentials({
@@ -3890,6 +3893,21 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIsNone(problem("openai-codex/gpt-a", local_server=""))
         self.assertIsNone(problem("", local_server=""))
         self.assertIsNotNone(problem("anthropic/claude-a", local_server=""))
+        # The OpenAI API key is its own provider, apart from the ChatGPT sign-in.
+        self.assertIsNotNone(problem("openai/gpt-a", local_server=""))
+        with mock.patch.object(web, "HILDE_HOME", home):
+            web.openai_credentials_path().unlink()
+            web._write_private_json(web.openai_api_key_path(), {"api_key": "sk-key"})
+        self.assertIsNone(problem("openai/gpt-a", local_server=""))
+        self.assertIsNone(problem("", local_server=""))
+        self.assertIsNotNone(problem("openai-codex/gpt-a", local_server=""))
+        self.assertIsNotNone(problem("gemini/gemini-a", local_server=""))
+        with mock.patch.object(web, "HILDE_HOME", home):
+            web.openai_api_key_path().unlink()
+            web._write_private_json(web.gemini_key_path(), {"api_key": "AIza-key"})
+        self.assertIsNone(problem("gemini/gemini-a", local_server=""))
+        self.assertIsNone(problem("", local_server=""))
+        self.assertIsNotNone(problem("openai/gpt-a", local_server=""))
         self.assertEqual(
             normalize({"audiobook": {"local_provider": "vllm"}})["audiobook"]["local_provider"], ""
         )
@@ -4498,6 +4516,306 @@ class AnthropicProviderTests(unittest.TestCase):
         base64.b64decode(image["source"]["data"], validate=True)
 
 
+class FakeProviderHandler(BaseHTTPRequestHandler):
+    """A cloud provider's HTTP API: JSON replies and server-sent events."""
+
+    def reply(self, status, payload, headers=()):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def stream(self, events):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for event in events:
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+
+    def body(self):
+        return json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+
+    def log_message(self, format, *args):
+        pass
+
+
+def serve_fake_provider(test, handler):
+    """Start a fake provider for one test; return its origin."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return f"http://127.0.0.1:{server.server_port}"
+
+
+def patch_for_test(test, *patches):
+    for patch in patches:
+        patch.start()
+        test.addCleanup(patch.stop)
+
+
+class OpenAIAPIProviderTests(unittest.TestCase):
+    def test_api_key_is_checked_kept_owner_only_and_used_with_figures(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+
+        class OpenAIHandler(FakeProviderHandler):
+            def authorized(self):
+                if self.headers.get("Authorization") == "Bearer sk-good":
+                    return True
+                self.reply(401, {"error": {
+                    "message": "Incorrect API key provided.", "code": "invalid_api_key",
+                }})
+                return False
+
+            def do_GET(self):
+                if self.path != "/v1/models":
+                    return self.reply(404, {})
+                if self.authorized():
+                    self.reply(200, {"object": "list", "data": [
+                        {"id": name, "object": "model", "created": created}
+                        for name, created in (
+                            ("gpt-old", 100), ("gpt-new", 300), ("o4-mini", 200),
+                            ("chatgpt-4o-latest", 250), ("gpt-4o-audio-preview", 400),
+                            ("gpt-4o-realtime-preview", 401), ("gpt-4o-transcribe", 402),
+                            ("gpt-4o-mini-tts", 403), ("gpt-image-1", 404),
+                            ("gpt-4o-search-preview", 405), ("text-embedding-3-large", 406),
+                            ("omni-moderation-latest", 407), ("gpt-3.5-turbo-instruct", 408),
+                            ("dall-e-3", 409), ("whisper-1", 410),
+                        )
+                    ]})
+                return None
+
+            def do_POST(self):
+                body = self.body()
+                if self.path != "/v1/responses":
+                    return self.reply(404, {})
+                if not self.authorized():
+                    return None
+                requests.append(body)
+                if len(requests) == 1:
+                    return self.reply(429, {"error": {
+                        "message": "Rate limit reached.", "code": "rate_limit_exceeded",
+                    }}, (("retry-after", "0"),))
+                return self.stream((
+                    {"type": "response.created", "response": {"id": "resp"}},
+                    # A reasoning model's summary is never the answer.
+                    {"type": "response.reasoning_summary_text.delta",
+                     "delta": "Draft: <NARRATION>Wrong.</NARRATION><SUMMARY>x</SUMMARY>"},
+                    {"type": "response.output_item.done", "item": {"type": "reasoning", "summary": []}},
+                    {"type": "response.output_text.delta", "delta": "<NARRATION>Figure one is "},
+                    {"type": "response.output_text.delta",
+                     "delta": "described.</NARRATION><SUMMARY>Figure.</SUMMARY>"},
+                    {"type": "response.completed", "response": {"id": "resp"}},
+                ))
+
+        origin = serve_fake_provider(self, OpenAIHandler)
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        home = root / ".hilde"
+        with mock.patch.object(web, "OPENAI_API_URL", f"{origin}/v1"), \
+                mock.patch.object(web, "HILDE_HOME", home), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            with self.assertRaisesRegex(RuntimeError, "OpenAI rejected the API key"):
+                web.connect_openai_api("sk-wrong")
+            self.assertFalse(web.openai_api_key_path().exists())
+            with self.assertRaises(ValueError):
+                web.connect_openai_api("sk with spaces")
+            web.connect_openai_api(" sk-good\n")
+            catalog = web.paper_model_catalog()
+            run = PaperRun(
+                source, stage / "prepared.txt", "utf-8", model="openai/gpt-new",
+                in_flight=1, prompt_path=prompt, scratch_path=stage,
+            )
+            run.pump()
+
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((home / "openai-api.json").stat().st_mode), 0o600)
+        # Text models only, newest first, apart from the ChatGPT sign-in's.
+        self.assertEqual(
+            [model["selector"] for model in catalog["models"]],
+            ["openai/gpt-new", "openai/chatgpt-4o-latest", "openai/o4-mini", "openai/gpt-old"],
+        )
+        self.assertEqual(catalog["default_model"], "openai/gpt-new")
+        self.assertEqual((catalog["openai_api_connected"], catalog["openai_connected"]), (True, False))
+        self.assertEqual(run.code, 0)
+        prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
+        self.assertIn("Figure one is described.", prepared)
+        self.assertNotIn("Wrong.", prepared)
+        # The rate-limited request was sent again unchanged.
+        self.assertEqual(requests[0], requests[1])
+        request = next(
+            body for body in requests
+            if any(part["type"] == "input_image" for part in body["input"][0]["content"])
+            and not str(body["instructions"]).startswith("You sort figures")
+        )
+        self.assertEqual(
+            (request["model"], request["stream"], request["store"]), ("gpt-new", True, False)
+        )
+        self.assertIn("Adapt every paragraph.", request["instructions"])
+        image = next(part for part in request["input"][0]["content"] if part["type"] == "input_image")
+        self.assertTrue(image["image_url"].startswith("data:image/png;base64,"))
+        base64.b64decode(image["image_url"].partition(",")[2], validate=True)
+
+
+class GeminiProviderTests(unittest.TestCase):
+    def test_api_key_is_checked_kept_owner_only_and_used_with_figures(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+        generate = ["generateContent", "countTokens"]
+        pages = {
+            "": ([
+                {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": generate},
+                {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": generate},
+                {"name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": generate},
+            ], "page-2"),
+            "page-2": ([
+                {"name": "models/gemini-3.8-flash-image", "supportedGenerationMethods": generate},
+                {"name": "models/gemini-live-2.5-flash", "supportedGenerationMethods": ["bidiGenerateContent"]},
+                {"name": "models/gemini-2.5-flash-native-audio-latest", "supportedGenerationMethods": generate},
+                {"name": "models/aqa", "supportedGenerationMethods": ["generateAnswer"]},
+                {"name": "models/gemma-3-27b-it", "supportedGenerationMethods": generate},
+                {"name": "models/gemini-10-pro", "supportedGenerationMethods": generate},
+                {"name": "models/imagen-4.0-generate-001", "supportedGenerationMethods": ["predict"]},
+            ], None),
+        }
+
+        class GeminiHandler(FakeProviderHandler):
+            def authorized(self):
+                if self.headers.get("x-goog-api-key") == "AIza-good":
+                    return True
+                # Google answers a wrong key with 400, not 401.
+                self.reply(400, {"error": {
+                    "code": 400, "message": "API key not valid. Please pass a valid API key.",
+                    "status": "INVALID_ARGUMENT",
+                }})
+                return False
+
+            def do_GET(self):
+                parts = urllib.parse.urlsplit(self.path)
+                query = urllib.parse.parse_qs(parts.query)
+                if parts.path != "/v1beta/models" or query.get("pageSize") != ["1000"]:
+                    return self.reply(404, {})
+                if self.authorized():
+                    models, following = pages[query.get("pageToken", [""])[0]]
+                    payload = {"models": models}
+                    if following:
+                        payload["nextPageToken"] = following
+                    self.reply(200, payload)
+                return None
+
+            def do_POST(self):
+                body = self.body()
+                if self.path != "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse":
+                    return self.reply(404, {})
+                if not self.authorized():
+                    return None
+                requests.append(body)
+                if len(requests) == 1:
+                    return self.reply(429, {"error": {
+                        "code": 429, "message": "Resource exhausted.", "status": "RESOURCE_EXHAUSTED",
+                    }}, (("retry-after", "0"),))
+
+                def chunk(parts, **candidate):
+                    return {"candidates": [{"content": {"role": "model", "parts": parts}, **candidate}]}
+
+                return self.stream((
+                    # Thoughts come first when a model shows them, and are never text.
+                    chunk([{"text": "Draft: <NARRATION>Wrong.</NARRATION><SUMMARY>x</SUMMARY>",
+                            "thought": True}]),
+                    chunk([{"text": "<NARRATION>Figure one is "}]),
+                    chunk([{"text": "described.</NARRATION><SUMMARY>Figure.</SUMMARY>",
+                            "thoughtSignature": "c2lnbmF0dXJl"}], finishReason="STOP"),
+                    {"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}},
+                ))
+
+        origin = serve_fake_provider(self, GeminiHandler)
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "extraction"
+        home = root / ".hilde"
+        with mock.patch.object(web, "GEMINI_API_URL", f"{origin}/v1beta"), \
+                mock.patch.object(web, "HILDE_HOME", home), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            with self.assertRaisesRegex(RuntimeError, "API key not valid"):
+                web.connect_gemini("AIza-wrong")
+            self.assertFalse(web.gemini_key_path().exists())
+            web.connect_gemini(" AIza-good\n")
+            catalog = web.paper_model_catalog()
+            run = PaperRun(
+                source, stage / "prepared.txt", "utf-8", model="gemini/gemini-3.8-flash",
+                in_flight=1, prompt_path=prompt, scratch_path=stage,
+            )
+            run.pump()
+
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((home / "gemini.json").stat().st_mode), 0o600)
+        # Text models from every page, newest version first.
+        self.assertEqual(
+            [model["selector"] for model in catalog["models"]],
+            ["gemini/gemini-10-pro", "gemini/gemini-3.8-flash", "gemini/gemini-2.5-pro"],
+        )
+        self.assertEqual(catalog["default_model"], "gemini/gemini-10-pro")
+        self.assertTrue(catalog["gemini_connected"])
+        self.assertEqual(run.code, 0)
+        prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
+        self.assertIn("Figure one is described.", prepared)
+        self.assertNotIn("Wrong.", prepared)
+        # The rate-limited request was sent again unchanged.
+        self.assertEqual(requests[0], requests[1])
+        request = next(
+            body for body in requests
+            if any("inlineData" in part for part in body["contents"][0]["parts"])
+            and not body["systemInstruction"]["parts"][0]["text"].startswith("You sort figures")
+        )
+        self.assertIn("Adapt every paragraph.", request["systemInstruction"]["parts"][0]["text"])
+        # The model's own output limit applies.
+        self.assertNotIn("generationConfig", request)
+        self.assertEqual(request["contents"][0]["role"], "user")
+        image = next(part for part in request["contents"][0]["parts"] if "inlineData" in part)
+        self.assertEqual(image["inlineData"]["mimeType"], "image/png")
+        base64.b64decode(image["inlineData"]["data"], validate=True)
+
+    def test_a_stopped_or_cut_off_answer_is_reported(self):
+        def read(*events):
+            return web._gemini_text(io.BytesIO(b"".join(
+                f"data: {json.dumps(event)}\n\n".encode() for event in events
+            )))
+
+        def finished(reason):
+            return {"candidates": [{"content": {"parts": [{"text": "Half"}]}, "finishReason": reason}]}
+
+        with self.assertRaisesRegex(RuntimeError, "output limit; lower Paragraphs per worker"):
+            read(finished("MAX_TOKENS"))
+        with self.assertRaisesRegex(RuntimeError, "SAFETY"):
+            read(finished("SAFETY"))
+        with self.assertRaisesRegex(RuntimeError, "PROHIBITED_CONTENT"):
+            read({"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}})
+        with self.assertRaises(web.ModelBusy):
+            read({"error": {"code": 503, "message": "Overloaded.", "status": "UNAVAILABLE"}})
+        with self.assertRaises(web.ModelBusy):
+            read({"candidates": [{"content": {"parts": [{"text": "Half"}]}}]})
+        with self.assertRaises(RuntimeError) as refused:
+            read({"error": {"code": 400, "message": "Bad request.", "status": "INVALID_ARGUMENT"}})
+        self.assertNotIsInstance(refused.exception, web.ModelBusy)
+        self.assertEqual(read(finished("STOP")), "Half")
+
+
+
 FAKE_CLAUDE_CODE = """\
 #!{python}
 import json, os, sys
@@ -4551,7 +4869,9 @@ class ClaudeCodeProviderTests(unittest.TestCase):
         with mock.patch.object(web, "CLAUDE_CODE_CANDIDATES", (str(claude),)), \
                 mock.patch.object(web, "HILDE_HOME", home), \
                 mock.patch.object(web, "read_openai_credentials", return_value=None), \
-                mock.patch.object(web, "read_anthropic_key", return_value=None):
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None):
             # Installed but signed out: no models, and the job is refused.
             catalog = web.paper_model_catalog()
             self.assertEqual((catalog["models"], catalog["claude_code_connected"]), ([], False))
@@ -6972,6 +7292,144 @@ class ChatTests(unittest.TestCase):
         self.assertIn('<a href="#" class="chat-cite" data-passage="2">¶2</a>',
                       payload["conversation"][-1]["html"])
         self.assertEqual(payload["passages"], {"1": 0, "2": 1})
+
+    def run_turn(self, turn):
+        """Start a turn and wait for it; return its events."""
+        self.assertTrue(web.ChatRegistry().start(turn))
+        events, index = [], 0
+        while not (events and events[-1]["type"] == "done"):
+            new, _ = turn.events_from(index, 10)
+            self.assertTrue(new, "the turn stalled")
+            events += new
+            index += len(new)
+        return events
+
+    def test_gemini_gets_its_answer_back_as_received_with_its_thought_signatures(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        requests = []
+        call_parts = [
+            {"text": "Which paragraph holds dams?", "thought": True},
+            {"functionCall": {"id": "fc-1", "name": "read_paragraphs", "args": {"start": 2}},
+             "thoughtSignature": "c2lnLWNhbGw="},
+            # Streaming may bring a signature later, on a part with no text.
+            {"text": "", "thoughtSignature": "c2lnLWVuZA=="},
+        ]
+
+        class GeminiHandler(FakeProviderHandler):
+            def do_POST(self):
+                if (
+                    self.path != "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"
+                    or self.headers.get("x-goog-api-key") != "AIza-good"
+                ):
+                    return self.reply(404, {})
+                requests.append(self.body())
+                if len(requests) == 1:
+                    return self.stream((
+                        {"candidates": [{"content": {"role": "model", "parts": call_parts[:1]}}]},
+                        {"candidates": [{"content": {"role": "model", "parts": call_parts[1:2]}}]},
+                        {"candidates": [{"content": {"role": "model", "parts": call_parts[2:]},
+                                         "finishReason": "STOP"}]},
+                    ))
+                return self.stream((
+                    {"candidates": [{"content": {"role": "model", "parts": [
+                        {"text": "Dams are in ¶2.", "thoughtSignature": "c2lnLWFuc3dlcg=="},
+                    ]}, "finishReason": "STOP"}]},
+                ))
+
+        origin = serve_fake_provider(self, GeminiHandler)
+        home = Path(self.storage.root) / ".hilde"
+        patch_for_test(
+            self, mock.patch.object(web, "GEMINI_API_URL", f"{origin}/v1beta"),
+            mock.patch.object(web, "HILDE_HOME", home),
+        )
+        web._write_private_json(web.gemini_key_path(), {"api_key": "AIza-good"})
+        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "gemini/gemini-test", ""))
+
+        first, second = requests
+        self.assertIn("¶2 [body] Dams. Tags: tag.", first["systemInstruction"]["parts"][0]["text"])
+        self.assertEqual(first["contents"], [{"role": "user", "parts": [{"text": "Where are dams?"}]}])
+        declarations = first["tools"][0]["functionDeclarations"]
+        self.assertEqual({tool["name"] for tool in declarations},
+                         {"read_paragraphs", "search_book", "write_file", "list_files", "delete_file"})
+        self.assertTrue(all("parametersJsonSchema" in tool and "parameters" not in tool for tool in declarations))
+        self.assertEqual(first["toolConfig"], {"functionCallingConfig": {"mode": "AUTO"}})
+        # The model turn goes back exactly as it arrived, every signature in
+        # its part, followed by the tool's result for that call.
+        self.assertEqual(second["contents"][1], {"role": "model", "parts": call_parts})
+        self.assertEqual(second["contents"][2], {"role": "user", "parts": [{"functionResponse": {
+            "name": "read_paragraphs", "id": "fc-1", "response": {"content": "¶2\nParagraph 2 text."},
+        }}]})
+        entries = web.read_chat(path)
+        self.assertEqual(entries[1]["gemini_parts"], call_parts)
+        self.assertEqual(entries[1]["calls"], [{"id": "fc-1", "name": "read_paragraphs", "arguments": {"start": 2}}])
+        self.assertEqual(entries[-1]["text"], "Dams are in ¶2.")
+        # A thought is never part of the answer.
+        self.assertNotIn("Which paragraph", json.dumps([entry.get("text") for entry in entries]))
+        # A call Gemini did not write, such as the listener's own reading, is
+        # marked so Gemini 3 takes it without a signature of its own.
+        contents = web._chat_gemini_contents([
+            {"role": "user", "text": "What is this?"},
+            {"role": "assistant", "text": "", "calls": [
+                {"id": "listener-1", "name": "read_paragraphs", "arguments": {"start": 1, "end": 1}},
+                {"id": "gemini-call-1", "name": "search_book", "arguments": {"query": "dams"}},
+            ]},
+            {"role": "tool", "id": "listener-1", "name": "read_paragraphs", "content": "¶1"},
+            {"role": "tool", "id": "gemini-call-1", "name": "search_book", "content": "none"},
+        ])
+        self.assertEqual(contents[1:], [
+            {"role": "model", "parts": [
+                {"functionCall": {"name": "read_paragraphs", "args": {"start": 1, "end": 1}, "id": "listener-1"},
+                 "thoughtSignature": web.GEMINI_SKIP_SIGNATURE},
+                {"functionCall": {"name": "search_book", "args": {"query": "dams"}}},
+            ]},
+            {"role": "user", "parts": [
+                {"functionResponse": {"name": "read_paragraphs", "response": {"content": "¶1"}, "id": "listener-1"}},
+                {"functionResponse": {"name": "search_book", "response": {"content": "none"}}},
+            ]},
+        ])
+
+    def test_an_openai_api_key_chats_through_responses(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        requests = []
+
+        class OpenAIHandler(FakeProviderHandler):
+            def do_POST(self):
+                if self.path != "/v1/responses" or self.headers.get("Authorization") != "Bearer sk-good":
+                    return self.reply(404, {})
+                requests.append(self.body())
+                if len(requests) == 1:
+                    return self.stream((
+                        {"type": "response.output_item.done", "item": {"type": "reasoning", "summary": []}},
+                        {"type": "response.output_item.done", "item": {
+                            "type": "function_call", "id": "fc_1", "call_id": "call_1",
+                            "name": "read_paragraphs", "arguments": '{"start": 2}',
+                        }},
+                        {"type": "response.completed", "response": {"id": "resp"}},
+                    ))
+                return self.stream((
+                    {"type": "response.output_text.delta", "delta": "Dams are in ¶2."},
+                    {"type": "response.completed", "response": {"id": "resp"}},
+                ))
+
+        origin = serve_fake_provider(self, OpenAIHandler)
+        home = Path(self.storage.root) / ".hilde"
+        patch_for_test(
+            self, mock.patch.object(web, "OPENAI_API_URL", f"{origin}/v1"),
+            mock.patch.object(web, "HILDE_HOME", home),
+        )
+        web._write_private_json(web.openai_api_key_path(), {"api_key": "sk-good"})
+        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "openai/gpt-test", ""))
+
+        first, second = requests
+        self.assertEqual((first["model"], first["store"], first["stream"]), ("gpt-test", False, True))
+        self.assertEqual(first["tool_choice"], "auto")
+        self.assertTrue(all(tool["type"] == "function" and tool["strict"] is False for tool in first["tools"]))
+        self.assertEqual(second["input"][1:], [
+            {"type": "function_call", "call_id": "call_1", "name": "read_paragraphs",
+             "arguments": json.dumps({"start": 2})},
+            {"type": "function_call_output", "call_id": "call_1", "output": "¶2\nParagraph 2 text."},
+        ])
+        self.assertEqual(web.read_chat(path)[-1]["text"], "Dams are in ¶2.")
 
     def test_a_question_from_the_player_comes_with_the_paragraphs_being_played(self):
         book, _ = self.book(chat_narration("Storms.", "Dams.", "Silt."))

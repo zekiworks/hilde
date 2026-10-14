@@ -198,6 +198,29 @@ CLAUDE_CODE_CANDIDATES = ("claude", "~/.local/bin/claude", "~/.claude/local/clau
 CLAUDE_CODE_STATUS_TIMEOUT = 20
 ANTHROPIC_API_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
+OPENAI_API_MODEL_PROVIDER = "openai"
+# An API key from the OpenAI platform, billed per use; distinct from the
+# ChatGPT sign-in above, which reaches the Codex backend.
+OPENAI_API_URL = "https://api.openai.com/v1"
+GEMINI_MODEL_PROVIDER = "gemini"
+# An API key from Google AI Studio, billed per use.
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"
+# The OpenAI API lists every model it serves; these are the ones that write
+# text through the Responses API.
+OPENAI_API_MODEL_PATTERN = re.compile(r"^(gpt-|o\d|chatgpt-)")
+OPENAI_API_MODEL_EXCLUDED = (
+    "audio", "realtime", "transcribe", "tts", "image", "search", "embedding", "moderation", "instruct",
+)
+GEMINI_MODEL_EXCLUDED = ("embedding", "tts", "image", "live", "native-audio", "aqa")
+# Statuses of a Gemini error that asking again may clear.
+GEMINI_BUSY_STATUSES = frozenset({"RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL"})
+# The id Hilde gives a Gemini function call that came without one; such an id
+# is never sent back to Gemini.
+GEMINI_CALL_PREFIX = "gemini-call-"
+# Gemini 3 refuses a function call of the current turn without its thought
+# signature; Google documents this value for calls it did not write, as a
+# conversation begun with another model or the listener's own reading.
+GEMINI_SKIP_SIGNATURE = "skip_thought_signature_validator"
 # A busy or rate-limited cloud provider is asked again this many times, after
 # its retry-after or 1, 2, 4, then 8 seconds. A model request whose connection
 # drops or is refused, from any provider, is asked again the same way.
@@ -4701,18 +4724,55 @@ def openai_model_names():
     return [slug for _, slug in sorted(models, key=lambda item: item[0])]
 
 
+def _read_api_key(path):
+    """Return the API key kept in path, or None when there is none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    key = data.get("api_key") if isinstance(data, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
+def _pasted_api_key(key, message):
+    """A pasted API key without its surrounding blanks; ValueError(message)
+    for one that cannot be a key."""
+    key = str(key or "").strip()
+    if not key or len(key) > 512 or any(
+        char.isspace() or not char.isprintable() for char in key
+    ):
+        raise ValueError(message)
+    return key
+
+
+def _provider_models_json(url, headers, label):
+    """GET a provider's model list; a refused key or a failed request raises
+    a RuntimeError that names the provider."""
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
+            return json.loads(response.read(8 * 1024 * 1024))
+    except urllib.error.HTTPError as error:
+        try:
+            body = json.loads(error.read(64 * 1024))
+            detail = _model_error(body, f"HTTP {error.code}")
+        except (AttributeError, OSError, ValueError):
+            body, detail = None, f"HTTP {error.code}"
+        # Google answers a bad key with 400 and the reason API_KEY_INVALID.
+        refused = error.code in (401, 403) or "API_KEY_INVALID" in json.dumps(body)
+        verdict = "rejected the API key" if refused else "did not list its models"
+        raise RuntimeError(f"{label} {verdict}: {detail}") from error
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot list {label} models: {exc}") from exc
+
+
 def anthropic_key_path():
     return HILDE_HOME / "anthropic.json"
 
 
 def read_anthropic_key():
     """Return this server's Anthropic API key, or None when it has none."""
-    try:
-        data = json.loads(anthropic_key_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    key = data.get("api_key") if isinstance(data, dict) else None
-    return key if isinstance(key, str) and key else None
+    return _read_api_key(anthropic_key_path())
 
 
 def _anthropic_headers(key, accept="application/json"):
@@ -4732,21 +4792,9 @@ def anthropic_model_names(key=None):
         raise RuntimeError(
             "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
         )
-    request = urllib.request.Request(
-        f"{ANTHROPIC_API_URL}/v1/models?limit=1000", headers=_anthropic_headers(key),
+    payload = _provider_models_json(
+        f"{ANTHROPIC_API_URL}/v1/models?limit=1000", _anthropic_headers(key), "Anthropic",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
-            payload = json.loads(response.read(8 * 1024 * 1024))
-    except urllib.error.HTTPError as error:
-        try:
-            detail = _model_error(json.loads(error.read(64 * 1024)), f"HTTP {error.code}")
-        except (AttributeError, OSError, ValueError):
-            detail = f"HTTP {error.code}"
-        verdict = "rejected the API key" if error.code in (401, 403) else "did not list its models"
-        raise RuntimeError(f"Anthropic {verdict}: {detail}") from error
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(f"Cannot list Anthropic models: {exc}") from exc
     rows = payload.get("data") if isinstance(payload, dict) else None
     names = [
         row["id"] for row in (rows if isinstance(rows, list) else ())
@@ -4759,11 +4807,7 @@ def anthropic_model_names(key=None):
 
 def connect_anthropic(key):
     """Keep an Anthropic API key, once Anthropic accepts it."""
-    key = str(key or "").strip()
-    if not key or len(key) > 512 or any(
-        char.isspace() or not char.isprintable() for char in key
-    ):
-        raise ValueError("Paste an API key from the Claude Console.")
+    key = _pasted_api_key(key, "Paste an API key from the Claude Console.")
     anthropic_model_names(key)
     _write_private_json(anthropic_key_path(), {"api_key": key})
 
@@ -4843,19 +4887,264 @@ def anthropic_request(payload, open_stream, pause, read):
         raise RuntimeError(
             "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
         )
+    return _keyed_request(
+        f"{ANTHROPIC_API_URL}/v1/messages", _anthropic_headers(key, "text/event-stream"),
+        payload, "Anthropic", open_stream, pause, read,
+    )
+
+
+def _keyed_request(url, headers, payload, label, open_stream, pause, read):
+    """POST one streamed request to a provider an API key reaches, asking
+    again while it is busy, before the stream or when `read` raises
+    ModelBusy; `read` takes the stream and returns the answer."""
     body = json.dumps(payload).encode("utf-8")
-    headers = _anthropic_headers(key, "text/event-stream")
-    for attempt in range(MODEL_RETRIES + 1):
-        with open_stream(f"{ANTHROPIC_API_URL}/v1/messages", headers, body) as response:
+    attempt = 0
+    while True:
+        with open_stream(url, headers, body) as response:
             if response.status in RETRYABLE_STATUSES and attempt < MODEL_RETRIES:
                 delay = _retry_delay(response, attempt)
             elif response.status != 200:
-                raise _stream_failure(response, "Anthropic")
+                raise _stream_failure(response, label)
             else:
-                return read(response)
+                try:
+                    return read(response)
+                except ModelBusy:
+                    if attempt == MODEL_RETRIES:
+                        raise
+                    delay = _retry_delay(None, attempt)
         if pause(delay):
             raise InterruptedError("document processing stopped")
-    raise AssertionError("unreachable Anthropic retry loop")
+        attempt += 1
+
+
+def openai_api_key_path():
+    return HILDE_HOME / "openai-api.json"
+
+
+def read_openai_api_key():
+    """Return this server's OpenAI API key, or None when it has none."""
+    return _read_api_key(openai_api_key_path())
+
+
+def _openai_api_headers(key, accept="application/json"):
+    return {
+        "Authorization": f"Bearer {key}",
+        "Accept": accept,
+        "Content-Type": "application/json",
+        "User-Agent": HILDE_USER_AGENT,
+    }
+
+
+def openai_api_model_names(key=None):
+    """List the text models an OpenAI API key may use, newest first."""
+    key = key or read_openai_api_key()
+    if not key:
+        raise RuntimeError(
+            "Add an OpenAI API key in Providers, under Adapt the text for listening, first."
+        )
+    payload = _provider_models_json(f"{OPENAI_API_URL}/models", _openai_api_headers(key), "OpenAI")
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    models = []
+    for row in rows if isinstance(rows, list) else ():
+        name = row.get("id") if isinstance(row, dict) else None
+        if (
+            not isinstance(name, str)
+            or not OPENAI_API_MODEL_PATTERN.match(name)
+            or any(word in name for word in OPENAI_API_MODEL_EXCLUDED)
+        ):
+            continue
+        created = row.get("created")
+        models.append((created if isinstance(created, (int, float)) else 0, name))
+    if not models:
+        raise RuntimeError("OpenAI listed no text models for this API key.")
+    return [name for _, name in sorted(models, key=lambda item: item[0], reverse=True)]
+
+
+def connect_openai_api(key):
+    """Keep an OpenAI API key, once OpenAI accepts it."""
+    key = _pasted_api_key(key, "Paste an API key from the OpenAI platform.")
+    openai_api_model_names(key)
+    _write_private_json(openai_api_key_path(), {"api_key": key})
+
+
+def openai_api_response(model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with an OpenAI model through the Responses API."""
+    content = [{"type": "input_text", "text": text}]
+    content += [{"type": "input_image", "image_url": _image_data_url(path)} for path in images]
+    return openai_api_request({
+        "model": model,
+        "instructions": system_prompt,
+        "input": [{"type": "message", "role": "user", "content": content}],
+        "store": False,
+        "stream": True,
+    }, open_stream, pause, _openai_text)
+
+
+def openai_api_request(payload, open_stream, pause, read):
+    """Send one streamed Responses request with this server's OpenAI API key,
+    asking again while OpenAI is busy; `read` takes the stream and returns
+    the answer."""
+    key = read_openai_api_key()
+    if key is None:
+        raise RuntimeError(
+            "Add an OpenAI API key in Providers, under Adapt the text for listening, first."
+        )
+    return _keyed_request(
+        f"{OPENAI_API_URL}/responses", _openai_api_headers(key, "text/event-stream"),
+        payload, "OpenAI", open_stream, pause, read,
+    )
+
+
+def gemini_key_path():
+    return HILDE_HOME / "gemini.json"
+
+
+def read_gemini_key():
+    """Return this server's Gemini API key, or None when it has none."""
+    return _read_api_key(gemini_key_path())
+
+
+def _gemini_headers(key, accept="application/json"):
+    return {
+        "x-goog-api-key": key,
+        "Accept": accept,
+        "Content-Type": "application/json",
+        "User-Agent": HILDE_USER_AGENT,
+    }
+
+
+def _natural_key(name):
+    """Sort key reading each run of digits as a number: gemini-10 after gemini-9."""
+    return [(0, int(piece), "") if piece.isdigit() else (1, 0, piece) for piece in re.split(r"(\d+)", name)]
+
+
+def gemini_model_names(key=None):
+    """List the text models a Gemini API key may use, newest first."""
+    key = key or read_gemini_key()
+    if not key:
+        raise RuntimeError(
+            "Add a Gemini API key in Providers, under Adapt the text for listening, first."
+        )
+    names, token = set(), ""
+    while True:
+        query = "pageSize=1000" + (f"&pageToken={urllib.parse.quote(token)}" if token else "")
+        payload = _provider_models_json(
+            f"{GEMINI_API_URL}/models?{query}", _gemini_headers(key), "Gemini",
+        )
+        payload = payload if isinstance(payload, dict) else {}
+        rows = payload.get("models")
+        for row in rows if isinstance(rows, list) else ():
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                continue
+            name = row["name"].removeprefix("models/")
+            methods = row.get("supportedGenerationMethods")
+            if (
+                isinstance(methods, list) and "generateContent" in methods
+                and name.startswith("gemini-")
+                and not any(word in name for word in GEMINI_MODEL_EXCLUDED)
+            ):
+                names.add(name)
+        following = payload.get("nextPageToken")
+        if not isinstance(following, str) or not following or following == token:
+            break
+        token = following
+    if not names:
+        raise RuntimeError("Gemini listed no text models for this API key.")
+    return sorted(names, key=_natural_key, reverse=True)
+
+
+def connect_gemini(key):
+    """Keep a Gemini API key, once Google accepts it."""
+    key = _pasted_api_key(key, "Paste an API key from Google AI Studio.")
+    gemini_model_names(key)
+    _write_private_json(gemini_key_path(), {"api_key": key})
+
+
+def _gemini_text(response, on_text=None, calls=None,
+                 limit="Gemini stopped at its output limit; lower Paragraphs per worker.", parts=None):
+    """Collect the answer of one streamed generateContent response: its text,
+    handed to `on_text` as it arrives, its function calls, added to `calls`,
+    and every part as received, added to `parts`. Thoughts are never text."""
+    texts, found, finish = [], [], None
+    for data in sse_events(response):
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        error = event.get("error")
+        if isinstance(error, dict):
+            failure = f"Gemini stopped the response: {_model_error(event, str(error.get('status') or 'error'))}"
+            if error.get("status") in GEMINI_BUSY_STATUSES:
+                raise ModelBusy(failure)
+            raise RuntimeError(failure)
+        feedback = event.get("promptFeedback") if isinstance(event.get("promptFeedback"), dict) else {}
+        if feedback.get("blockReason"):
+            raise RuntimeError(f"Gemini refused the request: {feedback['blockReason']}.")
+        candidates = event.get("candidates")
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
+        candidate = candidate if isinstance(candidate, dict) else {}
+        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+        for part in content.get("parts") or ():
+            if not isinstance(part, dict):
+                continue
+            if parts is not None:
+                parts.append(part)
+            if part.get("thought"):
+                continue
+            if isinstance(part.get("functionCall"), dict):
+                found.append(part["functionCall"])
+            elif isinstance(part.get("text"), str) and part["text"]:
+                texts.append(part["text"])
+                if on_text:
+                    on_text(part["text"])
+        finish = candidate.get("finishReason") or finish
+    if finish is None:
+        raise ModelBusy("Gemini ended the response before it completed.")
+    if finish == "MAX_TOKENS":
+        raise RuntimeError(limit)
+    if finish != "STOP":
+        raise RuntimeError(f"Gemini stopped the response: {finish}.")
+    if calls is not None:
+        calls.extend(
+            {
+                "id": str(call.get("id") or f"{GEMINI_CALL_PREFIX}{index}"),
+                "name": str(call.get("name") or ""),
+                "arguments": call["args"] if isinstance(call.get("args"), dict) else {},
+            }
+            for index, call in enumerate(found)
+        )
+    return "".join(texts)
+
+
+def gemini_response(model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with a Gemini model, up to the model's own output limit."""
+    parts = [{"text": text}]
+    for path in images:
+        parts.append({"inlineData": {
+            "mimeType": mimetypes.guess_type(path.name)[0] or "image/png",
+            "data": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }})
+    return gemini_request({
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": parts}],
+    }, model, open_stream, pause, _gemini_text)
+
+
+def gemini_request(payload, model, open_stream, pause, read):
+    """Send one streamed generateContent request with this server's Gemini API
+    key, asking again while Google is busy; `read` takes the stream and
+    returns the answer."""
+    key = read_gemini_key()
+    if key is None:
+        raise RuntimeError(
+            "Add a Gemini API key in Providers, under Adapt the text for listening, first."
+        )
+    return _keyed_request(
+        f"{GEMINI_API_URL}/models/{urllib.parse.quote(model, safe='')}:streamGenerateContent?alt=sse",
+        _gemini_headers(key, "text/event-stream"), payload, "Gemini", open_stream, pause, read,
+    )
 
 
 def claude_code_command():
@@ -5026,7 +5315,7 @@ def paper_model_catalog(local_server="", local_provider=""):
     """List the local server's models, then those of this server's providers."""
     local_server = normalize_local_server(local_server)
     local_models, cloud_models = [], []
-    openai_error = anthropic_error = local_error = ""
+    openai_error = anthropic_error = openai_api_error = gemini_error = local_error = ""
     if local_server:
         try:
             local_models = [
@@ -5059,11 +5348,30 @@ def paper_model_catalog(local_server="", local_provider=""):
             ]
         except RuntimeError as exc:
             anthropic_error = str(exc)
+    openai_api_connected = read_openai_api_key() is not None
+    if openai_api_connected:
+        try:
+            cloud_models += [
+                {"provider": OPENAI_API_MODEL_PROVIDER, "selector": f"{OPENAI_API_MODEL_PROVIDER}/{name}"}
+                for name in openai_api_model_names()
+            ]
+        except RuntimeError as exc:
+            openai_api_error = str(exc)
+    gemini_connected = read_gemini_key() is not None
+    if gemini_connected:
+        try:
+            cloud_models += [
+                {"provider": GEMINI_MODEL_PROVIDER, "selector": f"{GEMINI_MODEL_PROVIDER}/{name}"}
+                for name in gemini_model_names()
+            ]
+        except RuntimeError as exc:
+            gemini_error = str(exc)
     # Without a chosen model a job uses the local server's first model when
     # this browser added one, and nothing while it does not answer: a
     # document goes to a cloud provider only when chosen, or when no local
     # server was added. Then OpenAI's first model once signed in comes first,
-    # then Claude Code's, then Anthropic's, whose key is billed per request.
+    # then Claude Code's, then those of the API keys, billed per request:
+    # Anthropic's, OpenAI's, then Gemini's.
     defaults = local_models if local_server else cloud_models
     return {
         "models": local_models + cloud_models,
@@ -5075,6 +5383,10 @@ def paper_model_catalog(local_server="", local_provider=""):
         "openai_connected": openai_connected,
         "anthropic_error": anthropic_error,
         "anthropic_connected": anthropic_connected,
+        "openai_api_error": openai_api_error,
+        "openai_api_connected": openai_api_connected,
+        "gemini_error": gemini_error,
+        "gemini_connected": gemini_connected,
         "claude_code_connected": claude_code_connected,
         "claude_code_status": claude_code_message,
     }
@@ -7485,6 +7797,8 @@ def _adaptation_problem(values):
         if (
             read_openai_credentials() is None
             and read_anthropic_key() is None
+            and read_openai_api_key() is None
+            and read_gemini_key() is None
             and not claude_code_status()[0]
             and not values["local_server"]
         ):
@@ -7499,6 +7813,14 @@ def _adaptation_problem(values):
     elif provider == ANTHROPIC_MODEL_PROVIDER:
         if read_anthropic_key() is None:
             return ("Add an Anthropic API key in Providers, under Adapt the text for "
+                    "listening, to use this model.")
+    elif provider == OPENAI_API_MODEL_PROVIDER:
+        if read_openai_api_key() is None:
+            return ("Add an OpenAI API key in Providers, under Adapt the text for "
+                    "listening, to use this model.")
+    elif provider == GEMINI_MODEL_PROVIDER:
+        if read_gemini_key() is None:
+            return ("Add a Google Gemini API key in Providers, under Adapt the text for "
                     "listening, to use this model.")
     elif provider == CLAUDE_CODE_MODEL_PROVIDER:
         signed_in, status = claude_code_status()
@@ -7918,7 +8240,10 @@ CHAT_CONTEXT_ERROR = re.compile(
 )
 # Windows a server does not report: a local server's, unknown, is taken small.
 CHAT_LOCAL_CONTEXT = 32_768
-CHAT_PROVIDER_CONTEXT = {ANTHROPIC_MODEL_PROVIDER: 200_000, OPENAI_MODEL_PROVIDER: 272_000}
+CHAT_PROVIDER_CONTEXT = {
+    ANTHROPIC_MODEL_PROVIDER: 200_000, OPENAI_MODEL_PROVIDER: 272_000,
+    OPENAI_API_MODEL_PROVIDER: 272_000, GEMINI_MODEL_PROVIDER: 1_000_000,
+}
 CHAT_FILE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,79}\.md")
 CHAT_CITATION_PATTERN = re.compile(r"¶(\d+)(?:\s*[–-]\s*¶?(\d+))?")
 CHAT_OLD_BOOK = (
@@ -8686,23 +9011,72 @@ def _chat_openai_input(entries):
     return items
 
 
+def _chat_gemini_id(call_id):
+    """A call's id as Gemini gave it; None for one Hilde made up."""
+    return None if str(call_id).startswith(GEMINI_CALL_PREFIX) else call_id
+
+
+def _chat_gemini_contents(entries):
+    """The conversation as Gemini contents. A Gemini answer goes back as the
+    parts it arrived in, thought signatures included; one from elsewhere is
+    rebuilt, its first call marked as written outside Gemini. Tool results
+    ride in the listener's turn, and one role never follows itself."""
+    contents = []
+
+    def add(role, parts):
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"].extend(parts)
+        else:
+            contents.append({"role": role, "parts": list(parts)})
+
+    for entry in entries:
+        role = entry.get("role")
+        if role == "user":
+            add("user", [{"text": entry["text"]}])
+        elif role == "assistant":
+            stored = entry.get("gemini_parts")
+            if isinstance(stored, list) and stored:
+                add("model", stored)
+                continue
+            parts = []
+            if entry.get("text") or not entry.get("calls"):
+                parts.append({"text": entry.get("text") or "…"})
+            for index, call in enumerate(entry.get("calls") or ()):
+                function = {"name": call["name"], "args": call["arguments"]}
+                if _chat_gemini_id(call["id"]):
+                    function["id"] = call["id"]
+                part = {"functionCall": function}
+                if index == 0:
+                    part["thoughtSignature"] = GEMINI_SKIP_SIGNATURE
+                parts.append(part)
+            add("model", parts)
+        elif role == "tool":
+            function = {"name": entry["name"], "response": {"content": entry["content"]}}
+            if _chat_gemini_id(entry["id"]):
+                function["id"] = entry["id"]
+            add("user", [{"functionResponse": function}])
+    return contents
+
+
 def chat_model_reply(selector, local_server, system, entries, tools, on_text, open_stream, pause,
                      max_tokens=CHAT_MAX_OUTPUT_TOKENS):
     """Ask the chosen model for its next message, of at most `max_tokens`.
-    Return its text and tool calls ({"id", "name", "arguments"}); a provider
-    that cannot take tools raises with what to choose instead."""
+    Return its text, its tool calls ({"id", "name", "arguments"}), and any
+    provider fields to keep with the answer; a provider that cannot take
+    tools raises with what to choose instead."""
     provider, _, model = selector.partition("/")
     if not model:
         raise RuntimeError("Choose a model for Chat.")
     if provider in LOCAL_MODEL_PROVIDERS:
         if not local_server:
             raise RuntimeError("Add your local server under Add local first.")
-        return _chat_local(local_server, model, system, entries, tools, on_text, open_stream, max_tokens)
-    calls = []
+        return (*_chat_local(local_server, model, system, entries, tools, on_text, open_stream, max_tokens), {})
+    calls, parts = [], []
 
     def read(stream_reader):
         def run(response):
             calls.clear()
+            parts.clear()
             on_text(None)  # a retried request starts its text over
             return stream_reader(response)
         return run
@@ -8722,8 +9096,8 @@ def chat_model_reply(selector, local_server, system, entries, tools, on_text, op
                 response, on_text, calls, limit="Anthropic stopped at its output limit."
             )
         ))
-        return text, list(calls)
-    if provider == OPENAI_MODEL_PROVIDER:
+        return text, list(calls), {}
+    if provider in (OPENAI_MODEL_PROVIDER, OPENAI_API_MODEL_PROVIDER):
         payload = {
             "model": model, "instructions": system, "input": _chat_openai_input(entries),
             "store": False, "stream": True,
@@ -8731,10 +9105,30 @@ def chat_model_reply(selector, local_server, system, entries, tools, on_text, op
         if tools:
             payload["tools"] = [{"type": "function", "strict": False, **tool} for tool in tools]
             payload["tool_choice"] = "auto"
-        text = openai_request(payload, open_stream, pause, read(
+        request = openai_request if provider == OPENAI_MODEL_PROVIDER else openai_api_request
+        text = request(payload, open_stream, pause, read(
             lambda response: _openai_text(response, on_text, calls)
         ))
-        return text, list(calls)
+        return text, list(calls), {}
+    if provider == GEMINI_MODEL_PROVIDER:
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": _chat_gemini_contents(entries),
+        }
+        if tools:
+            payload["tools"] = [{"functionDeclarations": [
+                {"name": tool["name"], "description": tool["description"],
+                 "parametersJsonSchema": tool["parameters"]}
+                for tool in tools
+            ]}]
+            payload["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+        text = gemini_request(payload, model, open_stream, pause, read(
+            lambda response: _gemini_text(
+                response, on_text, calls, limit="Gemini stopped at its output limit.", parts=parts,
+            )
+        ))
+        # Gemini needs its answer back as it came, thought signatures in place.
+        return text, list(calls), {"gemini_parts": list(parts)}
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
         raise RuntimeError(
             "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
@@ -8878,7 +9272,7 @@ class ChatTurn:
                     raise ChatTooLong(f"{counted:,} input tokens leave no room to answer in a {window:,}-token window")
                 self.partial = ""
                 try:
-                    text, calls = chat_model_reply(
+                    text, calls, kept = chat_model_reply(
                         self.selector, self.local_server, system, context, tools,
                         self.on_text, self.model_stream, self.stop_requested.wait, max_tokens,
                     )
@@ -8896,6 +9290,8 @@ class ChatTurn:
                 entry = {"role": "assistant", "text": text.strip(), "at": utc_timestamp()}
                 if calls:
                     entry["calls"] = calls
+                # Provider fields, such as Gemini's parts, go back with the answer.
+                entry.update(kept)
                 self.keep(path, entries, entry)
                 if not calls:
                     return
@@ -10413,6 +10809,16 @@ class PaperRun(Run):
             )
         if provider == ANTHROPIC_MODEL_PROVIDER:
             return anthropic_response(
+                name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
+            )
+        if provider == OPENAI_API_MODEL_PROVIDER:
+            return openai_api_response(
+                name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
+            )
+        if provider == GEMINI_MODEL_PROVIDER:
+            return gemini_response(
                 name, system_prompt, text, attachments, self.model_stream,
                 self.stop_requested.wait,
             )
@@ -12160,16 +12566,22 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.openai_login.stop(),
             )
-        if route == "/api/paper/anthropic/key":
+        # Providers an API key reaches: check and keep a key, or remove it.
+        key_provider = {
+            "/api/paper/anthropic": (connect_anthropic, anthropic_key_path),
+            "/api/paper/openai-api": (connect_openai_api, openai_api_key_path),
+            "/api/paper/gemini": (connect_gemini, gemini_key_path),
+        }.get(route.rpartition("/")[0])
+        if key_provider and route.endswith("/key"):
             try:
-                connect_anthropic(body.get("key", ""))
+                key_provider[0](body.get("key", ""))
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
             except RuntimeError as exc:
                 return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
             return self.reply_paper_catalog()
-        if route == "/api/paper/anthropic/remove":
-            anthropic_key_path().unlink(missing_ok=True)
+        if key_provider and route.endswith("/remove"):
+            key_provider[1]().unlink(missing_ok=True)
             return self.reply_paper_catalog()
         if route == "/api/paper/local/check":
             try:
@@ -14069,7 +14481,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <section class="provider">
     <h3>Anthropic API</h3>
     <p class="note">An API key from the Claude Console, billed per use. This server
-      keeps it in ~/.hilde/anthropic.json, readable only by its user.</p>
+      keeps it in ~/.hilde/anthropic.json, readable only by its user. A Claude
+      subscription works only through Claude Code, above.</p>
     <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
       <input id="paper-anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-…">
     </div></div>
@@ -14077,9 +14490,41 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <strong id="paper-anthropic-status"></strong>
     </div></div>
     <div class="footer">
-      <button id="paper-anthropic-remove" onclick="removePaperAnthropic()">Remove</button>
+      <button id="paper-anthropic-remove" onclick="removePaperKey('anthropic')">Remove</button>
       <span class="grow"></span>
-      <button id="paper-anthropic-save" onclick="savePaperAnthropic()">Save key</button>
+      <button id="paper-anthropic-save" onclick="savePaperKey('anthropic')">Save key</button>
+    </div>
+  </section>
+  <section class="provider">
+    <h3>OpenAI API</h3>
+    <p class="note">An API key from platform.openai.com, billed per use. This server
+      keeps it in ~/.hilde/openai-api.json, readable only by its user.</p>
+    <div class="row"><label for="paper-openai-api-key">API key:</label><div class="line">
+      <input id="paper-openai-api-key" type="password" autocomplete="off" placeholder="sk-…">
+    </div></div>
+    <div class="row"><label>Status:</label><div>
+      <strong id="paper-openai-api-status"></strong>
+    </div></div>
+    <div class="footer">
+      <button id="paper-openai-api-remove" onclick="removePaperKey('openai-api')">Remove</button>
+      <span class="grow"></span>
+      <button id="paper-openai-api-save" onclick="savePaperKey('openai-api')">Save key</button>
+    </div>
+  </section>
+  <section class="provider">
+    <h3>Google Gemini API</h3>
+    <p class="note">An API key from Google AI Studio, billed per use. This server
+      keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
+    <div class="row"><label for="paper-gemini-key">API key:</label><div class="line">
+      <input id="paper-gemini-key" type="password" autocomplete="off" placeholder="AIza…">
+    </div></div>
+    <div class="row"><label>Status:</label><div>
+      <strong id="paper-gemini-status"></strong>
+    </div></div>
+    <div class="footer">
+      <button id="paper-gemini-remove" onclick="removePaperKey('gemini')">Remove</button>
+      <span class="grow"></span>
+      <button id="paper-gemini-save" onclick="savePaperKey('gemini')">Save key</button>
     </div>
   </section>
   <div class="footer">
@@ -14165,7 +14610,15 @@ let configuration = {}, voices = [], books = [];
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
-let paperOpenAIConnected = false, paperAnthropicConnected = false;
+let paperOpenAIConnected = false;
+// Providers an API key reaches, by the name in their element ids and routes:
+// who checks the key, their catalog fields' prefix, and whether this server
+// keeps a key.
+const paperKeyProviders = {
+  "anthropic": { label:"Anthropic", field:"anthropic", connected:false },
+  "openai-api": { label:"OpenAI", field:"openai_api", connected:false },
+  "gemini": { label:"Google", field:"gemini", connected:false },
+};
 let advancedOpen = false, voiceFormOpen = false;
 // Create shows a run's outcome above its steps while resultShown; Progress follows the run.
 let submitting = false, resultShown = false, stopping = false, waitingJobId = "";
@@ -16629,11 +17082,14 @@ function applyPaperCatalog(catalog) {
   fillModelSelect($("paper-figure-model"), state.audiobook.figure_model,
     "Same as the text model", catalog);
   paperOpenAIConnected = !!catalog.openai_connected;
-  paperAnthropicConnected = !!catalog.anthropic_connected;
-  renderPaperAnthropic(catalog.anthropic_error);
+  for (const [name, provider] of Object.entries(paperKeyProviders)) {
+    provider.connected = !!catalog[`${provider.field}_connected`];
+    renderPaperKey(name, catalog[`${provider.field}_error`]);
+  }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
   $("paper-local").textContent = state.audiobook.local_server ? "Local" : "Add local";
-  const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error;
+  const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error
+    || catalog.openai_api_error || catalog.gemini_error;
   $("paper-model-status").textContent = problem ||
     `${(catalog.models || []).length} models`;
   $("paper-model-status").classList.toggle("bad", !!problem);
@@ -16689,40 +17145,43 @@ async function pollPaperOpenAI() {
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
 async function openPaperProviders() {
-  $("paper-anthropic-key").value = "";
-  renderPaperAnthropic();
+  for (const name of Object.keys(paperKeyProviders)) {
+    $(`paper-${name}-key`).value = "";
+    renderPaperKey(name);
+  }
   $("paper-providers-dialog").showModal(); await pollPaperOpenAI();
 }
 function closePaperProviders() {
   clearTimeout(paperOAuthTimer); $("paper-providers-dialog").close();
 }
-function renderPaperAnthropic(message) {
-  $("paper-anthropic-status").textContent = message || (paperAnthropicConnected
+function renderPaperKey(name, message) {
+  const connected = paperKeyProviders[name].connected;
+  $(`paper-${name}-status`).textContent = message || (connected
     ? "An API key is saved on this server." : "No API key yet.");
-  $("paper-anthropic-remove").disabled = !paperAnthropicConnected;
+  $(`paper-${name}-remove`).disabled = !connected;
 }
-async function savePaperAnthropic() {
-  $("paper-anthropic-save").disabled = true;
-  $("paper-anthropic-status").textContent = "Checking the key with Anthropic…";
+async function savePaperKey(name) {
+  $(`paper-${name}-save`).disabled = true;
+  $(`paper-${name}-status`).textContent = `Checking the key with ${paperKeyProviders[name].label}…`;
   try {
-    const catalog = await jsonRequest("/api/paper/anthropic/key", {
+    const catalog = await jsonRequest(`/api/paper/${name}/key`, {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ key:$("paper-anthropic-key").value }),
+      body:JSON.stringify({ key:$(`paper-${name}-key`).value }),
     });
-    $("paper-anthropic-key").value = "";
+    $(`paper-${name}-key`).value = "";
     applyPaperCatalog(catalog);
     // Create's model check reads the server's providers; ask it again.
     await sync();
-  } catch (error) { $("paper-anthropic-status").textContent = error.message; }
-  finally { $("paper-anthropic-save").disabled = false; }
+  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
+  finally { $(`paper-${name}-save`).disabled = false; }
 }
-async function removePaperAnthropic() {
+async function removePaperKey(name) {
   try {
-    applyPaperCatalog(await jsonRequest("/api/paper/anthropic/remove", {
+    applyPaperCatalog(await jsonRequest(`/api/paper/${name}/remove`, {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     }));
     await sync();
-  } catch (error) { $("paper-anthropic-status").textContent = error.message; }
+  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
 }
 async function startPaperOpenAI() {
   try {

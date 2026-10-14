@@ -18,8 +18,9 @@ adaptation**:
   your local server's first model once you add one under **Add local**; if that
   server does not answer, the job stops rather than send your document to a
   cloud provider. Without a local server, Default is OpenAI's first model once
-  signed in, then Claude Code's, then the Anthropic API's. A cloud provider
-  that is busy or has a passing error is asked again, up to four times.
+  signed in, then Claude Code's, then the Anthropic API's, the OpenAI API's,
+  and the Google Gemini API's. A cloud provider that is busy or has a passing
+  error is asked again, up to four times.
 - **Providers** connects cloud models.
   - **OpenAI** signs this server in with a ChatGPT account: open the sign-in
     page it shows and enter the code, which **Copy** puts on the clipboard (or
@@ -37,11 +38,22 @@ adaptation**:
     provider updates **Create** at once: a "needs a model" message goes away
     without choosing another model.
   - **Anthropic API** takes an API key from the
-    [Claude Console](https://platform.claude.com/), billed per use. **Remove**
-    deletes it.
+    [Claude Console](https://platform.claude.com/), billed per use. A Claude
+    subscription works only through Claude Code, above, as Anthropic's terms
+    require.
+  - **OpenAI API** takes an API key from the
+    [OpenAI platform](https://platform.openai.com/api-keys), billed per use,
+    and lists the key's text models, newest first. It is separate from the
+    ChatGPT sign-in: its models appear as `openai/…`, the sign-in's as
+    `openai-codex/…`.
+  - **Google Gemini API** takes an API key from
+    [Google AI Studio](https://aistudio.google.com/apikey), billed per use,
+    and lists the key's Gemini text models, newest first.
 
-  The server keeps the ChatGPT sign-in and the API key in `~/.hilde/`,
-  readable only by the user running it.
+  Each API key is checked with its provider before it is kept; **Remove**
+  deletes it. The server keeps the ChatGPT sign-in in `~/.hilde/openai.json`
+  and the keys in `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`, and
+  `~/.hilde/gemini.json`, readable only by the user running it.
 - **Add local** connects a model server on your network. Choose its type,
   **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, then choose one of its models.
@@ -97,7 +109,7 @@ model, the figures, tables, and equations go to that provider, with their
 captions, the text read from them, and the author's text about each; the rest
 of the paper stays on your network. The book records the figure model.
 
-Figures reach OpenAI and Claude models as images, and a local model too once
+Figures reach OpenAI, Claude, and Gemini models as images, and a local model too once
 **This model sees images** is ticked. Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows

@@ -180,7 +180,8 @@ search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it in the chat, from the
 models you connected under **Providers** or **Add local** on **Create**. With
-none, the chat asks you to add one first. Claude Code models cannot chat:
+none, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and
+Google Gemini API keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
 conversation** starts over, and **× Close** closes the chat. A question Ask
