@@ -1287,6 +1287,35 @@ def roomiest_cuda_device(devices=None):
     return max(measured, key=lambda item: item[0])[1] if measured else None
 
 
+def pin_cuda(command, devices=None):
+    """Return the command and the environment that run it on its GPUs by UUID.
+
+    CUDA numbers only the GPUs it can open, so once one fails, a child's cuda:N
+    can be another card than the server's. The child sees just the GPUs its
+    --device and --worker-device name, listed by UUID and renumbered from 0. A
+    GPU turned off is never listed: CUDA hides every GPU after one it cannot
+    open. Without UUIDs the command runs unchanged.
+    """
+    flags = ("--device", "--worker-device")
+    used = []
+    for flag, value in zip(command, command[1:]):
+        if flag in flags and value.startswith("cuda:") and value not in used:
+            used.append(value)
+    if not used:
+        return command, None
+    choices = devices if devices is not None else available_devices()
+    uuids = {choice["value"]: choice.get("uuid") for choice in choices}
+    if not all(uuids.get(device) for device in used):
+        return command, None
+    renamed = {device: f"cuda:{index}" for index, device in enumerate(used)}
+    pinned = command[:1] + [
+        renamed.get(value, value) if flag in flags else value
+        for flag, value in zip(command, command[1:])
+    ]
+    visible = ",".join(f"GPU-{uuids[device]}" for device in used)
+    return pinned, {**os.environ, "CUDA_VISIBLE_DEVICES": visible}
+
+
 def public_device_label(value):
     """Name a local torch device the way the pool shows it to browsers."""
     if value.startswith("cuda:"):
@@ -1347,7 +1376,7 @@ def audiobook_consumers(clone_model, devices=None, nodes=()):
         ]
     consumers = [
         {
-            "id": choice["value"],
+            "id": local_device_id(choice),
             "kind": "local",
             "device": choice["value"],
             "label": choice["label"],
@@ -1362,6 +1391,15 @@ def audiobook_consumers(clone_model, devices=None, nodes=()):
     ]
     consumers.extend(remote_consumers(nodes))
     return tuple(consumers)
+
+
+def local_device_id(choice):
+    """A local device's lasting name: GPU-<UUID> for a GPU, else its torch name.
+
+    workers.yaml keeps GPUs turned off by this name, since a GPU that fails
+    renumbers the ones after it."""
+    value = choice["value"]
+    return f"GPU-{choice['uuid']}" if value.startswith("cuda:") and choice.get("uuid") else value
 
 
 def remote_consumers(nodes):
@@ -1394,11 +1432,15 @@ def remote_consumers(nodes):
 WORKERS_FILE = "workers.yaml"
 WORKERS_HEADER = """\
 # Narration workers: local_off lists this machine's devices that do not
-# narrate, and nodes the other machines, reached over passwordless SSH.
+# narrate (GPUs by UUID, as nvidia-smi -L shows them), and nodes the other
+# machines, reached over passwordless SSH.
 # Hilde writes this file when either changes under Advanced in a browser on
 # the server's machine. Stop the server before editing it by hand.
 """
 WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
+# This machine's devices as local_off names them: a GPU by its UUID, which
+# survives a GPU failing and the others being renumbered.
+LOCAL_DEVICE_PATTERN = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mps|cpu")
 WORKER_NODE_KEYS = ("host", "python", "model", "devices")
 
 
@@ -1456,10 +1498,12 @@ def read_workers(path):
         raise ValueError("each host may appear once; list all its devices under it")
     local_off = data.get("local_off") or []
     if not isinstance(local_off, list) or not all(
-        isinstance(device, str) and WORKER_DEVICE_PATTERN.fullmatch(device)
+        isinstance(device, str) and LOCAL_DEVICE_PATTERN.fullmatch(device)
         for device in local_off
     ):
-        raise ValueError("local_off lists devices such as cuda:0, mps, or cpu")
+        raise ValueError(
+            "local_off lists GPUs by UUID (GPU-…, as nvidia-smi -L shows them), mps, or cpu"
+        )
     if len(set(local_off)) != len(local_off):
         raise ValueError("local_off: each device may appear once")
     return nodes, local_off
@@ -2044,8 +2088,10 @@ def render_voice_previews(storage, clone_model, device):
         # Stage the clip so an interrupted render never publishes part of one.
         with tempfile.TemporaryDirectory(prefix=".preview-", dir=voice_dir) as temporary:
             staged = Path(temporary) / VOICE_PREVIEW_FILE
-            command = voice_preview_command(clone_model, voice_dir, staged, device)
-            if subprocess.run(command).returncode == 0 and staged.is_file():
+            command, environment = pin_cuda(
+                voice_preview_command(clone_model, voice_dir, staged, device)
+            )
+            if subprocess.run(command, env=environment).returncode == 0 and staged.is_file():
                 staged.replace(voice_dir / VOICE_PREVIEW_FILE)
             else:
                 failed.append(voice_dir.name)
@@ -9717,8 +9763,9 @@ class ChatSpeaker:
         self._stop()
         device = roomiest_cuda_device() or resolve_device("auto")
         self.events = queue.Queue()
+        command, environment = pin_cuda(self.command(voice_dir, device))
         self.worker = NarrationWorkerProcess(
-            "Chat speech", self.command(voice_dir, device), self.events, device=device
+            "Chat speech", command, self.events, device=device, environment=environment
         )
         self.voice = voice
         started = time.monotonic()
@@ -9974,8 +10021,9 @@ class Run:
             if self.kind == "voice":
                 self.publish("progress", {"done": 0, "total": 1})
         try:
+            command, environment = pin_cuda(self.command)
             self.process = subprocess.Popen(
-                self.command, cwd=str(ROOT), stdout=subprocess.PIPE,
+                command, cwd=str(ROOT), stdout=subprocess.PIPE, env=environment,
                 stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
             )
         except OSError as exc:
@@ -10127,11 +10175,12 @@ class JobQueue:
         """Take this machine's narration workers out of the pool, by device.
 
         A worker narrating a book cannot be taken out, and one worker must stay
-        in; putting one back starts any queued job that can now run.
+        in; putting one back starts any queued job that can now run. A device
+        this machine does not show now stays listed, so a failed GPU that comes
+        back stays off.
         """
         with self.lock:
-            local = {item["id"] for item in self.consumers if item["kind"] == "local"}
-            off = frozenset(devices) & local
+            off = frozenset(devices)
             if any(device in self.active for device in off - self.local_off):
                 raise ValueError(
                     "That GPU is narrating a book. Turn it off once the book is done."
@@ -12016,9 +12065,11 @@ class AudiobookRun(Run):
         }
         command = narrate_command(command_values)
         self.publish("log", " ".join(command) + "\n\n")
+        command, environment = pin_cuda(command)
         try:
             self.process = subprocess.Popen(
                 command,
+                env=environment,
                 cwd=str(ROOT),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -12910,6 +12961,11 @@ class Handler(BaseHTTPRequestHandler):
             jobs = self.server.jobs
             if device not in {item["device"] for item in jobs.local_snapshot()}:
                 return self.fail(HTTPStatus.NOT_FOUND, "This machine has no such device.")
+            if body.get("narrates") is not True and not LOCAL_DEVICE_PATTERN.fullmatch(device):
+                return self.fail(
+                    HTTPStatus.CONFLICT,
+                    "This GPU reports no UUID, so Hilde could not remember that it is off.",
+                )
             with self.server.workers_lock:
                 previous = jobs.local_off
                 off = previous - {device} if body.get("narrates") is True else previous | {device}
@@ -18196,6 +18252,10 @@ def main():
         ),
     )
     args = parser.parse_args()
+    # CUDA numbers GPUs in PCI bus order, the order nvidia-smi lists them in;
+    # each child still gets its GPUs by UUID (pin_cuda), since a GPU that
+    # fails renumbers the ones after it.
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     if not SCRIPT.is_file():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
     tts_models = configured_tts_models(args, parser)

@@ -7974,6 +7974,9 @@ class WorkerNodeTests(unittest.TestCase):
         "devices": ["cuda:1", "cuda:3"],
     }
     CLONE = {"source": "local", "model": "/local/Base", "allow_downloads": False}
+    GPU = "GPU-0a0a0a0a-1111-2222-3333-444444444444"
+    # A GPU that failed: this machine no longer shows it.
+    FAILED = "GPU-dead0000-1111-2222-3333-444444444444"
 
     def serve(self, nodes=()):
         temporary = tempfile.TemporaryDirectory()
@@ -7983,7 +7986,7 @@ class WorkerNodeTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.jobs = web.JobQueue(web.audiobook_consumers(
-            self.CLONE, [{"value": "cuda:0", "label": "CUDA 0"}], list(nodes)
+            self.CLONE, [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}], list(nodes)
         ))
         server.tts_models = {"design": {"source": "missing"}, "clone": dict(self.CLONE)}
         server.verbose = False
@@ -8020,8 +8023,10 @@ class WorkerNodeTests(unittest.TestCase):
         path = Path(temporary.name) / "workers.yaml"
         self.assertEqual(web.read_workers(path), ([], []))
         mac = {**self.NODE, "host": "studio-mac", "devices": ["mps"]}
-        web.write_workers(path, [self.NODE, mac], {"cuda:2", "cuda:0"})
-        self.assertEqual(web.read_workers(path), ([self.NODE, mac], ["cuda:0", "cuda:2"]))
+        web.write_workers(path, [self.NODE, mac], {self.GPU, self.FAILED, "cpu"})
+        self.assertEqual(
+            web.read_workers(path), ([self.NODE, mac], sorted([self.GPU, self.FAILED, "cpu"]))
+        )
         web.write_workers(path, [mac], set())
         self.assertEqual(web.read_workers(path), ([mac], []))
 
@@ -8043,7 +8048,9 @@ class WorkerNodeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     web.read_workers(path)
         for reason, local_off in {
-            "not a device": ["gpu0"], "a device twice": ["cuda:0", "cuda:0"], "not a list": "cuda:0",
+            "not a device": ["gpu0"], "a device twice": [self.GPU, self.GPU], "not a list": self.GPU,
+            # CUDA renumbers the GPUs after one that fails, so a number is unclear.
+            "a GPU by number": ["cuda:0"],
         }.items():
             with self.subTest(reason):
                 path.write_text(yaml.safe_dump({"local_off": local_off, "nodes": []}))
@@ -8259,15 +8266,19 @@ class WorkerNodeTests(unittest.TestCase):
     def test_a_gpu_turned_off_takes_no_book_and_the_pool_never_empties(self):
         server, origin = self.serve()
         jobs = server.jobs
-        off = {"device": "cuda:0", "narrates": False}
+        off = {"device": self.GPU, "narrates": False}
         # This machine's only GPU stays on until another machine can narrate.
         self.assertEqual(self.request(origin, "/api/workers/local", off)[0], 409)
         self.assertEqual(self.request(origin, "/api/workers/add", self.NODE)[0], 200)
+        # A failed GPU turned off earlier stays off when another one changes.
+        jobs.set_local_off({self.FAILED})
         status, answer = self.request(origin, "/api/workers/local", off)
         self.assertEqual(status, 200, answer)
         self.assertEqual([item["narrates"] for item in answer["local"]], [False])
         self.assertEqual([item["status"] for item in answer["consumers"]], ["off", "idle", "idle"])
-        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], ["cuda:0"]))
+        self.assertEqual(
+            web.read_workers(server.workers_path), ([self.NODE], sorted([self.GPU, self.FAILED]))
+        )
 
         record, _ = JobQueueTests.reserve(self, jobs, "nodes only")
         run = JobQueueTests.ControlledRun("nodes-only.mp3")
@@ -8279,11 +8290,13 @@ class WorkerNodeTests(unittest.TestCase):
         # Nor can the last machine go while every GPU here is off.
         status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
         self.assertEqual(status, 409)
-        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], ["cuda:0"]))
+        self.assertEqual(
+            web.read_workers(server.workers_path), ([self.NODE], sorted([self.GPU, self.FAILED]))
+        )
 
         # Back on, the GPU narrates the next book and cannot leave it midway.
         status, answer = self.request(
-            origin, "/api/workers/local", {"device": "cuda:0", "narrates": True}
+            origin, "/api/workers/local", {"device": self.GPU, "narrates": True}
         )
         self.assertEqual((status, answer["consumers"][0]["status"]), (200, "idle"))
         record, _ = JobQueueTests.reserve(self, jobs, "everywhere")
@@ -8292,9 +8305,29 @@ class WorkerNodeTests(unittest.TestCase):
         self.assertTrue(run.started.wait(2))
         self.assertIn("cuda:0", [worker["device"] for worker in run.assigned_workers])
         self.assertEqual(self.request(origin, "/api/workers/local", off)[0], 409)
-        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], []))
+        self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], [self.FAILED]))
         run.close(0)
         self.idle(jobs)
+
+    def test_a_child_gets_its_gpus_by_uuid_so_a_failed_gpu_cannot_shift_them(self):
+        devices = [
+            {"value": "cpu", "label": "CPU"},
+            *({"value": f"cuda:{index}", "label": f"CUDA {index}", "uuid": f"{index}" * 8}
+              for index in range(4)),
+        ]
+        command = ["python", "narrate", "--device", "cuda:1", "--dtype", "auto",
+                   "--worker-device", "cuda:3", "--ssh-worker", "spark,device=cuda:2"]
+
+        pinned, environment = web.pin_cuda(command, devices)
+
+        # Only the GPUs in use are listed: CUDA hides every GPU after one it
+        # cannot open, such as an off GPU that failed. Nodes keep their own.
+        self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], "GPU-11111111,GPU-33333333")
+        self.assertEqual(pinned, ["python", "narrate", "--device", "cuda:0", "--dtype", "auto",
+                                  "--worker-device", "cuda:1", "--ssh-worker", "spark,device=cuda:2"])
+        self.assertEqual(web.pin_cuda(["python", "--device", "cpu"], devices), (["python", "--device", "cpu"], None))
+        without_uuids = [{"value": "cuda:0", "label": "CUDA 0"}]
+        self.assertEqual(web.pin_cuda(command[:4], without_uuids), (command[:4], None))
 
     def test_a_book_on_nodes_alone_starts_no_worker_on_this_machine(self):
         workers = [consumer["worker"] for consumer in web.remote_consumers([self.NODE])]

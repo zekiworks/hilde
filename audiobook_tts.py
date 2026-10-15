@@ -1251,19 +1251,22 @@ def narration_worker(args, parser):
 class NarrationWorkerProcess:
     """One local or SSH model process speaking the chunk-worker protocol."""
 
-    def __init__(self, label, command, events, cleanup=None, device=None):
+    def __init__(self, label, command, events, cleanup=None, device=None, environment=None):
         self.label = label
         self.command = command
         self.events = events
         self.cleanup = cleanup
         # The local device, so a worker that runs out of memory can wait.
         self.device = device
+        # None inherits this process's environment.
+        self.environment = environment
         self.process = None
         self.input_lock = threading.Lock()
 
     def start(self):
         self.process = subprocess.Popen(
             self.command,
+            env=self.environment,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
