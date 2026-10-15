@@ -13782,6 +13782,8 @@ a { color:var(--accent); }
 .bad, .problem { color:var(--bad); }
 /* Errors never rely on color alone. */
 .problem::before, .notice.bad::before { content:"⚠ "; }
+/* While the server does not answer, what needs it is inert (setServerDown()). */
+body.server-down [inert] { opacity:.5; }
 .app-header { display:flex; align-items:center; gap:14px; }
 .brand-logo { width:48px; height:48px; border-radius:12px; flex:0 0 auto; }
 .brand-name { font-size:24px; }
@@ -14160,6 +14162,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       aria-controls="advanced-panels" onclick="toggleAdvanced()">Advanced</button>
   </nav>
   <p id="status" class="notice" role="status" aria-live="polite"></p>
+  <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
+    answering, so creating, saving, and deleting are off until it is back. This page checks
+    every few seconds and turns them on again by itself.</p>
 
   <div id="advanced-panels" class="advanced-panels hidden">
     <fieldset>
@@ -16859,9 +16864,31 @@ function followActive(info, reconnecting) {
   watch(currentJobId);
 }
 
+// What needs the server goes inert while it does not answer; the player and
+// the text stay, so a book already downloaded plays on.
+const SERVER_PARTS = [
+  "#advanced-panels", "#page-audiobook", "#page-progress", "#page-voice",
+  "#library-view", "#book-view .player-panel", "#chat-pane",
+];
+let serverDown = false;
+function setServerDown(down) {
+  if (down === serverDown) return;
+  serverDown = down;
+  document.body.classList.toggle("server-down", down);
+  $("server-down").classList.toggle("hidden", !down);
+  for (const selector of SERVER_PARTS) {
+    const part = document.querySelector(selector);
+    if (part) part.inert = down;
+  }
+}
+
 async function refreshJobs() {
   try {
     const current = await jsonRequest("/api/jobs");
+    // Back again, or never loaded: the server may have restarted, so take its state afresh.
+    const restart = serverDown || !state;
+    setServerDown(false);
+    if (restart) { await startPage(); return; }
     jobs = current.queue || []; runs = current.runs || [];
     consumers = current.consumers || [];
     renderQueue();
@@ -16872,7 +16899,10 @@ async function refreshJobs() {
     const active = runs.find((item) => item.active) || null;
     if (active) followActive(active, true);
     else if (!running) render();
-  } catch (_) {}
+  } catch (error) {
+    // fetch() fails with a TypeError only when it cannot reach the server.
+    if (error instanceof TypeError) setServerDown(true);
+  }
 }
 
 function render() {
@@ -17863,14 +17893,18 @@ function renderConnection() {
     : here ? "This machine: browsers treat it as secure."
     : "Plain HTTP: browsers on this device flag downloads. Start the server with --https.";
 }
-fetch("/api/state").then((response) => response.json()).then((data) => {
-  load(data);
+async function startPage() {
+  load(await jsonRequest("/api/state"));
   if (!caps.airdrop) $("airdrop").title = "AirDrop requires a macOS server";
   renderConnection();
+  setStatus("");
   refreshPaperModels();
   refreshWorkers();
-  setInterval(refreshJobs, 2000);
-});
+}
+// The page may come from the browser's cache while the server is down; the
+// poll then finds it down and starts the page once it answers.
+startPage().catch((error) => { if (error instanceof TypeError) setServerDown(true); });
+setInterval(refreshJobs, 2000);
 </script>
 </body>
 </html>

@@ -38,6 +38,36 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](web-ui.md#voices). |
 
+### Start at boot
+
+On Linux, a systemd user service starts Hilde with the machine and restarts it
+if it stops. Save this as `~/.config/systemd/user/hilde.service`, with your
+checkout, interpreter, and server options:
+
+```ini
+[Unit]
+Description=Hilde audiobook studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/path/to/hilde
+ExecStart=/path/to/python audiobook_tts_web.py --host 0.0.0.0 --port 8800 \
+  --voice-design-model /path/to/VoiceDesign --voice-clone-model /path/to/Base
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Then run `systemctl --user daemon-reload && systemctl --user enable --now hilde`,
+and once `sudo loginctl enable-linger $USER`, so user services start at boot
+without a login. `systemctl --user restart hilde` restarts it and
+`journalctl --user -u hilde` shows its log. Restarting stops any book being
+made; started again with the same document and voice, it continues where it
+stopped.
+
 ## Web search for Chat
 
 Chat with Hilde can search the web and read pages when the server knows a

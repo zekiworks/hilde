@@ -364,3 +364,10 @@ which answers a browser on the server's own machine alone, names the nodes'
 hosts and paths. **AirDrop…** appears
 only when the server runs on macOS with `pyobjc-framework-Cocoa`; other
 clients use **Download MP3**.
+
+When Hilde's server stops answering, for example while the machine restarts,
+the page says so at the top and turns off everything that needs the server:
+creating, saving, deleting, settings, and Chat. The tabs, the player, and the
+text stay, so a book already downloaded plays on. The page checks every two
+seconds and, once the server answers, reloads its state and turns everything
+back on by itself; there is no need to refresh.

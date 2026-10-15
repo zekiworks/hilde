@@ -894,6 +894,18 @@ while its request runs. Deleting the selected voice or document clears that
 selection, so Create reopens the step that needs it, and deleting a voice just
 saved clears its message.
 
+The page polls `/api/jobs` every 2 seconds (`refreshJobs()`), which doubles as
+the server probe: a `fetch()` that fails with a `TypeError` (the server cannot
+be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
+shows `#server-down` and makes `SERVER_PARTS` inert (Advanced, Create,
+Progress, Voices, the Listen table, an open book's actions, and Chat), so
+nothing that needs the server can be pressed or focused; the tabs, the
+player, and the text stay, so a downloaded book plays on. The first poll that
+answers again, or answers before the page ever loaded (served from the
+browser's cache while the server was down), lifts it and runs `startPage()`,
+which takes the state, catalogs, and workers afresh, since the server may
+have restarted.
+
 Buttons that start work disable themselves while their request is in flight,
 so a double click starts one job or voice. A refresh restores the page, Create
 step, selections, the book open on Listen, and a running job's progress. A
