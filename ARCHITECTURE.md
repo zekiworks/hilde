@@ -1038,6 +1038,37 @@ its original, in an aside of its own when a description has no original text.
 new voice needs. A stale voice's reader and audio are refused with HTTP 409:
 its timings belong to the earlier text.
 
+With its own text, `/api/reader` places the reader in the book's passages
+(numbered N as Chat cites them, the 1-based position in `narration.json`).
+`block_passages` gives each reader block's passage, the one whose
+`paragraphs` range covers the block's paragraph (`reader_block_passages()`;
+`null` for a block none covers). `passages` (`passage_details()`) gives each
+passage's `type`, PDF `page`, `section` (the text of the nearest heading
+passage at or before it, "" before the first), `label` ("Figure 2", "Table 1",
+from a caption opening with its number, else ""), `caption` (its caption
+sources' text without Markdown marks, else ""), and `sources` (`type`, `page`,
+`text`). `figures` (`reader_figures()`) lists each figure or table passage with
+pictures: `label`, `page`, `composite` (`/api/figure?book=…&passage=N`, or
+`null`) and `panels`, one per crop in reader order: its `block`, `image` (its
+index among the block's pictures), and `position` among the others
+(`figure_panel_positions()`: `left`, `right`, `top`, `bottom`, combinations
+such as `top left`, `center` or `middle` between others, `whole` for a single
+crop). PDF extraction cuts figures into separate crops, so Attention's Figure 2
+comes out as two pictures that stack on a narrow screen. `figure_boxes()` finds
+each crop on its source page by template matching (OpenCV
+`TM_CCOEFF_NORMED`, at least `FIGURE_MATCH_SCORE`) against the page rendered at
+the dpi it was cut at: `FIGURE_CROP_DPI` (150, pymupdf4llm's default, which the
+converter keeps) for figures, `TABLE_CROP_DPI` (200, the converter's own
+table render) for tables. `GET /api/figure` renders the union of the boxes
+from the PDF at `FIGURE_RENDER_DPI` (`figure_png()`), so the panels keep the
+printed layout; `GET /api/source-page` renders a whole page at
+`SOURCE_PAGE_DPI` (`source_page_png()`). Both, and the boxes, are cached in
+memory only (`functools.lru_cache`, keyed by the PDF's size and modification
+time); nothing is written into the book. Without a PDF (`book_source()`), or
+with a crop not found, `composite` is `null`, `panels` empty, and
+`/api/figure` answers 404. `/api/figure` finds the crops through the default
+voice's paragraphs (`book_figure()`).
+
 The reader player requests `/api/audio?book=...&voice=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
 requested time while decoding audio from elsewhere (measured in Chrome: up to
@@ -1116,10 +1147,8 @@ most `CHAT_CONTEXT_MAX_PASSAGES`, shown above the compose box with
 
 One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
 time, on its own thread). `begin()` loads the book through `chat_book()` and
-saves the listener's message, followed, with a `context`, by a
-`read_paragraphs` call and its result recorded as if the model had made it,
-so the model starts from that text and trimming treats it as any read;
-`run()` asks the model and runs its tool calls
+saves the listener's message, with the manifest of what it is about as
+`context`; `run()` asks the model and runs its tool calls
 until it answers without one. The system prompt (`chat_system_prompt()`)
 holds the book's outline (`chat_outline()`), where N is a passage's 1-based
 position in `narration.json`: `full`, every passage as `¶N [type] summary
@@ -1167,6 +1196,35 @@ checked the same way; and reads at most `CHAT_PAGE_MAX_BYTES` within
 as is. A failure is told to the model as the tool's result. The prompt names
 web text as others' writing whose instructions are never followed.
 
+A message may be about part of the book: `about` is
+`{"kind": "passages", "start", "end"}` (at most `CHAT_CONTEXT_MAX_PASSAGES`),
+`{"kind": "selection", "start", "end", "quote"}`, or
+`{"kind": "figure", "passage"}` (a figure or table passage), checked by
+`chat_about()`. `chat_attachment()` turns it into a manifest, the same for
+`POST /api/chat/context` (the page's context chip) and `POST /api/chat/send`:
+`about`, `section`, `preview` (at most `CHAT_PREVIEW_CHARS`), `items` (each
+`kind`, `label`, `text`, and the `passage` it comes from, except a selection),
+`image` (`sent`, `count` of pictures the figure has, `why` when not sent), and
+`badge` (`Local`, or `Cloud: ` and `CHAT_PROVIDER_NAMES`). Paragraphs bring
+each one's narration ("Hilde's narration") and, unless it is `unchanged`, its
+source text ("From the paper · <section>, PDF p. N"); a selection brings its
+words first ("Your selection"). A figure brings its caption ("From the paper
+· caption"), every other passage whose source text names it by number
+(`_mentioned_visuals()`: "Figure 2", "Fig. 2", "Figures 1 and 2"; never one
+only printed near it), and its narration ("Hilde's description"); and its
+picture, the `/api/figure` rendering or else its crops, when the model takes
+pictures in chat (`chat_sees_images()`: `CHAT_IMAGE_PROVIDERS`, a local model
+when its server is marked as seeing images; Claude Code cannot chat). Every
+converter sends the user message as the same parts (`_chat_user_parts()`): the
+items under their labels (`chat_attachment_text()`), the pictures, then the
+message: Anthropic `text` and base64 `image` blocks, Responses `input_text`
+and `input_image` data URLs (ChatGPT and the OpenAI key), Gemini `text` and
+`inlineData` parts, and for a local server one string, or `text` and
+`image_url` data URL parts when there are pictures. The stored entry keeps the
+manifest without pictures; the pictures ride only with the requests of the
+turn that attached them, each counted as `CHAT_IMAGE_TOKENS`. The system
+prompt says what each label means.
+
 `chat_context()` sends the conversation whole until it passes `CHAT_TRIM_AT`
 (80%) of the model's window less its reply, counted at
 `CHAT_CHARS_PER_TOKEN`, the prompt and tool schemas fixed; then the oldest
@@ -1197,7 +1255,7 @@ arrive on a later, empty part, so a Gemini answer keeps every part as received
 in `gemini_parts` on its stored assistant entry; `_chat_gemini_contents()`
 sends those back unchanged as the `model` turn, followed by one `user` turn
 of `functionResponse`s. An assistant entry without them (another model's, or
-the listener's own reading) is rebuilt with Google's documented
+a reading an earlier Hilde added for the listener) is rebuilt with Google's documented
 `GEMINI_SKIP_SIGNATURE` on its first call. Other providers ignore
 `gemini_parts`. Claude Code, which runs with its
 tools off, refuses chat with a message. A local reply still writing at its
@@ -1208,7 +1266,8 @@ Events (`text` deltas, `reset`, `message` with a display entry, `trimmed`,
 when a stream drops, reloads the conversation. `ChatTurn.keep()` saves an
 entry to `chat.json` and publishes it under the turn's lock, which
 `chat_payload()` reads the conversation, the partial answer, and
-`event_index` under, so a page sees each message once. `chat_display_entry()` renders
+`event_index` under, so a page sees each message once. `chat_display_entry()` keeps
+a listener's message's `context` manifest, for the chip on past questions, and renders
 an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
 `.chat-cite` links; `chat_payload()` maps each passage number to its first
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
@@ -1280,8 +1339,10 @@ Read answers aloud on, the last answer of a finished turn is read.
 | `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
+| `GET /api/source-page?book=...&page=N` | Page N (1-based) of the book's PDF (`book_source()`) as PNG at `SOURCE_PAGE_DPI`, cached in memory. HTTP 404 when the book has no PDF or no such page, or for an invalid id or page. |
+| `GET /api/figure?book=...&passage=N` | Figure or table passage N as laid out in the book's PDF: the union of its crops' boxes, found by template matching (`figure_boxes()`), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
-| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, and its Original view's batches. |
+| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position}]}}`; see Reader). |
 | `GET /api/paper/models` | Adaptation model catalog: the browser's added local servers' models, server by server in the order added, each `{provider, selector, server, label: "<model> · <host:port>"}` (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, with the default a job uses when none is chosen, Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
@@ -1290,12 +1351,13 @@ Read answers aloud on, the last answer of a finished turn is read.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries, `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with), `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
-| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `context` `{start, end}` (passage numbers, at most `CHAT_CONTEXT_MAX_PASSAGES`, read before the model answers); the local servers are the browser's own `audiobook.local_servers`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `context`. |
+| `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are the browser's own `audiobook.local_servers`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
@@ -1369,7 +1431,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 199 tests. It covers voice persistence
+The regression suite currently has 206 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1434,7 +1496,13 @@ result and the latest message, a book without summaries refused, a rebuilt
 book keeping its files and dropping its conversation, a turn against a
 fake local server running streamed tool calls until the model answers, a
 local model asked on the added server that offers it, a
-question from the player reaching the model with its paragraphs already read,
+question about paragraphs reaching the model with their narration labelled in
+its message, a figure's context bringing its caption, every passage naming it
+(never one printed only near it), and its description, each provider's request
+carrying exactly that manifest, with the picture only when the model takes
+pictures and only on the turn that attached it, the reader placing blocks in
+passages and a two-panel figure's crops found on its PDF page and rendered
+side by side, missing source pages refused,
 web pages on this machine or the local network never fetched, directly or by
 redirect, a page read as its main content in pieces, SearXNG results listed
 with their links, no web tools without a search server, an answer read
@@ -1548,4 +1616,4 @@ stopping the job, and Stop
 cutting off requests a busy model server has not answered. It does not load a
 Qwen model or require a GPU.
 
-Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, `markdown-it-py`, PyYAML (for `workers.yaml`), `cryptography` (for `--https`), matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in, a signed-in Claude Code, an Anthropic, OpenAI, or Google Gemini API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.
+Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, OpenCV (`opencv-python`, which RapidOCR also needs; figure layout), `markdown-it-py`, PyYAML (for `workers.yaml`), `cryptography` (for `--https`), matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in, a signed-in Claude Code, an Anthropic, OpenAI, or Google Gemini API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.

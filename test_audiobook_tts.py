@@ -156,8 +156,9 @@ def speech_wav(text, seconds_per_char=0.07):
 
 def store_book(storage, title="A Paper", source_sha256="a" * 64, voice="Narrator", *,
                markdown="<!-- audiobook-tts:block=0 -->\n\nBody text.",
-               timings=ONE_BLOCK_TIMINGS, narration=None, audio=None, voice_fields=None):
-    """Publish a book with one voice the way a finished job does."""
+               timings=ONE_BLOCK_TIMINGS, narration=None, audio=None, voice_fields=None, source=None):
+    """Publish a book with one voice the way a finished job does; `source`,
+    a PDF, is kept as the book's own copy."""
     staged = storage.in_progress / f"staged-{voice}.mp3"
     staged.parent.mkdir(parents=True, exist_ok=True)
     if audio is None:
@@ -168,13 +169,13 @@ def store_book(storage, title="A Paper", source_sha256="a" * 64, voice="Narrator
     now = web.utc_timestamp()
     record = {
         "schema": web.BOOK_SCHEMA, "source_sha256": source_sha256, "title": title,
-        "source_filenames": [f"{title}.pdf"], "source_file": None,
+        "source_filenames": [f"{title}.pdf"], "source_file": "source.pdf" if source else None,
         "created_at": now, "updated_at": now, "chunk_max_chars": 500,
     }
     entry = {"name": voice, "created_at": now, "duration": 0.1, **(voice_fields or {})}
     return web.commit_book(
         storage, record, narration or {"schema": 1, "original_view": False, "passages": []},
-        markdown, None, entry, staged, dict(timings),
+        markdown, source, entry, staged, dict(timings),
     )
 
 
@@ -7579,8 +7580,9 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(entries[-1]["text"], "Dams are in ¶2.")
         # A thought is never part of the answer.
         self.assertNotIn("Which paragraph", json.dumps([entry.get("text") for entry in entries]))
-        # A call Gemini did not write, such as the listener's own reading, is
-        # marked so Gemini 3 takes it without a signature of its own.
+        # A call Gemini did not write, such as another model's or a reading an
+        # earlier Hilde added for the listener, is marked so Gemini 3 takes it
+        # without a signature of its own.
         contents = web._chat_gemini_contents([
             {"role": "user", "text": "What is this?"},
             {"role": "assistant", "text": "", "calls": [
@@ -7645,7 +7647,7 @@ class ChatTests(unittest.TestCase):
         ])
         self.assertEqual(web.read_chat(path)[-1]["text"], "Dams are in ¶2.")
 
-    def test_a_question_from_the_player_comes_with_the_paragraphs_being_played(self):
+    def test_a_question_about_paragraphs_comes_with_their_narration_in_the_message(self):
         book, _ = self.book(chat_narration("Storms.", "Dams.", "Silt."))
         FakeChatModel.requests = []
         FakeChatModel.replies = [[({"content": "Dams hold coarse sediment back."}, "stop")]]
@@ -7653,25 +7655,39 @@ class ChatTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
+        passages = web.chat_book(self.storage, book)[2]
+        about = web.chat_about({"kind": "passages", "start": 2, "end": 3}, passages)
+        attachment = web.chat_attachment(
+            self.storage, book, passages, "lm-studio/fake", about, local_servers_at(server),
+        )
         turn = web.ChatTurn(self.storage, book, 'What does it mean by "trapped"?', "lm-studio/fake",
-                            local_servers_at(server), (2, 3))
+                            local_servers_at(server), attachment)
         self.assertTrue(web.ChatRegistry().start(turn))
         index = 0
         while not turn.events_from(index, 10)[1]:
             index = len(turn.events)
 
-        # The model is asked once, already holding the text she was at,
-        # read right after her question as if it had asked.
+        # The model is asked once, the labelled paragraphs in her message,
+        # without a read made up for it.
         (request,) = FakeChatModel.requests
-        messages = request["messages"][1:]
-        self.assertEqual([message["role"] for message in messages], ["user", "assistant", "tool"])
-        self.assertEqual(json.loads(messages[1]["tool_calls"][0]["function"]["arguments"]),
-                         {"start": 2, "end": 3})
-        self.assertEqual(messages[2]["content"], "¶2\nParagraph 2 text.\n\n¶3\nParagraph 3 text.")
-        self.assertEqual(
-            [entry["text"] for entry in web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]],
-            ['What does it mean by "trapped"?', "", "Read ¶2–3", "Dams hold coarse sediment back."],
-        )
+        (message,) = request["messages"][1:]
+        self.assertEqual(message["content"], (
+            "The listener attached this from the book:\n\n"
+            "[Hilde's narration (¶2)]\nParagraph 2 text.\n\n"
+            "[Hilde's narration (¶3)]\nParagraph 3 text.\n\n"
+            'What does it mean by "trapped"?'
+        ))
+        conversation = web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]
+        self.assertEqual([entry["text"] for entry in conversation],
+                         ['What does it mean by "trapped"?', "Dams hold coarse sediment back."])
+        # The page shows the chip of a past question from its manifest.
+        self.assertEqual(conversation[0]["context"], attachment[0])
+        self.assertEqual(attachment[0]["preview"], "Paragraph 2 text.")
+        self.assertEqual(attachment[0]["badge"], "Local")
+        with self.assertRaisesRegex(ValueError, "at most 6"):
+            web.chat_about({"kind": "passages", "start": 1, "end": 9}, passages)
+        with self.assertRaisesRegex(ValueError, "figure or table"):
+            web.chat_about({"kind": "figure", "passage": 2}, passages)
 
     def test_a_local_model_is_asked_on_the_server_that_offers_it(self):
         book, _ = self.book(chat_narration("Storms.", "Dams."))
@@ -7791,6 +7807,296 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(label, 'Searched the book for "optimal threshold"')
         self.assertEqual([line.split()[0] for line in content.splitlines()], ["¶2", "¶1"])
         self.assertIn("denote the optimal threshold value", content)
+
+
+# A figure of two panels side by side, at points the crop dpi cuts on whole pixels.
+FIGURE_PANELS = ((72, 120, 216, 264), (312, 96, 504, 288))
+
+
+def store_figure_book(storage):
+    """A one-page PDF book: a heading, prose, Figure 1 (two panels side by
+    side, cut as PDF extraction cuts them), and prose naming other figures.
+    Return the book and the crops."""
+    import pymupdf
+
+    pdf_path = Path(storage.root) / "two-panels.pdf"
+    rng = np.random.default_rng(7)
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        page.insert_text((72, 72), "1 Model")
+        for rect in FIGURE_PANELS:
+            pixels = rng.integers(0, 256, (48, 48, 3), dtype=np.uint8)
+            page.insert_image(pymupdf.Rect(rect), pixmap=pymupdf.Pixmap(pymupdf.csRGB, 48, 48, pixels.tobytes(), False))
+        pdf.save(pdf_path)
+        crops = [
+            pdf[0].get_pixmap(dpi=web.FIGURE_CROP_DPI, clip=pymupdf.Rect(rect)).tobytes("png")
+            for rect in FIGURE_PANELS
+        ]
+
+    def passage(number, kind, text, source, unchanged=True, sources=None):
+        return {
+            "id": number, "type": kind, "page": 1, "text": text, "original_text": source,
+            "unchanged": unchanged, "paragraphs": [number - 1, number - 1],
+            "sources": sources or [{"type": kind, "page": 1, "text": source}],
+            "summary": f"Summary {number}.", "tags": [],
+        }
+
+    caption = "Figure 1: Encoder (left) and decoder (right)."
+    narration = {"schema": 2, "original_view": False, "passages": [
+        passage(1, "heading", "1 Model", "# **1 Model**"),
+        passage(2, "body", "The encoder reads the input, as Figure 1 shows.",
+                "The encoder reads the input (Figure 1).", unchanged=False),
+        # Printed right above the figure, it never names it.
+        passage(3, "body", "The decoder writes the output.", "The decoder writes the output."),
+        passage(4, "figure", "Figure 1 shows the encoder on the left and the decoder on the right.", caption,
+                unchanged=False, sources=[
+                    {"type": "figure", "page": 1, "text": "![](images/left.png)"},
+                    {"type": "figure", "page": 1, "text": "![](images/right.png)"},
+                    {"type": "caption", "page": 1, "text": caption},
+                ]),
+        passage(5, "body", "Unlike Figure 10, Figures 1 and 2 hold no numbers.",
+                "Unlike Figure 10, Figures 1 and 2 hold no numbers."),
+        passage(6, "body", "Figure 10 is in the appendix.", "Figure 10 is in the appendix."),
+    ]}
+    pictures = "\n\n".join(f"![](data:image/png;base64,{base64.b64encode(crop).decode()})" for crop in crops)
+    blocks = [
+        "# 1 Model", "The encoder reads the input, as Figure 1 shows.", "The decoder writes the output.",
+        f"Figure 1 shows the encoder on the left and the decoder on the right.\n\n{pictures}",
+        "Unlike Figure 10, Figures 1 and 2 hold no numbers.", "Figure 10 is in the appendix.",
+    ]
+    timings = {
+        "schema": 3, "sample_rate": 24000, "duration_samples": 2400, "block_count": len(blocks),
+        "paragraphs": list(range(len(blocks))),
+        "cues": [{"block": block, "start_sample": 400 * block, "end_sample": 400 * (block + 1)}
+                 for block in range(len(blocks))],
+        "word_timing": "unavailable", "word_cues": [],
+    }
+    book = store_book(
+        storage, source_sha256="f" * 64, narration=narration, timings=timings, source=pdf_path,
+        markdown="\n\n".join(f"<!-- audiobook-tts:block={index} -->\n\n{block}" for index, block in enumerate(blocks)),
+    )
+    return book, crops
+
+
+class FigureAndContextTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+        self.book, self.crops = store_figure_book(self.storage)
+        self.passages = web.chat_book(self.storage, self.book)[2]
+
+    def figure(self, model, local_servers=()):
+        about = web.chat_about({"kind": "figure", "passage": 4}, self.passages)
+        return web.chat_attachment(self.storage, self.book, self.passages, model, about, list(local_servers))
+
+    def local_server(self):
+        FakeChatModel.requests, FakeChatModel.replies = [], []
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_the_reader_places_blocks_passages_and_figure_panels(self):
+        payload = web.audiobook_reader_payload(self.storage, self.book)
+        self.assertEqual(payload["block_passages"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(payload["passages"][4], {
+            "type": "figure", "page": 1, "section": "1 Model", "label": "Figure 1",
+            "caption": "Figure 1: Encoder (left) and decoder (right).",
+            "sources": self.passages[3]["sources"],
+        })
+        self.assertEqual(
+            [(detail["section"], detail["label"]) for detail in payload["passages"].values()],
+            [("1 Model", "")] * 3 + [("1 Model", "Figure 1")] + [("1 Model", "")] * 2,
+        )
+        self.assertEqual(payload["figures"], {4: {
+            "label": "Figure 1", "page": 1, "composite": f"/api/figure?book={self.book}&passage=4",
+            "panels": [{"block": 3, "image": 0, "position": "left"}, {"block": 3, "image": 1, "position": "right"}],
+        }})
+
+    def test_panel_positions_follow_the_boxes_as_printed(self):
+        grid = [(0, 0, 10, 10), (12, 0, 22, 10), (0, 12, 10, 22), (12, 12, 22, 22)]
+        self.assertEqual(web.figure_panel_positions(grid), ["top left", "top right", "bottom left", "bottom right"])
+        self.assertEqual(web.figure_panel_positions([(0, 0, 10, 4), (0, 6, 10, 20)]), ["top", "bottom"])
+        self.assertEqual(web.figure_panel_positions([(0, 0, 10, 10)]), ["whole"])
+
+    def get(self, server, path):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{path}") as response:
+                return response.status, response.headers["Content-Type"], response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers["Content-Type"], exc.read()
+
+    def test_the_figure_route_renders_the_panels_side_by_side_from_the_pdf(self):
+        import cv2
+
+        bare = store_book(self.storage, title="No PDF", source_sha256="b" * 64)
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.storage = self.storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                status, kind, body = self.get(server, f"/api/figure?book={self.book}&passage=4")
+                not_figure = self.get(server, f"/api/figure?book={self.book}&passage=3")[0]
+                page = self.get(server, f"/api/source-page?book={self.book}&page=1")
+                missing = [
+                    self.get(server, f"/api/source-page?book={self.book}&page={number}")[0]
+                    for number in ("0", "2", "x")
+                ] + [self.get(server, f"/api/source-page?book={bare}&page=1")[0],
+                     self.get(server, f"/api/figure?book={bare}&passage=1")[0]]
+            finally:
+                server.shutdown()
+                thread.join()
+        self.assertEqual((status, kind), (200, "image/png"))
+        composite = cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_GRAYSCALE)
+        # One picture: the union of both panels' boxes, at the render dpi.
+        scale = web.FIGURE_RENDER_DPI / 72
+        self.assertAlmostEqual(composite.shape[1], (504 - 72) * scale, delta=2)
+        self.assertAlmostEqual(composite.shape[0], (288 - 96) * scale, delta=2)
+        # Each panel sits where the PDF prints it: side by side, left then right.
+        found = []
+        for crop in self.crops:
+            template = cv2.imdecode(np.frombuffer(crop, np.uint8), cv2.IMREAD_GRAYSCALE)
+            template = cv2.resize(template, None, fx=web.FIGURE_RENDER_DPI / web.FIGURE_CROP_DPI,
+                                  fy=web.FIGURE_RENDER_DPI / web.FIGURE_CROP_DPI)
+            _, score, _, at = cv2.minMaxLoc(cv2.matchTemplate(composite, template, cv2.TM_CCOEFF_NORMED))
+            self.assertGreater(score, 0.8)
+            found.append(at)
+        self.assertAlmostEqual(found[0][0], 0, delta=3)
+        self.assertAlmostEqual(found[1][0], (312 - 72) * scale, delta=3)
+        self.assertAlmostEqual(found[0][1], (120 - 96) * scale, delta=3)
+        self.assertEqual(not_figure, 404)
+        self.assertEqual((page[0], page[1]), (200, "image/png"))
+        self.assertEqual(missing, [404] * 5)
+
+    def test_a_figure_brings_its_caption_the_passages_naming_it_and_its_description(self):
+        manifest, images = self.figure("anthropic/claude-test")
+        self.assertEqual(
+            [(item["kind"], item["label"], item["passage"]) for item in manifest["items"]],
+            [("caption", "From the paper · caption", 4),
+             ("source", "From the paper · 1 Model, PDF p. 1", 2),
+             ("source", "From the paper · 1 Model, PDF p. 1", 5),
+             ("description", "Hilde's description", 4)],
+        )
+        self.assertEqual(manifest["items"][1]["text"], "The encoder reads the input (Figure 1).")
+        # The paragraph printed beside it, and one naming Figure 10, are not about it.
+        sent = json.dumps(manifest)
+        self.assertNotIn("The decoder writes the output", sent)
+        self.assertNotIn("appendix", sent)
+        self.assertEqual(manifest["section"], "1 Model")
+        self.assertEqual(manifest["preview"], "Figure 1: Encoder (left) and decoder (right).")
+        self.assertEqual(manifest["badge"], "Cloud: Anthropic")
+        # The picture as printed goes to a cloud model, never into the manifest.
+        self.assertEqual(manifest["image"], {"sent": True, "count": 1})
+        self.assertEqual(images[0]["mime"], "image/png")
+        self.assertNotIn(images[0]["data"], sent)
+        self.assertEqual(self.figure("claude-code/opus")[0]["image"]["sent"], False)
+
+    def test_every_provider_sends_exactly_the_manifest_and_its_picture(self):
+        question = "What is on the left?"
+
+        def entry(attachment):
+            manifest, images = attachment
+            return {"role": "user", "text": question, "context": manifest, "images": images}
+
+        attachment = self.figure("gemini/gemini-test")
+        manifest, images = attachment
+        text = web.chat_attachment_text(manifest)
+        for item in manifest["items"]:
+            self.assertIn(f"[{item['label']} (¶{item['passage']})]\n{item['text']}", text)
+        self.assertEqual(text.count("\n\n["), len(manifest["items"]) + 1)  # the items and the picture's note
+        data, url = images[0]["data"], f"data:image/png;base64,{images[0]['data']}"
+        self.assertEqual(web._chat_anthropic_messages([entry(attachment)]), [{"role": "user", "content": [
+            {"type": "text", "text": text},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+            {"type": "text", "text": question},
+        ]}])
+        self.assertEqual(web._chat_openai_input([entry(attachment)]), [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": text},
+            {"type": "input_image", "image_url": url},
+            {"type": "input_text", "text": question},
+        ]}])
+        self.assertEqual(web._chat_gemini_contents([entry(attachment)]), [{"role": "user", "parts": [
+            {"text": text}, {"inlineData": {"mimeType": "image/png", "data": data}}, {"text": question},
+        ]}])
+        # A local model gets the picture only when its server is marked as seeing images.
+        server = f"http://127.0.0.1:{self.local_server().server_port}"
+        seeing = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "vision": True}])
+        self.assertEqual(seeing[0]["image"], {"sent": True, "count": 1})
+        self.assertEqual(seeing[0]["badge"], "Local")
+        self.assertEqual(web._chat_openai_messages("S", [entry(seeing)])[1], {"role": "user", "content": [
+            {"type": "text", "text": web.chat_attachment_text(seeing[0])},
+            {"type": "image_url", "image_url": {"url": url}},
+            {"type": "text", "text": question},
+        ]})
+        blind = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "vision": False}])
+        self.assertEqual(blind[0]["image"], {
+            "sent": False, "count": 1, "why": "This local model's server is not marked as seeing images.",
+        })
+        self.assertEqual(blind[1], [])
+        self.assertEqual(web._chat_openai_messages("S", [entry(blind)])[1], {
+            "role": "user", "content": f"{web.chat_attachment_text(blind[0])}\n\n{question}",
+        })
+        self.assertNotIn("as printed in the paper", web.chat_attachment_text(blind[0]))
+
+    def test_the_picture_goes_with_the_turn_that_attached_it_only(self):
+        server = self.local_server()
+        servers = [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio", "vision": True}]
+        FakeChatModel.replies = [[({"content": "The encoder."}, "stop")], [({"content": "Yes."}, "stop")]]
+        attachment = self.figure("lm-studio/fake", servers)
+        for text, attached in (("What is on the left?", attachment), ("Sure?", None)):
+            turn = web.ChatTurn(self.storage, self.book, text, "lm-studio/fake", servers, attached)
+            self.assertTrue(web.ChatRegistry().start(turn))
+            index = 0
+            while not turn.events_from(index, 10)[1]:
+                index = len(turn.events)
+        first, second = FakeChatModel.requests
+        self.assertIn("image_url", json.dumps(first["messages"][-1]))
+        self.assertNotIn("image_url", json.dumps(second))
+        self.assertIn("[Hilde's description (¶4)]", second["messages"][1]["content"])
+        path = web.read_book(self.storage, self.book)[0]
+        stored = web.read_chat(path)[0]
+        self.assertEqual(stored["context"], attachment[0])
+        self.assertNotIn("images", stored)
+        self.assertNotIn(attachment[1][0]["data"], (path / "chat.json").read_text())
+
+    def test_the_context_route_answers_the_manifest_send_uses(self):
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.storage = self.storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                def post(about):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{server.server_port}/api/chat/context",
+                        data=json.dumps({"book": self.book, "model": "openai/gpt-test", "about": about}).encode(),
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    try:
+                        with urllib.request.urlopen(request) as response:
+                            return response.status, json.load(response)
+                    except urllib.error.HTTPError as exc:
+                        return exc.code, json.load(exc)
+
+                figure = post({"kind": "figure", "passage": 4})
+                selection = post({"kind": "selection", "start": 2, "end": 3, "quote": "reads  the\ninput"})
+                wrong = post({"kind": "figure", "passage": 3})
+            finally:
+                server.shutdown()
+                thread.join()
+        self.assertEqual(figure, (200, self.figure("openai/gpt-test")[0]))
+        self.assertEqual(selection[0], 200)
+        self.assertEqual(
+            [(item["kind"], item.get("passage")) for item in selection[1]["items"]],
+            [("selection", None), ("narration", 2), ("source", 2), ("narration", 3)],
+        )
+        self.assertEqual(selection[1]["items"][0], {"kind": "selection", "label": "Your selection", "text": "reads the input"})
+        self.assertEqual(selection[1]["image"], {"sent": False, "count": 0, "why": "Only text is attached."})
+        self.assertEqual(wrong[0], 400)
 
 
 class FakeWeb(BaseHTTPRequestHandler):

@@ -31,6 +31,7 @@ import collections
 import concurrent.futures
 import contextlib
 import difflib
+import functools
 import datetime
 import io
 import json
@@ -3862,6 +3863,12 @@ def audiobook_reader_payload(storage, book, voice=None):
             held_blocks,
         )
     filenames = record.get("source_filenames") or []
+    # A new voice reads the book's own text; it needs that text.
+    has_text = narration is not None and narration_sha256 == record.get("narration_sha256")
+    passages = narration["passages"] if has_text else []
+    details = passage_details(passages)
+    block_passages = reader_block_passages(paragraphs, passages)
+    pdf = book_source(storage, path, record)
     return {
         "book": book,
         "voice": voice,
@@ -3871,8 +3878,7 @@ def audiobook_reader_payload(storage, book, voice=None):
             {"name": entry["name"], "status": entry.get("status")}
             for entry in record.get("voices") or ()
         ],
-        # A new voice reads the book's own text; it needs that text.
-        "has_text": narration is not None and narration_sha256 == record.get("narration_sha256"),
+        "has_text": has_text,
         "sample_rate": sample_rate,
         "timing_precision": timing_precision,
         "word_timing": word_timing,
@@ -3885,7 +3891,240 @@ def audiobook_reader_payload(storage, book, voice=None):
             )
         ],
         "originals": originals,
+        "block_passages": block_passages,
+        "passages": details,
+        "figures": reader_figures(
+            book, pdf if pdf is not None and pdf.suffix.lower() == ".pdf" else None,
+            passages, details, sources, block_passages,
+        ),
     }
+
+
+# PDF extraction cuts a figure at pymupdf4llm's default of 150 dpi (the
+# converter passes none) and a table at the 200 dpi it renders tables at;
+# a crop is found on its page rendered at the same dpi.
+FIGURE_CROP_DPI = 150
+TABLE_CROP_DPI = 200
+# A crop counts as found where it matches its page this closely.
+FIGURE_MATCH_SCORE = 0.9
+# A figure as laid out on its page, and a whole source page, are rendered
+# from the PDF at these.
+FIGURE_RENDER_DPI = 200
+SOURCE_PAGE_DPI = 150
+FIGURE_PASSAGE_TYPES = frozenset({"figure", "table"})
+
+
+def passage_details(passages):
+    """Each passage's place and source by its number (as Chat cites it):
+    type, PDF page, section (the nearest heading at or before it), label
+    ("Figure 2", from its caption), caption, and source paragraphs."""
+    details, section = {}, ""
+    for number, passage in enumerate(passages, 1):
+        sources = [
+            {"type": source.get("type"), "page": source.get("page"), "text": source.get("text") or ""}
+            for source in passage.get("sources") or () if isinstance(source, dict)
+        ]
+        if passage.get("type") == "heading":
+            heading = passage.get("original_text") or " ".join(source["text"] for source in sources)
+            section = " ".join(_layout_text(heading).split())
+        caption = " ".join(
+            " ".join(_layout_text(source["text"]).split()) for source in sources if source["type"] == "caption"
+        )
+        named = CAPTION_NUMBER_PATTERN.match(caption)
+        details[number] = {
+            "type": passage.get("type") or "body",
+            "page": passage.get("page"),
+            "section": section,
+            "label": (
+                f"{'Table' if named.group(1).lower().startswith('tab') else 'Figure'} {int(named.group(2))}"
+                if named else ""
+            ),
+            "caption": caption,
+            "sources": sources,
+        }
+    return details
+
+
+def reader_block_passages(paragraphs, passages):
+    """The number of the passage each reader block belongs to, by the reader
+    paragraphs the passage covers; None for a block no passage covers."""
+    owners = {}
+    for number, passage in enumerate(passages, 1):
+        covered = passage.get("paragraphs")
+        if isinstance(covered, list) and covered and all(type(value) is int for value in covered):
+            owners.update(dict.fromkeys(range(covered[0], covered[-1] + 1), number))
+    return [owners.get(paragraph) for paragraph in paragraphs]
+
+
+def reader_passage_images(sources, block_passages, number):
+    """A passage's pictures in reader order, as (block, index of the picture
+    in its block, MIME type, bytes)."""
+    images = []
+    for block, (source, owner) in enumerate(zip(sources, block_passages)):
+        if owner != number:
+            continue
+        pictures = [
+            match.group(2) for match in MARKDOWN_IMAGE_PATTERN.finditer(source)
+            if READER_IMAGE_DATA.fullmatch(match.group(2))
+        ]
+        for index, url in enumerate(pictures):
+            header, _, data = url.partition(",")
+            images.append((block, index, header[5:].partition(";")[0].lower(), base64.b64decode(data)))
+    return images
+
+
+def _pdf_version(pdf):
+    status = pdf.stat()
+    return status.st_size, status.st_mtime_ns
+
+
+def figure_boxes(pdf, passage, crops):
+    """Where a figure's or table's crops sit on its PDF page, in points
+    (x0, y0, x1, y1), crop by crop; None when one cannot be found."""
+    if not crops:
+        return None
+    dpi = TABLE_CROP_DPI if passage.get("type") == "table" else FIGURE_CROP_DPI
+    return _figure_boxes(str(pdf), _pdf_version(pdf), passage.get("page"), dpi, tuple(crops))
+
+
+@functools.lru_cache(maxsize=64)
+def _figure_boxes(pdf, version, page, dpi, crops):
+    import cv2
+    import numpy
+    import pymupdf
+
+    try:
+        with pymupdf.open(pdf) as document:
+            if type(page) is not int or not 1 <= page <= document.page_count:
+                return None
+            sheet = document[page - 1]
+            origin = sheet.rect.tl
+            pixmap = sheet.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
+    except (RuntimeError, ValueError):
+        return None
+    rendered = numpy.frombuffer(pixmap.samples, numpy.uint8).reshape(pixmap.height, pixmap.stride)[:, :pixmap.width]
+    boxes = []
+    for crop in crops:
+        template = cv2.imdecode(numpy.frombuffer(crop, numpy.uint8), cv2.IMREAD_GRAYSCALE)
+        if template is None or template.shape[0] > rendered.shape[0] or template.shape[1] > rendered.shape[1]:
+            return None
+        _, score, _, (x, y) = cv2.minMaxLoc(cv2.matchTemplate(rendered, template, cv2.TM_CCOEFF_NORMED))
+        # A blank crop scores NaN, which fails here too.
+        if not score >= FIGURE_MATCH_SCORE:
+            return None
+        height, width = template.shape
+        scale = 72 / dpi
+        boxes.append((
+            origin.x + x * scale, origin.y + y * scale,
+            origin.x + (x + width) * scale, origin.y + (y + height) * scale,
+        ))
+    return tuple(boxes)
+
+
+def figure_panel_positions(boxes):
+    """Each box's place among the others, as printed: "left", "top right",
+    "center"…; "whole" for a figure of one crop."""
+    if len(boxes) == 1:
+        return ["whole"]
+    slack = 0.02 * max(
+        max(box[2] for box in boxes) - min(box[0] for box in boxes),
+        max(box[3] for box in boxes) - min(box[1] for box in boxes),
+    )
+    positions = []
+    for box in boxes:
+        others = [other for other in boxes if other is not box]
+        left = any(other[2] <= box[0] + slack for other in others)
+        right = any(other[0] >= box[2] - slack for other in others)
+        above = any(other[3] <= box[1] + slack for other in others)
+        below = any(other[1] >= box[3] - slack for other in others)
+        across = "center" if left and right else "right" if left else "left" if right else ""
+        down = "middle" if above and below else "bottom" if above else "top" if below else ""
+        positions.append(" ".join(filter(None, (down, across))) or "center")
+    return positions
+
+
+def figure_png(pdf, passage, boxes):
+    """A figure as laid out in the PDF: its boxes' union rendered from the page."""
+    clip = (
+        min(box[0] for box in boxes), min(box[1] for box in boxes),
+        max(box[2] for box in boxes), max(box[3] for box in boxes),
+    )
+    return _pdf_png(str(pdf), _pdf_version(pdf), passage.get("page"), FIGURE_RENDER_DPI, clip)
+
+
+def source_page_png(pdf, page):
+    """A page of a PDF (1-based) as PNG; None when it has no such page."""
+    return _pdf_png(str(pdf), _pdf_version(pdf), page, SOURCE_PAGE_DPI)
+
+
+@functools.lru_cache(maxsize=32)
+def _pdf_png(pdf, version, page, dpi, clip=None):
+    import pymupdf
+
+    try:
+        with pymupdf.open(pdf) as document:
+            if type(page) is not int or not 1 <= page <= document.page_count:
+                return None
+            sheet = document[page - 1]
+            return sheet.get_pixmap(
+                dpi=dpi, clip=pymupdf.Rect(clip) if clip else None, alpha=False,
+            ).tobytes("png")
+    except (RuntimeError, ValueError):
+        return None
+
+
+def reader_figures(book, pdf, passages, details, sources, block_passages):
+    """Each figure or table passage with pictures, by number: its label, PDF
+    page, the link of its picture as laid out in the PDF, and its panels
+    (each crop's block, index in the block, and place in the figure). Without
+    a PDF, or with a crop not found on its page, the link is None and the
+    panels empty."""
+    figures = {}
+    for number, passage in enumerate(passages, 1):
+        if passage.get("type") not in FIGURE_PASSAGE_TYPES:
+            continue
+        images = reader_passage_images(sources, block_passages, number)
+        if not images:
+            continue
+        boxes = figure_boxes(pdf, passage, [image[3] for image in images]) if pdf else None
+        figures[number] = {
+            "label": details[number]["label"],
+            "page": passage.get("page"),
+            "composite": (
+                f"/api/figure?book={urllib.parse.quote(book)}&passage={number}" if boxes else None
+            ),
+            "panels": [
+                {"block": block, "image": index, "position": position}
+                for (block, index, _, _), position in zip(images, figure_panel_positions(boxes))
+            ] if boxes else [],
+        }
+    return figures
+
+
+def book_figure(storage, book, number):
+    """A book's figure or table passage `number` as the reader shows it: the
+    passage, its crops (reader_passage_images()), and its picture as laid
+    out in the source PDF, or None without one. FileNotFoundError when the
+    book has no such passage or no text of its own."""
+    path, record = read_book(storage, book)
+    narration, narration_sha256 = read_narration(path)
+    if narration is None or narration_sha256 != record.get("narration_sha256"):
+        raise FileNotFoundError("This book has no text of its own.")
+    passages = narration["passages"]
+    if not 1 <= number <= len(passages) or passages[number - 1].get("type") not in FIGURE_PASSAGE_TYPES:
+        raise FileNotFoundError("This book has no such figure.")
+    passage = passages[number - 1]
+    _, voice, _ = book_audio(storage, book)
+    sources = _reader_markdown_sources((path / "reader.md").read_text(encoding="utf-8"))
+    synchronization = read_json_file(voice_folder(path, voice) / "timings.json") or {}
+    paragraphs = synchronization.get("paragraphs") or list(range(len(sources)))
+    crops = reader_passage_images(sources, reader_block_passages(paragraphs, passages), number)
+    pdf = book_source(storage, path, record)
+    boxes = (
+        figure_boxes(pdf, passage, [crop[3] for crop in crops])
+        if pdf is not None and pdf.suffix.lower() == ".pdf" else None
+    )
+    return passage, crops, figure_png(pdf, passage, boxes) if boxes else None
 
 
 def _render_reader_originals(originals, paragraphs):
@@ -8355,8 +8594,21 @@ CHAT_MAX_TOOL_CALLS = 20
 CHAT_READ_MAX_CHARS = 24_000
 CHAT_FILE_MAX_BYTES = 1_000_000
 CHAT_MESSAGE_MAX_CHARS = 8_000
-# A question asked from the player brings at most this many paragraphs.
+# A message about a part of the book brings at most this many paragraphs.
 CHAT_CONTEXT_MAX_PASSAGES = 6
+# A picture sent with a message, as counted toward the model's window.
+CHAT_IMAGE_TOKENS = 1_600
+# Cloud providers whose chat requests carry pictures; a local model's do when
+# its server is marked as seeing images. Claude Code cannot chat.
+CHAT_IMAGE_PROVIDERS = frozenset({
+    OPENAI_MODEL_PROVIDER, OPENAI_API_MODEL_PROVIDER, ANTHROPIC_MODEL_PROVIDER, GEMINI_MODEL_PROVIDER,
+})
+CHAT_PROVIDER_NAMES = {
+    OPENAI_MODEL_PROVIDER: "OpenAI", OPENAI_API_MODEL_PROVIDER: "OpenAI",
+    ANTHROPIC_MODEL_PROVIDER: "Anthropic", GEMINI_MODEL_PROVIDER: "Google",
+    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
+}
+CHAT_PREVIEW_CHARS = 80
 # Tool results and messages leave the model's context, oldest first, once it
 # passes CHAT_TRIM_AT of the model's window, until it is under CHAT_TRIM_TO.
 CHAT_TRIM_AT = 0.8
@@ -8585,9 +8837,12 @@ The listener asks about the book; answer from its text. {CHAT_OUTLINE_INTROS[det
 Summaries are not the text: before quoting the book, or answering about details,
 read the paragraphs with read_paragraphs. Cite paragraphs as ¶12 or ¶12–14, so the
 listener can jump to them. Results of earlier reads may leave the conversation
-when it grows long; read again when you need them. A read that follows the
-listener's message before you answer is the part of the book they were
-listening to when they asked: "this" and quoted words refer to it.
+when it grows long; read again when you need them. A listener's message may
+come with what they attached from the book: the part they were listening to,
+words they selected, or a figure or table. Each part is labelled: "From the
+paper" is the source document's own text, "Hilde's narration" and "Hilde's
+description" are what the listener hears, "Your selection" is the words the
+listener selected. "This" and quoted words refer to what they attached.
 
 You can write Markdown files the listener downloads, such as a summary or the
 conversation, with write_file, see them with list_files, and delete one with
@@ -8704,6 +8959,162 @@ def chat_read(passages, start, end=None):
         last = number
     label = f"Read ¶{start}" if last == start else f"Read ¶{start}–{last}"
     return "\n\n".join(pieces), label
+
+
+def chat_about(about, passages):
+    """The part of the book a message is about, checked against its
+    passages: a run of paragraphs {"kind": "passages", "start", "end"}, words
+    selected in them {"kind": "selection", "start", "end", "quote"}, or a
+    figure or table {"kind": "figure", "passage"}. ValueError says what is wrong."""
+    kind = about.get("kind") if isinstance(about, dict) else None
+    if kind == "figure":
+        number = about.get("passage")
+        if (
+            type(number) is not int or not 1 <= number <= len(passages)
+            or passages[number - 1].get("type") not in FIGURE_PASSAGE_TYPES
+        ):
+            raise ValueError("about.passage is the paragraph number of a figure or table.")
+        return {"kind": kind, "passage": number}
+    if kind in ("passages", "selection"):
+        start, end = about.get("start"), about.get("end")
+        if not (
+            type(start) is int and type(end) is int
+            and 1 <= start <= end < start + CHAT_CONTEXT_MAX_PASSAGES and end <= len(passages)
+        ):
+            raise ValueError(
+                f"about.start and about.end are the book's paragraph numbers, at most {CHAT_CONTEXT_MAX_PASSAGES}."
+            )
+        if kind == "passages":
+            return {"kind": kind, "start": start, "end": end}
+        quote = " ".join(str(about.get("quote") or "").split())
+        if not quote or len(quote) > CHAT_MESSAGE_MAX_CHARS:
+            raise ValueError(f"about.quote is the selected text, at most {CHAT_MESSAGE_MAX_CHARS:,} characters.")
+        return {"kind": kind, "start": start, "end": end, "quote": quote}
+    raise ValueError('about.kind is "passages", "selection", or "figure".')
+
+
+def _paper_label(detail):
+    """"From the paper · 3.2 Attention, PDF p. 4", without what is unknown."""
+    where = ", ".join(filter(None, (detail["section"], f"PDF p. {detail['page']}" if detail["page"] else "")))
+    return f"From the paper · {where}" if where else "From the paper"
+
+
+def _passage_source(passage):
+    return passage.get("original_text") or "\n\n".join(
+        source.get("text") or "" for source in passage.get("sources") or () if isinstance(source, dict)
+    )
+
+
+def chat_sees_images(selector, local_servers):
+    """Whether a chat request to this model can carry pictures, and why not."""
+    provider = selector.partition("/")[0]
+    if provider in LOCAL_MODEL_PROVIDERS:
+        try:
+            sees = local_route(selector, local_servers)["vision"]
+        except RuntimeError as exc:
+            return False, str(exc)
+        return (True, "") if sees else (False, "This local model's server is not marked as seeing images.")
+    if provider in CHAT_IMAGE_PROVIDERS:
+        return True, ""
+    if provider == CLAUDE_CODE_MODEL_PROVIDER:
+        return False, "Claude Code can't chat; choose another model."
+    return False, "This model can't take pictures in Chat."
+
+
+def chat_attachment(storage, book, passages, selector, about, local_servers):
+    """What a message about a part of the book (chat_about()) brings: the
+    manifest the page shows as its context chip and the conversation keeps,
+    and the pictures sent with that message only, as {"mime", "data"}
+    (base64).
+
+    A figure brings its caption, every passage whose source names it by its
+    number (never one only near it), and Hilde's description; its picture as
+    laid out in the PDF, else its crops, when the model takes pictures.
+    Paragraphs bring Hilde's narration and, where the adaptation changed
+    them, the paper's text; a selection brings its words first."""
+    details = passage_details(passages)
+    images, pictures = [], []
+    if about["kind"] == "figure":
+        first = number = about["passage"]
+        passage, detail = passages[number - 1], details[number]
+        items = [
+            {"kind": "caption", "label": "From the paper · caption", "passage": number, "text": detail["caption"]}
+        ] if detail["caption"] else []
+        if detail["label"]:
+            word, _, figure = detail["label"].partition(" ")
+            named = (word.lower(), int(figure))
+            items += [
+                {"kind": "source", "label": _paper_label(details[other]), "passage": other,
+                 "text": _passage_source(mention)}
+                for other, mention in enumerate(passages, 1)
+                if other != number and named in _mentioned_visuals(_passage_source(mention))
+            ]
+        if passage.get("text"):
+            items.append({"kind": "description", "label": "Hilde's description", "passage": number,
+                          "text": passage["text"]})
+        preview = detail["caption"] or detail["label"]
+        try:
+            _, crops, composite = book_figure(storage, book, number)
+        except (FileNotFoundError, OSError, ValueError):
+            crops, composite = [], None
+        pictures = [("image/png", composite)] if composite else [(crop[2], crop[3]) for crop in crops]
+        sees, why = chat_sees_images(selector, local_servers)
+        if not pictures:
+            why = "This figure has no picture."
+        elif sees:
+            images = [{"mime": mime, "data": base64.b64encode(data).decode("ascii")} for mime, data in pictures]
+    else:
+        first = about["start"]
+        items = []
+        for number in range(about["start"], about["end"] + 1):
+            passage = passages[number - 1]
+            if passage.get("text"):
+                items.append({"kind": "narration", "label": "Hilde's narration", "passage": number,
+                              "text": passage["text"]})
+            if not passage.get("unchanged") and _passage_source(passage):
+                items.append({"kind": "source", "label": _paper_label(details[number]), "passage": number,
+                              "text": _passage_source(passage)})
+        if about["kind"] == "selection":
+            items.insert(0, {"kind": "selection", "label": "Your selection", "text": about["quote"]})
+        preview = items[0]["text"] if items else ""
+        why = "Only text is attached."
+    preview = " ".join(preview.split())
+    if len(preview) > CHAT_PREVIEW_CHARS:
+        preview = preview[:CHAT_PREVIEW_CHARS - 1].rstrip() + "…"
+    provider = selector.partition("/")[0]
+    manifest = {
+        "about": about,
+        "section": details[first]["section"],
+        "preview": preview,
+        "items": items,
+        "image": {"sent": True, "count": len(images)} if images else {
+            "sent": False, "count": len(pictures), "why": why,
+        },
+        "badge": "Local" if provider in LOCAL_MODEL_PROVIDERS else f"Cloud: {CHAT_PROVIDER_NAMES.get(provider, provider)}",
+    }
+    return manifest, images
+
+
+def chat_attachment_text(manifest):
+    """What a listener attached, as the model reads it: each part under its label."""
+    parts = ["The listener attached this from the book:"]
+    for item in manifest["items"]:
+        where = f" (¶{item['passage']})" if item.get("passage") else ""
+        parts.append(f"[{item['label']}{where}]\n{item['text']}")
+    count = manifest["image"]["count"]
+    if manifest["image"]["sent"]:
+        parts.append(f"[The figure as printed in the paper: {count} picture{'' if count == 1 else 's'}, attached.]")
+    return "\n\n".join(parts)
+
+
+def _chat_user_parts(entry):
+    """A listener's message as ("text" | "image", value) parts: what they
+    attached as labelled text, its pictures (present only on the turn that
+    attached them), then what they wrote."""
+    parts = [("text", chat_attachment_text(entry["context"]))] if entry.get("context") else []
+    parts += [("image", image) for image in entry.get("images") or ()]
+    parts.append(("text", entry["text"]))
+    return parts
 
 
 class _PageText(html.parser.HTMLParser):
@@ -9039,7 +9450,17 @@ def _chat_openai_messages(system, entries):
     for entry in entries:
         role = entry.get("role")
         if role == "user":
-            messages.append({"role": "user", "content": entry["text"]})
+            parts = _chat_user_parts(entry)
+            if all(kind == "text" for kind, _ in parts):
+                content = "\n\n".join(value for _, value in parts)
+            else:
+                # Pictures go only to a server marked as seeing images (chat_sees_images()).
+                content = [
+                    {"type": "text", "text": value} if kind == "text" else
+                    {"type": "image_url", "image_url": {"url": f"data:{value['mime']};base64,{value['data']}"}}
+                    for kind, value in parts
+                ]
+            messages.append({"role": "user", "content": content})
         elif role == "assistant":
             message = {"role": "assistant", "content": entry.get("text") or ""}
             if entry.get("calls"):
@@ -9127,7 +9548,10 @@ def _chat_anthropic_messages(entries):
     for entry in entries:
         role = entry.get("role")
         if role == "user":
-            add("user", {"type": "text", "text": entry["text"]})
+            for kind, value in _chat_user_parts(entry):
+                add("user", {"type": "text", "text": value} if kind == "text" else {
+                    "type": "image", "source": {"type": "base64", "media_type": value["mime"], "data": value["data"]},
+                })
         elif role == "assistant":
             if entry.get("text") or not entry.get("calls"):
                 add("assistant", {"type": "text", "text": entry.get("text") or "…"})
@@ -9144,7 +9568,11 @@ def _chat_openai_input(entries):
     for entry in entries:
         role = entry.get("role")
         if role == "user":
-            items.append({"type": "message", "role": "user", "content": [{"type": "input_text", "text": entry["text"]}]})
+            items.append({"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": value} if kind == "text" else
+                {"type": "input_image", "image_url": f"data:{value['mime']};base64,{value['data']}"}
+                for kind, value in _chat_user_parts(entry)
+            ]})
         elif role == "assistant":
             if entry.get("text"):
                 items.append({"type": "message", "role": "assistant",
@@ -9178,7 +9606,11 @@ def _chat_gemini_contents(entries):
     for entry in entries:
         role = entry.get("role")
         if role == "user":
-            add("user", [{"text": entry["text"]}])
+            add("user", [
+                {"text": value} if kind == "text" else
+                {"inlineData": {"mimeType": value["mime"], "data": value["data"]}}
+                for kind, value in _chat_user_parts(entry)
+            ])
         elif role == "assistant":
             stored = entry.get("gemini_parts")
             if isinstance(stored, list) and stored:
@@ -9286,7 +9718,7 @@ class ChatTurn:
     published as events while they happen, until the model answers without
     a tool, CHAT_MAX_TOOL_CALLS is reached, or the listener stops it."""
 
-    def __init__(self, storage, book, text, selector, local_servers, context=None, search_server=""):
+    def __init__(self, storage, book, text, selector, local_servers, attachment=None, search_server=""):
         self.storage = storage
         self.book = book
         self.text = text
@@ -9294,8 +9726,9 @@ class ChatTurn:
         # The browser's added local servers; a local model runs on the first
         # that offers it (local_route()).
         self.local_servers = local_servers
-        # The paragraphs the listener was at when asking: (start, end) or None.
-        self.context = context
+        # What the listener attached (chat_attachment()): its manifest, kept
+        # with the message, and its pictures, sent with this turn only; or None.
+        self.attachment = attachment
         # A SearXNG origin enables the web tools; empty leaves them out.
         self.search_server = search_server
         self.events = []
@@ -9363,25 +9796,16 @@ class ChatTurn:
             self.publish({"type": "message", "entry": chat_display_entry(entry)})
 
     def begin(self):
-        """Load the book and keep the listener's message, before the turn
-        runs, so the conversation shows it at once. A message asked from
-        the player comes with the paragraphs being played, read for the
-        model as if it had asked. ChatUnavailable says why Chat cannot
-        answer about this book."""
+        """Load the book and keep the listener's message, with the manifest
+        of what they attached, before the turn runs, so the conversation
+        shows it at once. ChatUnavailable says why Chat cannot answer about
+        this book."""
         self.path, self.record, self.passages = chat_book(self.storage, self.book)
         self.entries = read_chat(self.path)
-        self.entries.append({"role": "user", "text": self.text, "at": utc_timestamp()})
-        if self.context:
-            start, end = self.context
-            call = {
-                "id": f"listener-{os.urandom(6).hex()}", "name": "read_paragraphs",
-                "arguments": {"start": start, "end": end},
-            }
-            content, label = chat_read(self.passages, start, end)
-            self.entries.append({"role": "assistant", "text": "", "calls": [call], "at": utc_timestamp()})
-            self.entries.append({
-                "role": "tool", "id": call["id"], "name": call["name"], "content": content, "label": label,
-            })
+        self.asked = {"role": "user", "text": self.text, "at": utc_timestamp()}
+        if self.attachment:
+            self.asked["context"] = self.attachment[0]
+        self.entries.append(self.asked)
         self.save(self.path, self.entries)
 
     def run(self):
@@ -9415,7 +9839,13 @@ class ChatTurn:
                 if trimmed > trimmed_told:
                     trimmed_told = trimmed
                     self.publish({"type": "trimmed", "count": trimmed})
-                counted = chat_input_tokens(self.selector, server, system, context, tools)
+                images = self.attachment[1] if self.attachment else []
+                counted = chat_input_tokens(self.selector, server, system, context, tools) + (
+                    CHAT_IMAGE_TOKENS * len(images) if any(entry is self.asked for entry in context) else 0
+                )
+                # The pictures ride with the message that attached them, in
+                # this turn's requests only; the conversation keeps none.
+                context = [{**entry, "images": images} if entry is self.asked else entry for entry in context]
                 max_tokens = min(CHAT_MAX_OUTPUT_TOKENS, window - counted - CHAT_TOKEN_MARGIN)
                 if max_tokens < CHAT_MIN_OUTPUT_TOKENS:
                     if len(details) > 1:
@@ -9496,7 +9926,10 @@ def chat_display_entry(entry):
     Hilde's answer as HTML with ¶ citations as links, a tool's label, or a notice."""
     role = entry.get("role")
     if role == "user":
-        return {"role": "user", "text": entry.get("text", "")}
+        shown = {"role": "user", "text": entry.get("text", "")}
+        if entry.get("context"):
+            shown["context"] = entry["context"]
+        return shown
     if role == "assistant":
         html = READER_MARKDOWN.render(entry.get("text") or "")
         html = CHAT_CITATION_PATTERN.sub(
@@ -12697,6 +13130,29 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return None
+        if route == "/api/figure":
+            # A figure or table as laid out on its page of the book's PDF.
+            try:
+                _, _, picture = book_figure(
+                    self.server.storage, query.get("book", [""])[0], int(query.get("passage", [""])[0]),
+                )
+            except (ValueError, FileNotFoundError, OSError):
+                picture = None
+            if picture is None:
+                return self.fail(HTTPStatus.NOT_FOUND, "This figure can't be found in the book's PDF.")
+            return self.reply(HTTPStatus.OK, picture, "image/png", extra=(("Cache-Control", "no-cache"),))
+        if route == "/api/source-page":
+            # A page of the book's PDF, 1-based.
+            try:
+                path, record = read_book(self.server.storage, query.get("book", [""])[0])
+                page = int(query.get("page", [""])[0])
+            except (ValueError, FileNotFoundError):
+                return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook page")
+            pdf = book_source(self.server.storage, path, record)
+            picture = source_page_png(pdf, page) if pdf is not None and pdf.suffix.lower() == ".pdf" else None
+            if picture is None:
+                return self.fail(HTTPStatus.NOT_FOUND, "This book's PDF has no such page.")
+            return self.reply(HTTPStatus.OK, picture, "image/png", extra=(("Cache-Control", "no-cache"),))
         if route == "/api/source":
             # The book's document, under the name it was added with.
             book = query.get("book", [""])[0]
@@ -12849,6 +13305,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route == "/api/chat/speak":
             return self.chat_speak(body)
+        if route == "/api/chat/context":
+            return self.chat_context_manifest(body)
         if route == "/api/chat/send":
             return self.chat_send(body)
         if route == "/api/chat/stop":
@@ -13219,6 +13677,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, clip, "audio/wav", extra=(("Cache-Control", "no-store"),))
 
+    def chat_attach(self, book, model, about):
+        """What a message about `about` brings (chat_attachment()), and None;
+        or None and the failure to answer with."""
+        try:
+            _, _, passages = chat_book(self.server.storage, book)
+        except ChatUnavailable as exc:
+            return None, (HTTPStatus.CONFLICT, str(exc))
+        except (ValueError, FileNotFoundError):
+            return None, (HTTPStatus.NOT_FOUND, "no such audiobook")
+        try:
+            about = chat_about(about, passages)
+        except ValueError as exc:
+            return None, (HTTPStatus.BAD_REQUEST, str(exc))
+        state = normalize(read_state_cookie(self.headers.get("Cookie")))
+        return chat_attachment(
+            self.server.storage, book, passages, model, about, state["audiobook"]["local_servers"],
+        ), None
+
+    def chat_context_manifest(self, body):
+        """The manifest of what a message about part of a book would bring,
+        for the page's context chip, made as Send makes it."""
+        model = str(body.get("model") or "").strip()
+        if not model:
+            return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
+        attachment, failure = self.chat_attach(str(body.get("book") or ""), model, body.get("about"))
+        if failure:
+            return self.fail(*failure)
+        return self.reply(HTTPStatus.OK, attachment[0], extra=(("Cache-Control", "no-store"),))
+
     def chat_send(self, body):
         """Start Hilde's answer to a listener's message about a book."""
         book = str(body.get("book") or "")
@@ -13232,22 +13719,14 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not model:
             return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
-        context = body.get("context")
-        if context is not None:
-            start = context.get("start") if isinstance(context, dict) else None
-            end = context.get("end") if isinstance(context, dict) else None
-            if not (
-                type(start) is int and type(end) is int
-                and 1 <= start <= end < start + CHAT_CONTEXT_MAX_PASSAGES
-            ):
-                return self.fail(
-                    HTTPStatus.BAD_REQUEST,
-                    f"context is {{start, end}}: at most {CHAT_CONTEXT_MAX_PASSAGES} paragraph numbers.",
-                )
-            context = (start, end)
+        attachment = None
+        if body.get("about") is not None:
+            attachment, failure = self.chat_attach(book, model, body["about"])
+            if failure:
+                return self.fail(*failure)
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         turn = ChatTurn(
-            self.server.storage, book, text, model, state["audiobook"]["local_servers"], context,
+            self.server.storage, book, text, model, state["audiobook"]["local_servers"], attachment,
             self.server.search_server,
         )
         try:

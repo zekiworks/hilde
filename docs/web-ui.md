@@ -196,9 +196,18 @@ you listen. It pauses the book, opens the chat, and writes a question about
 the sentence being read, `What does it mean by "…"?` for a short one and
 `Explain this part: "…"` for a longer one, without sending it: change it or
 press Enter. Select words in the text first to ask about them instead. The
-paragraphs you were at go with the question, so Hilde answers from their full
-text; the line above the message box names them, and **Remove** sends the
-question without them. Play continues from the same word.
+part you were at goes with the question, each piece labelled with where it
+comes from: Hilde's narration of those paragraphs and, where the adaptation
+changed them, the paper's own text ("From the paper · section, PDF p. N"), and
+words you selected as "Your selection". A question about a figure or table
+brings its caption, every paragraph of the paper that names it by number
+("Figure 2", "Fig. 2", "Figures 1 and 2"; never one only printed near it), and
+Hilde's description. Its picture, laid out as in the PDF, goes too when the
+chosen model takes pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys
+do, a local model only when its server is marked as seeing images. The picture
+goes with that question only. The chip above the message box shows exactly
+what will be sent and whether the model is local or in the cloud; past
+questions keep their chips. Play continues from the same word.
 
 **▶ Listen**, the orange button under each of Hilde's answers, reads it aloud
 in Hilde's own voice (or, when the Hilde voice is gone from **Voices**, the
