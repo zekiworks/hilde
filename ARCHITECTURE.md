@@ -273,7 +273,7 @@ and the full hash in `book.json`.
   image name, or panel titles; an uncaptioned picture is an equation when its printed text is math, and a figure otherwise.
   Schema 2 adds `summary` and `tags`, the batch's SUMMARY and TAGS (a
   heading batch, which never reaches a model, has its own text as summary
-  and no tags); Chat with Hilde needs them, so a schema 1 book cannot chat.
+  and no tags); Ask Hilde needs them, so a schema 1 book cannot chat.
   `narration_text()` joins the passages' text: exactly what the first voice
   read and every later voice reads.
 - `reader.md` is the follow-along view: block-marked Markdown with pictures
@@ -353,7 +353,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, `local_servers`, the local model servers added under **Add local**, in the order added: at most `LOCAL_SERVERS_MAX` (8) `{"server", "provider", "vision"}`, one per server, the server an origin from `normalize_local_server()`, `provider` `ollama` or `lm-studio`, `vision` whether its models see images, true only when stored as `true`; `normalize_local_servers()` drops invalid and repeated entries, and a state from before the list, with `local_server`, `local_provider`, and `local_vision`, becomes its one entry, those keys dropped; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Chat with Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice.
+- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed and the side panel's width are this browser's alone, in `localStorage` (see Reader), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -849,26 +849,30 @@ The run log shows below every page but **Listen**. Each page:
   Without audiobooks it shows a short explanation and **Create your first
   audiobook**. Each row is a book; its note lists the voices that read its
   current text. **Listen**, or a click anywhere else on its row (not on a
-  button, nor one ending a text selection), opens the book view: title, narrator, duration,
-  source, **Follow along**, **Original** (adapted books), a voice picker (more
-  than one ready voice), **Change voice** (books with their own text), **Download MP3**,
-  **Download source** (books whose document is found: `has_source`),
-  **Chat with Hilde**, **Recreate with the latest Hilde**, a notice offering
-  **Make <voice> again** for each stale voice, the player, and the
-  synchronized reader; **All audiobooks** returns to the table, and so does the
-  **Listen** tab when pressed while Listen is shown (`chooseListen()`); from
-  another page it opens Listen as it was left, with its book. **Change
-  voice** lists the saved voices the book does not have yet. **Recreate** asks
-  first. Both start a job whose progress shows on **Progress**. While a book is
-  open, `playerKey()`, a capturing `keydown` listener on the document, gives
-  the player YouTube's shortcuts (Space or K, J and L 10 seconds, ← and → 5,
-  ↑ and ↓ volume only while focus is in `#artifact-player`, M, 0 to 9, Home
-  and End, < and > through `PLAYER_SPEEDS`, ? toggling **Keyboard shortcuts**)
+  button, nor one ending a text selection), opens the book view. Its top row
+  is **← Library** (a back link, as is the **Listen** tab pressed while
+  Listen is shown: `chooseListen()`; from another page the tab opens Listen
+  as it was left, with its book), the title, and one meta line: "Read by
+  <voice>" (a voice picker instead when more than one voice is ready),
+  duration, source file; then the **Files** links, the stale-voice notice
+  (**Make <voice> again**), and **Change voice**'s picker when open. Pinned
+  above the text (`#listen-bar`, sticky) are **Follow along**, the
+  **Narration text | Source text** switch (each option says what it shows),
+  **⋯ More** (**Download MP3**, **Download source** when `has_source`,
+  **Change voice…** for books with their own text, **Recreate with the latest
+  Hilde…**, **Keyboard shortcuts**), and the player bar. **Change voice**
+  lists the saved voices the book does not have yet; **Recreate** asks first;
+  both start a job whose progress shows on **Progress**. Menus open on a
+  click or tap, never on hover, one at a time; Escape or a click elsewhere
+  closes them. While a book is open, `playerKey()`, a capturing `keydown`
+  listener on the document, gives the player YouTube's shortcuts (Space or K,
+  J and L 10 seconds, ← and → 5, ↑ and ↓ volume only while focus is in
+  `#artifact-player`, M, 0 to 9, Home and End, < and > through
+  `PLAYER_SPEEDS`, ? opening and closing the **Keyboard shortcuts** dialog)
   and announces volume and speed in `#player-key-status`. Text inputs,
-  selects, and tab strips keep their keys, Space still presses a focused
-  button, link, summary, or box, and a key with Ctrl, Alt, or Meta is left
-  alone. Speed is set as `defaultPlaybackRate` too, since moving playback to
-  the downloaded book reloads the audio, which resets the rate to the default.
+  selects, the volume slider, and tab strips keep their keys (the seek bar
+  takes the player's), Space still presses a focused button, link, summary,
+  or box, and a key with Ctrl, Alt, or Meta is left alone.
 - On **Create**, a document whose content is already a book shows **You
   already have this one** with **Open**, **Overwrite**, and **Change voice**
   in step 1. For a book with its own text, Change voice makes step 3 hide
@@ -885,9 +889,7 @@ progress** list, the result card, the **Listen** table, and an open book's
 title. Step 1's summary,
 the **In progress** list, and **Listen** rows show the full name as a tooltip.
 The document dropdown is a native `<select>`, which shows one line and clips
-it at its width. An open book's actions go beneath its title and source line
-whenever both do not fit beside a title at least 320px wide, so a long title
-or file name never runs into them.
+it at its width.
 
 Every **Delete** asks for confirmation (`window.confirm`) and disables itself
 while its request runs. Deleting the selected voice or document clears that
@@ -898,9 +900,11 @@ The page polls `/api/jobs` every 2 seconds (`refreshJobs()`), which doubles as
 the server probe: a `fetch()` that fails with a `TypeError` (the server cannot
 be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
 shows `#server-down` and makes `SERVER_PARTS` inert (Advanced, Create,
-Progress, Voices, the Listen table, an open book's actions, and Chat), so
-nothing that needs the server can be pressed or focused; the tabs, the
-player, and the text stay, so a downloaded book plays on. The first poll that
+Progress, Voices, the Listen table, an open book's **More** menu, stale-voice
+notice and **Change voice**, **Ask Hilde**, the chat, **Ask about this
+figure**, and the selection menu's **Ask about this**), so nothing that needs
+the server can be pressed or focused; the tabs, the player, the text, its
+views, and the figure and page already shown stay, so a downloaded book plays on. The first poll that
 answers again, or answers before the page ever loaded (served from the
 browser's cache while the server was down), lifts it and runs `startPage()`,
 which takes the state, catalogs, and workers afresh, since the server may
@@ -919,6 +923,20 @@ tables into list rows. On phones and coarse pointers every control is at least
 44 px tall. Focus is always visible, and selection, step state, and errors
 never rely on color alone (check marks, "Selected", ⚠ prefixes, and
 visually hidden step states).
+
+Listen below 768 px: the text takes the full width, the player docks at the
+bottom inside the safe area (`env(safe-area-inset-bottom)`, `viewport-fit=cover`),
+and the page leaves `--dock-h` (the player's height, kept by a
+`ResizeObserver`, `fitDock()`) free beneath the text; the chat, a figure, and
+a source page open as full-screen sheets. Below 1200 px the side panel always
+replaces the reading view (`.side-panel` fixed over it, `html.sheet-open`
+stopping the page from scrolling beneath), with **← Back to the book**. Its
+height follows the visual viewport (`fitVisualViewport()` sets `--vv-height`
+and `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of
+the screen leaves out the chat's book and section lines, and a chip scrolls
+within a quarter of the visible height), so the message box and **Send** stay
+visible with an on-screen keyboard. Every Listen control is at least 44 px on
+phones and coarse pointers.
 
 ### Voice previews
 
@@ -997,8 +1015,10 @@ GPU with the most free memory (`roomiest_cuda_device()` reads the same
 
 The **Listen** reader renders narration-ready Markdown, including structurally
 valid pipe tables and embedded PNG/JPEG/WebP/GIF visuals. Raw HTML is disabled.
-Its audio controls stay pinned to the top of the screen while the text
-scrolls. Newly generated audio has
+The book view gives the page the whole width (`main.reading`) and the text a
+reading column of `68ch` at 18 px with a 1.6 line height; the page scrolls,
+never an inner box. The controls and player stay pinned to the top of the
+screen while the text scrolls. Newly generated audio has
 exact integer-sample cues for every sentence and force-aligned word. The first
 aligned word in each block becomes its sentence checkpoint, replacing legacy
 length estimates whenever word timing exists.
@@ -1009,12 +1029,13 @@ shared `<p>` (or heading line), while lists, tables, and images stay blocks
 attached to their sentence. New sidecars record each block's paragraph in a
 `paragraphs` array; paragraph-era sidecars derive it from their original
 paragraph blocks; sentence sidecars written before the array existed show one
-sentence per paragraph. The playing sentence is tinted, its paragraph carries
-the accent bar, and the current word is filled with a lighter accent under
-dark ink (7.7:1 contrast). The word switches without a fade, since a fade
+sentence per paragraph. The paragraph being read carries a 2 px accent rail
+and a 5% accent background; the word being read a 25% accent background and a
+2 px accent underline, its text color unchanged; the sentence itself is not
+tinted. The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
-An adapted book's Original view comes from its `narration.json`
+An adapted book's Source text comes from its `narration.json`
 (`narration_originals()`): one entry per passage in order, with the narration
 paragraphs made from it (`[first, last]`, or `null` for a batch the model left
 out), the PDF page it starts on (or `null`), whether it is a `description` (a
@@ -1026,10 +1047,14 @@ books whose blocks had to be rebuilt from the narration alone, have none
 matches its record. `/api/reader` validates the ranges as increasing within
 the voice's paragraphs and renders the text with raw HTML off, restoring only
 balanced `<sup>`/`<sub>` pairs, since extraction writes superscripts as tags.
-The browser labels a description's first paragraph **Description** and, when
-there is any original text, offers **Original**: it shows each batch's text,
-headed "Original · PDF p. N", muted beneath the narration made from it, and a
-left-out batch as "Not narrated" in its place. A passage kept with hard flags
+The browser labels a description's first paragraph **Hilde's description**.
+When there is any original text it offers **Source text** (`setTextView()`,
+`.source-view`): the narration of an adapted passage gives way to its
+author's text, tagged "Original · PDF p. N"; a passage read word for word
+keeps its narration, tagged "Unchanged · PDF p. N"; a description keeps only
+its pictures (`.reader-picture`) above its caption; a left-out batch shows as
+"Not narrated" in its place. Every "PDF p. N" opens that page in the side
+panel. A passage kept with hard flags
 (D14) carries them as `flags`, shown in the accent color as "Check: …" under
 its original, in an aside of its own when a description has no original text.
 
@@ -1106,44 +1131,104 @@ The sentence cue is authoritative over a disagreeing word cue, so a word
 alignment error cannot outlive its sentence. Narration-ready visual descriptions
 receive word cues, while attached table cells and image markup do not.
 Visual-only and invisible-artifact intervals remain assigned to an adjacent
-visible block for their full audio duration. **Follow along** scrolls only
-when the playing sentence is no longer wholly visible below the pinned player,
-then brings it a quarter of the way down the rest of the screen: the text turns
-like pages instead of sliding at every sentence, so a figure stays in view
-while its description is read. Paragraph-era sidecars retain estimated sentence cues only when
-word alignment is unavailable. Older MP3s without reader metadata remain
-playable but have no synchronized text.
+visible block for their full audio duration. Paragraph-era sidecars retain
+estimated sentence cues only when word alignment is unavailable. Older MP3s
+without reader metadata remain playable but have no synchronized text.
 
-### Chat with Hilde
+The reading position is the narrated sentence and its passage, never pixels.
+Each reader paragraph carries its passage (`data-passage`, from
+`block_passages`), as does each Source text aside. `listeningElement()` is
+the narrated sentence, or in Source text the shown element of its passage.
+**Follow along** scrolls only when that element is no longer wholly visible
+below the pinned bar (above the docked player on a phone), then brings it a
+quarter of the way down the rest of the screen: the text turns like pages
+instead of sliding at every sentence, so a figure stays in view while its
+description is read; with Follow along off the page never scrolls by itself.
+A layout change (`keepPlace()`: the panel opening, closing, or resizing)
+and the Narration/Source switch keep the narrated sentence, or when it is
+off screen the first paragraph shown, at the same height on screen; leaving
+Listen for another tab and coming back does the same (`listenPlace`). None
+touches the audio. A scroll the listener makes (a wheel, touch, key, or the
+scroll bar within the last 1.2 s; the page's own scrolls are marked by
+`scrollPageBy()`) that takes the narrated sentence off screen sets
+`detached`: auto-scroll waits and **↑/↓ Back to where you're listening**
+shows at the bottom of the text until it is pressed or the sentence is back
+on screen; opening a figure or a source page, or a ¶ link in an answer, does
+the same.
 
-**Chat with Hilde** on an open book adds `.chatting` to `#book-view`: the
-view takes one screen's height (`sizeChat()`), and `#book-pane` (the book view
-as before) and `#chat-pane` share it as two halves of a column, each
-scrolling on its own, on a phone too. Above the book, `#book-files` lists the
-book's `files/` as download links whether or not the chat is open. The chat
-pane holds the model picker (the adaptation catalog, `fillChatModels()`, kept
-as `player.chat_model`), **New conversation**, **Close**, the problem line
-(an old book's `CHAT_OLD_BOOK`, or no models, offering **Providers** and
-**Add local**), the conversation, and the compose box: Enter sends,
-Shift+Enter breaks the line, **Stop** replaces **Send** while Hilde answers.
-Opening another book closes the chat. Opening or closing it moves the text
-into another scroller; `keepReaderPlace()` keeps the playing paragraph, or
-the first one visible, just below the pinned player.
+A click on a word seeks; a click that ends a drag selection does not
+(`seekReaderBlock()` ignores a non-collapsed selection), nor does a long
+press. A finished selection in the text shows a small menu above it (below
+it on a touch screen, whose own menu is above): **Ask about this** (a
+selection chip), **Listen from here** (the first selected word, by
+`readerWordSeekSample()`, else its sentence or passage), and **Copy**.
 
-**Chat with Hilde** (`toggleChat()`) opens the chat with an empty compose box
-and no passage context (`openChat({ fresh: true })`), for a question about
-anything; a question Ask Hilde wrote and nobody sent does not come back.
-**New conversation** and **× Close** in its header are full buttons
-(`.chat-head-button`, 40 px tall). **Ask Hilde** sits in the pinned player
-(`askHildeButton()`). `askHilde()` pauses the audio, opens the chat, and writes a question into the compose box
-without sending it: about the text selected in `#reader-content` (taken on
-`pointerdown`, before the press can clear it) or else the playing sentence,
-`What does it mean by "…"?` up to ten words and `Explain this part: "…"`
-beyond, quoted up to 300 characters. Its reader paragraphs (an Original
-aside counts as the paragraph above it; nothing playing means the first one
-visible) map to passage numbers through `chat_payload()`'s `passages`, at
-most `CHAT_CONTEXT_MAX_PASSAGES`, shown above the compose box with
-**Remove** and sent as `context`.
+Figures: a figure or table passage with pictures (`figures`) shows them on a
+light paper card that is never inverted, at their own aspect ratio, with its
+caption under **From the paper · PDF p. N**. When all its crops are in one
+block and the PDF layout was found, a wide screen shows `composite` (the
+`/api/figure` picture) instead of the crops; below 768 px the crops stack,
+each labeled by its `position` ("Left panel of the source figure"), the word
+the narration uses. A click opens the figure large in the side panel
+(`openFigure()`): the picture as the PDF lays it out, **From the paper** (the
+caption and a link to its PDF page) and **Hilde's description** (its
+narration), and **Ask about this figure**. No badge says a description was
+checked.
+
+The player bar is the page's own: play/pause, a seek bar, elapsed and total
+time, a speed button showing the speed ("1.25×") that opens 0.75× to 2×,
+mute and volume, and **Ask Hilde**. The `<audio>` element has no controls.
+This browser keeps each book's place and speed in `localStorage`
+(`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`; saved about
+every second while playing, on pause, seek, and leaving the page), and the
+panel width (`hilde.panelWidth`); never in the book, the voice, or the
+server. Opening the book, or reloading, sets the speed and, once the audio's
+metadata and the reader are in, the saved time with the same voice (else the
+start of the saved passage), paused, and brings that sentence on screen.
+One sound plays at a time (`oneSoundAtATime()`): the book, the voice preview
+player (previews and drafts), and the answer voice each pause the others
+when they start; an answer read aloud keeps its place when paused this way.
+
+### Ask Hilde
+
+One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
+a source page (`#page-view`), with a tab for each one opened. On a screen
+1200 px or wider it sits fixed at the right, `--panel-w` wide (440 px by
+default, 400 to 720 by dragging its left edge or with ← and → on it,
+`setPanelWidth()`, kept as `hilde.panelWidth`), and the text moves left
+beside it (`.panel-open`); narrower, it covers the reading view (see the
+phone paragraph under UI contract). Each view keeps its state while another
+shows or the panel is closed, until another book opens (`resetChatFor()`):
+the draft, its chip, the conversation and its scroll position (`chatScroll`,
+restored on return, or the end when it was at the end), and an answer still
+arriving, which keeps streaming into the hidden conversation. Under the
+book's title, `#book-files` lists the book's `files/` as download links.
+
+**Ask Hilde**, in the player bar, is the one way in. `askHilde()` opens the
+chat as it was left; the book keeps playing. Text selected in
+`#reader-content` (taken on `pointerdown`, before the press can clear it) is
+attached; else, with no chip and no draft, the passage playing is (a figure
+passage as a figure). The chat's head shows the book, the section of the
+chip (else of the passage playing), the model picker (the adaptation
+catalog, `fillChatModels()`, kept as `player.chat_model`) with its
+**Local** / **Cloud: <provider>** badge (the catalog's `badge`,
+`model_badge()`), **Read answers aloud**, and **New conversation**; then the
+problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
+**Providers** and **Add local**), the conversation, the chip, and the
+compose box: Enter sends, Shift+Enter breaks the line, **Stop** replaces
+**Send** while Hilde answers.
+
+A chip (`attachAbout()`) is the `about` of the question, frozen when
+attached: playback moving on never changes it. The page asks
+`POST /api/chat/context` for its manifest and draws the chip only from it
+(`chipElement()`): the section (a figure's label first), the preview, and
+each item's label and passage, opening to its text, plus whether the
+figure's picture goes ("Not sent: the figure's picture." and why, when it
+does not). **×** removes it; **Replace** attaches the text selected in the
+book instead, or else the part playing. Choosing another model asks for the
+manifest again, since the picture depends on the model. **Send** waits for
+the manifest and sends `about`; the stored question keeps the manifest, so
+past questions show the same chip. Sending clears the draft and the chip.
 
 One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
 time, on its own thread). `begin()` loads the book through `chat_book()` and
@@ -1308,14 +1393,18 @@ one plays (7 to 9 ms between clips). `/api/chat/speak` returns each clip's
 block; `chatBlocks()` finds the page's blocks in the same order (`p`,
 `h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and the playing one
 takes the book's spoken-word colors (`.chat-speaking`) and scrolls into view.
-The orange button under an answer reads **▶ Listen**, **❚❚ Pause** while it
-plays, and **▶ Resume** once paused: a pause, or another answer starting,
-keeps the answer's place (`chatPlace`: clip and time) and **Start over**
-shows; Resume asks the server for that clip, which it kept, and seeks to the
-time. A tap starts it: **Listen**, or **Send** with Read answers aloud on,
-which plays a silent clip so a phone allows the answer that finishes later to
-play. Playing an answer pauses the book; Close and another book stop it. With
-Read answers aloud on, the last answer of a finished turn is read.
+The pill under an answer (dashed, unlike the book's round play button) reads
+**🔈 Read aloud**, **❚❚ Pause reading** while it plays, and **🔈 Resume
+reading** once paused: a pause, or another sound starting, keeps the answer's
+place (`chatPlace`: clip and time) and **Start over** shows; Resume asks the
+server for that clip, which it kept, and seeks to the time. A tap starts it:
+**Read aloud**, or **Send** with Read answers aloud on, which plays a silent
+clip so a phone allows the answer that finishes later to play (the silent
+clip pauses nothing). An answer starting to play pauses the book
+(`pauseOtherSounds()`); when it ends or is paused the book does not restart:
+**▶ Resume book** shows under that answer until the book plays again.
+Closing the panel and another book stop it. With Read answers aloud on, the
+last answer of a finished turn is read.
 
 ## HTTP routes
 
@@ -1343,7 +1432,7 @@ Read answers aloud on, the last answer of a finished turn is read.
 | `GET /api/figure?book=...&passage=N` | Figure or table passage N as laid out in the book's PDF: the union of its crops' boxes, found by template matching (`figure_boxes()`), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position}]}}`; see Reader). |
-| `GET /api/paper/models` | Adaptation model catalog: the browser's added local servers' models, server by server in the order added, each `{provider, selector, server, label: "<model> · <host:port>"}` (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, with the default a job uses when none is chosen, Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
+| `GET /api/paper/models` | Adaptation model catalog: the browser's added local servers' models, server by server in the order added, each `{provider, selector, server, label: "<model> · <host:port>"}` (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, each with its `badge` (`model_badge()`: `Local`, or `Cloud: <provider>`, as Ask Hilde shows it before sending), with the default a job uses when none is chosen, Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate one local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and answer its normalized `server` and `provider`; the page then appends it to `audiobook.local_servers` and asks for the catalog. HTTP 400 once the browser has `LOCAL_SERVERS_MAX` servers and this is not one of them, 502 when the server does not list models. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no added server of its type ("Add a local server of this model's type under Add local."). |
@@ -1489,7 +1578,7 @@ reader, Original view, and text, idempotently, keeping a backup until they
 play, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
 audio in the `.mp3` sample entry Safari plays, with keep-alive byte ranges, safe
-book downloads, Chat with Hilde (Markdown file names only inside the book's
+book downloads, Ask Hilde (Markdown file names only inside the book's
 `files/`, create refusing an existing file and append a missing one, delete,
 reads cut at their cap, trimming past 80% that keeps a tool call with its
 result and the latest message, a book without summaries refused, a rebuilt
@@ -1608,7 +1697,7 @@ events that ask for a retry) while a refused request fails at once and Stop
 cuts the wait short, an added local server as the default that never gives
 way to a cloud provider while it does not answer, only models this
 server can reach, an old single local server becoming the first of a capped
-list of unique servers, models of two local servers listed together with the
+list of unique servers, models of two local servers listed together, each with its Local or Cloud badge, with the
 first server's first as the default and a job's prose sent to the text
 model's server and its figure to the figure model's (as an image only where
 that server's models see images), a local model no added server offers

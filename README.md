@@ -251,8 +251,10 @@ device must install again.
 ## Web UI
 
 **Create** turns a document into an audiobook, **Listen** plays it with its
-synchronized text, **Chat with Hilde** answers questions about it and writes
-Markdown notes, and **Voices** designs narrators: see [Web UI](docs/web-ui.md).
+synchronized text, its source text, and its figures as laid out in the PDF,
+remembering where you were in each book, **Ask Hilde** answers questions
+about what you are hearing and writes Markdown notes, and **Voices** designs
+narrators: see [Web UI](docs/web-ui.md).
 
 ## Command line
 

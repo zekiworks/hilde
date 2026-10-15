@@ -64,7 +64,7 @@ adaptation**:
   type, **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, and press **Check and add**. The
   models of every added server then appear together in each model list
-  (**Model**, the checking model, the figure model, and Chat with Hilde),
+  (**Model**, the checking model, the figure model, and Ask Hilde),
   grouped by server, so the text model can run on one server and the figure
   model on another. Each request goes to the server that offers its model; a
   model two servers offer runs on the one added first. Tick **This model sees
@@ -155,7 +155,7 @@ reaches the model with the power on warmup_steps alone, never run into the
 product before it, and "d k" in a sentence reaches it as d with the index k.
 
 With each passage the model also writes a one-line summary and up to six tags,
-which Hilde keeps with the book. They are not read aloud: **Chat with Hilde**
+which Hilde keeps with the book. They are not read aloud: **Ask Hilde**
 uses them to find the paragraphs a question is about.
 
 In a PDF, a sentence that a page break, a figure, or a footnote splits is

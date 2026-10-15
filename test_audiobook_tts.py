@@ -3886,6 +3886,10 @@ class LocalPaperProviderTests(unittest.TestCase):
                 [model["selector"] for model in catalog["models"]],
                 ["lm-studio/deepseek", "openai-codex/gpt-a"],
             )
+            # Each model says where it runs, as Chat's picker shows it before sending.
+            self.assertEqual(
+                [model["badge"] for model in catalog["models"]], ["Local", "Cloud: OpenAI"],
+            )
             # While it does not answer, a job gets no default rather than
             # sending the document to OpenAI.
             with mock.patch.object(

@@ -5750,6 +5750,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
     # Claude Code's, then those of the API keys, billed per request:
     # Anthropic's, OpenAI's, then Gemini's.
     defaults = local_models if local_servers else cloud_models
+    for model in local_models + cloud_models:
+        model["badge"] = model_badge(model["selector"])
     return {
         "models": local_models + cloud_models,
         "default_model": defaults[0]["selector"] if defaults else "",
@@ -9021,6 +9023,15 @@ def chat_sees_images(selector, local_servers):
     return False, "This model can't take pictures in Chat."
 
 
+def model_badge(selector):
+    """Where a model runs, as the page labels it before anything is sent:
+    "Local", or "Cloud: <provider>"."""
+    provider = selector.partition("/")[0]
+    if provider in LOCAL_MODEL_PROVIDERS:
+        return "Local"
+    return f"Cloud: {CHAT_PROVIDER_NAMES.get(provider, provider)}"
+
+
 def chat_attachment(storage, book, passages, selector, about, local_servers):
     """What a message about a part of the book (chat_about()) brings: the
     manifest the page shows as its context chip and the conversation keeps,
@@ -9081,7 +9092,6 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
     preview = " ".join(preview.split())
     if len(preview) > CHAT_PREVIEW_CHARS:
         preview = preview[:CHAT_PREVIEW_CHARS - 1].rstrip() + "…"
-    provider = selector.partition("/")[0]
     manifest = {
         "about": about,
         "section": details[first]["section"],
@@ -9090,7 +9100,7 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
         "image": {"sent": True, "count": len(images)} if images else {
             "sent": False, "count": len(pictures), "why": why,
         },
-        "badge": "Local" if provider in LOCAL_MODEL_PROVIDERS else f"Cloud: {CHAT_PROVIDER_NAMES.get(provider, provider)}",
+        "badge": model_badge(selector),
     }
     return manifest, images
 
@@ -14232,7 +14242,7 @@ PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Hilde</title>
 <link rel="icon" type="image/png" href="/hilde-dark.png">
 <link rel="apple-touch-icon" href="/hilde-dark.png">
@@ -14451,48 +14461,111 @@ legend + * { clear:both; }
 #log { height:240px; margin-top:16px; padding:10px; overflow:auto; background:var(--field);
        border:1px solid var(--line); border-radius:8px; color:var(--dim);
        font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
-.back { margin:0 0 12px; }
-audio { height:36px; }
-.player-panel { background:var(--surface); border-radius:var(--radius) var(--radius) 0 0; }
-/* The actions go beneath the title when both do not fit, never squeezing it. */
-.player-heading { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px;
-                  padding:16px 18px 6px; }
-.player-title { display:grid; flex:1 1 320px; gap:2px; min-width:0; }
-.player-title h2 { font-size:18px; }
-.player-title .note { overflow-wrap:anywhere; }
-.player-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-/* Only the controls stay on screen while the text scrolls beneath them. */
-.player-controls { position:sticky; top:0; z-index:3; display:flex; flex-wrap:wrap; align-items:center;
-                   gap:8px 10px; padding:8px 18px 14px; background:var(--surface);
-                   border-radius:0 0 var(--radius) var(--radius);
-                   box-shadow:0 8px 24px rgba(0,0,0,.3); }
-/* The seek bar keeps its width; on a phone the button goes beneath it. */
-.player-controls audio { display:block; flex:1 1 280px; min-width:0; }
-.player-controls .ask-hilde { flex:none; margin-left:auto; white-space:nowrap; }
-.reader-panel { margin-top:12px; padding:10px 6px; background:var(--surface);
-                border-radius:var(--radius); }
+/* Listen with a book open: the workspace takes the screen, the text keeps a
+   reading width, and one side panel (chat, figure, source page) sits beside it. */
+main.reading { max-width:none; }
+html:has(main.reading) { scrollbar-gutter:stable; }
+.listen-workspace { --panel-w:440px; }
+.reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
+.reading-column > :not(.reader-panel) { font-size:15px; }
+.book-top { display:grid; gap:6px; margin-bottom:12px; }
+button.back-link { justify-self:start; padding:4px 0; color:var(--dim); text-decoration:none; }
+button.back-link:hover:not(:disabled) { color:var(--text); }
+.book-top h2 { font-size:22px; }
+.book-meta { overflow-wrap:anywhere; }
+.book-meta select { margin:0 2px; padding:2px 8px; font-size:13px; }
+.book-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin-top:6px; }
+.book-controls .grow { flex:1; }
+/* Narration text | Source text: each option says what it shows. */
+.text-switch { display:flex; padding:3px; background:var(--field); border:1px solid var(--line);
+               border-radius:10px; }
+.text-switch button { display:grid; justify-items:start; gap:0; min-height:0; padding:4px 12px;
+                      border:0; border-radius:7px; background:transparent; color:var(--dim);
+                      line-height:1.25; text-align:left; }
+.text-switch button small { font-size:12px; }
+.text-switch button[aria-checked=true] { background:var(--raised); color:var(--text);
+                                         box-shadow:inset 0 -2px 0 var(--accent); }
+.text-switch button span { font-weight:600; }
+/* Small pop-up menus: More, playback speed, a text selection. */
+.menu-wrap { position:relative; }
+.menu { position:absolute; z-index:30; top:calc(100% + 4px); right:0; display:grid; min-width:200px;
+        padding:4px; background:var(--raised); border:1px solid var(--line); border-radius:10px;
+        box-shadow:0 10px 30px rgba(0,0,0,.45); }
+.menu button { min-height:36px; padding:6px 12px; border:0; border-radius:6px; background:transparent;
+               text-align:left; white-space:nowrap; }
+.menu button:hover:not(:disabled) { background:var(--hover); }
+.menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent); }
+.more-button { min-width:44px; padding:0 12px; font-size:20px; line-height:1; }
+.change-voice { margin:4px 0 0; padding:12px 14px; background:var(--surface); border-radius:10px; }
+.reading-column .notice { margin-top:4px; }
+/* The view's controls and the player stay on screen above the text while it
+   scrolls; on a phone the player docks at the bottom instead. */
+.listen-bar { position:sticky; top:0; z-index:5; display:grid; gap:8px; padding:8px 0 4px;
+              background:var(--bg); }
+.listen-bar .book-controls { margin:0; }
+.player-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 12px;
+              background:var(--surface); border-radius:var(--radius);
+              box-shadow:0 8px 24px rgba(0,0,0,.3); }
+.player-bar button { min-height:40px; padding:0 10px; }
+.player-bar .ask-hilde { margin-left:auto; padding:0 16px; }
+.player-play { display:grid; place-items:center; width:44px; height:44px; padding:0 !important;
+               border-radius:50%; background:var(--accent); border-color:var(--accent);
+               color:var(--accent-ink); }
+.player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
+.player-play svg, .player-mute svg { width:18px; height:18px; fill:currentColor; }
+.player-time { color:var(--dim); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+               font-variant-numeric:tabular-nums; }
+.player-seek { flex:1 1 160px; min-width:100px; accent-color:var(--accent); }
+.player-volume { width:80px; accent-color:var(--accent); }
+.player-speed { min-width:64px; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.player-mute { display:grid; place-items:center; width:40px; padding:0 !important; }
+.player-status { flex-basis:100%; color:var(--dim); font-size:12px; }
+.player-status:empty { display:none; }
+.reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
-/* Files Hilde wrote for the book, at the top left of its view. */
-.book-files { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin:0 0 10px; }
+/* Files Hilde wrote for the book, under its title. */
+.book-files { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; }
 .book-file-links { display:flex; flex-wrap:wrap; gap:4px 14px; }
 .book-file-links a { color:var(--text); text-decoration-color:var(--dim); text-underline-offset:3px; }
-/* Chatting, the book scrolls in the top half and the chat fills the bottom. */
-#book-view.chatting { display:flex; flex-direction:column; gap:10px; }
-#book-view.chatting .book-pane { flex:1 1 50%; min-height:0; overflow:auto; }
-.chat-pane { display:flex; flex:1 1 50%; flex-direction:column; min-height:0;
-             background:var(--surface); border-radius:var(--radius); }
-.chat-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 14px;
-             border-bottom:1px solid var(--line); }
-.chat-head h3 { flex:1; min-width:max-content; font-size:15px; }
-.chat-head select { max-width:min(320px,100%); }
-/* Easy to see and to tap, and quieter than the orange Listen button. */
-.chat-head .chat-head-button { min-height:40px; padding:0 14px; font-size:15px; }
+/* Back to where you're listening: at the bottom of the screen while the
+   narrated sentence is out of sight. */
+.back-to-listening { position:sticky; bottom:calc(16px + var(--dock-h, 0px)); z-index:6; display:block;
+                     margin:12px auto 0; box-shadow:0 6px 20px rgba(0,0,0,.5); }
+/* The side panel: beside the text on a wide screen, the whole screen below. */
+.side-panel { position:fixed; z-index:20; top:0; right:0; bottom:0; display:flex;
+              flex-direction:column; width:var(--panel-w); background:var(--surface);
+              border-left:1px solid var(--line); overscroll-behavior:contain; }
+.panel-resize { position:absolute; z-index:1; top:0; bottom:0; left:-5px; width:10px;
+                cursor:col-resize; touch-action:none; }
+.panel-resize:hover, .panel-resize:focus-visible { background:linear-gradient(90deg,
+  transparent 4px, var(--accent) 4px, var(--accent) 6px, transparent 6px); outline:0; }
+.panel-head { display:flex; align-items:center; gap:8px; padding:8px 10px;
+              border-bottom:1px solid var(--line); }
+.panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
+.panel-tabs [role=tab] { min-height:36px; padding:4px 12px; border:0; border-radius:8px;
+                         background:transparent; color:var(--dim); white-space:nowrap; }
+.panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
+                                             box-shadow:inset 0 -2px 0 var(--accent); }
+.panel-close { min-width:40px; padding:0 10px; font-size:18px; }
+.panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
+.panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
+.chat-head { display:grid; gap:6px; padding:10px 14px; border-bottom:1px solid var(--line); }
+.chat-where { display:grid; min-width:0; }
+.chat-book { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-options { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; font-size:13px; }
+.chat-options select { max-width:220px; padding:3px 8px; font-size:13px; }
+.chat-options button.link { padding:4px 0; font-size:13px; }
+.badge { padding:1px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim);
+         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; }
+.badge.cloud { border-color:var(--accent); color:var(--accent-light); }
+.badge:empty { display:none; }
 .chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
 .chat-log { display:grid; flex:1; align-content:start; gap:10px; min-height:0; overflow:auto;
-            padding:12px 14px; }
-.chat-user { justify-self:end; max-width:85%; margin:0; padding:8px 12px; border-radius:12px;
-             background:var(--raised); white-space:pre-wrap; overflow-wrap:anywhere; }
+            overscroll-behavior:contain; padding:12px 14px; }
+.chat-user { justify-self:end; display:grid; gap:6px; max-width:90%; margin:0; padding:8px 12px;
+             border-radius:12px; background:var(--raised); }
+.chat-user-text { white-space:pre-wrap; overflow-wrap:anywhere; }
 .chat-assistant { line-height:1.55; overflow-wrap:anywhere; }
 .chat-assistant.live { white-space:pre-wrap; }
 .chat-assistant > * { margin:0; }
@@ -14501,59 +14574,153 @@ audio { height:36px; }
 .chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
 .chat-cite { color:var(--accent); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
-/* Read aloud: an orange button under each answer, Start over beside it while a place is kept. */
+/* Reading an answer aloud: a speech control, unlike the book's round player. */
 .chat-voice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:.7em; }
-button.chat-listen { min-height:40px; padding:0 16px; font-size:15px; }
-.chat-restart { font-size:14px; }
+button.chat-listen { min-height:36px; padding:0 14px; border-style:dashed; border-radius:999px;
+                     font-size:14px; }
+button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent); }
+.chat-restart, .chat-resume-book { font-size:14px; }
 /* The block being read, in the book's spoken-word colors. */
 .chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent-light);
                                  box-shadow:0 0 0 3px var(--accent-light); border-radius:3px; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
-.chat-about { display:flex; align-items:baseline; gap:10px; margin:0; padding:8px 14px 0;
-              border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
+.chat-about { padding:8px 14px 0; border-top:1px solid var(--line); }
 .chat-about + .chat-compose { border-top:0; }
 .chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; }
-.reader-paragraph { padding:6px 12px; border-left:3px solid transparent;
-                    border-radius:6px; line-height:1.6; transition:border-color .15s; }
-.reader-paragraph.active { border-left-color:var(--accent); }
+/* A context chip: the part of the book a question is about, and exactly
+   what goes with it. A long one scrolls within a share of the visible
+   viewport, so an on-screen keyboard leaves the message box and Send in sight. */
+.chip { display:grid; gap:4px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
+        border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px;
+        background:var(--field); font-size:13px; }
+.chip-head { display:flex; align-items:center; gap:6px; }
+.chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
+                white-space:nowrap; }
+.chip-head button { min-height:28px; padding:0 8px; font-size:13px; }
+.chip-preview { color:var(--dim); overflow-wrap:anywhere; }
+.chip-items { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
+.chip-items li { color:var(--dim); }
+.chip-items details > summary { width:auto; }
+.chip-items details > summary::marker { color:var(--accent); }
+.chip-items details p { margin:4px 0 6px; padding-left:12px; color:var(--text); white-space:pre-wrap; }
+.chip-note { color:var(--dim); }
+.chat-user .chip { background:var(--surface); }
+/* The figure and the source page, large. */
+.figure-view-title { margin-bottom:10px; font-size:16px; }
+.zoom-card { cursor:default; }
+.panel-section { display:grid; gap:4px; margin-top:16px; }
+.panel-section p { line-height:1.55; }
+.source-label, .description-label { margin:0; font-size:12px; font-weight:650; letter-spacing:.04em;
+                                     text-transform:uppercase; }
+.source-label { color:var(--text); }
+.description-label { color:var(--accent-light); }
+.panel-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }
+.page-nav { display:flex; align-items:center; justify-content:center; gap:12px; padding:8px;
+            border-bottom:1px solid var(--line); }
+.page-nav span { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.source-page { display:block; width:100%; height:auto; background:#fff; border-radius:4px; }
+/* The text: a reading column; the paragraph being read has a rail, the word
+   being read a soft mark; the text keeps its color. */
+.reader-content { font-size:18px; line-height:1.6; }
+.reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
+.reader-paragraph.active, .source-view .reader-original.active {
+  border-left-color:var(--accent); background:rgba(224,123,57,.05);
+}
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
-.reader-sentence, .reader-block { border-radius:4px; cursor:pointer;
-                                  transition:background-color .15s; }
-.reader-sentence { padding:.1em 0; -webkit-box-decoration-break:clone;
-                   box-decoration-break:clone; }
-.reader-sentence:hover, .reader-block:hover { background:var(--raised); }
-.reader-sentence.active, .reader-block.active { background:var(--accent-soft); }
-/* The spoken word switches at once: a fade passes through colors in which its
-   text all but disappears, and a short word is mostly fade. */
-.reader-word { border-radius:3px; }
-.reader-word.active { color:var(--accent-ink); background:var(--accent-light);
-                      box-shadow:0 0 0 2px var(--accent-light); }
+.reader-sentence, .reader-block { cursor:pointer; }
+.reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
+.reader-word { border-radius:2px; }
+.reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
+.reader-word.active { background:rgba(224,123,57,.25); box-shadow:inset 0 -2px 0 var(--accent); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
-.reader-block img { display:block; max-width:100%; height:auto; margin:12px auto;
-                    border-radius:5px; }
+.reader-block img { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:5px; }
 .reader-block .table-scroll { max-width:100%; overflow-x:auto; margin:10px 0; }
 .reader-block table { width:max-content; min-width:100%; border-collapse:collapse;
-                      font-variant-numeric:tabular-nums; }
+                      font-variant-numeric:tabular-nums; font-size:15px; }
 .reader-block th, .reader-block td { padding:7px 10px; border:1px solid var(--line);
                                      vertical-align:top; text-align:left; }
 .reader-block th { background:var(--raised); }
 .reader-block td { overflow-wrap:normal; word-break:normal; }
 .reader-block code { white-space:pre-wrap; }
-/* Original: the author's text behind adapted narration, muted beneath it. */
-.reader-original { display:none; margin:2px 12px 10px 15px; padding:6px 12px;
-                   border-left:3px solid var(--line); color:var(--dim);
-                   font-size:.94em; line-height:1.55; }
-.show-original .reader-original { display:block; }
+/* A figure: a light paper card, never inverted, at its own aspect ratio.
+   The PDF's layout on a wide screen; on a phone its panels stack, each named
+   by its place in the source figure. */
+.figure-card { display:block; margin:12px 0; padding:12px; background:#f6f3ec; color:#26231f;
+               border-radius:8px; cursor:zoom-in; }
+.figure-card img { display:block; max-width:100%; height:auto; margin:0 auto; border-radius:0; }
+.figure-panel + .figure-panel { margin-top:14px; }
+.figure-panel-label { margin:0 0 4px; color:#4d4740; font-size:13px; font-weight:600; }
+.figure-card .figure-caption { margin-top:10px; font-size:14px; line-height:1.45; }
+.figure-caption .source-label { display:block; color:#4d4740; }
+.figure-card.has-composite .figure-panels { display:none; }
+.reader-label { color:var(--dim); font-size:12px; font-weight:650;
+                letter-spacing:.04em; text-transform:uppercase; }
+.reader-label.description-label { color:var(--accent-light); }
+/* Source text: the document's own words in place of the narration made from
+   them; a paragraph read word for word stays, tagged Unchanged. */
+.reader-original { display:none; margin:2px 0 10px; padding:6px 16px 6px 14px;
+                   border-left:2px solid transparent; line-height:1.6; }
+.source-view .reader-original { display:block; }
+.source-view .reader-paragraph.adapted { display:none; }
+.source-view .reader-paragraph.described > :not(.reader-picture) { display:none; }
 .reader-original > * { margin:0; }
 .reader-original > * + * { margin-top:.5em; }
 .reader-original :is(h1,h2,h3,h4,h5,h6) { font-size:1em; }
-.reader-label { color:var(--dim); font-size:12px; font-weight:650;
-                letter-spacing:.04em; text-transform:uppercase; }
+.reader-tag { display:flex; flex-wrap:wrap; align-items:center; gap:6px; color:var(--dim);
+              font:12px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.04em;
+              text-transform:uppercase; }
+.reader-tag button.link { min-height:0; padding:0; color:var(--dim); font:inherit;
+                          text-transform:inherit; }
+.reader-tag button.link:hover:not(:disabled) { color:var(--text); }
 .reader-flag { color:var(--accent); font-size:.92em; }
+.selection-menu { position:fixed; z-index:40; display:flex; gap:2px; padding:4px;
+                  background:var(--raised); border:1px solid var(--line); border-radius:10px;
+                  box-shadow:0 10px 30px rgba(0,0,0,.5); }
+.selection-menu button { min-height:36px; padding:4px 12px; border:0; background:transparent;
+                         white-space:nowrap; }
+.selection-menu button:hover:not(:disabled) { background:var(--hover); }
+.shortcut-table { border-collapse:collapse; font-size:14px; }
+.shortcut-table th { padding:5px 16px 5px 0; text-align:left; white-space:nowrap; }
+.shortcut-table td { padding:5px 0; color:var(--dim); }
+.shortcut-table kbd { padding:1px 6px; border:1px solid var(--line); border-radius:4px;
+                      background:var(--field); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+/* With the panel open on a wide screen, the text moves left to make room. */
+@media (min-width:1200px) {
+  .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
+  .panel-back { display:none; }
+}
+/* Narrower, the panel takes the reading view's place, with a way back; it
+   fits the visible viewport, so an on-screen keyboard never covers Send. */
+@media (max-width:1199.98px) {
+  .side-panel { left:0; bottom:auto; top:var(--vv-top, 0px); width:auto;
+                height:var(--vv-height, 100dvh); border-left:0; }
+  html.sheet-open { overflow:hidden; }
+  .panel-resize, .panel-close { display:none; }
+}
+/* A phone: the text takes the width; the player docks at the bottom, inside
+   the safe area, and the text ends above it. */
+@media (max-width:767.98px) {
+  .reading-column { max-width:none; }
+  .reader-content { font-size:17px; }
+  .reader-paragraph, .reader-original { padding-left:10px; padding-right:10px; }
+  .listen-bar { display:contents; }
+  .listen-bar .book-controls { margin-bottom:10px; }
+  .player-bar { position:fixed; z-index:15; right:0; bottom:0; left:0; gap:4px 8px;
+                padding:6px 10px calc(6px + env(safe-area-inset-bottom)); border-radius:14px 14px 0 0;
+                box-shadow:0 -8px 24px rgba(0,0,0,.45); }
+  .player-volume, .player-status { display:none; }
+  /* Follow along and More share a row; the switch takes the next. */
+  .book-controls .text-switch { order:1; flex-basis:100%; }
+  .player-seek { order:10; flex-basis:100%; height:28px; }
+  body:has(main.reading) { padding-bottom:var(--dock-h, 120px); }
+  .figure-card.has-composite .figure-panels { display:block; }
+  .figure-card.has-composite .figure-composite { display:none; }
+  .menu { position:fixed; right:8px; left:8px; top:auto; bottom:calc(var(--dock-h, 0px) + 8px); }
+}
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
 dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
@@ -14581,9 +14748,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .row { grid-template-columns:1fr; }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .job-row { grid-template-columns:1fr; }
-  .player-heading { flex-direction:column; align-items:stretch; }
-  /* In a column the 320px basis would be the title's height. */
-  .player-title { flex-basis:auto; }
   /* Table rows become compact list items; cells keep their order. */
   .data-table thead { display:none; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
@@ -14613,6 +14777,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   }
   details > summary { padding:11px 0; }
   .preview-button { width:44px; height:44px; }
+}
+/* Listen on a phone or a touch screen: every control 44px or more. */
+@media (max-width:767.98px), (pointer:coarse) {
+  .book-top button, .book-controls button, .player-bar button, .chip-head button, .panel-head button,
+  .menu button, .selection-menu button, .chat-options button, .chat-voice button, .panel-actions button,
+  .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
+  .player-mute, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
+  .player-seek, .chat-options select, .book-meta select { min-height:44px; }
+  .chip-items summary { min-height:44px; padding:12px 0; }
+  .panel-tabs [role=tab] { min-height:44px; }
+  .keyboard-open .chat-where { display:none; }
+  .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
 </head>
@@ -15003,101 +15179,178 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           first audiobook</button>
       </div>
     </div>
-    <div id="book-view" class="hidden">
-      <div id="book-pane" class="book-pane">
-      <button class="primary back" type="button" onclick="closeBook()">← All audiobooks</button>
-      <nav id="book-files" class="book-files hidden" aria-label="Files Hilde wrote">
-        <span class="note">Files</span>
-        <span id="book-file-links" class="book-file-links"></span>
-      </nav>
-      <section class="player-panel" aria-labelledby="reader-title">
-        <div class="player-heading">
-          <div class="player-title">
-            <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
-            <span id="reader-meta" class="note"></span>
-            <span id="reader-download" class="note" aria-live="polite"></span>
-            <span id="player-key-status" class="note" aria-live="polite"></span>
-          </div>
-          <div class="player-actions">
-            <label class="check note"><input id="reader-follow" type="checkbox" checked>
-              Follow along</label>
-            <label id="reader-original-toggle" class="check note hidden"><input
-              id="reader-original" type="checkbox"
-              onchange="$('reader-content').classList.toggle('show-original', this.checked)">
-              Original</label>
+    <div id="book-view" class="listen-workspace hidden">
+      <div class="reading-column">
+        <header class="book-top">
+          <button class="link back-link" type="button" onclick="closeBook()">← Library</button>
+          <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
+          <p class="book-meta note">
+            <span id="reader-voice-name"></span>
             <label for="reader-voice" class="visually-hidden">Voice</label>
             <select id="reader-voice" class="hidden"
               onchange="openAudiobook(state.player.book, false, this.value)"></select>
-            <button id="reader-change-voice" type="button" class="hidden"
-              onclick="openChangeVoice()">Change voice</button>
-            <button type="button" onclick="downloadBook()">Download MP3</button>
-            <button id="reader-source" type="button" class="hidden"
-              onclick="downloadSource()">Download source</button>
-            <button id="chat-toggle" type="button" aria-controls="chat-pane" aria-expanded="false"
-              onclick="toggleChat()">Chat with Hilde</button>
+            <span id="reader-meta"></span>
+          </p>
+          <nav id="book-files" class="book-files note hidden" aria-label="Files Hilde wrote">
+            <span>Files</span>
+            <span id="book-file-links" class="book-file-links"></span>
+          </nav>
+          <p id="reader-stale" class="notice hidden"></p>
+          <div id="change-voice" class="change-voice hidden">
+            <div class="field">
+              <label for="change-voice-name">New voice</label>
+              <div class="line">
+                <select id="change-voice-name"></select>
+                <button id="change-voice-start" class="primary" type="button"
+                  onclick="startBookJob('voice', $('change-voice-name').value)">Create</button>
+                <button class="link" type="button" onclick="closeChangeVoice()">Cancel</button>
+              </div>
+            </div>
+            <p class="note">The new voice reads the same text; nothing is written again.</p>
           </div>
-        </div>
-        <div id="change-voice" class="change-voice hidden">
-          <div class="field">
-            <label for="change-voice-name">New voice</label>
-            <div class="line">
-              <select id="change-voice-name"></select>
-              <button id="change-voice-start" class="primary" type="button"
-                onclick="startBookJob('voice', $('change-voice-name').value)">Create</button>
-              <button class="link" type="button" onclick="closeChangeVoice()">Cancel</button>
+        </header>
+        <div id="listen-bar" class="listen-bar">
+          <div class="book-controls">
+            <label id="reader-follow-toggle" class="check note"><input id="reader-follow"
+              type="checkbox" checked> Follow along</label>
+            <div id="text-view" class="text-switch hidden" role="radiogroup" aria-label="Text shown">
+              <button type="button" role="radio" aria-checked="true" data-view="narration"
+                onclick="setTextView('narration')"><span>Narration text</span><small>what Hilde
+                reads aloud</small></button>
+              <button type="button" role="radio" aria-checked="false" data-view="source"
+                onclick="setTextView('source')"><span>Source text</span><small>the document's own
+                words</small></button>
+            </div>
+            <span class="grow"></span>
+            <div class="menu-wrap">
+              <button id="more-button" class="more-button" type="button" aria-label="More"
+                aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu"
+                onclick="toggleMenu('more')">⋯</button>
+              <div id="more-menu" class="menu hidden" role="menu" aria-label="More">
+                <button type="button" role="menuitem" onclick="closeMenus(); downloadBook()">Download MP3</button>
+                <button id="reader-source" type="button" role="menuitem" class="hidden"
+                  onclick="closeMenus(); downloadSource()">Download source</button>
+                <button id="reader-change-voice" type="button" role="menuitem" class="hidden"
+                  onclick="closeMenus(); openChangeVoice()">Change voice…</button>
+                <button id="reader-recreate" type="button" role="menuitem"
+                  onclick="closeMenus(); recreateBook()">Recreate with the latest Hilde…</button>
+                <button type="button" role="menuitem" onclick="closeMenus(); openShortcuts()">Keyboard shortcuts</button>
+              </div>
             </div>
           </div>
-          <p class="note">The new voice reads the same text; nothing is written again.</p>
-        </div>
-        <p id="reader-stale" class="notice hidden"></p>
-        <div class="line">
-          <button id="reader-recreate" class="link" type="button"
-            onclick="recreateBook()">Recreate with the latest Hilde</button>
-          <details id="player-keys" class="note">
-            <summary>Keyboard shortcuts</summary>
-            <p>Space or K: play or pause. J and L: back and forward 10 seconds. ← and →: 5
-              seconds. ↑ and ↓, with the player focused: volume. M: mute. 0 to 9: jump to that
-              tenth of the book. Home and End: start and end. &lt; and &gt;: slower and faster.
-              ?: this list.</p>
-          </details>
-        </div>
-      </section>
-      <div id="artifact-player" class="player-controls"></div>
-      <p id="reader-unavailable" class="notice hidden"></p>
-      <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
-        <article id="reader-content" class="reader-content"></article>
-      </section>
-      </div>
-      <section id="chat-pane" class="chat-pane hidden" aria-labelledby="chat-title">
-        <div class="chat-head">
-          <h3 id="chat-title">Chat with Hilde</h3>
-          <label for="chat-model" class="visually-hidden">Chat model</label>
-          <select id="chat-model"></select>
-          <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak" type="checkbox">
-            Read answers aloud</label>
-          <button id="chat-new" class="chat-head-button" type="button" onclick="newChat()">New conversation</button>
-          <button class="chat-head-button" type="button" onclick="closeChat()">× Close</button>
-        </div>
-        <div id="chat-problem" class="chat-problem hidden" role="status">
-          <p id="chat-problem-text"></p>
-          <div id="chat-add-model" class="line hidden">
-            <button type="button" onclick="openPaperProviders()">Providers</button>
-            <button type="button" onclick="openPaperLocal()">Add local</button>
+          <div id="artifact-player" class="player-bar" role="group" aria-label="Player">
+            <button id="player-play" class="player-play" type="button" aria-label="Play"
+              onclick="togglePlayback()"></button>
+            <span id="player-elapsed" class="player-time">0:00</span>
+            <input id="player-seek" class="player-seek" type="range" min="0" max="0" step="0.1" value="0"
+              aria-label="Position in the book">
+            <span id="player-total" class="player-time">0:00</span>
+            <div class="menu-wrap">
+              <button id="player-speed" class="player-speed" type="button" aria-haspopup="menu"
+                aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1×</button>
+              <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
+            </div>
+            <button id="player-mute" class="player-mute" type="button" aria-label="Mute"
+              onclick="toggleMute()"></button>
+            <input id="player-volume" class="player-volume" type="range" min="0" max="1" step="0.05"
+              value="1" aria-label="Volume">
+            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel">Ask Hilde</button>
+            <span id="reader-download" class="player-status" aria-live="polite"></span>
+            <span id="player-key-status" class="visually-hidden" aria-live="polite"></span>
           </div>
         </div>
-        <div id="chat-log" class="chat-log" aria-live="polite"></div>
-        <p id="chat-about" class="chat-about hidden">
-          <span id="chat-about-text"></span>
-          <button class="link" type="button" onclick="setChatAbout(null)">Remove</button>
-        </p>
-        <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
-          <label for="chat-input" class="visually-hidden">Message</label>
-          <textarea id="chat-input" rows="2" maxlength="8000"
-            placeholder="Ask about this book, or ask Hilde to write a summary file"></textarea>
-          <button id="chat-send" class="primary" type="submit">Send</button>
-          <button id="chat-stop" class="hidden" type="button" onclick="stopChat()">Stop</button>
-        </form>
-      </section>
+        <p id="reader-unavailable" class="notice hidden"></p>
+        <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
+          <article id="reader-content" class="reader-content"></article>
+        </section>
+        <button id="back-to-listening" class="back-to-listening hidden" type="button"
+          onclick="backToListening()">Back to where you're listening</button>
+      </div>
+      <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
+        <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
+          aria-label="Panel width" aria-valuemin="400" tabindex="0"></div>
+        <div class="panel-head">
+          <button class="link panel-back" type="button" onclick="closePanel()">← Back to the book</button>
+          <div id="panel-tabs" class="panel-tabs" role="tablist" aria-label="Panel">
+            <button id="panel-tab-chat" type="button" role="tab" aria-controls="chat-pane"
+              onclick="showPanelView('chat')">Ask Hilde</button>
+            <button id="panel-tab-figure" class="hidden" type="button" role="tab"
+              aria-controls="figure-view" onclick="showPanelView('figure')"></button>
+            <button id="panel-tab-page" class="hidden" type="button" role="tab"
+              aria-controls="page-view" onclick="showPanelView('page')"></button>
+          </div>
+          <button class="panel-close" type="button" aria-label="Close the panel"
+            onclick="closePanel()">×</button>
+        </div>
+        <section id="chat-pane" class="panel-view" role="tabpanel" aria-labelledby="panel-tab-chat">
+          <div class="chat-head">
+            <div class="chat-where">
+              <span id="chat-book" class="chat-book"></span>
+              <span id="chat-section" class="note"></span>
+            </div>
+            <div class="chat-options">
+              <label for="chat-model" class="note">Model</label>
+              <select id="chat-model"></select>
+              <span id="chat-badge" class="badge" title="Where your question and its context go"></span>
+              <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak"
+                type="checkbox"> Read answers aloud</label>
+              <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
+            </div>
+          </div>
+          <div id="chat-problem" class="chat-problem hidden" role="status">
+            <p id="chat-problem-text"></p>
+            <div id="chat-add-model" class="line hidden">
+              <button type="button" onclick="openPaperProviders()">Providers</button>
+              <button type="button" onclick="openPaperLocal()">Add local</button>
+            </div>
+          </div>
+          <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <div id="chat-about" class="chat-about hidden" aria-live="polite"></div>
+          <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
+            <label for="chat-input" class="visually-hidden">Message</label>
+            <textarea id="chat-input" rows="2" maxlength="8000"
+              placeholder="Ask about this book, or ask Hilde to write a summary file"></textarea>
+            <button id="chat-send" class="primary" type="submit">Send</button>
+            <button id="chat-stop" class="hidden" type="button" onclick="stopChat()">Stop</button>
+          </form>
+        </section>
+        <section id="figure-view" class="panel-view hidden" role="tabpanel" aria-labelledby="panel-tab-figure">
+          <div id="figure-scroll" class="panel-scroll">
+            <h3 id="figure-title" class="figure-view-title"></h3>
+            <div id="figure-large" class="figure-card zoom-card"></div>
+            <section class="panel-section">
+              <h4 class="source-label">From the paper</h4>
+              <p id="figure-caption"></p>
+              <p><button id="figure-page" class="link" type="button"></button></p>
+            </section>
+            <section class="panel-section">
+              <h4 class="description-label">Hilde's description</h4>
+              <div id="figure-description"></div>
+            </section>
+            <div class="panel-actions">
+              <button class="primary" type="button" onclick="askAboutFigure()">Ask about this figure</button>
+            </div>
+          </div>
+        </section>
+        <section id="page-view" class="panel-view hidden" role="tabpanel" aria-labelledby="panel-tab-page">
+          <div class="page-nav">
+            <button id="page-previous" type="button" aria-label="Previous page"
+              onclick="openSourcePage(pageShown - 1)">‹</button>
+            <span id="page-label"></span>
+            <button id="page-next" type="button" aria-label="Next page"
+              onclick="openSourcePage(pageShown + 1)">›</button>
+          </div>
+          <div id="page-scroll" class="panel-scroll">
+            <img id="page-image" class="source-page" alt="">
+            <p id="page-problem" class="problem hidden"></p>
+          </div>
+        </section>
+      </aside>
+      <div id="selection-menu" class="selection-menu hidden" role="menu" aria-label="Selected text">
+        <button type="button" role="menuitem" data-action="ask">Ask about this</button>
+        <button type="button" role="menuitem" data-action="listen">Listen from here</button>
+        <button type="button" role="menuitem" data-action="copy">Copy</button>
+      </div>
     </div>
   </section>
 
@@ -15109,6 +15362,25 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   </datalist>
 </main>
 <footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt="">Zeki Works</footer>
+
+<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+  <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+  <table class="shortcut-table">
+    <tr><th><kbd>Space</kbd> or <kbd>K</kbd></th><td>Play or pause</td></tr>
+    <tr><th><kbd>J</kbd> / <kbd>L</kbd></th><td>Back / forward 10 seconds</td></tr>
+    <tr><th><kbd>←</kbd> / <kbd>→</kbd></th><td>Back / forward 5 seconds</td></tr>
+    <tr><th><kbd>↑</kbd> / <kbd>↓</kbd></th><td>Volume, while the player has focus</td></tr>
+    <tr><th><kbd>M</kbd></th><td>Mute</td></tr>
+    <tr><th><kbd>0</kbd> to <kbd>9</kbd></th><td>Jump to that tenth of the book</td></tr>
+    <tr><th><kbd>Home</kbd> / <kbd>End</kbd></th><td>Start / end</td></tr>
+    <tr><th><kbd>&lt;</kbd> / <kbd>&gt;</kbd></th><td>Slower / faster</td></tr>
+    <tr><th><kbd>?</kbd></th><td>This list</td></tr>
+  </table>
+  <div class="footer">
+    <span class="grow"></span>
+    <button type="button" onclick="$('shortcuts-dialog').close()">Close</button>
+  </div>
+</dialog>
 
 <dialog id="paper-providers-dialog">
   <h2>Providers</h2>
@@ -15280,6 +15552,8 @@ const READER_WORD_LEAD_SECONDS = 0.1;
 const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5v11L13 8z"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zm5 0h3v10H9z"/></svg>';
 const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.1 3 7.9 1.6 9.3l4.6 4.6 8.2-8.2-1.4-1.4z"/></svg>';
+const VOLUME_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm9.2-1.6a5 5 0 0 1 0 7.2l-1-1a3.6 3.6 0 0 0 0-5.2z"/></svg>';
+const MUTED_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm8.6.2 1-1 1.7 1.7 1.7-1.7 1 1-1.7 1.8 1.7 1.7-1 1-1.7-1.7-1.7 1.7-1-1 1.7-1.7z"/></svg>';
 let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], consumers = [];
 let configuration = {}, voices = [], books = [];
 let running = false, runKind = null;
@@ -15313,6 +15587,9 @@ let etaPhase = null, etaPhaseStarted = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
 let readerBlocks = [], readerWordElements = [], readerFrame = 0;
 let activeReaderBlock = -1, activeReaderWord = -1;
+// The open book's reader: its passages (¶ numbers) by block, their sections,
+// captions, and pages, and its figures as the PDF lays them out.
+let readerPayload = null;
 // The whole book, downloaded from the first press of play.
 let readerDownload = null;
 // One shared player keeps hundreds of preview buttons cheap.
@@ -15583,8 +15860,8 @@ function readerPlayer(book, voice) {
   // MP3 remains a fallback for browsers without MP3-in-MP4 playback. The MP4's
   // type names no codec: Safari plays its `.mp3` sample entry but answers ""
   // to every MP3-in-MP4 codecs string, so one would send it to the MP3.
+  // Hilde's own player bar drives it; the element shows nothing itself.
   const audio = document.createElement("audio");
-  audio.controls = true;
   audio.preload = "metadata";
   const url = "/api/audio?book=" + encodeURIComponent(book)
     + "&voice=" + encodeURIComponent(voice) + "&v=" + Date.now();
@@ -15635,37 +15912,45 @@ function playDownloadedBook() {
   if (!download || !download.url || download.swapped || download.audio !== readerAudio) return;
   download.swapped = true;
   const audio = download.audio, time = audio.currentTime, playing = !audio.paused;
-  // The same bytes, so cue times and exact seeking stay as they were.
+  // The same bytes, so cue times and exact seeking stay as they were. While
+  // the copy loads, the position reads 0: the text, the bar, and the saved
+  // place wait for it (download.restoring).
+  download.restoring = true;
   audio.replaceChildren();
   audio.addEventListener("loadedmetadata", () => {
     audio.currentTime = time;
+    download.restoring = false;
     if (playing) audio.play().catch(() => {});
   }, { once: true });
   audio.src = download.url;
 }
 
 function clearReader() {
+  saveBookPlace();
   cancelAnimationFrame(readerFrame); readerFrame = 0;
+  if (readerAudio) { readerAudio.pause(); readerAudio.remove(); }
   readerAudio = null; readerCues = []; readerWordCues = [];
   readerSampleRate = 0; readerBlocks = []; readerWordElements = [];
   activeReaderBlock = -1; activeReaderWord = -1;
+  readerPayload = null; readerRestored = false; bookPausedForSpeech = false;
   if (readerDownload) {
     readerDownload.controller.abort();
     if (readerDownload.url) URL.revokeObjectURL(readerDownload.url);
     readerDownload = null;
   }
   $("reader-download").textContent = "";
-  // Removing the audio element also stops its playback.
-  $("artifact-player").replaceChildren();
   $("reader-content").replaceChildren();
   $("reader-panel").classList.add("hidden");
   $("reader-unavailable").classList.add("hidden");
-  $("reader-original-toggle").classList.add("hidden");
+  $("text-view").classList.add("hidden");
   $("reader-voice").classList.add("hidden");
   $("reader-change-voice").classList.add("hidden");
   $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
   $("change-voice").classList.add("hidden");
+  hideSelectionMenu();
+  setDetached(false);
+  renderPlayer();
 }
 
 function readerCueAt(sample) {
@@ -15710,6 +15995,7 @@ function followReaderAudio() {
   readerFrame = 0;
   if (!readerAudio || readerAudio.paused) return;
   updateReaderHighlight();
+  renderPlayerTime();
   readerFrame = requestAnimationFrame(followReaderAudio);
 }
 
@@ -15770,7 +16056,9 @@ function wrapReaderWords(parts, cues) {
 }
 
 function seekReaderBlock(event, block) {
-  if (event.target.closest("a") || !readerAudio) return;
+  if (event.target.closest("a, .figure-card") || !readerAudio) return;
+  // The click that ends a drag selection selects; it never seeks.
+  if (!window.getSelection().isCollapsed) return;
   const word = readerWordCues[event.target.closest(".reader-word")?.dataset.cue];
   const sample = word
     ? readerWordSeekSample(word)
@@ -15778,20 +16066,91 @@ function seekReaderBlock(event, block) {
   if (sample === undefined) return;
   readerAudio.currentTime = sample / readerSampleRate;
   updateReaderHighlight();
+  setDetached(false);
+}
+
+// A figure's panels as the PDF lays them out: one picture of the whole
+// figure (shown on a wide screen) beside its crops, each named by its place
+// in the source figure (shown stacked on a phone), and the paper's caption.
+function figureCaption(number) {
+  const detail = readerPayload.passages[number] || {};
+  const caption = document.createElement("p");
+  caption.className = "figure-caption";
+  const label = document.createElement("span");
+  label.className = "source-label";
+  label.textContent = ["From the paper", detail.page ? `PDF p. ${detail.page}` : ""]
+    .filter(Boolean).join(" · ");
+  caption.append(label, detail.caption || "");
+  return caption;
+}
+function panelName(position) {
+  return position && position !== "whole"
+    ? `${position[0].toUpperCase()}${position.slice(1)} panel of the source figure` : "";
+}
+function buildFigureCard(visual, number, block) {
+  const figure = readerPayload.figures[number];
+  const images = [...visual.querySelectorAll("img")];
+  visual.classList.add("figure-card");
+  visual.dataset.figure = number;
+  visual.tabIndex = 0;
+  visual.setAttribute("role", "button");
+  visual.setAttribute("aria-label", `Open ${figure.label || "the figure"} large`);
+  const panels = figure.panels.filter((panel) => panel.block === block);
+  const box = document.createElement("div");
+  box.className = "figure-panels";
+  images.forEach((image, index) => {
+    const holder = image.parentElement;
+    const panel = document.createElement("div");
+    panel.className = "figure-panel";
+    const name = panelName((panels.find((item) => item.image === index) || {}).position);
+    if (name) {
+      const label = document.createElement("p");
+      label.className = "figure-panel-label";
+      label.textContent = name;
+      panel.append(label);
+    }
+    image.alt = image.alt || name || figure.label || "";
+    panel.append(image);
+    box.append(panel);
+    if (holder !== visual && !holder.textContent.trim() && !holder.querySelector("img")) holder.remove();
+  });
+  visual.prepend(box);
+  // Every panel here: show the figure as one picture, as in the PDF.
+  if (figure.composite && figure.panels.length > 1 && panels.length === figure.panels.length) {
+    const composite = document.createElement("img");
+    composite.className = "figure-composite";
+    composite.loading = "lazy";
+    composite.alt = `${figure.label || "The figure"}, as laid out in the paper`;
+    composite.src = figure.composite;
+    composite.addEventListener("error", () => {
+      composite.remove(); visual.classList.remove("has-composite");
+    });
+    visual.classList.add("has-composite");
+    visual.prepend(composite);
+  }
+  visual.append(figureCaption(number));
+  visual.addEventListener("click", () => openFigure(number));
+  visual.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault(); openFigure(number);
+  });
 }
 
 function renderReaderBlocks(blocks, wordCuesByBlock) {
   // Sentences of one narration paragraph flow as inline spans in a shared <p>
   // or heading; lists, tables, and images stay blocks. Every part of a
-  // sentence shares its cue, click target, and highlight.
+  // sentence shares its cue, click target, and highlight. A paragraph knows
+  // its passage (the ¶ number), which source paragraphs and chat use.
   const content = $("reader-content");
   const parts = [];
   let paragraph = null, paragraphId = null, line = null;
   for (const item of blocks) {
+    const passage = passageOfBlock(item.id);
     if (!paragraph || item.paragraph !== paragraphId) {
       paragraph = document.createElement("section");
       paragraph.className = "reader-paragraph";
       paragraph.dataset.paragraph = item.paragraph;
+      if (passage) paragraph.dataset.passage = passage;
       content.append(paragraph);
       paragraphId = item.paragraph; line = null;
     }
@@ -15834,32 +16193,43 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
       own.push(sentence);
     }
     wrapReaderWords(own, wordCuesByBlock.get(item.id) || []);
-    for (const part of own)
+    for (const part of own) {
       part.addEventListener("click", (event) => seekReaderBlock(event, item.id));
+      if (!part.classList.contains("reader-block") || !part.querySelector("img")) continue;
+      // A picture stays in Source text: it is the document's own.
+      part.classList.add("reader-picture");
+      if (passage && readerPayload.figures[passage]) buildFigureCard(part, passage, item.id);
+    }
     parts[item.id] = own;
   }
   return parts;
 }
 
 function renderReaderOriginals(originals) {
-  // The author's text follows the narration made from it, with the PDF page
-  // it starts on; a passage read word for word shows only its page, and
-  // passages left out of the narration show in place. A description the
-  // model wrote of a figure, table, or equation says so. Returns whether
-  // there is anything to show.
+  // Source text: the author's text in place of the narration made from it,
+  // tagged with the PDF page it starts on, which opens that page in the
+  // panel; a passage read word for word keeps its narration, tagged
+  // Unchanged, and passages left out of the narration show in place. In
+  // Narration text, a description the model wrote of a figure, table, or
+  // equation is labeled Hilde's description. Returns whether there is
+  // anything to show.
   const content = $("reader-content");
   const sections = new Map([...content.querySelectorAll(".reader-paragraph")]
     .map((section) => [Number(section.dataset.paragraph), section]));
   let anchor = null;
-  for (const original of originals) {
+  for (const [index, original] of originals.entries()) {
     if (original.paragraphs) {
       const [first, last] = original.paragraphs;
       if (original.description && sections.has(first)) {
         const label = document.createElement("p");
-        label.className = "reader-label";
-        label.textContent = "Description";
+        label.className = "reader-label description-label";
+        label.textContent = "Hilde's description";
         sections.get(first).prepend(label);
       }
+      const kind = original.unchanged ? "unchanged" : original.description ? "described"
+        : original.html ? "adapted" : "";
+      for (let id = first; id <= last; id++)
+        if (kind && sections.has(id)) sections.get(id).classList.add(kind);
       for (let id = last; id >= first; id--)
         if (sections.has(id)) { anchor = sections.get(id); break; }
     }
@@ -15868,19 +16238,24 @@ function renderReaderOriginals(originals) {
     if (!original.html && !original.unchanged && !(original.flags || []).length) continue;
     const aside = document.createElement("aside");
     aside.className = "reader-original";
-    const label = document.createElement("p");
-    label.className = "reader-label";
-    label.textContent = [
-      !original.paragraphs ? "Not narrated"
-        : original.unchanged ? "Unchanged" : "Original",
-      original.page ? "PDF p. " + original.page : "",
-    ].filter(Boolean).join(" · ");
+    aside.dataset.passage = index + 1;
+    const tag = document.createElement("p");
+    tag.className = "reader-tag";
+    tag.append(!original.paragraphs ? "Not narrated" : original.unchanged ? "Unchanged" : "Original");
+    if (original.page) {
+      const page = document.createElement("button");
+      page.type = "button"; page.className = "link";
+      page.textContent = `PDF p. ${original.page}`;
+      page.title = `Show page ${original.page} of the source PDF beside the text`;
+      page.addEventListener("click", () => openSourcePage(original.page));
+      tag.append(" · ", page);
+    }
     const template = document.createElement("template");
     template.innerHTML = original.html;
     for (const link of template.content.querySelectorAll("a")) {
       link.target = "_blank"; link.rel = "noopener";
     }
-    aside.append(label, template.content);
+    aside.append(tag, template.content);
     // What a check found that asking again did not clear: worth a listen.
     if ((original.flags || []).length) {
       const flagged = document.createElement("p");
@@ -15894,26 +16269,124 @@ function renderReaderOriginals(originals) {
   return content.querySelector(".reader-original") !== null;
 }
 
-function followReaderSentence(element) {
-  // Scroll only once the playing sentence leaves the text visible below the
-  // pinned player, then bring it a quarter of the way down. The text turns
-  // like pages instead of sliding at every sentence, and a figure stays in
-  // view while its description is read.
-  const player = $("artifact-player").getBoundingClientRect();
-  const top = Math.max(player.bottom, 0);
-  const bottom = window.innerHeight;
+// --- Reading position --------------------------------------------------------
+// The place is the sentence being narrated and its passage, never pixels.
+// The page scrolls (never an inner box); the player is pinned above the text,
+// or docked beneath it on a phone.
+function passageOfBlock(block) {
+  const passages = readerPayload ? readerPayload.block_passages || [] : [];
+  for (let index = Math.min(block, passages.length - 1); index >= 0; index--)
+    if (passages[index]) return passages[index];
+  return null;
+}
+function playerDocked() { return window.matchMedia("(max-width:767.98px)").matches; }
+// The part of the screen the text shows in: beneath the pinned controls and
+// player, or above the docked player on a phone.
+function readingViewport() {
+  if (playerDocked()) return { top:0, bottom:$("artifact-player").getBoundingClientRect().top };
+  return { top:Math.max($("listen-bar").getBoundingClientRect().bottom, 0), bottom:window.innerHeight };
+}
+function shown(element) { return !!element && element.getClientRects().length > 0; }
+function onScreen(element) {
+  if (!shown(element)) return false;
+  const box = element.getBoundingClientRect(), view = readingViewport();
+  return box.bottom > view.top && box.top < view.bottom;
+}
+// What Source text shows for a passage: its narration when unchanged, its
+// picture, or the author's text.
+function sourceElement(passage) {
+  if (!passage) return null;
+  return [...$("reader-content").querySelectorAll(`[data-passage="${passage}"]`)].find(shown) || null;
+}
+// Where the listener is: the narrated sentence, or in Source text the
+// source paragraph that holds it.
+function listeningElement() {
+  if (activeReaderBlock < 0) return null;
+  if (textView === "source") return sourceElement(passageOfBlock(activeReaderBlock));
+  return (readerBlocks[activeReaderBlock] || []).find(shown) || null;
+}
+// The text at the top of the reading view, when the narrated sentence is not on screen.
+function firstVisibleText() {
+  const view = readingViewport();
+  return [...$("reader-content").querySelectorAll(".reader-paragraph, .reader-original")]
+    .find((element) => shown(element) && element.getBoundingClientRect().bottom > view.top + 4) || null;
+}
+// What a change of layout keeps in place: the narrated sentence while it is
+// on screen and followed, else the paragraph at the top of the text.
+function readingAnchor() {
+  if (!readerAudio) return null;
+  const listening = listeningElement();
+  if (listening && !detached && onScreen(listening))
+    return { element:listening, block:activeReaderBlock, passage:passageOfBlock(activeReaderBlock),
+             top:listening.getBoundingClientRect().top };
+  const element = firstVisibleText();
+  return element ? { element, block:-1, passage:Number(element.dataset.passage) || null,
+                     top:element.getBoundingClientRect().top } : null;
+}
+// Scrolling the page for the listener, which Back to where you're listening ignores.
+let expectScrollUntil = 0, userScrollAt = 0;
+function scrollPageBy(delta, behavior = "auto") {
+  if (Math.abs(delta) < 1) return;
+  expectScrollUntil = performance.now() + (behavior === "smooth" ? 1500 : 400);
+  window.scrollBy({ top:delta, behavior });
+}
+function keepPlace(change) {
+  const anchor = readingAnchor();
+  change();
+  if (anchor && anchor.element.isConnected)
+    scrollPageBy(anchor.element.getBoundingClientRect().top - anchor.top);
+}
+function motion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+// Bring an element a quarter of the way down the reading view.
+function placeListening(element, behavior) {
+  if (!element) return;
   const box = element.getBoundingClientRect();
-  if (box.top >= top && box.bottom <= bottom) return;
-  // Once the text scrolls, the player is pinned to the top of the screen.
-  window.scrollBy({
-    top: box.top - player.height - (bottom - player.height) / 4,
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto" : "smooth",
-  });
+  // Once the text scrolls, the controls and player are pinned to the top of the screen.
+  const top = playerDocked() ? 0 : $("listen-bar").getBoundingClientRect().height;
+  const bottom = playerDocked() ? $("artifact-player").getBoundingClientRect().top : window.innerHeight;
+  scrollPageBy(box.top - top - (bottom - top) / 4, behavior);
+}
+function followListening(element) {
+  // Scroll only once the playing sentence leaves the visible text, then
+  // bring it a quarter of the way down. The text turns like pages instead
+  // of sliding at every sentence, and a figure stays in view while its
+  // description is read.
+  const box = element.getBoundingClientRect(), view = readingViewport();
+  if (box.top >= view.top && box.bottom <= view.bottom) return;
+  placeListening(element, motion());
+}
+// Back to where you're listening: shown while the listener has scrolled
+// the narrated sentence away, or jumped elsewhere; auto-scroll waits meanwhile.
+let detached = false;
+function setDetached(value) {
+  detached = value;
+  renderBackToListening();
+}
+function renderBackToListening() {
+  const button = $("back-to-listening");
+  const element = detached && readerAudio ? listeningElement() : null;
+  button.classList.toggle("hidden", !element);
+  if (!element) return;
+  const above = element.getBoundingClientRect().bottom < readingViewport().top;
+  button.textContent = `${above ? "↑" : "↓"} Back to where you're listening`;
+}
+function backToListening() {
+  setDetached(false);
+  placeListening(listeningElement(), motion());
+}
+function userScrolled() {
+  if (!readerAudio || state.tab !== "player" || performance.now() < expectScrollUntil) return;
+  // Layout changes scroll too (images loading, scroll anchoring); only a
+  // scroll right after the listener's own wheel, touch, or key counts.
+  if (performance.now() - userScrollAt > 1200) return;
+  const element = listeningElement();
+  if (element) setDetached(!onScreen(element));
 }
 
 function updateReaderHighlight() {
-  if (!readerAudio || !readerSampleRate) return;
+  if (!readerAudio || !readerSampleRate || readerDownload?.restoring) return;
   const sample = Math.round(readerAudio.currentTime * readerSampleRate);
   const candidateWordCue = readerWordCueAt(sample);
   const sentenceCue = readerCueAt(sample);
@@ -15926,12 +16399,23 @@ function updateReaderHighlight() {
     const previous = readerBlocks[activeReaderBlock] || [];
     for (const part of previous) part.classList.remove("active");
     previous[0]?.closest(".reader-paragraph").classList.remove("active");
+    const passageBefore = passageOfBlock(activeReaderBlock);
     activeReaderBlock = nextBlock;
     const parts = readerBlocks[nextBlock] || [];
     for (const part of parts) part.classList.add("active");
     parts[0]?.closest(".reader-paragraph").classList.add("active");
-    if (parts.length && $("reader-follow").checked && !readerAudio.paused)
-      followReaderSentence(parts[0]);
+    const passage = passageOfBlock(nextBlock);
+    if (passage !== passageBefore) {
+      for (const element of $("reader-content").querySelectorAll(".reader-original.active"))
+        element.classList.remove("active");
+      $("reader-content").querySelector(`.reader-original[data-passage="${passage}"]`)
+        ?.classList.add("active");
+      if (panelOpen) renderChatHeader();
+    }
+    const element = listeningElement();
+    if (element && $("reader-follow").checked && !readerAudio.paused && !detached)
+      followListening(element);
+    renderBackToListening();
     // A sentence start is a natural pause, so switching sources there is not heard.
     if (readerDownload?.url && !readerDownload.swapped) playDownloadedBook();
   }
@@ -15942,6 +16426,166 @@ function updateReaderHighlight() {
   activeReaderWord = nextWord;
   if (nextWord >= 0 && readerWordElements[nextWord])
     readerWordElements[nextWord].classList.add("active");
+}
+
+// Narration text | Source text. Switching keeps the reading position: the
+// source paragraph that holds the narrated sentence takes the sentence's
+// place on screen, and switching back puts the sentence there again.
+let textView = "narration";
+function renderTextView() {
+  $("reader-content").classList.toggle("source-view", textView === "source");
+  for (const button of $("text-view").querySelectorAll("[role=radio]")) {
+    const checked = button.dataset.view === textView;
+    button.setAttribute("aria-checked", String(checked));
+    button.tabIndex = checked ? 0 : -1;
+  }
+}
+function setTextView(view) {
+  if (view === textView) return;
+  const anchor = readingAnchor();
+  textView = view;
+  renderTextView();
+  if (!anchor) return;
+  const element = anchor.block >= 0 ? listeningElement()
+    : view === "source" ? sourceElement(anchor.passage)
+    : [...$("reader-content").querySelectorAll(`.reader-paragraph[data-passage="${anchor.passage}"]`)].find(shown);
+  if (element) scrollPageBy(element.getBoundingClientRect().top - anchor.top);
+  renderBackToListening();
+}
+
+// --- The player bar -----------------------------------------------------------
+const SPEED_CHOICES = [0.75, 1, 1.25, 1.5, 1.75, 2];
+function formatSpeed(speed) { return `${Number(speed.toFixed(2))}×`; }
+function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+  const hours = Math.floor(total / 3600), minutes = Math.floor(total / 60) % 60;
+  const rest = String(total % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${rest}` : `${minutes}:${rest}`;
+}
+let seekDragging = false;
+function renderPlayerTime() {
+  const audio = readerAudio;
+  if (readerDownload?.restoring) return;
+  const duration = audio && Number.isFinite(audio.duration) ? audio.duration : 0;
+  const time = audio ? audio.currentTime : 0;
+  $("player-elapsed").textContent = formatClock(time);
+  $("player-total").textContent = formatClock(duration);
+  const seek = $("player-seek");
+  seek.max = String(duration);
+  if (!seekDragging) seek.value = String(time);
+  seek.setAttribute("aria-valuetext", `${formatClock(time)} of ${formatClock(duration)}`);
+}
+function renderPlayer() {
+  const audio = readerAudio, playing = !!audio && !audio.paused;
+  const play = $("player-play");
+  play.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+  play.setAttribute("aria-label", playing ? "Pause" : "Play");
+  const speed = audio ? audio.playbackRate : 1;
+  $("player-speed").textContent = formatSpeed(speed);
+  $("player-speed").setAttribute("aria-label", `Playback speed ${formatSpeed(speed)}`);
+  for (const item of $("speed-menu").children)
+    item.setAttribute("aria-checked", String(Math.abs(Number(item.dataset.speed) - speed) < 1e-9));
+  const muted = !!audio && (audio.muted || audio.volume === 0);
+  $("player-mute").innerHTML = muted ? MUTED_ICON : VOLUME_ICON;
+  $("player-mute").setAttribute("aria-label", muted ? "Sound on" : "Mute");
+  $("player-volume").value = String(audio ? (audio.muted ? 0 : audio.volume) : 1);
+  renderPlayerTime();
+  renderResumeBook();
+}
+function togglePlayback() {
+  if (!readerAudio) return;
+  if (readerAudio.paused) readerAudio.play().catch(() => {}); else readerAudio.pause();
+}
+function toggleMute() {
+  if (!readerAudio) return;
+  if (readerAudio.volume === 0) { readerAudio.volume = 1; readerAudio.muted = false; }
+  else readerAudio.muted = !readerAudio.muted;
+}
+// Speed is this browser's playback preference, kept per book; it never
+// changes the audio.
+function setSpeed(speed) {
+  if (!readerAudio) return;
+  // Loading the downloaded book resets playbackRate to the default one.
+  readerAudio.defaultPlaybackRate = speed; readerAudio.playbackRate = speed;
+}
+// Menus open on a click or tap, never on hover; one at a time.
+function toggleMenu(name) {
+  const menu = $(`${name}-menu`), open = menu.classList.contains("hidden");
+  closeMenus();
+  if (!open) return;
+  menu.classList.remove("hidden");
+  $(name === "more" ? "more-button" : "player-speed").setAttribute("aria-expanded", "true");
+  (menu.querySelector("[aria-checked=true]") || menu.querySelector("button:not(.hidden)"))
+    ?.focus({ preventScroll:true });
+}
+function closeMenus() {
+  for (const [menu, button] of [["more-menu", "more-button"], ["speed-menu", "player-speed"]]) {
+    $(menu).classList.add("hidden");
+    $(button).setAttribute("aria-expanded", "false");
+  }
+}
+function openShortcuts() { $("shortcuts-dialog").showModal(); }
+
+// --- This browser's memory of each book: its place and its speed -------------
+// localStorage, never the book's, the voice's, or the server's files.
+function stored(key) {
+  try { return JSON.parse(localStorage.getItem(`hilde.${key}`)); } catch (_) { return null; }
+}
+function store(key, value) {
+  try { localStorage.setItem(`hilde.${key}`, JSON.stringify(value)); } catch (_) {}
+}
+function bookPlace(book) { return stored(`book.${book}`) || {}; }
+let readerRestored = false, placeSavedAt = 0;
+function saveBookPlace() {
+  const audio = readerAudio, book = state && state.player.book;
+  if (!audio || !book || !readerRestored || readerDownload?.restoring) return;
+  placeSavedAt = performance.now();
+  store(`book.${book}`, {
+    ...bookPlace(book), voice:state.player.voice, time:audio.currentTime,
+    block:activeReaderBlock, passage:passageOfBlock(activeReaderBlock),
+    speed:audio.defaultPlaybackRate,
+  });
+}
+function saveBookPlaceSoon() { if (performance.now() - placeSavedAt > 1000) saveBookPlace(); }
+function rememberSpeed() {
+  const book = state && state.player.book;
+  if (readerAudio && book) store(`book.${book}`, { ...bookPlace(book), speed:readerAudio.defaultPlaybackRate });
+}
+// Reopening a book, or reloading, finds it paused where it was: the same
+// time with the same voice, else the start of the same passage.
+function restoreBookPlace(place, voice) {
+  const audio = readerAudio;
+  let time = null;
+  if (place.voice === voice && Number.isFinite(place.time)) time = place.time;
+  else if (place.passage && readerPayload) {
+    const block = (readerPayload.block_passages || []).indexOf(place.passage);
+    const cue = readerCues.find((candidate) => candidate.block === block);
+    if (cue) time = cue.start_sample / readerSampleRate;
+  }
+  if (time > 0) audio.currentTime = Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time;
+  readerRestored = true;
+  updateReaderHighlight();
+  renderPlayer();
+  if (time > 0) placeListening(listeningElement(), "auto");
+}
+function bindReaderAudio(audio) {
+  audio.addEventListener("timeupdate", () => {
+    updateReaderHighlight(); renderPlayerTime(); saveBookPlaceSoon();
+  });
+  audio.addEventListener("seeking", () => { updateReaderHighlight(); renderPlayerTime(); });
+  audio.addEventListener("seeked", saveBookPlace);
+  audio.addEventListener("play", () => {
+    pauseOtherSounds(audio);
+    bookPausedForSpeech = false;
+    renderPlayer();
+    if (!readerFrame) readerFrame = requestAnimationFrame(followReaderAudio);
+    downloadWholeBook(audio);
+  });
+  audio.addEventListener("pause", () => { renderPlayer(); saveBookPlace(); playDownloadedBook(); });
+  for (const type of ["durationchange", "volumechange", "ended"])
+    audio.addEventListener(type, renderPlayer);
+  audio.addEventListener("ratechange", () => { renderPlayer(); rememberSpeed(); });
+  oneSoundAtATime(audio);
 }
 
 const MODIFIED_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" });
@@ -15972,7 +16616,8 @@ function bookById(id) {
   return books.find((book) => book.id === id) || null;
 }
 
-// A book's voices all read its one text; the reader plays one of them.
+// A book's voices all read its one text; the reader plays one of them. It
+// opens paused where this browser last left it, at the speed chosen for it.
 async function openAudiobook(id, focus, voiceName) {
   if (!id) return;
   stopPreview();
@@ -15985,29 +16630,34 @@ async function openAudiobook(id, focus, voiceName) {
   render(); queueSync();
   resetChatFor(id);
   const heard = book ? book.voices.find((item) => item.name === voice) : null;
-  const details = book
-    ? [voice && `Read by ${voice}`, formatDuration(heard ? heard.duration : book.duration), book.source]
-    : [];
   $("reader-title").textContent = book ? book.title : id;
-  $("reader-meta").textContent = details.filter(Boolean).join(" · ");
+  $("reader-voice-name").textContent = voice ? `Read by ${voice}` : "";
+  $("reader-meta").textContent = book
+    ? [formatDuration(heard ? heard.duration : book.duration), book.source]
+      .filter(Boolean).map((part) => `· ${part}`).join(" ")
+    : "";
   // Only a book whose document is kept, or is in Documents, offers it.
   $("reader-source").classList.toggle("hidden", !(book && book.has_source));
-  if (focus) $("reader-title").focus();
+  expectScrollUntil = performance.now() + 400;
+  window.scrollTo(0, 0);
+  if (focus) $("reader-title").focus({ preventScroll:true });
   const audio = readerPlayer(id, voice);
-  $("artifact-player").replaceChildren(audio, askHildeButton());
+  $("artifact-player").append(audio);
   readerAudio = audio;
-  audio.addEventListener("timeupdate", updateReaderHighlight);
-  audio.addEventListener("seeking", updateReaderHighlight);
-  audio.addEventListener("play", () => {
-    if (!readerFrame) readerFrame = requestAnimationFrame(followReaderAudio);
-    downloadWholeBook(audio);
+  const place = bookPlace(id);
+  const speed = Number(place.speed);
+  if (speed >= 0.25 && speed <= 4) setSpeed(speed);
+  bindReaderAudio(audio);
+  renderPlayer();
+  const metadata = new Promise((resolve) => {
+    audio.addEventListener("loadedmetadata", resolve, { once:true });
   });
-  audio.addEventListener("pause", () => playDownloadedBook());
   try {
     const payload = await jsonRequest(
       "/api/reader?book=" + encodeURIComponent(id) + "&voice=" + encodeURIComponent(voice)
     );
     if (readerAudio !== audio) return;
+    readerPayload = payload;
     showBookVoices(payload);
     readerCues = payload.cues || [];
     readerWordCues = (payload.word_cues || []).map(
@@ -16022,15 +16672,14 @@ async function openAudiobook(id, focus, voiceName) {
     }
     readerSampleRate = Number(payload.sample_rate) || 0;
     readerBlocks = renderReaderBlocks(payload.blocks || [], wordCuesByBlock);
-    $("reader-original-toggle").classList.toggle(
-      "hidden", !renderReaderOriginals(payload.originals || [])
-    );
-    details.push(payload.word_timing !== "unavailable"
+    $("text-view").classList.toggle("hidden", !renderReaderOriginals(payload.originals || []));
+    if (textView === "source" && $("text-view").classList.contains("hidden")) textView = "narration";
+    renderTextView();
+    $("reader-follow-toggle").title = payload.word_timing !== "unavailable"
       ? "Words highlight as they're read"
       : payload.timing_precision === "estimated"
       ? "Sentences highlight approximately"
-      : "Sentences highlight as they're read");
-    $("reader-meta").textContent = details.filter(Boolean).join(" · ");
+      : "Sentences highlight as they're read";
     $("reader-panel").classList.remove("hidden");
     updateReaderHighlight();
   } catch (_) {
@@ -16039,6 +16688,8 @@ async function openAudiobook(id, focus, voiceName) {
       "The text for this audiobook isn't available, but you can still listen.";
     $("reader-unavailable").classList.remove("hidden");
   }
+  await metadata;
+  if (readerAudio === audio) restoreBookPlace(place, voice);
 }
 
 // The voice picker lists the voices that read the book's current text; a
@@ -16053,6 +16704,8 @@ function showBookVoices(payload) {
     return option;
   }));
   select.classList.toggle("hidden", ready.length < 2);
+  // With a choice of voices, the picker names the voice.
+  if (ready.length >= 2) $("reader-voice-name").textContent = "Read by";
   $("reader-change-voice").classList.toggle("hidden", !payload.has_text);
   const notice = $("reader-stale");
   notice.replaceChildren();
@@ -16084,7 +16737,7 @@ function openChangeVoice() {
 }
 function closeChangeVoice() {
   $("change-voice").classList.add("hidden");
-  $("reader-change-voice").focus();
+  $("more-button").focus();
 }
 
 async function recreateBook() {
@@ -16135,65 +16788,163 @@ function downloadSource() {
     location.href = "/api/source?book=" + encodeURIComponent(state.player.book);
 }
 
-// Chat with Hilde: the open book's conversation, below its text. One
-// conversation per book, shared by every browser; Hilde's answer streams in.
-let chatOpen = false, chatData = null, chatStream = null, chatLive = null;
-let chatHasModels = false, chatModelsError = "";
+// --- The side panel: Ask Hilde (chat), a figure, a source page ---------------
+// One panel beside the text on a wide screen (width kept in this browser),
+// the whole screen below 1200px. Each view keeps its state while another
+// shows or the panel is closed: the draft, its context chip, the
+// conversation and its scroll position, and an answer still arriving.
+let panelOpen = false, panelView = "chat", figureShown = 0, pageShown = 0;
+let chatScroll = null;  // { top, atEnd } of the conversation while it is hidden
+function narrowScreen() { return !window.matchMedia("(min-width:1200px)").matches; }
+function chatShown() { return panelOpen && panelView === "chat"; }
+function renderPanel() {
+  $("side-panel").classList.toggle("hidden", !panelOpen);
+  $("book-view").classList.toggle("panel-open", panelOpen);
+  document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
+  for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"]]) {
+    const selected = view === panelView;
+    $(id).classList.toggle("hidden", !selected);
+    $(`panel-tab-${view}`).setAttribute("aria-selected", String(selected));
+    $(`panel-tab-${view}`).tabIndex = selected ? 0 : -1;
+  }
+  $("panel-tab-figure").classList.toggle("hidden", !figureShown);
+  $("panel-tab-page").classList.toggle("hidden", !pageShown);
+  $("ask-hilde").setAttribute("aria-expanded", String(chatShown()));
+}
+function rememberChatScroll() {
+  const log = $("chat-log");
+  chatScroll = { top:log.scrollTop, atEnd:log.scrollTop + log.clientHeight >= log.scrollHeight - 8 };
+}
+function setPanel(open, view = panelView) {
+  const wasChat = chatShown();
+  if (wasChat && (!open || view !== "chat")) rememberChatScroll();
+  keepPlace(() => { panelOpen = open; panelView = view; renderPanel(); });
+  if (chatShown() && !wasChat && chatScroll) {
+    const log = $("chat-log");
+    log.scrollTop = chatScroll.atEnd ? log.scrollHeight : chatScroll.top;
+  }
+  if (panelOpen) renderChatHeader();
+}
+function showPanelView(view) { setPanel(true, view); }
+function closePanel() {
+  setPanel(false);
+  stopSpeaking();
+  $("ask-hilde").focus({ preventScroll:true });
+}
+function setPanelWidth(width, save) {
+  const most = Math.max(400, Math.min(720, window.innerWidth - 700));
+  const value = Math.round(Math.min(most, Math.max(400, width)));
+  keepPlace(() => $("book-view").style.setProperty("--panel-w", `${value}px`));
+  const handle = $("panel-resize");
+  handle.setAttribute("aria-valuenow", String(value));
+  handle.setAttribute("aria-valuemax", String(most));
+  if (save) store("panelWidth", value);
+}
+// A phone's keyboard shrinks only the visual viewport; the panel follows
+// it, and while the keyboard takes a quarter of the screen or more the chat
+// leaves out the book and section lines, so the message box and Send stay in
+// sight beneath the model and its badge.
+function fitVisualViewport() {
+  const viewport = window.visualViewport;
+  if (!viewport) return;
+  document.documentElement.style.setProperty("--vv-height", `${viewport.height}px`);
+  document.documentElement.style.setProperty("--vv-top", `${viewport.offsetTop}px`);
+  document.documentElement.classList.toggle("keyboard-open", viewport.height < window.innerHeight * 0.75);
+}
+// The docked player's height, which the text leaves free beneath it.
+function fitDock() {
+  document.documentElement.style.setProperty(
+    "--dock-h", playerDocked() ? `${$("artifact-player").offsetHeight}px` : "0px",
+  );
+}
 
-// Opening another book closes the chat and shows that book's files.
+// A figure, large: the picture as the PDF lays it out, the paper's caption
+// and page, and Hilde's description, each labeled as what it is.
+function openFigure(number) {
+  const figure = readerPayload && readerPayload.figures[number];
+  if (!figure) return;
+  const detail = readerPayload.passages[number] || {};
+  figureShown = number;
+  $("panel-tab-figure").textContent = figure.label || "Figure";
+  $("figure-title").textContent = figure.label || "Figure";
+  const large = $("figure-large");
+  const card = $("reader-content").querySelector(`.figure-card[data-figure="${number}"]`);
+  const crops = () => card ? [...card.querySelectorAll(".figure-panel")].map((panel) => panel.cloneNode(true)) : [];
+  if (figure.composite) {
+    const image = document.createElement("img");
+    image.alt = `${figure.label || "The figure"}, as laid out in the paper`;
+    image.addEventListener("error", () => large.replaceChildren(...crops()));
+    image.src = figure.composite;
+    large.replaceChildren(image);
+  } else large.replaceChildren(...crops());
+  $("figure-caption").textContent = detail.caption || "The paper gives no caption.";
+  const page = $("figure-page");
+  page.textContent = figure.page ? `Show PDF p. ${figure.page}` : "";
+  page.classList.toggle("hidden", !figure.page);
+  page.onclick = () => openSourcePage(figure.page);
+  const description = $("figure-description");
+  description.replaceChildren(...[...$("reader-content")
+    .querySelectorAll(`.reader-paragraph[data-passage="${number}"] > :is(p, h1, h2, h3, h4, h5, h6):not(.reader-label)`)]
+    .map((element) => {
+      const text = document.createElement("p");
+      text.textContent = element.textContent.trim();
+      return text;
+    }));
+  setPanel(true, "figure");
+  $("figure-scroll").scrollTop = 0;
+  setDetached(true);
+}
+function askAboutFigure() {
+  if (!figureShown) return;
+  attachAbout({ kind:"figure", passage:figureShown });
+  setPanel(true, "chat");
+  focusChatInput();
+}
+// A page of the source PDF, beside the text.
+function openSourcePage(page) {
+  if (!page || page < 1 || !state.player.book) return;
+  pageShown = page;
+  $("panel-tab-page").textContent = `PDF p. ${page}`;
+  $("page-label").textContent = `PDF p. ${page}`;
+  $("page-previous").disabled = page <= 1;
+  const image = $("page-image"), problem = $("page-problem");
+  problem.classList.add("hidden");
+  image.classList.remove("hidden");
+  image.alt = `Page ${page} of the source PDF`;
+  image.onerror = () => {
+    image.classList.add("hidden");
+    problem.textContent = `Page ${page} isn't in this book's source PDF.`;
+    problem.classList.remove("hidden");
+  };
+  image.src = "/api/source-page?book=" + encodeURIComponent(state.player.book) + "&page=" + page;
+  setPanel(true, "page");
+  $("page-scroll").scrollTop = 0;
+  setDetached(true);
+}
+
+// Ask Hilde: the open book's conversation, in the panel. One conversation
+// per book, shared by every browser; Hilde's answer streams in.
+let chatData = null, chatStream = null, chatLive = null;
+let chatHasModels = false, chatModelsError = "", chatModels = [];
+
+// Opening another book closes the panel and shows that book's files.
 function resetChatFor(book) {
   if (chatData && chatData.book === book) return;
   stopChatStream();
   stopSpeaking();
-  chatOpen = false; chatData = null; chatLive = null;
-  setChatAbout(null);
+  chatData = null; chatLive = null; chatScroll = null;
+  panelOpen = false; panelView = "chat"; figureShown = 0; pageShown = 0;
+  clearAbout();
+  $("chat-input").value = "";
   $("chat-log").replaceChildren();
   renderChatFiles([]);
-  renderChatLayout();
+  renderPanel();
   if (book) loadChat();
 }
-// The Chat with Hilde button opens an empty box, for a question about
-// anything; Ask Hilde opens the chat too, then fills in what is playing.
-function toggleChat() { if (chatOpen) closeChat(); else openChat({ fresh:true }); }
-async function openChat({ fresh = false } = {}) {
-  if (!state.player.book) return;
-  if (fresh) {
-    $("chat-input").value = "";
-    setChatAbout(null);
-  }
-  keepReaderPlace(() => { chatOpen = true; renderChatLayout(); });
-  $("chat-input").focus();
-  await Promise.all([loadChat(), refreshChatModels()]);
+function focusChatInput() {
+  // A touch screen's keyboard would cover the conversation; a tap opens it.
+  if (!window.matchMedia("(pointer:coarse)").matches) $("chat-input").focus({ preventScroll:true });
 }
-function closeChat() {
-  keepReaderPlace(() => { chatOpen = false; renderChatLayout(); });
-  stopSpeaking();
-  $("chat-toggle").focus();
-}
-// Splitting or joining the view moves the text into another scroller; the
-// paragraph the listener was at stays at the top of the text.
-function keepReaderPlace(change) {
-  const section = (readerBlocks[activeReaderBlock] || [])[0]?.closest(".reader-paragraph")
-    || visibleReaderParagraph();
-  change();
-  if (chatOpen) $("book-view").scrollIntoView({ block:"start" });
-  if (!section) return;
-  const scroller = chatOpen ? $("book-pane") : document.scrollingElement;
-  const top = chatOpen ? $("book-pane").getBoundingClientRect().top : 0;
-  scroller.scrollTop += section.getBoundingClientRect().top - top
-    - $("artifact-player").getBoundingClientRect().height - 12;
-}
-function renderChatLayout() {
-  $("book-view").classList.toggle("chatting", chatOpen);
-  $("chat-pane").classList.toggle("hidden", !chatOpen);
-  $("chat-toggle").setAttribute("aria-expanded", String(chatOpen));
-  sizeChat();
-}
-// The book and the chat share one screen's height, each scrolling on its own.
-function sizeChat() {
-  $("book-view").style.height = chatOpen ? `${Math.max(420, window.innerHeight - 24)}px` : "";
-}
-window.addEventListener("resize", sizeChat);
 
 async function loadChat() {
   const book = state.player.book;
@@ -16216,7 +16967,7 @@ function applyChat(data) {
 }
 function chatEntryElement(entry) {
   if (entry.role === "assistant" && !entry.text) return null;
-  const node = document.createElement(entry.role === "assistant" ? "div" : "p");
+  const node = document.createElement(entry.role === "assistant" || entry.role === "user" ? "div" : "p");
   node.className = `chat-${entry.role}`;
   // The server renders answers from Markdown with raw HTML turned off.
   if (entry.role === "assistant") {
@@ -16225,6 +16976,13 @@ function chatEntryElement(entry) {
     for (const link of node.querySelectorAll("a:not(.chat-cite)")) {
       link.target = "_blank"; link.rel = "noopener noreferrer";
     }
+  } else if (entry.role === "user") {
+    // A past question shows what went with it, as its chip did.
+    if (entry.context) node.append(chipElement(entry.context));
+    const text = document.createElement("p");
+    text.className = "chat-user-text";
+    text.textContent = entry.text;
+    node.append(text);
   } else node.textContent = entry.text;
   // Answers can be read aloud in Hilde's voice.
   if (entry.role === "assistant" && chatData && chatData.speech === "") {
@@ -16233,12 +16991,16 @@ function chatEntryElement(entry) {
     controls.className = "chat-voice";
     const listen = document.createElement("button");
     listen.type = "button";
-    listen.className = "primary chat-listen";
+    listen.className = "chat-listen";
     const restart = document.createElement("button");
     restart.type = "button";
     restart.className = "link chat-restart hidden";
     restart.textContent = "Start over";
-    controls.append(listen, restart);
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "chat-resume-book hidden";
+    resume.textContent = "▶ Resume book";
+    controls.append(listen, restart, resume);
     node.append(controls);
     setVoiceButton(node, "listen");
   }
@@ -16252,7 +17014,13 @@ function chatLiveElement() {
   }
   return chatLive;
 }
-function scrollChat() { const log = $("chat-log"); log.scrollTop = log.scrollHeight; }
+// New messages scroll the conversation to its end; hidden, it goes to its
+// end on return only if it was there.
+function scrollChat() {
+  const log = $("chat-log");
+  if (chatShown()) log.scrollTop = log.scrollHeight;
+  else if (!chatScroll) chatScroll = { top:0, atEnd:true };
+}
 function renderChatFiles(files) {
   const book = state.player.book;
   $("book-file-links").replaceChildren(...files.map((file) => {
@@ -16275,7 +17043,8 @@ function renderChatControls() {
   $("chat-add-model").classList.toggle("hidden", !problem || !!(chatData && chatData.problem));
   $("chat-send").classList.toggle("hidden", running);
   $("chat-stop").classList.toggle("hidden", !running);
-  $("chat-send").disabled = !!problem;
+  // A chip still being made, or one that failed, goes with no question.
+  $("chat-send").disabled = !!problem || !!(chatAbout && !chatAbout.manifest);
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
   $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
@@ -16290,10 +17059,47 @@ function renderChatControls() {
 const chatVoice = new Audio();
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 let chatSpeaking = null;  // { node, button, number, next, url }
-const VOICE_LABELS = { listen:"▶ Listen", starting:"Starting…", pause:"❚❚ Pause", resume:"▶ Resume" };
+const VOICE_LABELS = {
+  listen:"🔈 Read aloud", starting:"Starting…", pause:"❚❚ Pause reading", resume:"🔈 Resume reading",
+};
 function setVoiceButton(node, mode) {
-  node.querySelector(".chat-listen").textContent = VOICE_LABELS[mode];
+  const button = node.querySelector(".chat-listen");
+  button.textContent = VOICE_LABELS[mode];
+  button.dataset.mode = mode;
   node.querySelector(".chat-restart").classList.toggle("hidden", mode === "listen" || mode === "starting");
+}
+
+// One sound at a time: whatever starts playing (the book, a voice preview or
+// draft, an answer read aloud) pauses every other. An answer read aloud
+// keeps its place; the book it paused waits for Resume book.
+let bookPausedForSpeech = false, spokenNode = null;
+function oneSoundAtATime(media) {
+  media.addEventListener("play", () => pauseOtherSounds(media));
+}
+function pauseOtherSounds(playing) {
+  // The silent clip that lets a phone play an answer later is no sound.
+  if (playing === chatVoice && chatVoice.src === SILENT_WAV) return;
+  for (const media of [readerAudio, previewAudio, chatVoice]) {
+    if (!media || media === playing || media.paused) continue;
+    if (media === readerAudio && playing === chatVoice) bookPausedForSpeech = true;
+    if (media === chatVoice && chatSpeaking) stopSpeaking();
+    else media.pause();
+  }
+  if (playing === chatVoice && chatSpeaking) spokenNode = chatSpeaking.node;
+  renderResumeBook();
+}
+// Resume book shows under the answer that paused the book, once it stops.
+function renderResumeBook() {
+  for (const button of $("chat-log").querySelectorAll(".chat-resume-book")) {
+    const node = button.closest(".chat-assistant");
+    button.classList.toggle("hidden", !(bookPausedForSpeech && readerAudio && readerAudio.paused
+      && node === spokenNode && !(chatSpeaking && chatSpeaking.node === node)));
+  }
+}
+function resumeBook() {
+  bookPausedForSpeech = false;
+  if (readerAudio) readerAudio.play().catch(() => {});
+  renderResumeBook();
 }
 function unlockChatVoice() {
   if (chatSpeaking) return;
@@ -16326,7 +17132,7 @@ function markChatBlock(node, block) {
 function stopSpeaking(finished = false) {
   const speaking = chatSpeaking;
   chatSpeaking = null;
-  if (!speaking) { chatVoice.pause(); return; }
+  if (!speaking) { chatVoice.pause(); renderResumeBook(); return; }
   if (!finished && speaking.number) {
     speaking.node.chatPlace = { number:speaking.number, time:chatVoice.currentTime };
   }
@@ -16336,6 +17142,7 @@ function stopSpeaking(finished = false) {
   setVoiceButton(speaking.node, speaking.node.chatPlace ? "resume" : "listen");
   if (speaking.url) URL.revokeObjectURL(speaking.url);
   speaking.next?.then((url) => URL.revokeObjectURL(url), () => {});
+  renderResumeBook();
 }
 async function speakAnswer(button, { restart = false } = {}) {
   const node = button.closest(".chat-assistant");
@@ -16345,7 +17152,6 @@ async function speakAnswer(button, { restart = false } = {}) {
   }
   stopSpeaking();  // another answer keeps its place
   if (restart) node.chatPlace = null;
-  if (readerAudio && !readerAudio.paused) readerAudio.pause();
   const place = node.chatPlace || { number:1, time:0 };
   const speaking = chatSpeaking = { node, button, number:0, next:null, url:"" };
   setVoiceButton(node, "starting");
@@ -16396,18 +17202,33 @@ function speakLatestAnswer() {
 
 function fillChatModels(catalog) {
   const select = $("chat-model");
-  const models = catalog.models || [];
-  select.replaceChildren(...models.map((model) => new Option(model.label || model.selector, model.selector)));
+  chatModels = catalog.models || [];
+  select.replaceChildren(...chatModels.map((model) => new Option(model.label || model.selector, model.selector)));
   const wanted = [state.player.chat_model, state.audiobook.model, catalog.default_model]
-    .find((selector) => selector && models.some((model) => model.selector === selector));
+    .find((selector) => selector && chatModels.some((model) => model.selector === selector));
   if (wanted) select.value = wanted;
-  chatHasModels = models.length > 0;
+  chatHasModels = chatModels.length > 0;
   chatModelsError = catalog.local_error || "";
   renderChatControls();
+  renderChatHeader();
 }
 async function refreshChatModels() {
   try { fillChatModels(await jsonRequest("/api/paper/models")); }
   catch (error) { chatHasModels = false; chatModelsError = error.message; renderChatControls(); }
+}
+// The panel's head: the book, the section the question is about (else the
+// one playing), and where the chosen model runs, before anything is sent.
+function renderChatHeader() {
+  const book = bookById(state.player.book);
+  $("chat-book").textContent = book ? book.title : "";
+  const passage = passageOfBlock(activeReaderBlock);
+  const detail = readerPayload && passage ? readerPayload.passages[passage] : null;
+  $("chat-section").textContent = (chatAbout && chatAbout.manifest ? chatAbout.manifest.section
+    : detail ? detail.section : "") || "";
+  const model = chatModels.find((item) => item.selector === $("chat-model").value);
+  const badge = $("chat-badge");
+  badge.textContent = model ? model.badge || "" : "";
+  badge.classList.toggle("cloud", badge.textContent.startsWith("Cloud"));
 }
 
 async function sendChat(event) {
@@ -16415,15 +17236,16 @@ async function sendChat(event) {
   const text = $("chat-input").value.trim();
   const model = $("chat-model").value;
   if (!text || !model || (chatData && chatData.running)) return;
+  if (chatAbout && !chatAbout.manifest) return;
   if (state.player.chat_speak) unlockChatVoice();
   $("chat-send").disabled = true;
   try {
     const data = await jsonRequest("/api/chat/send", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book, text, model, ...(chatAbout ? { context:chatAbout } : {}) }),
+      body:JSON.stringify({ book:state.player.book, text, model, ...(chatAbout ? { about:chatAbout.about } : {}) }),
     });
     $("chat-input").value = "";
-    setChatAbout(null);
+    clearAbout();
     applyChat(data);
     connectChat(data.event_index);
   } catch (error) {
@@ -16485,41 +17307,155 @@ async function newChat() {
     $("chat-input").focus();
   } catch (error) { setStatus(error.message, true); }
 }
+// A ¶ link in an answer jumps the text there; Back to where you're
+// listening then shows the way back.
 function jumpToPassage(number) {
   const paragraph = chatData ? chatData.passages[String(number)] : undefined;
   if (paragraph === undefined) return;
   const section = $("reader-content")
     .querySelector(`.reader-paragraph[data-paragraph="${paragraph}"]`);
-  if (section) section.scrollIntoView({ block:"start", behavior:"smooth" });
+  const target = textView === "source" ? sourceElement(number) || section : section;
+  if (!shown(target)) return;
+  if (narrowScreen()) setPanel(false);
+  placeListening(target, motion());
+  setDetached(true);
 }
 
-// Ask Hilde, on the player: pause, open the chat, and ask about the part
-// playing (or the text selected in the reader). The paragraphs go with the
-// question; the question is only written, never sent.
-let chatAbout = null, askSelection = null;
-function setChatAbout(about) {
-  chatAbout = about;
-  $("chat-about").classList.toggle("hidden", !about);
-  $("chat-about-text").textContent = !about ? ""
-    : `Hilde reads ${about.start === about.end ? `¶${about.start}` : `¶${about.start}–${about.end}`} with your question.`;
+// Context chips: what a question is about, attached to the draft and frozen
+// there (playback moving on never changes it) until it is sent, removed, or
+// replaced. The chip shows the server's manifest: exactly what goes with
+// the question, and whether the figure's picture does.
+let chatAbout = null, chatAboutSeq = 0, askSelection = null, replaceSelection = null;
+async function attachAbout(about) {
+  if (!about) return;
+  const seq = ++chatAboutSeq;
+  chatAbout = { about, manifest:null, error:"" };
+  renderChatAbout();
+  if (!$("chat-model").value) await refreshChatModels();
+  try {
+    const manifest = await jsonRequest("/api/chat/context", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ book:state.player.book, model:$("chat-model").value, about }),
+    });
+    if (seq === chatAboutSeq) chatAbout.manifest = manifest;
+  } catch (error) {
+    if (seq === chatAboutSeq) chatAbout.error = error.message;
+  }
+  if (seq === chatAboutSeq) renderChatAbout();
 }
-// The reader paragraph a node is in; an Original shown beneath a paragraph
-// belongs to it.
-function readerParagraphOf(node) {
-  let element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
-  const section = element && element.closest(".reader-paragraph");
-  if (section) return Number(section.dataset.paragraph);
-  element = element && element.closest(".reader-original");
-  while (element && !element.matches(".reader-paragraph")) element = element.previousElementSibling;
-  return element ? Number(element.dataset.paragraph) : null;
+function clearAbout() {
+  chatAboutSeq++;
+  chatAbout = null;
+  renderChatAbout();
 }
-// The ¶ number of the passage a reader paragraph was read from.
-function passageOfParagraph(paragraph) {
-  if (paragraph === null || !chatData) return 0;
-  let found = 0;
-  for (const [number, first] of Object.entries(chatData.passages))
-    if (first <= paragraph && Number(number) > found) found = Number(number);
-  return found;
+function renderChatAbout() {
+  const box = $("chat-about");
+  box.replaceChildren();
+  if (chatAbout && chatAbout.manifest) box.append(chipElement(chatAbout.manifest, true));
+  else if (chatAbout) {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    const head = chipHead(chatAbout.error ? "Couldn't attach this part" : "Attaching…", true);
+    chip.append(head);
+    if (chatAbout.error) {
+      const problem = document.createElement("p");
+      problem.className = "problem";
+      problem.textContent = chatAbout.error;
+      chip.append(problem);
+    }
+    box.append(chip);
+  }
+  box.classList.toggle("hidden", !chatAbout);
+  renderChatControls();
+  renderChatHeader();
+}
+function chipHead(title, editable) {
+  const head = document.createElement("div");
+  head.className = "chip-head";
+  const section = document.createElement("span");
+  section.className = "chip-section";
+  section.textContent = title; section.title = title;
+  head.append(section);
+  if (!editable) return head;
+  const replace = document.createElement("button");
+  replace.type = "button"; replace.className = "link";
+  replace.textContent = "Replace";
+  replace.title = "Attach the text selected in the book instead, or else the part playing now";
+  // Taken before the press can clear the selection.
+  replace.addEventListener("pointerdown", () => { replaceSelection = readerSelection(); });
+  replace.addEventListener("click", () => {
+    const picked = replaceSelection || readerSelection();
+    replaceSelection = null;
+    attachAbout(picked ? selectionAbout(picked) : playingAbout());
+  });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "×";
+  remove.setAttribute("aria-label", "Remove the attached part");
+  remove.addEventListener("click", () => { clearAbout(); focusChatInput(); });
+  head.append(replace, remove);
+  return head;
+}
+function chipElement(manifest, editable = false) {
+  const chip = document.createElement("div");
+  chip.className = "chip";
+  const about = manifest.about || {};
+  const label = about.kind === "figure" && readerPayload
+    ? (readerPayload.passages[about.passage] || {}).label : "";
+  const section = manifest.section || "Before the first heading";
+  chip.append(chipHead(label ? `${label} · ${section}` : section, editable));
+  const preview = document.createElement("p");
+  preview.className = "chip-preview";
+  preview.textContent = manifest.preview || "";
+  const list = document.createElement("ul");
+  list.className = "chip-items";
+  list.setAttribute("aria-label", "What Hilde gets with the question");
+  for (const item of manifest.items || []) {
+    const entry = document.createElement("li");
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = item.passage ? `${item.label} (¶${item.passage})` : item.label;
+    const text = document.createElement("p");
+    text.textContent = item.text;
+    details.append(summary, text);
+    entry.append(details);
+    list.append(entry);
+  }
+  const image = manifest.image || {};
+  if (image.sent || image.count) {
+    const entry = document.createElement("li");
+    entry.className = image.sent ? "chip-image" : "chip-note";
+    entry.textContent = image.sent
+      ? (image.count > 1 ? `The figure's ${image.count} pictures` : "The figure's picture")
+      : `Not sent: the figure's picture. ${image.why || ""}`.trim();
+    list.append(entry);
+  }
+  chip.append(preview, list);
+  return chip;
+}
+// What the listener is at: the passage playing (a figure as a figure), or
+// the text they selected.
+function playingAbout() {
+  let passage = passageOfBlock(activeReaderBlock);
+  if (!passage) {
+    const element = firstVisibleText();
+    passage = element ? Number(element.dataset.passage) || null : null;
+  }
+  if (!passage) return null;
+  if (readerPayload && readerPayload.figures[passage]) return { kind:"figure", passage };
+  return { kind:"passages", start:passage, end:passage };
+}
+function selectionAbout(picked) {
+  const start = picked.first || picked.last || passageOfBlock(activeReaderBlock);
+  if (!start) return playingAbout();
+  const end = Math.min(Math.max(start, picked.last || start), start + 5);
+  return { kind:"selection", start, end, quote:picked.text.slice(0, 8000) };
+}
+// The passage a node of the text belongs to: its paragraph's, or its source's.
+function readerPassageOf(node) {
+  const element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+  const holder = element && element.closest("[data-passage]");
+  return holder ? Number(holder.dataset.passage) || null : null;
 }
 function readerSelection() {
   const selection = window.getSelection();
@@ -16528,51 +17464,75 @@ function readerSelection() {
   if (!$("reader-content").contains(range.commonAncestorContainer)) return null;
   const text = selection.toString().replace(/\s+/g, " ").trim();
   if (!text) return null;
-  return { text, first: readerParagraphOf(range.startContainer), last: readerParagraphOf(range.endContainer) };
+  return { text, range, first:readerPassageOf(range.startContainer), last:readerPassageOf(range.endContainer) };
 }
-// The first paragraph not hidden under the pinned player.
-function visibleReaderParagraph() {
-  const top = $("artifact-player").getBoundingClientRect().bottom;
-  return [...$("reader-content").querySelectorAll(".reader-paragraph")]
-    .find((section) => section.getBoundingClientRect().bottom > top + 4) || null;
-}
-function askHildeButton() {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "ask-hilde";
-  button.textContent = "Ask Hilde";
-  button.title = "Pause and ask Hilde about this part";
-  // Taken before the press can clear the selection.
-  button.addEventListener("pointerdown", () => { askSelection = readerSelection(); });
-  button.addEventListener("click", askHilde);
-  return button;
-}
+// Ask Hilde opens the panel's chat as it was left. With text selected, that
+// text is attached; with nothing attached and nothing written, the part
+// playing is. The book keeps playing.
 async function askHilde() {
   const picked = askSelection || readerSelection();
   askSelection = null;
-  if (readerAudio && !readerAudio.paused) readerAudio.pause();
-  let quote = "", first = null, last = null;
-  if (picked) {
-    ({ text: quote, first, last } = picked);
-  } else {
-    const sentence = (readerBlocks[activeReaderBlock] || [])[0];
-    const section = sentence || visibleReaderParagraph();
-    if (sentence) quote = sentence.textContent.replace(/\s+/g, " ").trim();
-    first = last = section ? readerParagraphOf(section) : null;
+  setPanel(true, "chat");
+  if (!chatData) loadChat();
+  if (picked) attachAbout(selectionAbout(picked));
+  else if (!chatAbout && !$("chat-input").value.trim()) attachAbout(playingAbout());
+  focusChatInput();
+  refreshChatModels();
+}
+
+// The menu on a finished selection in the text: a click seeks, a drag or a
+// long press selects and offers this instead.
+let pointerHeld = false, selectionTimer = 0;
+function hideSelectionMenu() { $("selection-menu").classList.add("hidden"); }
+function queueSelectionMenu() {
+  clearTimeout(selectionTimer);
+  selectionTimer = setTimeout(showSelectionMenu, 250);
+}
+function showSelectionMenu() {
+  const picked = !pointerHeld && state && state.tab === "player" && readerSelection();
+  if (!picked) { hideSelectionMenu(); return; }
+  $("selection-menu").classList.remove("hidden");
+  placeSelectionMenu();
+}
+function placeSelectionMenu() {
+  const menu = $("selection-menu"), selection = window.getSelection();
+  if (menu.classList.contains("hidden") || !selection.rangeCount) return;
+  const box = selection.getRangeAt(0).getBoundingClientRect(), view = readingViewport();
+  const height = menu.offsetHeight, width = menu.offsetWidth;
+  // Below the selection on a touch screen, whose own menu goes above it.
+  const below = window.matchMedia("(pointer:coarse)").matches;
+  let top = below ? box.bottom + 12 : box.top - height - 8;
+  if (top < view.top + 4) top = box.bottom + 8;
+  if (top + height > view.bottom - 4) top = box.top - height - 8;
+  // A selection scrolled partly away keeps its menu on screen.
+  top = Math.min(Math.max(top, view.top + 4), view.bottom - height - 4);
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
+    Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
+}
+// Listen from here: the first word of the selection, else its sentence or passage.
+function listenFromSelection(picked) {
+  if (!readerAudio || !picked) return;
+  const word = [...$("reader-content").querySelectorAll(".reader-word")]
+    .find((element) => shown(element) && picked.range.intersectsNode(element));
+  let sample;
+  if (word) sample = readerWordSeekSample(readerWordCues[word.dataset.cue]);
+  else {
+    const sentence = readerBlocks.findIndex((parts) => (parts || [])
+      .some((part) => shown(part) && picked.range.intersectsNode(part)));
+    const block = sentence >= 0 ? sentence
+      : (readerPayload ? readerPayload.block_passages.indexOf(picked.first) : -1);
+    sample = readerCues.find((cue) => cue.block === block)?.start_sample;
   }
-  if (!chatOpen) await openChat();
-  else if (!chatData) await loadChat();
-  const start = passageOfParagraph(first);
-  const end = Math.max(start, passageOfParagraph(last));
-  setChatAbout(start ? { start, end: Math.min(end, start + 5) } : null);
-  const input = $("chat-input");
-  if (quote) {
-    const clipped = quote.length > 300 ? quote.slice(0, 300).replace(/\s+\S*$/, "") + "…" : quote;
-    input.value = quote.split(" ").length <= 10
-      ? `What does it mean by "${clipped}"?` : `Explain this part: "${clipped}"`;
-  }
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
+  if (sample === undefined) return;
+  readerAudio.currentTime = sample / readerSampleRate;
+  updateReaderHighlight();
+  setDetached(false);
+}
+async function copySelection(picked) {
+  try { await navigator.clipboard.writeText(picked.text); }
+  catch (_) { document.execCommand("copy"); }
+  setStatus("Copied the selected text.");
 }
 
 async function refreshLibrary(restore) {
@@ -17343,11 +18303,12 @@ function followActive(info, reconnecting) {
   watch(currentJobId);
 }
 
-// What needs the server goes inert while it does not answer; the player and
-// the text stay, so a book already downloaded plays on.
+// What needs the server goes inert while it does not answer; the player, the
+// text, and its views stay, so a book already downloaded plays on.
 const SERVER_PARTS = [
   "#advanced-panels", "#page-audiobook", "#page-progress", "#page-voice",
-  "#library-view", "#book-view .player-panel", "#chat-pane",
+  "#library-view", "#more-menu", "#reader-stale", "#change-voice", "#ask-hilde", "#chat-pane",
+  "#figure-view .panel-actions", "#selection-menu [data-action=ask]",
 ];
 let serverDown = false;
 function setServerDown(down) {
@@ -17422,12 +18383,18 @@ function render() {
   const reading = tab === "player" && !!state.player.book;
   $("library-view").classList.toggle("hidden", reading);
   $("book-view").classList.toggle("hidden", !reading);
+  document.querySelector("main").classList.toggle("reading", reading);
+  document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
+  if (!reading) { hideSelectionMenu(); closeMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
 }
 
+// Leaving Listen for another tab and coming back keeps the text where it was.
+let listenPlace = null;
 function setTab(tab) {
   if (!state || state.tab === tab) return;
   stopPreview();
+  if (state.tab === "player") listenPlace = readingAnchor();
   state.tab = tab;
   setStatus("");
   // Other browsers and the operator add voices and previews meanwhile.
@@ -17437,6 +18404,9 @@ function setTab(tab) {
     if (state.player.book && !readerAudio) openAudiobook(state.player.book);
   }
   render(); sync();
+  if (tab === "player" && listenPlace && listenPlace.element.isConnected)
+    scrollPageBy(listenPlace.element.getBoundingClientRect().top - listenPlace.top);
+  if (tab === "player") listenPlace = null;
 }
 function toggleAdvanced() {
   advancedOpen = !advancedOpen;
@@ -18249,6 +19219,8 @@ $("worker-host").addEventListener("keydown", (event) => {
   if (event.key === "Enter") { event.preventDefault(); connectWorker(); }
 });
 previewAudio.addEventListener("play", syncPreviewButtons);
+oneSoundAtATime(previewAudio);
+oneSoundAtATime(chatVoice);
 previewAudio.addEventListener("pause", syncPreviewButtons);
 previewAudio.addEventListener("ended", () => { previewing = ""; syncPreviewButtons(); });
 $("tab-list").addEventListener("keydown", (event) => {
@@ -18278,6 +19250,9 @@ $("add-tabs").addEventListener("keydown", (event) => {
 $("chat-model").addEventListener("change", (event) => {
   state.player.chat_model = event.target.value;
   queueSync();
+  renderChatHeader();
+  // The same part again: whether the figure's picture goes depends on the model.
+  if (chatAbout) attachAbout(chatAbout.about);
 });
 $("chat-input").addEventListener("keydown", (event) => {
   // Enter sends; Shift+Enter starts a new line.
@@ -18292,12 +19267,13 @@ function playerKey(event) {
   const audio = readerAudio, target = event.target;
   if (!audio || state.tab !== "player" || !state.player.book) return;
   if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  // The seek bar takes the player's keys; the volume slider keeps its own.
   if (target.closest?.(
     "textarea, select, [contenteditable], [role=tab], [role=tablist], "
-    + "input:not([type=checkbox]):not([type=radio])"
+    + "input:not([type=checkbox]):not([type=radio]):not(#player-seek)"
   )) return;
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-  const presses = target.closest?.("button, a, summary, input");
+  const presses = target.closest?.("button, a, summary, input:not(#player-seek)");
   const inPlayer = !!target.closest?.("#artifact-player");
   const seek = (time) => {
     audio.currentTime = Math.max(0, Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time);
@@ -18327,11 +19303,10 @@ function playerKey(event) {
     const next = key === ">"
       ? PLAYER_SPEEDS.find((speed) => speed > rate + 1e-9) ?? PLAYER_SPEEDS.at(-1)
       : PLAYER_SPEEDS.findLast((speed) => speed < rate - 1e-9) ?? PLAYER_SPEEDS[0];
-    // Loading the downloaded book resets playbackRate to the default one.
-    audio.defaultPlaybackRate = next; audio.playbackRate = next;
+    setSpeed(next);
     say(`Speed ${next}×`);
   } else if (key === "?") {
-    $("player-keys").open = !$("player-keys").open;
+    if ($("shortcuts-dialog").open) $("shortcuts-dialog").close(); else openShortcuts();
   } else {
     return;
   }
@@ -18347,6 +19322,7 @@ $("chat-log").addEventListener("click", (event) => {
     speakAnswer(restart.closest(".chat-assistant").querySelector(".chat-listen"), { restart:true });
     return;
   }
+  if (event.target.closest(".chat-resume-book")) { resumeBook(); return; }
   const cite = event.target.closest(".chat-cite");
   if (!cite) return;
   event.preventDefault();
@@ -18357,6 +19333,116 @@ $("chat-speak").addEventListener("change", (event) => {
   queueSync();
   if (!event.target.checked) stopSpeaking();
 });
+
+// Listen: the player bar, the panel, the selection menu, and the reading position.
+$("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection(); });
+$("ask-hilde").addEventListener("click", askHilde);
+$("speed-menu").append(...SPEED_CHOICES.map((speed) => {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.setAttribute("role", "menuitemradio");
+  item.dataset.speed = speed;
+  item.textContent = formatSpeed(speed);
+  item.addEventListener("click", () => {
+    setSpeed(speed); closeMenus(); $("player-speed").focus();
+  });
+  return item;
+}));
+$("player-seek").addEventListener("pointerdown", () => { seekDragging = true; });
+$("player-seek").addEventListener("pointerup", () => { seekDragging = false; });
+$("player-seek").addEventListener("input", (event) => {
+  if (readerAudio) readerAudio.currentTime = Number(event.target.value);
+});
+$("player-volume").addEventListener("input", (event) => {
+  if (!readerAudio) return;
+  readerAudio.volume = Number(event.target.value);
+  readerAudio.muted = readerAudio.volume === 0;
+});
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".menu-wrap")) closeMenus();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
+    closeMenus(); event.preventDefault();
+  } else if (!$("selection-menu").classList.contains("hidden")) hideSelectionMenu();
+});
+document.addEventListener("pointerdown", (event) => {
+  pointerHeld = true;
+  if (!event.target.closest("#selection-menu")) hideSelectionMenu();
+  // The page's own scroll bar.
+  if (event.target === document.documentElement) userScrollAt = performance.now();
+}, true);
+for (const type of ["pointerup", "pointercancel"])
+  document.addEventListener(type, () => { pointerHeld = false; queueSelectionMenu(); }, true);
+document.addEventListener("selectionchange", queueSelectionMenu);
+// Pressed, the menu keeps the selection it acts on.
+$("selection-menu").addEventListener("pointerdown", (event) => event.preventDefault());
+$("selection-menu").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  const picked = readerSelection();
+  if (!action || !picked) return;
+  hideSelectionMenu();
+  if (action === "copy") { copySelection(picked); return; }
+  window.getSelection().removeAllRanges();
+  if (action === "listen") listenFromSelection(picked);
+  else {
+    attachAbout(selectionAbout(picked));
+    setPanel(true, "chat");
+    focusChatInput();
+  }
+});
+for (const type of ["wheel", "touchmove"])
+  window.addEventListener(type, () => { userScrollAt = performance.now(); }, { passive:true });
+window.addEventListener("keydown", (event) => {
+  if (["PageUp", "PageDown", "ArrowUp", "ArrowDown"].includes(event.key)) userScrollAt = performance.now();
+});
+window.addEventListener("scroll", () => {
+  userScrolled();
+  placeSelectionMenu();
+}, { passive:true });
+$("panel-resize").addEventListener("pointerdown", (event) => {
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+// The panel's right edge is the viewport's, beside any scroll bar.
+const panelWidthAt = (event) => $("side-panel").getBoundingClientRect().right - event.clientX;
+$("panel-resize").addEventListener("pointermove", (event) => {
+  if (event.currentTarget.hasPointerCapture(event.pointerId))
+    setPanelWidth(panelWidthAt(event), false);
+});
+$("panel-resize").addEventListener("pointerup", (event) => {
+  setPanelWidth(panelWidthAt(event), true);
+});
+$("panel-resize").addEventListener("keydown", (event) => {
+  const step = { ArrowLeft:16, ArrowRight:-16 }[event.key];
+  if (!step) return;
+  event.preventDefault();
+  setPanelWidth($("side-panel").offsetWidth + step, true);
+});
+$("panel-tabs").addEventListener("keydown", (event) => {
+  const views = ["chat", "figure", "page"].filter((view) => !$(`panel-tab-${view}`).classList.contains("hidden"));
+  const index = views.indexOf(panelView);
+  const next = { ArrowRight:views[(index + 1) % views.length],
+                 ArrowLeft:views[(index + views.length - 1) % views.length] }[event.key];
+  if (!next) return;
+  event.preventDefault();
+  showPanelView(next);
+  $(`panel-tab-${next}`).focus();
+});
+window.visualViewport?.addEventListener("resize", fitVisualViewport);
+window.visualViewport?.addEventListener("scroll", fitVisualViewport);
+window.addEventListener("resize", () => {
+  fitVisualViewport(); fitDock();
+  document.documentElement.classList.toggle(
+    "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
+});
+new ResizeObserver(fitDock).observe($("artifact-player"));
+window.addEventListener("pagehide", saveBookPlace);
+document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
+fitVisualViewport();
+setPanelWidth(Number(stored("panelWidth")) || 440, false);
+renderPlayer();
 
 
 // Whether downloads will warn here, and Hilde's certificate when it has one.

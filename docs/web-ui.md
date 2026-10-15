@@ -142,32 +142,62 @@ when that heading is a section such as Abstract. Search looks only at titles;
 every word you type must
 appear, in any order and case. **Delete** removes an audiobook, every voice of
 it, and its text after you confirm. **Listen**, or a click anywhere on a book's
-row, opens the book's player and
-narration text, whose audio controls stay on screen while the text scrolls,
-and **Download MP3** retrieves the voice being played. **Download source**
-saves the document the book was made from, under the name it was added with;
-it shows only when that document is still there: the book's own copy, or a
-document with the same content in **Documents**. **← All audiobooks**, or
-the **Listen** tab pressed while a book is open, goes back to the list; from
-another tab, **Listen** brings back the book you had open. A book read by more
-than one voice shows a voice picker. **Change voice** reads the same text in
-another saved voice: nothing is rewritten, and the voice you have keeps
-playing until the new one is ready. **Recreate with the latest Hilde** writes
-the book again from its document with the current text adaptation, after you
-confirm; it is the only way a book's text changes. Voices made from the
-earlier text are kept but no longer play against the new one: the book offers
-**Make <voice> again** for each. Text keeps its paragraphs:
-the playing sentence is tinted inside its paragraph, the paragraph is marked
-with an accent bar, and the current word is filled in light orange with dark
-text. Sentence-era readers created before paragraph grouping was recorded still
-show one sentence per paragraph; paragraph-era readers regain their paragraphs
-automatically.
-Clicking a word seeks to that word (just before its aligned onset); clicking
-elsewhere in a sentence, or on its attached figure or table, seeks to the
-start of the sentence.
+row, opens the book: **← Library** (as does the **Listen** tab pressed while a
+book is open; from another tab, **Listen** brings back the book you had open),
+the title, and one line with the voice, the length, and the source file. A
+book read by more than one voice shows a voice picker in that line. Above the
+text, and staying on screen while it scrolls, are **Follow along**, the
+**Narration text | Source text** switch, **⋯** (More), and the player: play,
+the seek bar, the time, the speed (it shows, for example, **1.25×**; click it
+to choose 0.75× to 2×), mute and volume, and **Ask Hilde**. On a phone the
+player sits at the bottom of the screen instead and never covers the text.
+The text runs in a comfortable reading column; on a wide screen the panel for
+the chat, a figure, or a source page opens beside it.
 
-**Chat with Hilde** splits an open book's view: the book stays on top, still
-playing and scrolling, and a conversation about it fills the bottom half. Ask
+**⋯** holds **Download MP3** (the voice being played), **Download source**
+(the document the book was made from, under the name it was added with; only
+while that document is still there: the book's own copy, or a document with
+the same content in **Documents**), **Change voice…**, **Recreate with the
+latest Hilde…**, and **Keyboard shortcuts**. **Change voice** reads the same
+text in another saved voice: nothing is rewritten, and the voice you have
+keeps playing until the new one is ready. **Recreate with the latest Hilde**
+writes the book again from its document with the current text adaptation,
+after you confirm; it is the only way a book's text changes. Voices made from
+the earlier text are kept but no longer play against the new one: the book
+offers **Make <voice> again** for each.
+
+Your browser remembers, for each book, where you were (the sentence and the
+time) and the speed you chose, and the width of the side panel: opening the
+book again, or reloading the page, finds it paused at that sentence. This is
+kept in the browser only, never in the book or on the server; the speed never
+changes the audio.
+
+Text keeps its paragraphs: the paragraph being read is marked by a thin
+accent line at its left, and the word being read by a soft accent mark under
+it; the text keeps its color. Sentence-era readers created before paragraph
+grouping was recorded still show one sentence per paragraph; paragraph-era
+readers regain their paragraphs automatically. Clicking a word seeks to that
+word (just before its aligned onset); clicking elsewhere in a sentence seeks
+to the start of the sentence. Selecting text (dragging, or a long press on a
+phone) never seeks: a small menu offers **Ask about this**, **Listen from
+here** (from the first selected word), and **Copy**.
+
+Nothing you do in the view moves the audio or your place: opening or closing
+the chat, switching between Narration and Source text, opening a figure or a
+page, going to another tab and back. If you scroll away while **Follow
+along** is on, it stops following and **Back to where you're listening**
+appears; it appears too after you open a figure or a page or follow a ¶ link.
+With **Follow along** off, the page never scrolls by itself.
+
+A figure shows on a light card with its caption under **From the paper**. On
+a wide screen a figure of several panels shows as it is laid out in the PDF;
+on a phone its panels stack, each named by its place, such as "Left panel of
+the source figure". Click a figure to see it large beside the text with its
+caption, a link to its PDF page, **Hilde's description**, and **Ask about this
+figure**.
+
+**Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
+in its place, with **← Back to the book**); the book keeps playing. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
 the paragraphs it needs before answering. For a long book on a model with a
@@ -178,54 +208,55 @@ is a link that scrolls the book to it. When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab. Its answer streams in as it writes;
-**Stop** ends it. The model is one of yours: pick it in the chat, from the
-models you connected under **Providers** or the models of every server you
-added under **Add local** on **Create**; a local model answers from the server
-that offers it. With none, the chat asks you to add one first. ChatGPT, the
-Anthropic, OpenAI, and Google Gemini API keys, and local models can chat;
-Claude Code models cannot:
+**Stop** ends it. The model is one of yours: pick it at the top of the chat,
+from the models you connected under **Providers** or the models of every
+server you added under **Add local** on **Create**; a local model answers
+from the server that offers it. Beside it, **Local** or **Cloud: <provider>**
+says where your question goes before you send it. With none, the chat asks
+you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
+keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
-conversation** starts over, and **× Close** closes the chat. A question Ask
-Hilde wrote and you didn't send is gone when you next press **Chat with
-Hilde**, which always opens with an empty box. When a conversation grows long,
-its oldest messages and reads leave what Hilde remembers, and the chat says so.
+conversation** starts over. Your unsent question, what is attached to it, and
+the conversation stay as they were when you look at a figure or a page, or
+close the chat and open it again; an answer keeps arriving meanwhile. When a
+conversation grows long, its oldest messages and reads leave what Hilde
+remembers, and the chat says so.
 
-**Ask Hilde**, beside the player, is for the moment something is unclear while
-you listen. It pauses the book, opens the chat, and writes a question about
-the sentence being read, `What does it mean by "…"?` for a short one and
-`Explain this part: "…"` for a longer one, without sending it: change it or
-press Enter. Select words in the text first to ask about them instead. The
-part you were at goes with the question, each piece labelled with where it
-comes from: Hilde's narration of those paragraphs and, where the adaptation
-changed them, the paper's own text ("From the paper · section, PDF p. N"), and
-words you selected as "Your selection". A question about a figure or table
-brings its caption, every paragraph of the paper that names it by number
-("Figure 2", "Fig. 2", "Figures 1 and 2"; never one only printed near it), and
-Hilde's description. Its picture, laid out as in the PDF, goes too when the
-chosen model takes pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys
-do, a local model only when its server is marked as seeing images. The picture
-goes with that question only. The chip above the message box shows exactly
-what will be sent and whether the model is local or in the cloud; past
-questions keep their chips. Play continues from the same word.
+Ask Hilde attaches the part being read (or the words you selected) above the
+message box: its section, its first words, **×** to remove it, and
+**Replace** to attach what you have selected, or else what is playing now.
+It stays as attached while the book plays on. It lists exactly what goes with
+your question, each piece labelled with where it comes from: Hilde's narration
+of those paragraphs and, where the adaptation changed them, the paper's own
+text ("From the paper · section, PDF p. N"), and words you selected as "Your
+selection". A question about a figure or table brings its caption, every
+paragraph of the paper that names it by number ("Figure 2", "Fig. 2",
+"Figures 1 and 2"; never one only printed near it), and Hilde's description.
+Its picture, laid out as in the PDF, goes too when the chosen model takes
+pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys do, a local model
+only when its server is marked as seeing images; otherwise the list says the
+picture is not sent. The picture goes with that question only. Past questions
+keep their lists.
 
-**▶ Listen**, the orange button under each of Hilde's answers, reads it aloud
-in Hilde's own voice (or, when the Hilde voice is gone from **Voices**, the
-first voice there by name), marking the paragraph or list item being read.
-**❚❚ Pause** stops at the word; **▶ Resume** goes on from there, and **Start
-over** reads from the beginning. Listening to another answer keeps this
-one's place too. **Read answers aloud**, in the chat's
-header, reads each answer as soon as it is finished, so you can ask with Ask
-Hilde, hear the answer, and press Play to go on with the book. Reading pauses
-the book. The first answer after a while takes a few seconds longer while the
+**🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
+own voice (or, when the Hilde voice is gone from **Voices**, the first voice
+there by name), marking the paragraph or list item being read. **❚❚ Pause
+reading** stops at the word; **🔈 Resume reading** goes on from there, and
+**Start over** reads from the beginning. Listening to another answer keeps
+this one's place too. **Read answers aloud**, in the chat's header, reads each
+answer as soon as it is finished. One sound plays at a time: reading an
+answer pauses the book, and when it ends the book stays paused and **▶ Resume
+book** appears under the answer; starting the book, or a voice preview, stops
+the others. The first answer after a while takes a few seconds longer while the
 narration model loads; it stays loaded for five minutes after the last answer
 read, then frees its GPU. Code, web addresses, and Markdown are not read; a
 citation such as ¶12 is read as "paragraph 12". Reading aloud needs the
 server's own narration model (`--voice-clone-model`); without it, neither
 shows.
 
-The files Hilde writes are listed as download links at the top left of the
-book, and stay until you ask Hilde to delete one. **Recreate with the latest
+The files Hilde writes are listed as download links under the book's title,
+and stay until you ask Hilde to delete one. **Recreate with the latest
 Hilde** keeps them and starts a new conversation, since paragraph numbers
 change. Books made before this version of Hilde have no paragraph summaries:
 the chat says to recreate the book first.
@@ -236,7 +267,7 @@ and then report the requested time while playing audio from up to a minute
 away. Safari and Chrome both play this MP4, so a clicked word is the word you
 hear; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
 approximate seeking. From the first press of play the whole book downloads in
-the background, with its progress under the title; once it is in, playback moves
+the background, with its progress in the player; once it is in, playback moves
 to that copy at the next sentence start, and from then on nothing waits on the
 network, seeking included. Each sentence cue takes precedence over a stray word cue,
 so a word alignment error never outlives its sentence. **Follow along** turns
@@ -247,7 +278,7 @@ keyboard shortcuts: Space or K plays or pauses, J and L go back and forward
 10 seconds, ← and → 5 seconds, ↑ and ↓ change the volume while the player has
 focus, M mutes, 0 to 9 jump to that tenth of the book, Home and End go to its
 start and end, < and > slow it down and speed it up (0.25× to 2×), and ?
-opens the list under **Keyboard shortcuts**. Typing in a text field, such as
+opens the **Keyboard shortcuts** list. Typing in a text field, such as
 the chat, never triggers them. The web shell is served with `Cache-Control:
 no-store`, so subsequent ordinary refreshes load
 the current player code. A table in a PDF shows as printed, a picture cut from
@@ -260,15 +291,20 @@ interval remains active for its complete audio cue instead of advancing to the
 next text block. Standalone invisible PDF format-control artifacts are removed
 before new narration; an existing audiobook's artifact interval is assigned to
 the following visible block. When adaptation changes the prose, the reader
-shows the narration-ready version, and a description the model wrote of a
-figure, table, or equation carries a **Description** label. **Original**
-shows the author's text muted beneath the passage made from it, headed with the
-PDF page it starts on, and shows passages the model left out, such as a
-copyright notice, as **Not narrated**. Books narrated without adaptation, or
-adapted before Hilde recorded the original text, have no **Original**. A
-passage Hilde asked the model about again and still found stating a number or
-name the source doesn't print, or a lost "not", shows "Check: …" under its
-original, so you know what to listen for.
+shows the narration-ready version (**Narration text**: what Hilde reads
+aloud), and a description the model wrote of a figure, table, or equation
+carries the label **Hilde's description**. **Source text** shows the
+document's own words in place of the narration made from them, each passage
+tagged with the PDF page it starts on (click the page to see it beside the
+text): **Original** where the adaptation changed it, **Unchanged** where Hilde
+reads it word for word, and **Not narrated** for passages the model left out,
+such as a copyright notice. Switching keeps your place: the source paragraph
+of the sentence being read takes its place on screen, and switching back
+brings the sentence back. Books narrated without adaptation, or adapted before
+Hilde recorded the original text, have no **Source text**. A passage Hilde
+asked the model about again and still found stating a number or name the
+source doesn't print, or a lost "not", shows "Check: …" under its original,
+so you know what to listen for.
 A PDF table's picture carries its whole caption for screen readers. If
 forced alignment is partially or fully unavailable, exact sentence timing
 remains usable. Existing paragraph-era reader sidecars receive estimated

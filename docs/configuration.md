@@ -30,7 +30,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
-| `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Chat with Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
+| `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -70,7 +70,7 @@ stopped.
 
 ## Web search for Chat
 
-Chat with Hilde can search the web and read pages when the server knows a
+Ask Hilde can search the web and read pages when the server knows a
 [SearXNG](https://docs.searxng.org/) instance with its JSON format turned on.
 One runs in Docker on the same machine:
 
