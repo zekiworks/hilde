@@ -68,7 +68,7 @@ Hilde keeps the nodes, and the local devices that are off, in `workers.yaml`
 in the library folder (`--storage-root`):
 
 ```yaml
-local_off: [cuda:0]
+local_off: [GPU-12345678-abcd-ef01-2345-6789abcdef01]
 nodes:
 - host: user@gpu-box
   python: /home/user/hilde/.venv/bin/python
@@ -76,9 +76,12 @@ nodes:
   devices: [cuda:1, cuda:2, cuda:3]
 ```
 
-`devices` and `local_off` take `cuda:N`, `mps`, or `cpu`. To edit the file by
-hand, stop the server first; it reads the file when it starts and refuses to
-start if a node is invalid or no worker would be left.
+`devices` take `cuda:N`, `mps`, or `cpu`. `local_off` names this machine's GPUs
+by UUID, as `nvidia-smi -L` shows them, because a GPU that fails renumbers the
+ones after it; it also takes `mps` or `cpu`. A GPU listed there stays off even
+while it is missing. To edit the file by hand, stop the server first; it reads
+the file when it starts and refuses to start if a node is invalid or no worker
+would be left.
 
 The server has no sign-in, so only a browser on its own machine sees the hosts
 and paths or changes the nodes. A browser on another device sees the node's

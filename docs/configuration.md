@@ -215,7 +215,9 @@ CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 
 Without a restart, **This machine narrates on** under **Advanced** turns each
 local device off or on; with a node added, every local device can be off, so
-only the other machines narrate.
+only the other machines narrate. Hilde remembers an off GPU by its UUID, so it
+stays off when another GPU fails or is removed and the others are renumbered.
+Each narration, preview, and answer reading runs on its GPUs by UUID as well.
 
 Remote membership comes from the nodes in `workers.yaml`, which **Add workers**
 under **Advanced** writes; nodes added or removed there take effect without a

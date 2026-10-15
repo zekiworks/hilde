@@ -329,7 +329,8 @@ first served (`release_migration_backup()`). The empty `.versions` and
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
 - Workers: `workers.yaml`, a `nodes:` list of `host`, `python`, `model`, and
   `devices` (`cuda:N`, `mps`, or `cpu`) and an optional `local_off:` list of
-  this machine's devices that do not narrate, with a comment header, written
+  this machine's devices that do not narrate (a GPU by its UUID, `GPU-…` as
+  `nvidia-smi -L` shows it; `mps`; `cpu`), with a comment header, written
   atomically by `write_workers()` when a node is added or removed or a local
   device is turned off or on, and read at startup by `read_workers()`.
 
@@ -719,7 +720,15 @@ the pool. OpenAI-compatible narration and local hosts without CUDA use one
 fallback worker. The device probe counts GPUs after CUDA initialization: before
 it, NVML also counts a GPU the runtime cannot open, and indexing that GPU would
 drop the whole pool to one CPU worker. A skipped GPU shifts the later runtime
-indexes, which are the ones narration children use.
+indexes, so a local GPU's worker ID, and its name in `local_off`, is its UUID
+(`local_device_id()`); `cuda:N` is only the server's current index. Entries for
+a GPU not present stay in `local_off`, so a GPU that comes back stays off. The
+server sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and `pin_cuda()` starts every model
+child (narration, voice runs, previews, answer speech) with
+`CUDA_VISIBLE_DEVICES` set to the UUIDs of just the GPUs its `--device` and
+`--worker-device` name, renumbered from `cuda:0`: a GPU that fails after the
+server started cannot shift them, and an off GPU is never listed, since CUDA
+hides every GPU after one it cannot open.
 
 Source and local voice assets are snapshotted before a record enters the
 consumer queue. Voice generation is exclusive and requires no preparing,
