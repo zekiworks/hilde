@@ -30,9 +30,9 @@ memory fails the run. Leave a GPU unticked when another program fills it.
 
 ## Web server
 
-Open **Advanced** in a browser on the server's own machine, at
-`http://127.0.0.1:8800/`. Under **This server**, **Other machines** lists the
-nodes, and **Add workers** adds one:
+Open **Settings** in a browser on the server's own machine, at
+`http://127.0.0.1:8800/`. **Other machines** lists the nodes, and **Add
+workers** adds one:
 
 1. Enter the machine as an IP address, a host name, or `user@host`, and press
    **Connect**. Hilde connects over SSH, or says why it could not: SSH does not
@@ -57,8 +57,8 @@ The node narrates from the next book on, without a restart; a book already
 being narrated keeps its workers. Adding a machine again replaces its settings
 and GPUs. **Remove** takes a node away, except while it narrates a book.
 
-The server's own devices narrate too. **This machine narrates on**, under
-**This server**, has a box for each; untick one to keep it out of narration
+The server's own devices narrate too. **Narrates on**, under
+**This machine's GPUs** in **Settings**, has a box for each; untick one to keep it out of narration
 from the next book on, for example to time a book on one Spark alone. Its chip
 then reads `off`. A GPU narrating a book cannot be unticked until the book is
 done, and one worker always stays: the last local device cannot be unticked

@@ -1,6 +1,6 @@
 # Text adaptation
 
-**Adapt the text for listening**, in the **Create audiobook** step, rewrites a
+**Adapt the text for listening**, in the **How Hilde prepares the text** step of **Create**, rewrites a
 document for someone listening, who cannot skim or glance back. The author's
 prose stays word for word. Whatever would be a chore to hear is left out:
 tables of contents, lists of sections, page numbers, citation
@@ -10,11 +10,12 @@ or bibliography under its own heading is removed before the model sees the
 text, even without adaptation and even when the PDF runs the heading into the
 paragraph before it. Inline attributions and the sections after the
 bibliography, such as appendices, remain.
-While adaptation is selected, **Model**, **Providers**, and **Add local**
-appear right under it, and **Workers** under **Advanced** in **Text
-adaptation**:
+**More** under that option holds **Text model**, **Providers**, and **Add
+local**, and **Settings** holds **Workers** under **Text preparation**. The
+option shows the chosen model and a **Local** or **Cloud: <provider>** badge
+saying where the document's text goes:
 
-- **Model** picks the model that rewrites the text. Left on Default, a job uses
+- **Text model** picks the model that rewrites the text. Left on Default, a job uses
   the first model of the first local server you added under **Add local** that
   answers; if none answers, the job stops rather than send your document to a
   cloud provider. Without a local server, Default is OpenAI's first model once
@@ -64,7 +65,7 @@ adaptation**:
   type, **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
   `host:port`, for example `127.0.0.1:8010`, and press **Check and add**. The
   models of every added server then appear together in each model list
-  (**Model**, the checking model, the figure model, and Ask Hilde),
+  (**Text model**, the checking model, the figure model, and Ask Hilde),
   grouped by server, so the text model can run on one server and the figure
   model on another. Each request goes to the server that offers its model; a
   model two servers offer runs on the one added first. Tick **This model sees

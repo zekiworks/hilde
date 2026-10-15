@@ -1397,7 +1397,7 @@ WORKERS_FILE = "workers.yaml"
 WORKERS_HEADER = """\
 # Narration workers: local_off lists this machine's devices that do not
 # narrate, and nodes the other machines, reached over passwordless SSH.
-# Hilde writes this file when either changes under Advanced in a browser on
+# Hilde writes this file when either changes under Settings in a browser on
 # the server's machine. Stop the server before editing it by hand.
 """
 WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
@@ -10856,7 +10856,7 @@ class JobQueue:
         self.consumers = normalized
         self.active = {}
         self.exclusive = None
-        # This machine's devices taken out of narration under Advanced.
+        # This machine's devices taken out of narration under Settings.
         self.local_off = frozenset()
         self.pending = []
         self.records = {}
@@ -13851,24 +13851,38 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def upload_document(self, name):
+        def refuse(code, message, unread=None):
+            # A refused upload's body would be taken for the start of the next
+            # request on this connection: it is read and dropped when its
+            # length is known and allowed, else the connection closes.
+            while unread:
+                chunk = self.rfile.read(min(1024 * 1024, unread))
+                if not chunk:
+                    break
+                unread -= len(chunk)
+            if unread is None or unread:
+                self.close_connection = True
+            return self.fail(code, message)
+
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            return self.fail(HTTPStatus.BAD_REQUEST, "invalid upload length")
+            return refuse(HTTPStatus.BAD_REQUEST, "invalid upload length")
         if length <= 0:
             return self.fail(
                 HTTPStatus.BAD_REQUEST, "choose a nonempty file"
             )
         if length > BOOK_UPLOAD_LIMIT:
-            return self.fail(
+            return refuse(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "upload exceeds the 64 MiB limit",
             )
         safe_name = safe_asset_name(name)
         if not safe_name or Path(safe_name).suffix.lower() not in PAPER_SUFFIXES:
-            return self.fail(
+            return refuse(
                 HTTPStatus.BAD_REQUEST,
                 "Document filename must end in PDF, text, or Markdown.",
+                unread=length,
             )
         descriptor = None
         temporary = None
@@ -14667,10 +14681,22 @@ a { color:var(--accent); }
 .problem::before, .notice.bad::before { content:"⚠ "; }
 /* While the server does not answer, what needs it is inert (setServerDown()). */
 body.server-down [inert] { opacity:.5; }
-.app-header { display:flex; align-items:center; gap:14px; }
+.app-header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
 .brand-logo { width:48px; height:48px; border-radius:12px; flex:0 0 auto; }
+.brand { flex:1 1 200px; min-width:0; }
 .brand-name { font-size:24px; }
 .brand-tagline { color:var(--dim); font-size:13px; }
+.header-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end;
+                  gap:8px; margin-left:auto; }
+.header-actions button { min-height:0; padding:6px 12px; font-size:13px; }
+.settings-button[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent); }
+/* The jobs indicator: a small lamp that glows while something runs. */
+.jobs-indicator { display:inline-flex; align-items:center; gap:8px;
+                  font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
+.jobs-indicator::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--dim); }
+.jobs-indicator.running::before { background:var(--accent); box-shadow:0 0 6px var(--accent); }
+.jobs-indicator.problem::before { background:var(--bad); }
+.jobs-indicator[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent); }
 /* Inline, not flex: flex drops the spaces around the mark, so copied text
    read "byZeki Works". */
 .signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
@@ -14679,7 +14705,7 @@ body.server-down [inert] { opacity:.5; }
                  margin-right:4px; }
 input[type=text], input[type=search], input[type=number], select, textarea {
   background:var(--field); color:var(--text); border:1px solid var(--line);
-  border-radius:8px; padding:9px 12px; font:inherit; min-width:0;
+  border-radius:8px; padding:9px 12px; font:inherit; min-width:0; max-width:100%;
 }
 input::placeholder, textarea::placeholder { color:#8a857e; }
 textarea { width:100%; min-height:96px; resize:vertical; }
@@ -14697,7 +14723,7 @@ button.link { background:none; border-color:transparent; color:var(--text);
               text-decoration-color:var(--dim); text-underline-offset:3px; }
 button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--text); }
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
-label.check input { width:18px; height:18px; margin:0; accent-color:var(--accent); }
+label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
@@ -14717,30 +14743,29 @@ label.check input { width:18px; height:18px; margin:0; accent-color:var(--accent
                                            font-weight:650; background:var(--bg);
                                            border-bottom-color:var(--bg);
                                            box-shadow:inset 0 3px 0 var(--accent); }
-.tabs .advanced { margin:0 0 6px auto; min-height:0; padding:5px 12px; font-size:13px; }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
 .page { padding-top:24px; }
 .page-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
              gap:12px; margin-bottom:16px; }
 .page-head h2 { font-size:22px; }
+.page-note { margin:-8px 0 14px; }
 .card { padding:20px 22px; background:var(--surface); border-radius:var(--radius); }
-.stack { display:grid; gap:14px; }
+.stack { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; }
 .actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
-.field { display:grid; gap:6px; }
+.field { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; min-width:0; }
 .field > label { color:var(--dim); font-size:13px; }
-.line { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.line { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
 .line > select, .line > input[type=text], .line > input[type=search] { flex:1 1 260px; }
 .banner { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px;
           padding:12px 16px; background:var(--surface); border-radius:10px; }
-.create-another { display:flex; flex-wrap:wrap; align-items:center; gap:12px 18px;
-                  margin-bottom:16px; }
-.create-another .note { flex:1 1 220px; margin:0; }
-button.large { min-height:48px; padding:12px 26px; font-size:17px; }
-.steps { display:grid; gap:12px; margin:0; padding:0; list-style:none; }
-.step { padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
+.banner > span { flex:1 1 200px; }
+.steps { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:0; padding:0;
+         list-style:none; }
+.step { min-width:0; padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
+.step:not(.is-active) { padding-top:12px; padding-bottom:12px; }
 .step.drop-target { outline:2px dashed var(--accent); outline-offset:-2px; }
-.step-head { display:flex; align-items:center; gap:14px; min-height:32px; }
+.step-head { display:flex; align-items:center; gap:14px; min-height:32px; min-width:0; }
 .step-marker { display:grid; place-items:center; flex:0 0 auto; width:30px; height:30px;
                border-radius:50%; background:var(--raised); color:var(--dim);
                font-size:14px; font-weight:650; }
@@ -14749,22 +14774,45 @@ button.large { min-height:48px; padding:12px 26px; font-size:17px; }
 .step-title { font-size:17px; }
 .step.is-upcoming .step-title { color:var(--dim); }
 .step-summary { flex:1; min-width:0; color:var(--dim); }
-.step-body { display:grid; gap:16px; margin-top:18px; padding-left:44px; }
+.step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin-top:14px;
+             padding-left:44px; }
 .step:not(.is-active) .step-body { display:none; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-.add-document { display:grid; gap:10px; }
-.add-heading { color:var(--dim); font-size:13px; }
-.subtabs { display:flex; gap:4px; width:max-content; padding:3px; background:var(--raised);
-           border-radius:9px; }
-.subtabs [role=tab] { min-height:0; padding:6px 18px; border:0; border-radius:7px;
-                      background:transparent; color:var(--dim); font-weight:600; }
-.subtabs [role=tab]:hover:not([aria-selected=true]) { background:var(--hover); color:var(--text); }
-.subtabs [role=tab][aria-selected=true] { background:var(--surface); color:var(--text);
-                                          box-shadow:inset 0 -2px 0 var(--accent); }
-.subtab-panel { display:grid; gap:12px; }
+/* Step 1: three separate ways to bring a document. */
+.sources { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:10px; }
+.source-card { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:10px;
+               min-width:0; padding:12px 14px; border:1px solid var(--line); border-radius:10px; }
+.source-title { margin:0; font-size:14px; font-weight:650; }
+.source-card .line > select { flex:1 1 100%; }
+.chosen { overflow-wrap:anywhere; }
+/* Step 3: each option says what it does, what it can change, and where it runs. */
+.options { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
+.option { display:grid; grid-template-columns:minmax(0,1fr); gap:0; min-width:0;
+          padding:8px 14px; border:1px solid var(--line); border-radius:10px; }
+.option-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+               gap:4px 12px; min-width:0; }
+.option-where { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
+.model-name { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.option-line { padding-left:28px; overflow-wrap:anywhere; }
+.option-line.note { font-size:13px; }
+.more-details { padding-left:28px; }
+.more-details > summary { font-size:13px; }
+.more-body { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; margin-top:6px;
+             color:var(--dim); font-size:14px; }
+.create-summary { display:grid; gap:4px; padding:10px 14px; background:var(--raised);
+                  border-radius:10px; }
+.summary-title { margin:0; font-size:12px; color:var(--dim); font-weight:600; letter-spacing:.04em;
+                 text-transform:uppercase; }
+.summary { display:flex; flex-wrap:wrap; gap:2px 24px; margin:0; }
+.summary-item { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0;
+                overflow-wrap:anywhere; }
+.summary dt { color:var(--dim); }
+.summary dt::after { content:":"; }
+.summary dd { margin:0; min-width:0; }
 details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-space:pre-wrap;
+                        overflow-wrap:anywhere;
                         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
-.voice-card { display:flex; align-items:center; gap:14px; padding:12px 14px;
+.voice-card { display:flex; align-items:center; gap:14px; min-width:0; padding:12px 14px;
               background:var(--raised); border-radius:10px; }
 .voice-meta { display:grid; gap:2px; min-width:0; }
 .clamp { display:-webkit-box; overflow:hidden; overflow-wrap:anywhere; -webkit-line-clamp:2;
@@ -14776,43 +14824,69 @@ details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-spac
 .preview-button[aria-pressed=true]:hover:not(:disabled) {
   background:var(--accent); border-color:var(--accent); color:var(--accent-ink);
 }
-.stages { display:grid; gap:12px; margin:18px 0; padding:0; list-style:none; }
-.stage { display:flex; align-items:center; gap:12px; color:var(--dim); }
+/* Progress: the stages of the job being followed, with real counts only. */
+.stages { display:grid; gap:10px; margin:16px 0; padding:0; list-style:none; }
+.stage { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; color:var(--dim); }
 .stage-icon { display:grid; place-items:center; flex:0 0 auto; width:24px; height:24px;
               border:2px solid var(--line); border-radius:50%; font-size:13px;
               font-weight:700; }
+.stage-note { flex-basis:100%; padding-left:36px; font-size:13px; font-weight:400; }
+.stage-note:empty { display:none; }
 .stage.is-done { color:var(--text); }
 .stage.is-done .stage-icon { border-color:var(--text); }
+.stage.is-skipped { opacity:.6; }
+.stage.is-skipped .stage-name { text-decoration:line-through; text-decoration-color:var(--dim); }
 .stage.is-active { color:var(--text); font-weight:600; }
 .stage.is-active .stage-icon { border-color:var(--accent); }
 .stage.is-active .stage-icon::after { content:""; width:10px; height:10px;
                                       border-radius:50%; background:var(--accent); }
+.progress-title { margin:0 0 4px; font-size:16px; overflow-wrap:anywhere; }
 .progress-meter { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px;
                   align-items:center; }
 progress { width:100%; height:8px; accent-color:var(--accent); }
-#progress-eta { white-space:nowrap; font-variant-numeric:tabular-nums; }
-#progress-detail { margin-top:6px; }
-#create-progress .actions, #create-result .actions { margin-top:18px; }
-#create-result { margin-bottom:12px; }
+#progress-count { white-space:nowrap; font-variant-numeric:tabular-nums; }
+#progress-detail, #progress-eta, #progress-workers { margin-top:6px; overflow-wrap:anywhere; }
+#progress-eta:empty, #progress-workers:empty { display:none; }
+#create-progress .actions, #create-result .actions, .failure .actions { margin-top:16px; }
+#create-result, #create-failure { margin-bottom:12px; }
 #result-text { margin-top:8px; font-size:17px; }
+.job-section { margin-top:16px; }
+.section-title { margin:0 0 10px; font-size:15px; }
+.failure { display:grid; gap:8px; margin-bottom:12px; border-left:3px solid var(--bad); }
+.failure h3 { font-size:17px; overflow-wrap:anywhere; }
+.failure .finished { margin:0; padding-left:18px; }
+.failure-continue { display:grid; gap:4px; }
 .queue-panel { margin-top:12px; padding:16px 22px; background:var(--surface);
                border-radius:var(--radius); }
 .queue-panel h3 { margin-bottom:10px; font-size:15px; }
 .job-queue { display:grid; gap:8px; }
-.job-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:12px;
+.job-section .job-queue:not(:empty) { margin-top:10px; padding:14px 22px; background:var(--surface);
+                                       border-radius:var(--radius); }
+.job-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:6px 12px;
            align-items:center; padding-top:8px; border-top:1px solid var(--line); }
 .job-row:first-child { padding-top:0; border-top:0; }
-.job-state { color:var(--dim); font-size:13px; white-space:nowrap; }
+.job-name { min-width:0; overflow-wrap:anywhere; }
+.job-state { color:var(--dim); font-size:13px; }
 .job-actions { display:flex; gap:6px; }
 .job-row button { min-height:0; padding:5px 10px; font-size:13px; }
-.advanced-panels { display:grid; gap:12px; margin-top:16px; }
-fieldset { margin:0; padding:16px 22px 12px; background:var(--surface); border:0;
+fieldset { min-width:0; margin:0; padding:16px 22px 12px; background:var(--surface); border:0;
            border-radius:var(--radius); }
 legend { float:left; width:100%; margin-bottom:12px; padding:0; font-weight:650; }
-legend + * { clear:both; }
+/* Everything after the floated legend starts below it, also behind a hidden note. */
+legend ~ * { clear:both; }
 .row { display:grid; grid-template-columns:170px minmax(0,1fr); gap:10px 14px;
        align-items:center; margin-bottom:10px; }
 .row > label:first-child, .row > .row-label { color:var(--dim); text-align:right; }
+/* Settings: one view of its own, each setting with when it applies. */
+.settings { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+.settings .page-head { margin-bottom:4px; }
+.settings fieldset > p.note { margin-bottom:12px; }
+.setting { display:grid; grid-template-columns:minmax(0,1fr); justify-items:start; gap:4px; min-width:0; }
+.setting > select, .setting > input { width:min(100%, 320px); }
+.setting > input.short { width:min(100%, 120px); }
+.applies { color:var(--dim); font-size:12px; }
+.applies::before { content:"↻ "; color:var(--accent); }
+.server-only { margin-top:4px; }
 .worker-list { display:flex; flex-wrap:wrap; gap:6px; }
 .worker-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
                border:1px solid var(--line); border-radius:999px; font-size:12px;
@@ -14824,8 +14898,8 @@ legend + * { clear:both; }
 .worker-chip.off { opacity:.55; }
 .worker-status { color:var(--dim); }
 .search { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
-.search input { flex:1 1 320px; }
-.data-table { width:100%; border-collapse:collapse; }
+.search input { flex:1 1 280px; }
+.data-table { width:100%; border-collapse:collapse; table-layout:auto; }
 .data-table th { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--dim);
                  font-size:12px; font-weight:600; letter-spacing:.04em; text-align:left;
                  text-transform:uppercase; }
@@ -14834,12 +14908,19 @@ legend + * { clear:both; }
 .data-table tbody tr:hover { background:var(--surface); }
 .data-table tr.is-selected { background:var(--accent-soft); }
 .voice-table .preview { width:64px; }
-.voice-table .name { width:22%; font-weight:600; overflow-wrap:anywhere; }
+.voice-table .name { width:18%; font-weight:600; overflow-wrap:anywhere; }
+/* A description is one line until its own control shows it whole, in place. */
+.voice-table .description { min-width:0; }
+.description-text { overflow-wrap:anywhere; }
+.description-text.collapsed { display:-webkit-box; overflow:hidden; -webkit-line-clamp:1;
+                              -webkit-box-orient:vertical; }
+button.description-toggle { padding:2px 0; min-height:0; color:var(--dim); font-size:13px; }
 .voice-table .select, .book-table .action { width:1%; text-align:right; white-space:nowrap; }
 .voice-table .select > * + *, .book-table .action > * + * { margin-left:4px; }
-.book-table .duration { width:120px; color:var(--dim); white-space:nowrap;
-                        font-variant-numeric:tabular-nums; }
-.book-table .source { width:26%; color:var(--dim); overflow-wrap:anywhere; }
+.book-table .duration, .book-table .position { color:var(--dim); white-space:nowrap;
+                                               font-variant-numeric:tabular-nums; }
+.book-table .source { width:22%; color:var(--dim); overflow-wrap:anywhere; }
+.book-table .voice { color:var(--dim); overflow-wrap:anywhere; }
 .book-table .book-row { cursor:pointer; }
 .data-table .modified { width:1%; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
@@ -14847,14 +14928,36 @@ legend + * { clear:both; }
 .selected-badge { display:inline-flex; align-items:center; gap:6px; padding:0 8px;
                   color:var(--accent); font-weight:650; white-space:nowrap; }
 .selected-badge svg { width:14px; height:14px; fill:currentColor; }
+button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1; }
 .more { display:block; margin:14px auto 0; }
 .empty { padding:40px 20px; background:var(--surface); border-radius:var(--radius);
-         color:var(--dim); text-align:center; }
+         color:var(--dim); text-align:center; overflow-wrap:anywhere; }
 .empty h3 { margin-bottom:8px; color:var(--text); font-size:18px; }
 .empty p { margin-bottom:18px; }
-#log { height:240px; margin-top:16px; padding:10px; overflow:auto; background:var(--field);
-       border:1px solid var(--line); border-radius:8px; color:var(--dim);
-       font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
+.empty p:last-child { margin-bottom:0; }
+/* A row's ⋯ menu, placed under its button (a sheet at the bottom on a phone);
+   as wide as its items, not stretched to the screen's right edge by .menu. */
+.menu.row-menu { position:fixed; top:auto; right:auto; }
+/* Short confirmations of what just happened, at the bottom of the screen. */
+.toast { position:fixed; z-index:50; left:50%; bottom:calc(20px + var(--dock-h, 0px));
+         transform:translateX(-50%); display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
+         max-width:calc(100vw - 24px); padding:10px 16px; background:var(--raised);
+         border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
+.toast button { min-height:0; padding:4px 10px; }
+.confirm-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
+.confirm-dialog p { overflow-wrap:anywhere; }
+.confirm-dialog .field { margin-top:12px; }
+/* The confirming button of a risky action: plain words, a warning color. */
+button.danger { background:var(--bad); border-color:var(--bad); color:var(--accent-ink); font-weight:650; }
+button.danger:hover:not(:disabled) { background:var(--bad); filter:brightness(1.08); }
+#confirm-where, #change-voice-where { margin-top:10px; gap:6px 8px; }
+/* Where a job's text goes: a label, the model's short name, its badge. */
+.where { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0;
+         overflow-wrap:anywhere; }
+.where .note { font-size:13px; }
+#change-voice-dialog .field { margin-bottom:12px; }
+#change-voice-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
+#change-voice-text { overflow-wrap:anywhere; }
 /* Listen with a book open: the workspace takes the screen, the text keeps a
    reading width, and one side panel (chat, figure, source page) sits beside it. */
 main.reading { max-width:none; }
@@ -14890,7 +14993,6 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .menu button:hover:not(:disabled) { background:var(--hover); }
 .menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent); }
 .more-button { min-width:44px; padding:0 12px; font-size:20px; line-height:1; }
-.change-voice { margin:4px 0 0; padding:12px 14px; background:var(--surface); border-radius:10px; }
 .reading-column .notice { margin-top:4px; }
 /* The view's controls and the player stay on screen above the text while it
    scrolls; on a phone the player docks at the bottom instead. */
@@ -14918,9 +15020,15 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
 /* Files Hilde wrote for the book, under its title. */
-.book-files { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; }
-.book-file-links { display:flex; flex-wrap:wrap; gap:4px 14px; }
-.book-file-links a { color:var(--text); text-decoration-color:var(--dim); text-underline-offset:3px; }
+.book-files > summary { width:auto; overflow-wrap:anywhere; }
+.note-list { display:grid; gap:8px; margin:8px 0 4px; padding:0; list-style:none; }
+.note-item { display:grid; gap:2px; min-width:0; padding:8px 12px; background:var(--surface);
+             border-radius:8px; overflow-wrap:anywhere; }
+.note-item strong { color:var(--text); }
+.note-item .line { gap:4px 12px; }
+.note-item a, .note-item button.link { padding:4px 0; color:var(--text); font-size:13px;
+                                       text-decoration-color:var(--dim); text-underline-offset:3px; }
+.chat-tool .saved { margin-left:6px; color:var(--accent-light); }
 /* Back to where you're listening: at the bottom of the screen while the
    narrated sentence is out of sight. */
 .back-to-listening { position:sticky; bottom:calc(16px + var(--dock-h, 0px)); z-index:6; display:block;
@@ -15113,7 +15221,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
   body:has(main.reading) { padding-bottom:var(--dock-h, 120px); }
   .figure-card.has-composite.stacks .figure-panels { display:block; }
   .figure-card.has-composite.stacks .figure-composite { display:none; }
-  .menu { position:fixed; right:8px; left:8px; top:auto; bottom:calc(var(--dock-h, 0px) + 8px); }
+  .menu, .menu.row-menu { position:fixed; right:8px; left:8px; top:auto; bottom:calc(var(--dock-h, 0px) + 8px); }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
@@ -15134,38 +15242,50 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   main { padding:14px 14px 4px; }
   .brand-logo { width:36px; height:36px; border-radius:9px; }
   .brand-name { font-size:20px; }
-  .brand-tagline { display:none; }
+  .brand-tagline { font-size:12px; line-height:1.3; }
   .tabs { gap:6px; margin-top:12px; padding:0 2px; }
   .page { padding-top:18px; }
-  .card, .step, fieldset, .queue-panel { padding:16px; }
+  .card, .step, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
   .step-body { padding-left:0; }
-  .row { grid-template-columns:1fr; }
+  .option-line, .more-details { padding-left:0; }
+  .row { grid-template-columns:minmax(0,1fr); }
   .row > label:first-child, .row > .row-label { text-align:left; }
-  .job-row { grid-template-columns:1fr; }
+  .job-row { grid-template-columns:minmax(0,1fr); }
+  /* A step's head: its marker, its title, and what was chosen on a line of its own. */
+  .step-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:2px 12px; }
+  .step-marker { grid-row:1 / span 2; }
+  .step-title { grid-column:2; }
+  .step-summary { grid-column:2; grid-row:2; }
+  .step-head > button.link { grid-column:3; grid-row:1 / span 2; }
   /* Table rows become compact list items; cells keep their order. */
   .data-table thead { display:none; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
                    border-bottom:1px solid var(--surface); }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
-  .voice-table tr { grid-template-columns:auto minmax(0,1fr); align-items:center; }
-  .voice-table .preview { grid-row:1 / span 2; }
-  .voice-table .name, .voice-table .description, .voice-table .modified { grid-column:2; }
-  .voice-table .description { color:var(--dim); font-size:14px; }
+  /* A voice: preview, name, and Select with ⋯ on one line; the description,
+     one line until its control opens it, under them. */
+  .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; }
+  .voice-table .preview { grid-column:1; grid-row:1 / span 2; align-self:start; }
+  .voice-table .name { grid-column:2; grid-row:1; }
+  .voice-table .description { grid-column:2 / span 2; grid-row:2; color:var(--dim); font-size:14px; }
+  /* The phone leaves out when a voice changed. */
+  .voice-table .modified { display:none !important; }
   .data-table .modified { font-size:13px; }
-  .voice-table .select { grid-column:2; grid-row:4; display:flex; flex-wrap:wrap;
+  .voice-table .select { grid-column:3; grid-row:1; display:flex; flex-wrap:nowrap;
                          align-items:center; gap:6px; }
   .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
-  .book-table .title, .book-table .duration, .book-table .source,
-  .book-table .modified { grid-column:1; }
-  .book-table .duration, .book-table .source { font-size:13px; }
+  .book-table .title, .book-table .duration, .book-table .source, .book-table .voice,
+  .book-table .position { grid-column:1; }
+  .book-table .duration, .book-table .source, .book-table .voice, .book-table .position { font-size:13px; }
   .data-table td[data-label]::before { content:attr(data-label) ": "; }
-  .book-table .action { grid-column:2; grid-row:1 / span 4; align-self:center; }
+  .book-table .action { grid-column:2; grid-row:1 / span 5; align-self:center; }
   .book-table .action { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
   .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
 }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
-  button, .tab-list [role=tab], .tabs .advanced, button.link, .job-row button,
+  button, .tab-list [role=tab], button.link, .job-row button, .header-actions button,
+  button.description-toggle, button.row-more, .toast button, .note-item a, .note-item button.link,
   input[type=text], input[type=search], input[type=number], select, label.check {
     min-height:44px;
   }
@@ -15190,9 +15310,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <main>
   <header class="app-header">
     <img class="brand-logo" src="/hilde-dark.png" width="48" height="48" alt="">
-    <div>
+    <div class="brand">
       <h1 class="brand-name">Hilde</h1>
-      <p class="brand-tagline">Audiobook Studio</p>
+      <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
+    </div>
+    <div class="header-actions">
+      <button id="jobs-indicator" class="jobs-indicator hidden" type="button" aria-controls="page-progress"
+        onclick="openProgress()"></button>
+      <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
+        aria-pressed="false" onclick="toggleSettings()">Settings</button>
     </div>
   </header>
 
@@ -15200,97 +15326,123 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div id="tab-list" class="tab-list" role="tablist" aria-label="Pages">
       <button id="tab-audiobook" type="button" role="tab" aria-controls="page-audiobook"
         onclick="setTab('audiobook')">Create</button>
-      <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
-        onclick="setTab('progress')">Progress</button>
       <button id="tab-voice" type="button" role="tab" aria-controls="page-voice"
         onclick="setTab('voice')">Voices</button>
       <button id="tab-player" type="button" role="tab" aria-controls="page-player"
         onclick="chooseListen()">Listen</button>
     </div>
-    <button id="advanced" class="advanced" type="button" aria-expanded="false"
-      aria-controls="advanced-panels" onclick="toggleAdvanced()">Advanced</button>
   </nav>
   <p id="status" class="notice" role="status" aria-live="polite"></p>
   <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
     answering, so creating, saving, and deleting are off until it is back. This page checks
     every few seconds and turns them on again by itself.</p>
 
-  <div id="advanced-panels" class="advanced-panels hidden">
-    <fieldset>
-      <legend>This server</legend>
-      <div class="row"><span class="row-label">Narration workers</span>
-        <div class="stack"><span id="compute-workers" class="worker-list"></span>
-          <span id="compute-detail" class="note"></span>
-          <div id="local-devices" class="line hidden"><span class="note">This machine
-            narrates on:</span><span id="local-device-list" class="line"></span></div></div></div>
-      <div class="row"><span class="row-label">Other machines</span>
-        <div class="stack"><div id="node-list" class="stack"></div>
+  <section id="page-settings" class="page settings hidden" aria-labelledby="settings-title">
+    <div class="page-head">
+      <h2 id="settings-title" tabindex="-1">Settings</h2>
+      <button class="link" type="button" onclick="toggleSettings()">Close settings</button>
+    </div>
+    <fieldset id="settings-narration">
+      <legend>Narration</legend>
+      <p id="narration-server-note" class="note hidden">A speech server narrates, so precision,
+        attention, and batch size do not apply.</p>
+      <div class="row"><label for="dtype">Precision</label><div class="setting">
+        <select id="dtype"><option>auto</option><option>float32</option>
+          <option>float16</option><option>bfloat16</option></select>
+        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+      <div class="row"><label for="attn">Attention</label><div class="setting">
+        <select id="attn"><option>sdpa</option>
+          <option>eager</option><option>flash_attention_2</option></select>
+        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+      <div class="row"><label for="language">Language</label><div class="setting">
+        <input id="language" type="text" placeholder="Auto">
+        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+      <div class="row"><label for="encoding">Text encoding</label><div class="setting">
+        <input id="encoding" type="text" placeholder="utf-8-sig">
+        <span class="applies">Applies to the next audiobook</span></div></div>
+      <div class="row"><label for="seed">Seed</label><div class="setting">
+        <input id="seed" type="text" placeholder="Optional seed">
+        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+      <div class="row"><label for="batch-size">Batch size</label><div class="setting">
+        <input id="batch-size" type="text" class="short">
+        <span class="applies">Applies to the next audiobook</span></div></div>
+      <div class="row"><label for="chunk-max-chars">Chunking</label><div class="setting">
+        <input id="chunk-max-chars" type="text" class="short">
+        <span class="applies">Applies to the next audiobook; a book's new voice keeps the
+          book's own</span></div></div>
+      <div class="row"><label for="mp3-level">MP3 compression</label><div class="setting">
+        <input id="mp3-level" type="text" class="short">
+        <span class="applies">Applies to the next audiobook</span></div></div>
+    </fieldset>
+    <fieldset id="settings-adaptation">
+      <legend>Text preparation</legend>
+      <p class="note">Used when "Adapt the text for listening" is on. Changing either prepares
+        the text again on Continue.</p>
+      <div class="row"><label for="paper-in-flight">Workers</label><div class="setting">
+        <input id="paper-in-flight" type="number" min="1" max="32" step="1" class="short">
+        <span class="applies">Applies to the next audiobook</span></div></div>
+      <div class="row"><label for="paper-paragraphs-per-worker">Paragraphs per worker</label><div class="setting">
+        <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1" class="short">
+        <span class="applies">Applies to the next audiobook</span></div></div>
+    </fieldset>
+    <fieldset id="settings-voices">
+      <legend>Voices</legend>
+      <div class="row"><label for="wav-subtype">Reference WAV encoding</label><div class="setting">
+        <select id="wav-subtype"><option>FLOAT</option><option>PCM_16</option>
+          <option>PCM_24</option><option>PCM_32</option><option>DOUBLE</option></select>
+        <span class="applies">Applies to the next voice preview. The reference clip is what
+          narration clones.</span></div></div>
+    </fieldset>
+    <fieldset id="settings-gpus">
+      <legend>This machine's GPUs</legend>
+      <div class="row"><span class="row-label">Workers</span>
+        <div class="setting"><span id="local-workers" class="worker-list"></span>
+          <span id="local-workers-detail" class="note"></span></div></div>
+      <div id="local-devices" class="row hidden"><span class="row-label">Narrates on</span>
+        <div class="setting"><span id="local-device-list" class="line"></span>
+          <span class="applies">Applies now: to queued and new audiobooks</span></div></div>
+      <p id="gpus-server-only" class="note server-only hidden">Only a browser on the server's
+        own machine can change this.</p>
+    </fieldset>
+    <fieldset id="settings-nodes">
+      <legend>Other machines</legend>
+      <div class="row"><span class="row-label">Workers</span>
+        <div class="setting"><span id="node-workers" class="worker-list"></span>
+          <span id="node-workers-detail" class="note"></span></div></div>
+      <div class="row"><span class="row-label">Machines</span>
+        <div class="setting"><div id="node-list" class="stack"></div>
           <div class="line">
             <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add workers</button>
             <span id="nodes-note" class="note"></span>
-          </div></div></div>
-      <div class="row"><span class="row-label">Models</span>
-        <span id="compute-models"></span></div>
+          </div>
+          <span id="nodes-applies" class="applies hidden">Applies now: a running audiobook keeps
+            its workers</span></div></div>
+      <p id="nodes-server-only" class="note server-only hidden">Only a browser on the server's
+        own machine can change this.</p>
+    </fieldset>
+    <fieldset id="settings-models">
+      <legend>Models and connection</legend>
+      <p class="note">Set when the server starts; shown here, not changed.</p>
+      <div class="row"><span class="row-label">Narration</span><span id="model-narration"></span></div>
+      <div class="row"><span class="row-label">Voice design</span><span id="model-design"></span></div>
+      <div class="row"><span class="row-label">Text model</span><span id="model-text"></span></div>
       <div class="row"><span class="row-label">Connection</span>
-        <div class="stack"><span id="connection-note" class="note"></span>
+        <div class="setting"><span id="connection-note" class="note"></span>
           <a id="certificate-download" class="hidden" href="/api/certificate"
             download="hilde-certificate.crt">Download Hilde's certificate</a></div></div>
     </fieldset>
-    <fieldset id="speech-advanced">
-      <legend>Speech tuning</legend>
-      <div class="row"><label for="dtype">Inference tuning</label><div class="line">
-        <select id="dtype"><option>auto</option><option>float32</option>
-          <option>float16</option><option>bfloat16</option></select>
-        <select id="attn" aria-label="Attention implementation"><option>sdpa</option>
-          <option>eager</option><option>flash_attention_2</option></select>
-      </div></div>
-      <div class="row"><label for="language">Text</label><div class="line">
-        <input id="language" type="text" placeholder="Auto" aria-label="Language">
-        <input id="encoding" type="text" placeholder="utf-8-sig" aria-label="Text encoding">
-        <input id="seed" type="text" placeholder="Optional seed" aria-label="Seed">
-      </div></div>
-    </fieldset>
-    <fieldset id="narration-advanced">
-      <legend>Narration</legend>
-      <div class="row"><label for="chunk-max-chars">Chunking</label><div class="line">
-        <input id="chunk-max-chars" type="text" style="flex:0 0 90px">
-        <label class="note" for="batch-size">Batch size</label>
-        <input id="batch-size" type="text" style="flex:0 0 90px">
-      </div></div>
-      <div class="row"><label for="mp3-level">MP3 compression</label><div class="line">
-        <input id="mp3-level" type="text" style="flex:0 0 90px">
-      </div></div>
-    </fieldset>
-    <fieldset id="adaptation-advanced">
-      <legend>Text adaptation</legend>
-      <div class="row"><label for="paper-in-flight">Workers</label><div class="line">
-        <input id="paper-in-flight" type="number" min="1" max="32" step="1">
-        <label class="note" for="paper-paragraphs-per-worker">Paragraphs per worker</label>
-        <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1">
-      </div></div>
-    </fieldset>
-    <fieldset id="voice-advanced">
-      <legend>Voice files</legend>
-      <div class="row"><label for="wav-subtype">Reference WAV encoding</label><div class="line">
-        <select id="wav-subtype"><option>FLOAT</option><option>PCM_16</option>
-          <option>PCM_24</option><option>PCM_32</option><option>DOUBLE</option></select>
-        <span class="note">The reference clip is what narration clones.</span>
-      </div></div>
-    </fieldset>
-  </div>
+  </section>
 
   <section id="page-audiobook" class="page" role="tabpanel" aria-labelledby="tab-audiobook">
     <h2 class="visually-hidden">Create an audiobook</h2>
+    <section id="create-failure" class="card failure hidden" aria-label="Unfinished audiobook"></section>
     <section id="create-result" class="card hidden" aria-labelledby="result-title">
-      <h3 id="result-title" tabindex="-1"></h3>
+      <h3 id="result-title" tabindex="-1">Your audiobook is ready</h3>
       <p id="result-text" class="clamp"></p>
       <p id="result-time" class="note"></p>
-      <details id="result-details" class="technical hidden">
-        <summary>Technical details</summary><pre id="result-detail-text"></pre>
-      </details>
       <div class="actions">
-        <button id="result-primary" class="primary" type="button" onclick="resultAction()"></button>
-        <button id="download" class="hidden" type="button" onclick="downloadArtifact()">Download MP3</button>
+        <button id="result-primary" type="button" onclick="startListening()">Start listening</button>
+        <button id="download" type="button" onclick="downloadArtifact(this)">Download MP3</button>
         <button id="airdrop" class="hidden" type="button" onclick="sendAirdrop()">AirDrop…</button>
       </div>
     </section>
@@ -15305,23 +15457,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             onclick="setStep('book')">Change</button>
         </div>
         <div class="step-body">
-          <div class="field">
-            <label for="document">Your documents</label>
-            <div class="line">
-              <select id="document"><option value="">Choose a document</option></select>
-              <button id="document-delete" class="link" type="button"
-                aria-label="Delete the chosen document" onclick="deleteDocument(this)">Delete</button>
-            </div>
-          </div>
-          <div class="add-document">
-            <span id="add-heading" class="add-heading">Or add a new one</span>
-            <div id="add-tabs" class="subtabs" role="tablist" aria-labelledby="add-heading">
-              <button id="add-tab-url" type="button" role="tab" aria-controls="add-url"
-                onclick="setAddVia('url')">URL</button>
-              <button id="add-tab-file" type="button" role="tab" aria-controls="add-file"
-                onclick="setAddVia('file')">File</button>
-            </div>
-            <div id="add-url" class="subtab-panel" role="tabpanel" aria-labelledby="add-tab-url">
+          <p id="book-chosen" class="chosen hidden"></p>
+          <div class="sources">
+            <section class="source-card" aria-labelledby="source-saved-title">
+              <h4 id="source-saved-title" class="source-title">Saved document</h4>
+              <div class="line">
+                <select id="document" aria-labelledby="source-saved-title"><option value="">Choose a document</option></select>
+                <button id="document-delete" class="link" type="button"
+                  aria-label="Delete the chosen document" onclick="deleteDocument(this)">Delete</button>
+              </div>
+            </section>
+            <section class="source-card" aria-labelledby="source-url-title">
+              <h4 id="source-url-title" class="source-title">From a URL</h4>
               <div class="field">
                 <label for="source-url">Link to a PDF, Markdown, or text file</label>
                 <input id="source-url" type="text" inputmode="url"
@@ -15331,16 +15478,19 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <label for="download-name">Save as (optional)</label>
                 <input id="download-name" type="text" placeholder="For example paper.pdf">
               </div>
-            </div>
-            <div id="add-file" class="subtab-panel hidden" role="tabpanel" aria-labelledby="add-tab-file">
+              <p class="note">Hilde downloads it when you press Continue.</p>
+            </section>
+            <section class="source-card" aria-labelledby="source-file-title">
+              <h4 id="source-file-title" class="source-title">Upload a file</h4>
+              <input id="document-file" class="hidden" type="file"
+                accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
               <div class="line">
-                <input id="document-file" class="hidden" type="file"
-                  accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
-                <button id="document-upload" type="button" onclick="chooseDocument()">Upload a file…</button>
-                <span class="note">PDF, Markdown, or plain text; or drop a file here</span>
+                <button id="document-upload" type="button" onclick="chooseDocument()">Choose a file…</button>
               </div>
-            </div>
+              <p class="note">PDF, Markdown, or plain text; or drop a file on this step.</p>
+            </section>
           </div>
+          <p id="book-problem" class="problem hidden" role="alert"></p>
           <div id="existing-book" class="notice hidden" role="status">
             <p><strong>You already have this one:</strong>
               <span id="existing-book-title"></span>.
@@ -15387,55 +15537,100 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <li id="step-create" class="step">
         <div class="step-head">
           <span class="step-marker" aria-hidden="true">3</span>
-          <h3 class="step-title" tabindex="-1">Create audiobook</h3>
+          <h3 class="step-title" tabindex="-1">How Hilde prepares the text</h3>
           <span class="visually-hidden step-state"></span>
         </div>
         <div class="step-body">
-          <div class="field">
-            <label class="check"><input id="adapt" type="checkbox"> Adapt the text for listening</label>
-            <span class="note">Rewrites the text so it sounds natural read aloud and leaves out
-              reference lists. It takes longer.</span>
-          </div>
-          <div id="adaptation-model" class="field">
-            <label for="paper-model">Model</label>
-            <div class="line">
-              <select id="paper-model"><option value="">Loading models…</option></select>
-              <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
-              <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
-              <span id="paper-model-status" class="note"></span>
-            </div>
-          </div>
-          <div id="figure-interpretation" class="field">
-            <label class="check"><input id="paper-interpret" type="checkbox"> Interpret and narrate figures/charts (Experimental)</label>
-            <span class="note">Unticked, a chart is described from its caption and what the paper's
-              text says about it, never from values read off the picture. Ticked, the figure model
-              reads every figure, chart, and table from its picture: more detail, and mistakes when
-              the model misreads a plot. A strong vision model reads plots far better than a small
-              local one.</span>
-            <div id="figure-model-row" class="field">
-              <label for="paper-figure-model">Figure model</label>
-              <div class="line">
-                <select id="paper-figure-model"><option value="">Same as the text model</option></select>
+          <div id="prepare-options" class="options">
+            <div id="option-adapt" class="option">
+              <div class="option-head">
+                <label class="check"><input id="adapt" type="checkbox"> Adapt the text for listening</label>
+                <span class="option-where"><span id="adapt-model-name" class="model-name"></span>
+                  <span id="adapt-badge" class="badge" title="Where the document's text goes"></span></span>
               </div>
+              <p class="option-line">Rewrites the text so it reads naturally aloud. It takes longer.</p>
+              <p class="option-line note">Can change: drops citation marks, page numbers, and reference
+                lists; tunes tables, formulas, and lists down to their point.</p>
+              <details id="adapt-more" class="more-details">
+                <summary>More</summary>
+                <div class="more-body">
+                  <p>Prose stays word for word. Tables, formulas, lists, and runs of numbers are
+                    told by their point, and figures, tables, and equations get descriptions. It
+                    may leave out whole passages; Hilde asks the model once more when that happens.
+                    A table of contents or bibliography is removed from a PDF even without this.</p>
+                  <p>The document's paragraphs, earlier summaries, captions, and figure images go to
+                    the text model.</p>
+                  <div id="adaptation-model" class="field">
+                    <label for="paper-model">Text model</label>
+                    <div class="line">
+                      <select id="paper-model"><option value="">Loading models…</option></select>
+                    </div>
+                    <div class="line">
+                      <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
+                      <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
+                      <span id="paper-model-status" class="note"></span>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
-          </div>
-          <div id="error-correction" class="field">
-            <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
-            <span class="note">Each description of a figure, table, or equation is checked against
-              the paper; one with a problem is rewritten, and the rewrite is kept only if a second
-              check finds it fixed. It takes longer.</span>
-            <div id="verify-model-row" class="field">
-              <label for="paper-verify-model">Checking model</label>
-              <div class="line">
-                <select id="paper-verify-model"><option value="">Same as the text model</option></select>
+            <div id="figure-interpretation" class="option">
+              <div class="option-head">
+                <label class="check"><input id="paper-interpret" type="checkbox"> Interpret and narrate
+                  figures/charts (Experimental)</label>
+                <span class="option-where"><span id="figure-model-name" class="model-name"></span>
+                  <span id="figure-badge" class="badge" title="Where the figure pictures go"></span></span>
               </div>
+              <p class="option-line">The figure model reads every figure, chart, and table from its picture.</p>
+              <p class="option-line note">Can change: more detail, and wrong values when a plot is misread.</p>
+              <details class="more-details">
+                <summary>More</summary>
+                <div class="more-body">
+                  <p>Unticked, a chart is described from its caption and what the paper's text says
+                    about it, never from values read off the picture. A strong vision model reads
+                    plots far better than a small local one.</p>
+                  <div id="figure-model-row" class="field">
+                    <label for="paper-figure-model">Figure model</label>
+                    <div class="line">
+                      <select id="paper-figure-model"><option value="">Same as the text model</option></select>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+            <div id="error-correction" class="option">
+              <div class="option-head">
+                <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
+                <span class="option-where"><span id="verify-model-name" class="model-name"></span>
+                  <span id="verify-badge" class="badge" title="Where the descriptions go to be checked"></span></span>
+              </div>
+              <p class="option-line">Checks each description of a figure, table, or equation against the paper.</p>
+              <p class="option-line note">Can change: a description with a problem is rewritten, kept only if a
+                second check finds it fixed.</p>
+              <details class="more-details">
+                <summary>More</summary>
+                <div class="more-body">
+                  <p>Each check sends the description and the paper's text around it to the checking
+                    model. It takes longer.</p>
+                  <div id="verify-model-row" class="field">
+                    <label for="paper-verify-model">Checking model</label>
+                    <div class="line">
+                      <select id="paper-verify-model"><option value="">Same as the text model</option></select>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
+          <p id="create-note" class="note"></p>
+          <section class="create-summary" aria-labelledby="summary-title">
+            <h4 id="summary-title" class="summary-title">Summary</h4>
+            <dl id="create-summary" class="summary"></dl>
+          </section>
           <p id="create-problem" class="problem hidden"></p>
           <div class="actions">
             <button id="run" class="primary" type="button"
               onclick="startAudiobook()">Create audiobook</button>
-            <span id="create-note" class="note"></span>
           </div>
         </div>
       </li>
@@ -15446,49 +15641,59 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </section>
   </section>
 
-  <section id="page-progress" class="page hidden" role="tabpanel" aria-labelledby="tab-progress">
-    <h2 class="visually-hidden">Progress</h2>
-    <div class="create-another">
-      <button class="primary large" type="button" onclick="createAnother()">Create another book</button>
-      <p class="note">You can queue as many books as you like. Hilde starts them in the
-        order you add them.</p>
+  <section id="page-progress" class="page hidden" aria-labelledby="progress-heading">
+    <div class="page-head">
+      <h2 id="progress-heading" tabindex="-1">Progress</h2>
+      <button type="button" onclick="createAnother()">Create another book</button>
     </div>
-    <section id="create-progress" class="card" aria-labelledby="progress-title">
-      <h3 id="progress-title" tabindex="-1">Creating your audiobook</h3>
-      <p id="progress-subject" class="note clamp"></p>
-      <ol id="stages" class="stages">
-        <li class="stage" data-stage="read"><span class="stage-icon" aria-hidden="true"></span>Reading
-          your document<span class="visually-hidden stage-state"></span></li>
-        <li class="stage" data-stage="prepare"><span class="stage-icon" aria-hidden="true"></span>Preparing
-          the narration<span class="visually-hidden stage-state"></span></li>
-        <li class="stage" data-stage="audio"><span class="stage-icon" aria-hidden="true"></span>Creating
-          the audio<span class="visually-hidden stage-state"></span></li>
-        <li class="stage" data-stage="finish"><span class="stage-icon" aria-hidden="true"></span>Finishing
-          your audiobook<span class="visually-hidden stage-state"></span></li>
-      </ol>
-      <div class="progress-meter">
-        <progress id="progress" max="1" aria-labelledby="progress-title"
-          aria-describedby="progress-detail progress-eta"></progress>
-        <span id="progress-eta" class="note"></span>
-      </div>
-      <p id="progress-detail" class="note"></p>
-      <div class="actions">
-        <button id="stop" type="button" onclick="stopRun()">Stop</button>
-      </div>
+    <p class="note page-note">Every job on this server, from any browser. Hilde starts them in the
+      order they were added.</p>
+    <section id="progress-failure" class="card failure hidden" aria-label="Unfinished audiobook"></section>
+    <section id="running-section" class="job-section hidden" aria-labelledby="running-heading">
+      <h3 id="running-heading" class="section-title">Running</h3>
+      <section id="create-progress" class="card hidden" aria-labelledby="progress-title">
+        <h4 id="progress-title" class="progress-title" tabindex="-1"></h4>
+        <p id="progress-subject" class="note"></p>
+        <ol id="stages" class="stages">
+          <li class="stage" data-stage="read"><span class="stage-icon" aria-hidden="true"></span><span
+            class="stage-name">Reading the document</span><span class="stage-note"></span></li>
+          <li class="stage" data-stage="prepare"><span class="stage-icon" aria-hidden="true"></span><span
+            class="stage-name">Preparing the text for listening</span><span class="stage-note"></span></li>
+          <li class="stage" data-stage="audio"><span class="stage-icon" aria-hidden="true"></span><span
+            class="stage-name">Generating audio</span><span class="stage-note"></span></li>
+          <li class="stage" data-stage="finish"><span class="stage-icon" aria-hidden="true"></span><span
+            class="stage-name">Aligning text and audio</span><span class="stage-note"></span></li>
+          <li class="stage" data-stage="ready"><span class="stage-icon" aria-hidden="true"></span><span
+            class="stage-name">Ready</span><span class="stage-note"></span></li>
+        </ol>
+        <div class="progress-meter">
+          <progress id="progress" max="1" aria-labelledby="progress-title"
+            aria-describedby="progress-detail progress-eta"></progress>
+          <span id="progress-count" class="note"></span>
+        </div>
+        <p id="progress-detail" class="note"></p>
+        <p id="progress-eta" class="note"></p>
+        <p id="progress-workers" class="note"></p>
+        <div class="actions">
+          <button id="stop" type="button" onclick="stopRun()">Stop</button>
+        </div>
+      </section>
+      <div id="running-jobs" class="job-queue"></div>
     </section>
-
-    <section class="queue-panel" aria-labelledby="progress-queue-heading">
-      <h3 id="progress-queue-heading">Queue</h3>
-      <div id="progress-queue" class="job-queue"></div>
+    <section id="queued-section" class="job-section hidden" aria-labelledby="queued-heading">
+      <h3 id="queued-heading" class="section-title">Queued</h3>
+      <div id="queued-jobs" class="job-queue"></div>
     </section>
   </section>
 
   <section id="page-voice" class="page hidden" role="tabpanel" aria-labelledby="tab-voice">
     <div class="page-head">
       <h2>Voices</h2>
-      <button id="new-voice" type="button" aria-controls="voice-form" aria-expanded="false"
+      <button id="new-voice" class="primary" type="button" aria-controls="voice-form" aria-expanded="false"
         onclick="openVoiceForm()">New voice</button>
     </div>
+    <p id="voice-chosen" class="banner hidden" role="status"><span id="voice-chosen-text"></span>
+      <button type="button" onclick="setTab('audiobook')">Back to Create</button></p>
     <section id="voice-form" class="card hidden" aria-labelledby="voice-form-title">
       <div class="stack">
         <h3 id="voice-form-title">New voice</h3>
@@ -15498,55 +15703,59 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             placeholder="Preset or server voice ID">
         </div>
         <div class="field">
+          <label for="instruct">Describe the voice</label>
+          <textarea id="instruct"
+            placeholder="Warm British female narrator in her thirties; calm, clear, and unhurried."></textarea>
+          <span class="note">For example: “Warm British female narrator in her thirties; calm, clear,
+            and unhurried.” Say the speaker, tone, accent, pace, and delivery. Voices are found by
+            searching these descriptions, and every voice reads the same short passage.</span>
+        </div>
+        <div class="field">
           <label for="voice-name">Name</label>
           <input id="voice-name" type="text" autocomplete="off" placeholder="For example Rebecca">
           <span id="voice-exists" class="note"></span>
         </div>
-        <div class="field">
-          <label for="instruct">Prompt</label>
-          <textarea id="instruct"
-            placeholder="Warm British female narrator in her thirties; calm, clear, and unhurried."></textarea>
-          <span class="note">Describe the speaker, tone, accent, pace, and delivery. Voices are
-            found by searching their prompts, and every voice reads the same short passage.</span>
-        </div>
         <p id="voice-problem" class="problem hidden"></p>
         <div id="voice-progress" class="progress-meter hidden">
-          <progress aria-label="Designing the voice"></progress>
-          <span class="note">Designing the voice…</span>
+          <progress aria-label="Generating the preview"></progress>
+          <span class="note">Generating the preview…</span>
         </div>
         <div id="voice-result" class="voice-card hidden" tabindex="-1"></div>
         <div class="actions">
           <button id="voice-listen" class="primary" type="button"
-            onclick="listenVoice()">Listen</button>
-          <button id="voice-save" class="hidden" type="button" onclick="saveVoice(this)">Save</button>
+            onclick="listenVoice()">Generate preview</button>
+          <button id="voice-save" type="button" onclick="saveVoice(this)">Save voice</button>
           <button id="voice-stop" class="hidden" type="button" onclick="stopRun()">Stop</button>
-          <button id="voice-close" type="button" onclick="closeVoiceForm()">Close</button>
+          <button id="voice-close" class="link" type="button" onclick="closeVoiceForm()">Close</button>
+          <span id="voice-where" class="badge hidden" title="Where the description goes"></span>
         </div>
+        <p id="voice-save-note" class="note"></p>
       </div>
     </section>
     <div class="search">
-      <label for="voice-search" class="visually-hidden">Search voice prompts</label>
+      <label for="voice-search" class="visually-hidden">Search voice descriptions</label>
       <input id="voice-search" type="search" autocomplete="off"
-        placeholder="Search prompts, for example warm british female">
+        placeholder="Search voice descriptions, e.g. warm british female">
       <span id="voice-count" class="note" aria-live="polite"></span>
     </div>
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
       <thead><tr><th scope="col">Preview</th><th scope="col">Voice name</th>
-        <th scope="col">Prompt</th><th scope="col">Modified</th>
+        <th scope="col">Voice description</th><th scope="col" class="modified">Modified</th>
         <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
     </table>
-    <p id="voice-none" class="empty hidden"></p>
+    <div id="voice-none" class="empty hidden">
+      <p id="voice-none-text"></p>
+      <button id="voice-clear" class="hidden" type="button" onclick="clearVoiceSearch()">Clear search</button>
+    </div>
     <button id="voice-more" class="more hidden" type="button"
       onclick="showMoreVoices()">Show more</button>
   </section>
 
-  <div id="log"></div>
-
   <section id="page-player" class="page hidden" role="tabpanel" aria-labelledby="tab-player">
     <div id="library-view">
-      <div class="page-head"><h2>Listen</h2></div>
+      <div class="page-head"><h2>Library</h2></div>
       <div id="library-content" class="hidden">
         <div class="search">
           <label for="book-search" class="visually-hidden">Search titles</label>
@@ -15557,7 +15766,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <table id="book-table" class="data-table book-table">
           <caption class="visually-hidden">Audiobooks</caption>
           <thead><tr><th scope="col">Title</th><th scope="col">Duration</th>
-            <th scope="col">Source name</th><th scope="col">Modified</th>
+            <th scope="col">Source file</th><th scope="col">Voice</th>
+            <th scope="col">Last position (this device)</th>
             <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
           <tbody id="book-rows"></tbody>
         </table>
@@ -15585,23 +15795,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               onchange="openAudiobook(state.player.book, false, this.value)"></select>
             <span id="reader-meta"></span>
           </p>
-          <nav id="book-files" class="book-files note hidden" aria-label="Files Hilde wrote">
-            <span>Files</span>
-            <span id="book-file-links" class="book-file-links"></span>
-          </nav>
+          <details id="book-files" class="book-files note hidden">
+            <summary id="book-files-summary"></summary>
+            <ul id="book-file-list" class="note-list"></ul>
+          </details>
           <p id="reader-stale" class="notice hidden"></p>
-          <div id="change-voice" class="change-voice hidden">
-            <div class="field">
-              <label for="change-voice-name">New voice</label>
-              <div class="line">
-                <select id="change-voice-name"></select>
-                <button id="change-voice-start" class="primary" type="button"
-                  onclick="startBookJob('voice', $('change-voice-name').value)">Create</button>
-                <button class="link" type="button" onclick="closeChangeVoice()">Cancel</button>
-              </div>
-            </div>
-            <p class="note">The new voice reads the same text; nothing is written again.</p>
-          </div>
         </header>
         <div id="listen-bar" class="listen-bar">
           <div class="book-controls">
@@ -15621,7 +15819,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu"
                 onclick="toggleMenu('more')">⋯</button>
               <div id="more-menu" class="menu hidden" role="menu" aria-label="More">
-                <button type="button" role="menuitem" onclick="closeMenus(); downloadBook()">Download MP3</button>
+                <button type="button" role="menuitem" onclick="downloadBook(this); closeMenus()">Download MP3</button>
                 <button id="reader-source" type="button" role="menuitem" class="hidden"
                   onclick="closeMenus(); downloadSource()">Download source</button>
                 <button id="reader-change-voice" type="button" role="menuitem" class="hidden"
@@ -15686,6 +15884,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <label for="chat-model" class="note">Model</label>
               <select id="chat-model"></select>
               <span id="chat-badge" class="badge" title="Where your question and its context go"></span>
+              <span id="chat-web" class="badge cloud hidden"
+                title="Hilde may search the web and read public pages for an answer">Web search on</span>
               <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak"
                 type="checkbox"> Read answers aloud</label>
               <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
@@ -15756,6 +15956,44 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   </datalist>
 </main>
 <footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt="">Zeki Works</footer>
+
+<div id="row-menu" class="menu row-menu hidden" role="menu"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<!-- One confirmation for every risky action: it names its target. -->
+<dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div id="confirm-where" class="line hidden"></div>
+    <div id="confirm-field" class="field hidden">
+      <label id="confirm-label" for="confirm-input"></label>
+      <input id="confirm-input" type="text" autocomplete="off">
+    </div>
+    <div class="footer">
+      <span class="grow"></span>
+      <button id="confirm-cancel" type="submit" value="cancel">Cancel</button>
+      <button id="confirm-ok" type="submit" value="ok"></button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="change-voice-dialog" aria-labelledby="change-voice-title">
+  <form method="dialog">
+    <h2 id="change-voice-title">Change voice</h2>
+    <div class="field">
+      <label for="change-voice-name">Voice</label>
+      <select id="change-voice-name"></select>
+    </div>
+    <p id="change-voice-text"></p>
+    <div id="change-voice-where" class="line hidden"></div>
+    <div class="footer">
+      <span class="grow"></span>
+      <button type="submit" value="cancel">Cancel</button>
+      <button id="change-voice-start" class="primary" type="submit" value="ok"></button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
   <h2 id="shortcuts-title">Keyboard shortcuts</h2>
@@ -15939,7 +16177,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <script>
 const $ = (id) => document.getElementById(id);
 const PAGE_SIZE = 50;
-const STAGES = ["read", "prepare", "audio", "finish"];
+// A job's stages as the page names them; the server's phases map onto the
+// first four (stageFor()), and Ready is its successful end.
+const STAGES = ["read", "prepare", "audio", "finish", "ready"];
+const STAGE_NAMES = {
+  read:"Reading the document", prepare:"Preparing the text", audio:"Generating audio",
+  finish:"Aligning text and audio", ready:"Ready",
+};
 // Playback from a clicked word, and its highlight, start up to this long before
 // the aligned onset so a slightly late alignment never clips the word.
 const READER_WORD_LEAD_SECONDS = 0.1;
@@ -15949,7 +16193,13 @@ const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11
 const VOLUME_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm9.2-1.6a5 5 0 0 1 0 7.2l-1-1a3.6 3.6 0 0 0 0-5.2z"/></svg>';
 const MUTED_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm8.6.2 1-1 1.7 1.7 1.7-1.7 1 1-1.7 1.8 1.7 1.7-1 1-1.7-1.7-1.7 1.7-1-1 1.7-1.7z"/></svg>';
 let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], consumers = [];
+// Jobs this server process finished, newest first: done, failed, or stopped.
+let recent = [];
 let configuration = {}, voices = [], books = [];
+// The text-model catalog, for each choice's short name and Local/Cloud badge.
+// Until it has loaded, the default model's place is unknown, so nothing that
+// would send text to it starts.
+let paperCatalog = { models:[], default_model:"", loaded:false };
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
@@ -15962,22 +16212,22 @@ const paperKeyProviders = {
   "openai-api": { label:"OpenAI", field:"openai_api", connected:false },
   "gemini": { label:"Google", field:"gemini", connected:false },
 };
-let advancedOpen = false, voiceFormOpen = false;
-// Create shows a run's outcome above its steps while resultShown; Progress follows the run.
+let settingsOpen = false, voiceFormOpen = false;
+// Create shows a finished run's outcome above its steps while resultShown.
 let submitting = false, resultShown = false, stopping = false, waitingJobId = "";
-// How step 1 adds a document: from a link ("url", first) or a file ("file").
-let addVia = "url";
 // The book Overwrite chose in step 1: Create then makes it again from its
 // document with the step 3 settings, as Recreate does on Listen. A document
 // that is another book's, or none, clears it.
 let overwriting = "";
-let runStage = null, recentLog = [], resultInfo = null, resultDetail = "";
-// A draft is the clip Listen made; Save stores exactly that clip.
+// What the followed job has done so far (newHistory()), and a ready book's outcome.
+let runHistory = null, recentLog = [], resultInfo = null;
+// A draft is the clip a preview made; Save stores exactly that clip, once heard.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
-// A step's first and latest progress reports; the estimate is their average pace.
+// Voices whose whole description shows in place.
+const expandedVoices = new Set();
+// The current stage's first and latest real counts; the estimate is their average pace.
 let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
-let etaPhase = null, etaPhaseStarted = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
 let readerBlocks = [], readerWordElements = [], readerFrame = 0;
 let activeReaderBlock = -1, activeReaderWord = -1;
@@ -16049,7 +16299,7 @@ function load(data) {
   state = data.state; facts = data.derived; assets = data.assets || assets;
   caps = data.capabilities || caps; jobs = data.queue || [];
   configuration = data.configuration || configuration;
-  runs = data.runs || []; consumers = data.consumers || [];
+  runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
   // A saved model stays chosen until the catalog says whether it is still there.
   for (const [id, key] of [
     ["paper-model", "model"], ["paper-verify-model", "verify_model"], ["paper-figure-model", "figure_model"],
@@ -16101,9 +16351,66 @@ async function sync() {
 }
 function queueSync() { syncSeq++; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 250); }
 
+// A document's type, by its name as the server checks it.
+const DOCUMENT_TYPES = { ".pdf":"PDF", ".md":"Markdown", ".markdown":"Markdown", ".txt":"Text", ".text":"Text" };
+function documentType(name) {
+  const match = /\.[^.]+$/.exec(String(name || "").toLowerCase());
+  return match ? DOCUMENT_TYPES[match[0]] || "" : "";
+}
+// The server's messages about a document, said shortly and plainly in step 1.
+function documentProblem(message) {
+  const text = String(message || "");
+  const rules = [
+    [/must use HTTP or HTTPS/, "That isn't a web link. Paste a link that starts with https://."],
+    [/cannot contain credentials/, "Links with a user name or password in them can't be used."],
+    [/port is invalid/, "That link's port number isn't valid."],
+    [/returned HTTP (\d+)/, (match) => `The link didn't work: the site answered ${match[1]}.`],
+    [/^Cannot download document URL/, "Hilde couldn't reach that link. Check it and try again."],
+    [/returned HTML/, "That link opens a web page, not a document. Use a direct link to the PDF, Markdown, or text file."],
+    [/64 MiB/, "That document is larger than 64 MB, the most Hilde takes."],
+    [/empty file|nonempty file/, "That file is empty."],
+    [/Cannot determine the document type/, "Hilde can't tell what kind of file that is. Under Save as, enter a name ending in .pdf, .md, or .txt."],
+    [/must end in PDF, text, or Markdown/, "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt."],
+    [/Enter a direct document URL/, "Enter a link, and a Save as name without a slash."],
+  ];
+  for (const [pattern, plain] of rules) {
+    const match = pattern.exec(text);
+    if (match) return typeof plain === "function" ? plain(match) : plain;
+  }
+  return text || "That document couldn't be added.";
+}
+// A problem adding the document stays in step 1 until the next try or choice.
+function setBookProblem(text) {
+  bookProblemText = text || "";
+  if (state) renderCreate();
+}
+// The Documents name a link will most likely get: its Save as name, else the
+// last part of its path; the server adds a suffix only to a name without one.
+function predictedDownloadNames() {
+  let name = state.audiobook.download_name.trim();
+  if (!name) {
+    try {
+      name = decodeURIComponent(new URL(state.audiobook.source_url.trim()).pathname.split("/").pop() || "");
+    } catch (_) { return []; }
+  }
+  if (!name) return [];
+  return documentType(name) ? [name] : [name, ...[".pdf", ".md", ".txt"].map((suffix) => name + suffix)];
+}
+// Adding a document under a name Documents already has replaces that file.
+async function replaceDocumentOk(names) {
+  const taken = names.find((name) => (assets.documents || []).includes(name));
+  return !taken || askConfirm({
+    title:`Replace document '${taken}'?`,
+    text:`Your documents already have a file named '${taken}'. The new one replaces it; `
+      + "audiobooks made from it are kept.",
+    confirm:"Replace it", danger:true,
+  });
+}
 function chooseDocument() { $("document-file").click(); }
 async function uploadDocument(file) {
   if (!file || $("document-upload").disabled) return;
+  setBookProblem("");
+  if (!(await replaceDocumentOk([file.name]))) return;
   $("document-upload").disabled = true;
   setStatus(`Uploading ${file.name}…`);
   try {
@@ -16123,7 +16430,8 @@ async function uploadDocument(file) {
     setStatus(`Added ${answer.name}.`);
     await sync();
   } catch (error) {
-    setStatus(error.message, true);
+    setStatus("");
+    setBookProblem(documentProblem(error.message));
   } finally {
     $("document-file").value = "";
     $("document-upload").disabled = false;
@@ -16132,6 +16440,8 @@ async function uploadDocument(file) {
 
 async function materializeUrl() {
   if (!state.audiobook.source_url.trim()) return true;
+  setBookProblem("");
+  if (!(await replaceDocumentOk(predictedDownloadNames()))) return false;
   setStatus("Downloading your document…");
   try {
     const answer = await jsonRequest("/api/documents/download", {
@@ -16152,7 +16462,8 @@ async function materializeUrl() {
     await sync();
     return true;
   } catch (error) {
-    setStatus(error.message, true);
+    setStatus("");
+    setBookProblem(documentProblem(error.message));
     return false;
   }
 }
@@ -16162,69 +16473,82 @@ function setStatus(text, bad) {
   $("status").classList.toggle("bad", !!bad);
 }
 
-function formatEtaDuration(seconds) {
-  const whole = Math.max(1, Math.ceil(seconds));
-  if (whole >= 3600) {
-    const totalMinutes = Math.ceil(whole / 60);
-    const hours = Math.floor(totalMinutes / 60), minutes = totalMinutes % 60;
-    return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+// A short note at the bottom of the screen, with at most one action.
+let toastTimer = 0;
+function showToast(text, action) {
+  const toast = $("toast");
+  const message = document.createElement("span");
+  message.textContent = text;
+  toast.replaceChildren(message);
+  if (action) {
+    const button = document.createElement("button");
+    button.type = "button"; button.textContent = action.label;
+    button.addEventListener("click", () => { hideToast(); action.run(); });
+    toast.append(button);
   }
-  if (whole >= 60)
-    return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2,"0")}s`;
-  return `${whole}s`;
+  toast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, action ? 8000 : 4000);
+}
+function hideToast() { clearTimeout(toastTimer); $("toast").classList.add("hidden"); }
+
+// The one confirmation of every risky action, in the page: its title names
+// the target. Resolves true (or the typed text, with `input`) or false.
+function askConfirm({ title, text, confirm, danger = false, input = null, where = [] }) {
+  const dialog = $("confirm-dialog");
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = text || "";
+  $("confirm-text").classList.toggle("hidden", !text);
+  $("confirm-where").replaceChildren(...where);
+  $("confirm-where").classList.toggle("hidden", !where.length);
+  $("confirm-field").classList.toggle("hidden", !input);
+  if (input) {
+    $("confirm-label").textContent = input.label;
+    $("confirm-input").value = input.value || "";
+  }
+  $("confirm-ok").textContent = confirm;
+  $("confirm-ok").className = danger ? "danger" : "primary";
+  dialog.returnValue = "";
+  dialog.showModal();
+  if (input) $("confirm-input").select();
+  else $("confirm-cancel").focus();
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      const ok = dialog.returnValue === "ok";
+      resolve(ok && input ? $("confirm-input").value.trim() : ok);
+    }, { once:true });
+  });
 }
 
-function phaseHistory(phase) {
-  try { return Number(localStorage.getItem(`audiobook-eta-${phase}`)); }
-  catch (_) { return NaN; }
-}
-function rememberPhaseDuration() {
-  if (!etaPhase || etaPhaseStarted === null) return;
-  const seconds = (performance.now() - etaPhaseStarted) / 1000;
-  if (!(seconds > 1 && seconds < 86400)) return;
-  const previous = phaseHistory(etaPhase);
-  const value = Number.isFinite(previous) ? previous * 0.65 + seconds * 0.35 : seconds;
-  try { localStorage.setItem(`audiobook-eta-${etaPhase}`, String(value)); }
-  catch (_) {}
-}
+// Time left only from the current stage's own pace, once it has made headway:
+// never a guess before that, and never from an earlier run.
 function renderEta() {
-  if (!running) { $("progress-eta").textContent = ""; return; }
-  if (etaDeadline === null) {
-    $("progress-eta").textContent =
-      etaSample && etaSample.done >= etaSample.total ? "Almost done…" : "Estimating time…";
-    return;
-  }
-  const remaining = (etaDeadline - performance.now()) / 1000;
-  $("progress-eta").textContent =
-    remaining > 0.5 ? `About ${formatEtaDuration(remaining)} left` : "Almost done…";
+  if (!running || etaDeadline === null) { $("progress-eta").textContent = ""; return; }
+  const minutes = Math.ceil(Math.max(0, etaDeadline - performance.now()) / 60000);
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  const left = minutes <= 1 ? "About a minute"
+    : hours ? `About ${hours} h${rest ? ` ${rest} min` : ""}` : `About ${minutes} min`;
+  $("progress-eta").textContent = `${left} left at the current pace`;
 }
-function beginEta(phase) {
-  if (etaPhase && etaPhase !== phase) rememberPhaseDuration();
+function beginEta() {
   clearInterval(etaTimer);
-  etaPhase = phase; etaPhaseStarted = performance.now();
   etaSample = null; etaStart = null; etaDeadline = null;
-  const historical = phaseHistory(phase);
-  if (Number.isFinite(historical) && historical > 0)
-    etaDeadline = performance.now() + historical * 1000;
   renderEta();
-  etaTimer = setInterval(renderEta, 1000);
+  etaTimer = setInterval(renderEta, 5000);
 }
 function endEta() {
-  rememberPhaseDuration();
   clearInterval(etaTimer);
-  etaTimer = null; etaSample = null; etaStart = null;
-  etaDeadline = null; etaPhase = null; etaPhaseStarted = null;
+  etaTimer = null; etaSample = null; etaStart = null; etaDeadline = null;
   $("progress-eta").textContent = "";
 }
-// The pace is the average since the step's first report: the time since then
+// The pace is the average since the stage's first report: the time since then
 // over the units finished since then. Workers finish chunks in bursts, so the
-// pace between two reports swings from minutes to hours; the step's average
-// barely moves with each report and settles as the step goes on. A step is
-// one kind of unit, as extraction reads pages, then paragraphs; its first
-// report can count work kept from before, as a resumed narration's does.
-// The average includes the step's start, such as loading the model, so it
-// waits for some headway, 5% of the step but at least three units, before
-// it replaces the previous run's duration of the step.
+// pace between two reports swings from minutes to hours; the stage's average
+// barely moves with each report and settles as the stage goes on. A stage
+// counts one kind of unit, as extraction reads pages, then paragraphs; its
+// first report can count work kept from before, as a resumed narration's does.
+// The average includes the stage's start, such as loading the model, so no
+// estimate shows before some headway: 5% of the stage, at least three units.
 function updateEta(done, total, elapsed, streamElapsed, unit) {
   done = Number(done); total = Number(total); elapsed = Number(elapsed);
   streamElapsed = Number(streamElapsed);
@@ -16232,19 +16556,18 @@ function updateEta(done, total, elapsed, streamElapsed, unit) {
   const sample = { done, total, elapsed, unit: unit || "" };
   if (!etaStart || etaStart.total !== total || etaStart.unit !== sample.unit ||
       done < etaSample.done || elapsed < etaSample.elapsed) {
-    // A later step of the phase, such as joining after speaking, has no
-    // estimate of its own yet; the phase's earlier step's is not its own.
-    if (etaStart) etaDeadline = null;
+    // A later step of the phase, such as joining after speaking, starts over.
+    etaDeadline = null;
     etaStart = etaSample = sample; renderEta(); return;
   }
   etaSample = sample;
   const advanced = done - etaStart.done, duration = elapsed - etaStart.elapsed;
   const headway = Math.min(total - etaStart.done, Math.max(3, Math.ceil((total - etaStart.done) * 0.05)));
-  if (advanced >= headway && advanced > 0 && duration > 0) {
+  if (advanced >= headway && advanced > 0 && duration > 0 && done < total) {
     const stale = Number.isFinite(streamElapsed) ? Math.max(0, streamElapsed - elapsed) : 0;
     const remaining = Math.max(0, duration / advanced * Math.max(0, total - done) - stale);
     etaDeadline = performance.now() + remaining * 1000;
-  }
+  } else if (done >= total) etaDeadline = null;
   renderEta();
 }
 
@@ -16287,13 +16610,13 @@ function downloadWholeBook(audio) {
         const { done, value } = await reader.read();
         if (done) break;
         parts.push(value); received += value.length;
-        if (total) setText(status, `Downloading the book: ${Math.floor(received * 100 / total)}%`);
+        if (total) setText(status, `Loading in this browser: ${Math.floor(received * 100 / total)}%`);
       }
       if (readerDownload !== download) return;
       download.url = URL.createObjectURL(
         new Blob(parts, { type: response.headers.get("Content-Type") || "" })
       );
-      setText(status, "Book downloaded");
+      setText(status, "Loaded in this browser");
       if (audio.paused) playDownloadedBook();
     } catch (error) {
       // Playback keeps streaming as before.
@@ -16341,7 +16664,7 @@ function clearReader() {
   $("reader-change-voice").classList.add("hidden");
   $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
-  $("change-voice").classList.add("hidden");
+  if ($("change-voice-dialog").open) $("change-voice-dialog").close();
   hideSelectionMenu();
   setDetached(false);
   renderPlayer();
@@ -16923,11 +17246,17 @@ function toggleMenu(name) {
   (menu.querySelector("[aria-checked=true]") || menu.querySelector("button:not(.hidden)"))
     ?.focus({ preventScroll:true });
 }
-function closeMenus() {
+// The book's own menus (More, speed); closeMenus() closes every menu.
+function closeReaderMenus() {
   for (const [menu, button] of [["more-menu", "more-button"], ["speed-menu", "player-speed"]]) {
     $(menu).classList.add("hidden");
     $(button).setAttribute("aria-expanded", "false");
   }
+}
+function closeMenus() {
+  closeReaderMenus();
+  $("row-menu").classList.add("hidden");
+  if (rowMenuButton) { rowMenuButton.setAttribute("aria-expanded", "false"); rowMenuButton = null; }
 }
 function openShortcuts() { $("shortcuts-dialog").showModal(); }
 
@@ -17122,40 +17451,78 @@ function showBookVoices(payload) {
       const button = document.createElement("button");
       button.type = "button"; button.className = "link";
       button.textContent = `Make ${item.name} again`;
-      button.addEventListener("click", () => startBookJob("voice", item.name));
+      button.addEventListener("click", () => openChangeVoice(item.name));
       notice.append(button, " ");
     }
   }
   notice.classList.toggle("hidden", !notice.childNodes.length);
 }
 
-function openChangeVoice() {
+// Change voice: the book's own text read by another voice; nothing is
+// written again. A voice the book already has (made from its earlier text)
+// is replaced; any other is added beside the book's voices.
+function changeVoiceText(book, voice) {
+  const has = !!(book && book.voices.some((item) => item.name === voice));
+  return `Read '${book ? book.title : ""}' with ${voice}? The text stays the same; `
+    + (has ? `this replaces ${voice}'s recording.`
+      : `${voice} is added beside the voices it has. Nothing is replaced.`);
+}
+async function openChangeVoice(preset = "") {
   const book = bookById(state.player.book);
-  const taken = new Set((book ? book.voices : [])
-    .filter((item) => item.status === "ready").map((item) => item.name));
+  if (!book) return;
+  const taken = new Set(book.voices.filter((item) => item.status === "ready").map((item) => item.name));
   const select = $("change-voice-name");
   select.replaceChildren(...voices.filter((voice) => !taken.has(voice.name))
     .map((voice) => new Option(voice.name, voice.name)));
-  $("change-voice-start").disabled = !select.options.length;
-  $("change-voice").classList.remove("hidden");
+  if (preset) select.value = preset;
+  const update = () => {
+    const voice = select.value;
+    $("change-voice-title").textContent = voice ? `Read '${book.title}' with ${voice}?` : "Change voice";
+    $("change-voice-text").textContent = voice ? changeVoiceText(book, voice)
+      : "Every saved voice already reads this book.";
+    const replaces = book.voices.some((item) => item.name === voice);
+    $("change-voice-start").textContent = replaces ? `Make ${voice} again` : "Read with this voice";
+    $("change-voice-start").className = replaces ? "danger" : "primary";
+    $("change-voice-start").disabled = !voice;
+  };
+  select.onchange = update;
+  update();
+  $("change-voice-where").replaceChildren(...sendOutBadges("voice"));
+  $("change-voice-where").classList.remove("hidden");
+  const dialog = $("change-voice-dialog");
+  dialog.returnValue = "";
+  dialog.showModal();
   select.focus();
-}
-function closeChangeVoice() {
-  $("change-voice").classList.add("hidden");
-  $("more-button").focus();
+  const ok = await new Promise((resolve) => dialog.addEventListener(
+    "close", () => resolve(dialog.returnValue === "ok"), { once:true }));
+  if (ok && select.value) startBookJob("voice", select.value);
 }
 
+// Recreate: the book made again from its document, with this browser's
+// current settings; the server's commit_book() is what each sentence says.
 async function recreateBook() {
   const book = bookById(state.player.book);
   if (!book) return;
-  if (!window.confirm(
-    `Recreate ${book.title} from its document with the latest Hilde? Its text and `
-    + "descriptions are written again, and its other voices will need to be made again."
-  )) return;
-  startBookJob("recreate", state.player.voice || book.voice);
+  // The dialog says where the text goes, which the catalog knows.
+  if (!paperCatalog.loaded) await refreshPaperModels();
+  const voice = state.player.voice || book.voice;
+  const others = book.voices.filter((item) => item.name !== voice);
+  const model = textModel(state.audiobook.model);
+  const settings = !state.audiobook.adapt ? "adapting is off, so no text model"
+    : model ? `${model.short} · ${model.badge}` : "no text model yet";
+  const ok = await askConfirm({
+    title:`Make '${book.title}' again?`,
+    text:`Make '${book.title}' again from its document? Hilde prepares the text again with your `
+      + `current settings (${settings}) and records it with ${voice}. The current text and `
+      + `${voice}'s recording are replaced.`
+      + (others.length ? " Its other voices are kept but must be made again before they play." : "")
+      + " Notes stay; the conversation is cleared.",
+    confirm:"Make it again", danger:true, where:sendOutBadges("recreate"),
+  });
+  if (ok) startBookJob("recreate", voice);
 }
 
-// A new voice or a remake of the open book; its progress shows on Create.
+// A new voice or a remake of the open book; its progress shows in the progress view.
 async function startBookJob(mode, voice) {
   const book = state.player.book;
   if (!book || !voice || submitting) return;
@@ -17179,14 +17546,28 @@ function closeBook() {
 // The Listen tab, pressed while Listen is shown, does what All audiobooks
 // does; from another page it opens Listen as it was, with its book.
 function chooseListen() {
+  if (settingsOpen) { setSettings(false); if (state.tab === "player") return; }
   if (state.tab !== "player") setTab("player");
   else if (state.player.book) closeBook();
 }
 
-function downloadBook() {
+// The MP3 exists as soon as the book does. A click starts the browser's
+// download; the page cannot know when, or whether, the file is saved, so the
+// button says only that it started, for a few seconds.
+function startDownload(url, button) {
+  location.href = url;
+  showToast("Download started");
+  if (!button) return;
+  const label = button.dataset.label || button.textContent;
+  button.dataset.label = label;
+  button.textContent = "Download started";
+  clearTimeout(button.downloadTimer);
+  button.downloadTimer = setTimeout(() => { button.textContent = label; }, 4000);
+}
+function downloadBook(button) {
   if (state.player.book)
-    location.href = "/api/download?book=" + encodeURIComponent(state.player.book)
-      + "&voice=" + encodeURIComponent(state.player.voice);
+    startDownload("/api/download?book=" + encodeURIComponent(state.player.book)
+      + "&voice=" + encodeURIComponent(state.player.voice), button);
 }
 function downloadSource() {
   if (state.player.book)
@@ -17389,7 +17770,16 @@ function chatEntryElement(entry) {
     text.className = "chat-user-text";
     text.textContent = entry.text;
     node.append(text);
-  } else node.textContent = entry.text;
+  } else {
+    node.textContent = entry.text;
+    // The server shows a tool's row only once its result is in: a note it
+    // wrote or appended to is saved by then.
+    if (entry.role === "tool" && /^(Wrote|Appended to) \S/.test(entry.text)) {
+      const saved = document.createElement("span");
+      saved.className = "saved"; saved.textContent = "· Saved";
+      node.append(saved);
+    }
+  }
   // Answers can be read aloud in Hilde's voice.
   if (entry.role === "assistant" && chatData && chatData.speech === "") {
     node.chatText = entry.text;
@@ -17427,17 +17817,47 @@ function scrollChat() {
   if (chatShown()) log.scrollTop = log.scrollHeight;
   else if (!chatScroll) chatScroll = { top:0, atEnd:true };
 }
+// Notes Hilde wrote for the book: each with its book and the section asked
+// about when it was written, where it is kept, and its file name.
 function renderChatFiles(files) {
-  const book = state.player.book;
-  $("book-file-links").replaceChildren(...files.map((file) => {
-    const link = document.createElement("a");
-    link.href = "/api/chat/file?book=" + encodeURIComponent(book) + "&name=" + encodeURIComponent(file.name);
-    link.textContent = file.name;
-    link.title = `${file.name} · ${Number(file.bytes).toLocaleString()} bytes · Download`;
-    link.setAttribute("download", file.name);
-    return link;
+  const book = state.player.book, record = bookById(book);
+  $("book-files-summary").textContent =
+    `Notes Hilde wrote (${files.length}): ${files.map((file) => file.name).join(", ")}`;
+  $("book-file-list").replaceChildren(...files.map((file) => {
+    const url = "/api/chat/file?book=" + encodeURIComponent(book) + "&name=" + encodeURIComponent(file.name);
+    const item = document.createElement("li");
+    item.className = "note-item";
+    const name = document.createElement("strong");
+    name.textContent = file.name;
+    const where = document.createElement("span");
+    where.textContent = [record ? record.title : "", file.section ? `Section: ${file.section}` : "No section"]
+      .filter(Boolean).join(" · ");
+    const place = document.createElement("span");
+    place.textContent = `In this book's files on the server · ${Number(file.bytes).toLocaleString()} bytes`;
+    const actions = document.createElement("div");
+    actions.className = "line";
+    const copy = document.createElement("button");
+    copy.type = "button"; copy.className = "link"; copy.textContent = "Copy text";
+    copy.setAttribute("aria-label", `Copy the text of ${file.name}`);
+    copy.addEventListener("click", () => copyNote(url, file.name));
+    const download = document.createElement("a");
+    download.href = url; download.textContent = "Download .md";
+    download.setAttribute("download", file.name);
+    download.setAttribute("aria-label", `Download ${file.name}`);
+    download.addEventListener("click", () => showToast("Download started"));
+    actions.append(copy, download);
+    item.append(name, where, place, actions);
+    return item;
   }));
   $("book-files").classList.toggle("hidden", !files.length);
+}
+async function copyNote(url, name) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(response.statusText);
+    await navigator.clipboard.writeText(await response.text());
+    showToast(`Copied the text of ${name}.`);
+  } catch (_) { showToast(`The text of ${name} couldn't be copied.`); }
 }
 function renderChatControls() {
   const running = !!(chatData && chatData.running);
@@ -17455,6 +17875,8 @@ function renderChatControls() {
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
   $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
   $("chat-speak").checked = state.player.chat_speak;
+  // With the server's web search, a question's searches go out to the web too.
+  $("chat-web").classList.toggle("hidden", !(chatData && chatData.web_search));
 }
 
 // Reading answers aloud: one audio element plays an answer's clips in turn,
@@ -17704,7 +18126,12 @@ async function stopChat() {
   } catch (error) { setStatus(error.message, true); }
 }
 async function newChat() {
-  if (!window.confirm("Start a new conversation? Hilde's files stay.")) return;
+  const book = bookById(state.player.book);
+  if (!(await askConfirm({
+    title:`Start a new conversation about '${book ? book.title : "this book"}'?`,
+    text:"The conversation so far is cleared. Notes Hilde wrote stay.",
+    confirm:"Start a new conversation", danger:true,
+  }))) return;
   try {
     applyChat(await jsonRequest("/api/chat/new", {
       method:"POST", headers:{ "Content-Type":"application/json" },
@@ -18000,37 +18427,93 @@ function cell(className, label) {
   return node;
 }
 
+// Where this browser last left a book: its voice and time (hilde.book.<id>),
+// while that voice still reads the book.
+function lastPosition(book) {
+  const place = bookPlace(book.id);
+  const voice = book.voices.find((item) => item.name === place.voice && item.status === "ready");
+  return voice && Number(place.time) > 0 ? { voice, time:Number(place.time) } : null;
+}
 function bookRow(book) {
   const row = document.createElement("tr");
   const title = cell("title");
   const name = document.createElement("div");
   name.className = "book-title clamp"; name.textContent = book.title; name.title = book.title;
   title.append(name);
-  const narrators = book.voices.filter((voice) => voice.status === "ready").map((voice) => voice.name);
-  if (narrators.length) {
-    const narrator = document.createElement("div");
-    narrator.className = "note"; narrator.textContent = `Read by ${narrators.join(", ")}`;
-    title.append(narrator);
-  }
   const duration = cell("duration", "Duration");
   duration.textContent = formatDuration(book.duration);
-  const source = cell("source", "Source");
+  const source = cell("source", "Source file");
   source.textContent = book.source || "Unknown";
+  const place = lastPosition(book);
+  const voice = cell("voice", "Voice");
+  const narrators = book.voices.filter((item) => item.status === "ready").map((item) => item.name);
+  const shownVoice = place ? place.voice.name : book.voice;
+  voice.textContent = shownVoice + (narrators.length > 1 ? ` (+${narrators.length - 1})` : "");
+  voice.title = narrators.length ? `Read by ${narrators.join(", ")}` : "";
+  const position = cell("position", "Last position (this device)");
+  position.textContent = place
+    ? `${formatClock(place.time)} of ${formatClock(place.voice.duration)}` : "Not started";
   const action = cell("action");
-  const listen = document.createElement("button");
-  listen.type = "button"; listen.textContent = "Listen";
-  listen.setAttribute("aria-label", `Listen to ${book.title}`);
-  listen.addEventListener("click", () => openAudiobook(book.id, true));
-  action.append(listen, deleteButton(`Delete ${book.title}`, (button) => deleteBook(book, button)));
-  row.append(title, duration, source, modifiedCell(book.modified), action);
-  // A click anywhere on the row does what Listen does; its buttons keep their
+  const open = document.createElement("button");
+  open.type = "button"; open.textContent = place ? "Continue" : "Open";
+  // Phase 1's name for this control, which its checks and screen readers know.
+  open.setAttribute("aria-label", `Listen to ${book.title}`);
+  open.title = place ? `Continue at ${formatClock(place.time)}, paused` : `Open ${book.title}`;
+  const go = () => openAudiobook(book.id, true, place ? place.voice.name : undefined);
+  open.addEventListener("click", go);
+  const more = rowMoreButton(`More for ${book.title}`, () => [
+    { label:"Delete…", run:(button) => deleteBook(book, button) },
+  ]);
+  action.append(open, more);
+  row.append(title, duration, source, voice, position, action);
+  // A click anywhere on the row does what Open does; its buttons keep their
   // own, and a click that ends a text selection selects.
   row.className = "book-row";
   row.addEventListener("click", (event) => {
     if (event.target.closest("button, a, input") || String(window.getSelection())) return;
-    openAudiobook(book.id, true);
+    go();
   });
   return row;
+}
+
+// A row's ⋯ button: its menu (one shared element) opens under it.
+function rowMoreButton(label, items) {
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "row-more";
+  button.textContent = "⋯";
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-haspopup", "menu");
+  button.setAttribute("aria-expanded", "false");
+  button.setAttribute("aria-controls", "row-menu");
+  button.addEventListener("click", () => openRowMenu(button, label, items()));
+  return button;
+}
+let rowMenuButton = null;
+function openRowMenu(button, label, items) {
+  const menu = $("row-menu");
+  const open = rowMenuButton !== button || menu.classList.contains("hidden");
+  closeMenus();
+  if (!open) return;
+  menu.setAttribute("aria-label", label);
+  menu.replaceChildren(...items.map((item) => {
+    const entry = document.createElement("button");
+    entry.type = "button"; entry.setAttribute("role", "menuitem");
+    entry.textContent = item.label;
+    entry.addEventListener("click", () => { closeMenus(); item.run(button); });
+    return entry;
+  }));
+  rowMenuButton = button;
+  button.setAttribute("aria-expanded", "true");
+  menu.classList.remove("hidden");
+  // Under its button on a wide screen; a phone's stylesheet docks it at the bottom.
+  menu.style.top = menu.style.left = "";
+  if (!playerDocked()) {
+    const box = button.getBoundingClientRect(), width = menu.offsetWidth, height = menu.offsetHeight;
+    const below = box.bottom + 4 + height <= window.innerHeight;
+    menu.style.top = `${below ? box.bottom + 4 : Math.max(8, box.top - 4 - height)}px`;
+    menu.style.left = `${Math.max(8, Math.min(box.right - width, window.innerWidth - width - 8))}px`;
+  }
+  menu.querySelector("button")?.focus({ preventScroll:true });
 }
 
 async function refreshVoices() {
@@ -18053,9 +18536,10 @@ function renderVoiceTable() {
   $("voice-rows").replaceChildren(...matches.slice(0, voiceLimit).map(voiceRow));
   $("voice-table").classList.toggle("hidden", matches.length === 0);
   $("voice-none").classList.toggle("hidden", matches.length > 0);
-  $("voice-none").textContent = voices.length
-    ? `No voice prompts contain all of: ${terms.join(" ")}`
-    : "No voices yet. Use New voice to create the first one.";
+  $("voice-none-text").textContent = !voices.length
+    ? "No voices yet. Use New voice to create the first one."
+    : `No voice description contains all of: ${terms.join(", ")}.`;
+  $("voice-clear").classList.toggle("hidden", !voices.length || !terms.length);
   const hidden = Math.max(0, matches.length - voiceLimit);
   $("voice-more").classList.toggle("hidden", hidden === 0);
   $("voice-more").textContent = `Show ${Math.min(hidden, PAGE_SIZE)} more`;
@@ -18064,8 +18548,13 @@ function renderVoiceTable() {
     : plural(voices.length, "voice");
 }
 function showMoreVoices() { voiceLimit += PAGE_SIZE; renderVoiceTable(); }
+function clearVoiceSearch() {
+  $("voice-search").value = "";
+  voiceLimit = PAGE_SIZE; renderVoiceTable();
+  $("voice-search").focus();
+}
 
-function voiceRow(voice) {
+function voiceRow(voice, index) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
   if (selected) row.className = "is-selected";
@@ -18073,38 +18562,69 @@ function voiceRow(voice) {
   preview.append(previewButton(voice));
   const name = cell("name");
   name.textContent = voice.name;
+  // One line until its own control shows the whole description in place:
+  // reading it neither selects the voice nor opens the editor.
   const description = cell("description");
   const text = document.createElement("div");
-  text.className = voice.description ? "clamp" : "clamp note";
-  text.textContent = voice.description || "No prompt saved";
+  const expanded = expandedVoices.has(voice.name);
+  text.id = `voice-description-${index}`;
+  text.className = `description-text${expanded ? "" : " collapsed"}${voice.description ? "" : " note"}`;
+  text.textContent = voice.description || "No description saved";
   description.append(text);
+  if (voice.description) {
+    const toggle = document.createElement("button");
+    toggle.type = "button"; toggle.className = "link description-toggle";
+    toggle.textContent = expanded ? "Show less" : "Full description";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-controls", text.id);
+    toggle.setAttribute("aria-label", `${expanded ? "Show less of" : "Full description of"} ${voice.name}`);
+    toggle.addEventListener("click", () => {
+      const open = !expandedVoices.has(voice.name);
+      if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
+      text.classList.toggle("collapsed", !open);
+      toggle.textContent = open ? "Show less" : "Full description";
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.setAttribute("aria-label", `${open ? "Show less of" : "Full description of"} ${voice.name}`);
+    });
+    description.append(toggle);
+  }
   if (!voice.comparable) {
     const older = document.createElement("div");
     older.className = "note";
     older.textContent = "Preview reads an older passage";
     description.append(older);
   }
-  // Select loads a voice into the editor above; the voice Create holds says so.
+  // Select chooses the voice Create uses next; the chosen one says so instead.
   const select = cell("select");
-  const edit = document.createElement("button");
-  edit.type = "button"; edit.textContent = "Select";
-  edit.setAttribute("aria-label", `Select ${voice.name} to edit it`);
-  edit.addEventListener("click", () => editVoice(voice));
-  select.append(edit);
   if (selected) {
     const badge = document.createElement("span");
     badge.className = "selected-badge";
     badge.innerHTML = CHECK_ICON;
-    badge.append("In use");
+    badge.append("Selected");
     select.append(badge);
+  } else if (!facts.clone_server) {
+    const choose = document.createElement("button");
+    choose.type = "button"; choose.textContent = "Select";
+    choose.setAttribute("aria-label", `Select ${voice.name} for the next audiobook`);
+    choose.addEventListener("click", () => chooseVoice(voice.name));
+    select.append(choose);
   }
-  const rename = document.createElement("button");
-  rename.type = "button"; rename.className = "link"; rename.textContent = "Rename";
-  rename.setAttribute("aria-label", `Rename ${voice.name}`);
-  rename.addEventListener("click", () => renameVoice(voice.name, rename));
-  select.append(rename, deleteButton(`Delete ${voice.name}`, (button) => deleteVoice(voice.name, button)));
+  select.append(rowMoreButton(`More for ${voice.name}`, () => [
+    { label:"Edit", run:() => editVoice(voice) },
+    { label:"Rename…", run:(button) => renameVoice(voice.name, button) },
+    { label:"Delete…", run:(button) => deleteVoice(voice.name, button) },
+  ]));
   row.append(preview, name, description, modifiedCell(voice.modified), select);
   return row;
+}
+// The same choice as Create step 2's dropdown, and the same state.
+function chooseVoice(name) {
+  state.audiobook.voice = name;
+  populateAssets();
+  render(); queueSync();
+  renderVoiceTable();
+  $("voice-chosen-text").textContent = `${name} is selected for your next audiobook.`;
+  $("voice-chosen").classList.remove("hidden");
 }
 
 function previewButton(voice) {
@@ -18154,9 +18674,10 @@ function stopPreview() {
   previewAudio.pause(); previewing = ""; syncPreviewButtons();
 }
 
-// Deleting asks first; the button stays disabled while the server removes the asset.
+// Deleting asks first, naming its target; the button stays disabled while
+// the server removes the asset.
 async function deleteAsset(kind, name, question, button) {
-  if (!window.confirm(question)) return null;
+  if (!(await askConfirm({ ...question, confirm:"Delete", danger:true }))) return null;
   button.disabled = true;
   try {
     return await jsonRequest(`/api/${kind}/delete`, {
@@ -18170,16 +18691,11 @@ async function deleteAsset(kind, name, question, button) {
     button.disabled = false;
   }
 }
-function deleteButton(label, onDelete) {
-  const button = document.createElement("button");
-  button.type = "button"; button.className = "link"; button.textContent = "Delete";
-  button.setAttribute("aria-label", label);
-  button.addEventListener("click", () => onDelete(button));
-  return button;
-}
 async function deleteVoice(name, button) {
-  const answer = await deleteAsset("voices", name,
-    `Delete the voice ${name}? Its reference clip and preview are removed for good.`, button);
+  const answer = await deleteAsset("voices", name, {
+    title:`Delete voice '${name}'?`,
+    text:"Its reference clip and preview are removed for good. Audiobooks it read keep their audio.",
+  }, button);
   if (!answer) return;
   if (previewing === name) stopPreview();
   if (voiceResult && voiceResult.saved === name) voiceResult = null;
@@ -18193,7 +18709,11 @@ async function deleteVoice(name, button) {
 // Renaming keeps the voice's files, and with them its version; the books it
 // read take the new name too.
 async function renameVoice(name, button) {
-  const entered = window.prompt(`Rename the voice ${name} to:`, name);
+  const entered = await askConfirm({
+    title:`Rename voice '${name}'`,
+    text:"Books it read take the new name too.",
+    confirm:"Rename", input:{ label:"New name", value:name },
+  });
   const newName = (entered || "").trim();
   if (!newName || newName === name) return;
   button.disabled = true;
@@ -18219,9 +18739,11 @@ async function renameVoice(name, button) {
   }
 }
 async function deleteBook(book, button) {
-  const answer = await deleteAsset("audiobooks", book.id,
-    `Delete the audiobook ${book.title}? Every voice of it and its text are removed for good.`,
-    button);
+  const answer = await deleteAsset("audiobooks", book.id, {
+    title:`Delete audiobook '${book.title}'?`,
+    text:"Every voice of it, its text, its notes, and its conversation are removed for good. "
+      + "Your documents are not touched.",
+  }, button);
   if (!answer) return;
   setStatus(`Deleted the audiobook ${book.title}.`);
   await refreshLibrary();
@@ -18229,8 +18751,10 @@ async function deleteBook(book, button) {
 async function deleteDocument(button) {
   const name = state.audiobook.document;
   if (!name) return;
-  const answer = await deleteAsset("documents", name,
-    `Delete ${name} from your documents? Audiobooks made from it are kept.`, button);
+  const answer = await deleteAsset("documents", name, {
+    title:`Delete document '${name}'?`,
+    text:"It is removed from your documents. Audiobooks made from it are kept.",
+  }, button);
   if (!answer) return;
   assets = answer.assets || assets;
   if (state.audiobook.document === name) state.audiobook.document = "";
@@ -18296,7 +18820,7 @@ function focusStep() {
   const node = $(`step-${currentStep()}`);
   const target = [...node.querySelectorAll(
     "select, input:not([type=file]):not([type=checkbox]), button.primary"
-  )].find((control) => !control.closest(".hidden") && !control.disabled);
+  )].find((control) => shown(control) && !control.disabled);
   (target || node.querySelector(".step-title")).focus();
 }
 async function continueFromBook() {
@@ -18308,7 +18832,9 @@ async function continueFromBook() {
     submitting = false; render();
     if (!downloaded) return;
   }
-  if (bookReady()) setStep("voice");
+  // A type Hilde doesn't read stops here; step 1 says so (renderCreate()).
+  if (!bookReady() || !documentType(state.audiobook.document)) return;
+  setStep("voice");
 }
 // Overwrite: the existing book is made again, so steps 2 and 3 run as for a
 // new book, with its adaptation settings.
@@ -18334,17 +18860,6 @@ function clearBookChoice() {
   $("source-url").value = ""; $("download-name").value = "";
   populateAssets();
 }
-function setAddVia(via) {
-  addVia = via;
-  // A typed link outranks the dropdown and Continue downloads it, so one
-  // hidden under File would act unseen.
-  if (via === "file" && (state.audiobook.source_url || state.audiobook.download_name)) {
-    state.audiobook.source_url = ""; state.audiobook.download_name = "";
-    $("source-url").value = ""; $("download-name").value = "";
-    queueSync();
-  }
-  render();
-}
 // From Progress: back to Create, with the first step empty for the next book.
 function createAnother() {
   resultShown = false;
@@ -18355,29 +18870,6 @@ function createAnother() {
 }
 function createFirstAudiobook() {
   setTab("audiobook"); setStep("book");
-}
-function resultAction() {
-  if (!resultInfo) return;
-  if (resultInfo.code === 0) return startListening();
-  retryResult();
-}
-function retryResult() {
-  // Continue the job this card reports, not whatever the form holds by now.
-  const { document: book, voice } = resultInfo;
-  resultShown = false;
-  if (resultInfo.book && resultInfo.mode !== "create") {
-    // A new voice or a remake names its book, not a document.
-    return requestRun(false, { book:resultInfo.book, mode:resultInfo.mode, voice })
-      .then((answer) => answer ? showStartedJob(answer) : render());
-  }
-  if (!book || !voice) return setStep("create");
-  state.audiobook.document = book;
-  state.audiobook[facts.clone_server ? "server_voice" : "voice"] = voice;
-  state.audiobook.source_url = ""; state.audiobook.download_name = "";
-  state.audiobook.step = "create";
-  for (const [id, path] of FIELDS) $(id).value = at(path);
-  populateAssets();
-  startAudiobook();
 }
 function startListening() {
   const info = resultInfo || {};
@@ -18395,7 +18887,7 @@ function stageFor(phase, unit) {
   if (phase === "alignment") return "finish";
   return null;
 }
-// Each step says what it is doing, so a long one, such as joining tens of
+// Each stage says what it is doing, so a long one, such as joining tens of
 // thousands of parts after the last one is spoken, never looks stuck.
 function progressDetail(info) {
   if (info.unit === "document") return "Using the text prepared earlier";
@@ -18403,28 +18895,159 @@ function progressDetail(info) {
   const of = `${count(info.done)} of ${count(info.total)}`;
   switch (info.unit) {
     case "page": return `Reading page ${of}`;
-    case "paragraph": return `Rewriting for listening: paragraph ${of}`;
+    case "paragraph": return `Preparing the text for listening: paragraph ${of}`;
     case "join": return `Joining the parts into one recording: ${of}`;
-    case "sentence": return `Matching the words to the audio: sentence ${of}`;
+    case "sentence": return `Aligning text and audio: sentence ${of}`;
   }
-  return info.phase === "narration" ? `Speaking part ${of}` : `Step ${of}`;
-}
-function progressSubject() {
-  const job = jobs.find((item) => item.id === currentJobId);
-  return job ? `${job.document} with ${job.voice}` : "your audiobook";
+  return info.phase === "narration" ? `Generating audio: part ${of}` : `Step ${of}`;
 }
 
+// --- What a job has done: its stages and real counts, from its events -------
+const UNIT_NOUNS = { page:"pages", paragraph:"paragraphs", part:"parts", join:"parts joined", sentence:"sentences" };
+function newHistory() {
+  return { seen:new Set(), counts:{}, current:null, latest:null, detail:"", log:[], code:null, partial:false };
+}
+// One event of a job (/api/events) into its history. Counts come only from
+// the server's progress and activity events; "Using the text prepared
+// earlier" counts nothing.
+function recordEvent(history, type, data) {
+  if (type === "log") {
+    history.log = history.log.concat(String(data).split("\n").map((line) => line.trim()).filter(Boolean))
+      .slice(-6);
+    return;
+  }
+  if (type === "done") { history.code = data.code; return; }
+  let stage = null, count = null;
+  // The extraction phase begins with reading pages, but only a page count shows
+  // that a document was read page by page: a text file never is.
+  if (type === "phase") { stage = stageFor(data.phase, null); history.latest = null; }
+  else if (type === "progress") {
+    stage = stageFor(data.phase, data.unit);
+    count = data.unit === "document" ? { unit:"reused" }
+      : { unit:data.unit || "part", done:Number(data.done), total:Number(data.total) };
+    if (data.unit !== "document") history.latest = { ...count, phase:data.phase };
+  } else if (type === "activity") {
+    stage = "prepare";
+    count = { unit:"paragraph", done:Number(data.completed), total:Number(data.total) };
+  }
+  if (!stage) return;
+  if (!(type === "phase" && stage === "read")) history.seen.add(stage);
+  history.current = stage;
+  if (count) (history.counts[stage] ||= {})[count.unit] = count;
+}
+function countText(counts) {
+  if (!counts) return "";
+  if (counts.reused) return "used the text prepared earlier";
+  return ["page", "paragraph", "part", "join", "sentence"].filter((unit) => counts[unit])
+    .map((unit) => `${counts[unit].done.toLocaleString()} of ${counts[unit].total.toLocaleString()} `
+      + UNIT_NOUNS[unit]).join(" · ");
+}
+// Each stage's state: done, active, failed, skipped (never reached, while a
+// later stage was), or pending. A skipped stage is never shown as done.
+function stageStates(history, outcome) {
+  const current = STAGES.indexOf(history.current);
+  return STAGES.map((stage, index) => {
+    if (stage === "ready") return outcome === "done" ? "done" : "pending";
+    if (outcome === "done" || index < current) return history.seen.has(stage) ? "done" : "skipped";
+    if (index === current) return outcome === "running" ? "active" : "failed";
+    return "pending";
+  });
+}
+// "Reading the document: done · Preparing the text: 212 of 840 paragraphs".
+function finishedText(history) {
+  if (!history.current) return "Nothing was finished yet.";
+  const states = stageStates(history, "failed");
+  return STAGES.map((stage, index) => {
+    if (history.partial && stage !== history.current) return "";
+    if (states[index] === "done") return `${STAGE_NAMES[stage]}: done`;
+    if (states[index] === "skipped") return `${STAGE_NAMES[stage]}: skipped`;
+    if (states[index] === "failed")
+      return `${STAGE_NAMES[stage]}: ${countText(history.counts[stage]) || "started"}`;
+    return "";
+  }).filter(Boolean).join(" · ");
+}
+function jobTitle(job) {
+  const book = job.book ? bookById(job.book) : null;
+  return book ? book.title : job.document;
+}
+
+// --- Where the work goes: Local, Cloud: <provider>, or a speech server -------
+const PROVIDER_SHORT = {
+  "openai-codex":"ChatGPT", "claude-code":"Claude Code", "anthropic":"Anthropic",
+  "openai":"OpenAI API", "gemini":"Gemini",
+};
+const PROVIDER_CLOUD = {
+  "openai-codex":"OpenAI", "openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google",
+  "claude-code":"Claude Code",
+};
+// A model choice ("" is the default) as its short name and the catalog's badge.
+function textModel(selector) {
+  const chosen = selector || paperCatalog.default_model || "";
+  if (!chosen) return paperCatalog.loaded ? null
+    : { selector:"", short:"Checking the models…", badge:"Checking…", isDefault:false };
+  const model = (paperCatalog.models || []).find((item) => item.selector === chosen);
+  const [provider, ...rest] = chosen.split("/");
+  const short = model && model.label ? model.label
+    : `${PROVIDER_SHORT[provider] || provider} ${rest.join("/")}`.trim();
+  const badge = model && model.badge ? model.badge
+    : ["ollama", "lm-studio"].includes(provider) ? "Local" : `Cloud: ${PROVIDER_CLOUD[provider] || provider}`;
+  return { selector:chosen, short, badge, isDefault:!selector };
+}
+function badgeElement(text, title = "") {
+  const badge = document.createElement("span");
+  badge.className = `badge${text.startsWith("Cloud") ? " cloud" : ""}`;
+  badge.textContent = text;
+  if (title) badge.title = title;
+  return badge;
+}
+function whereElement(label, name, badge, title) {
+  const node = document.createElement("span");
+  node.className = "where";
+  const lead = document.createElement("span");
+  lead.className = "note"; lead.textContent = `${label}:`;
+  node.append(lead);
+  if (name) {
+    const model = document.createElement("span");
+    model.className = "model-name"; model.textContent = name;
+    node.append(" ", model);
+  }
+  node.append(" ", badgeElement(badge, title));
+  return node;
+}
+// The speech server's model is all the page knows of it, so it makes no Local
+// or Cloud claim; narration on this server's own workers is Local.
+function speechWhere(role, label) {
+  const model = configuration[role];
+  if (!model || model.source === "missing") return null;
+  return model.source === "server"
+    ? whereElement(label, "", `Speech server: ${model.model}`, "Where the text is sent to be spoken")
+    : whereElement(label, "", "Local", "On this server's own workers");
+}
+// What a job sends where, shown before the click that starts it.
+function sendOutBadges(kind) {
+  const items = [];
+  if ((kind === "create" || kind === "recreate") && state.audiobook.adapt) {
+    const text = textModel(state.audiobook.model);
+    items.push(text ? whereElement("Text", text.short, text.badge, "Where the document's text goes")
+      : whereElement("Text", "", "No model yet"));
+    if (state.audiobook.interpret_figures) {
+      const figure = textModel(state.audiobook.figure_model || state.audiobook.model);
+      if (figure) items.push(whereElement("Figures", figure.short, figure.badge, "Where the figure pictures go"));
+    }
+    if (state.audiobook.verify) {
+      const check = textModel(state.audiobook.verify_model || state.audiobook.model);
+      if (check) items.push(whereElement("Checking", check.short, check.badge, "Where descriptions go to be checked"));
+    }
+  }
+  const speech = speechWhere(kind === "design" ? "design" : "clone", kind === "design" ? "Voice design" : "Narration");
+  if (speech) items.push(speech);
+  return items;
+}
+
+let bookProblemText = "";
 function renderCreate() {
   const step = currentStep();
   const done = { book:bookReady(), voice:voiceReady(), create:false };
-  // A finished run's card sits above the steps, which stay ready for the next book.
-  $("create-result").classList.toggle("hidden", !resultShown || !resultInfo);
-  for (const via of ["url", "file"]) {
-    const selected = via === addVia;
-    $(`add-tab-${via}`).setAttribute("aria-selected", String(selected));
-    $(`add-tab-${via}`).tabIndex = selected ? 0 : -1;
-    $(`add-${via}`).classList.toggle("hidden", !selected);
-  }
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
     const active = name === step, complete = !active && done[name];
@@ -18435,9 +19058,18 @@ function renderCreate() {
     node.querySelector(".step-state").textContent =
       active ? "(current step)" : complete ? "(done)" : "";
   });
-  $("book-summary").textContent = step !== "book" && done.book ? state.audiobook.document : "";
-  $("book-summary").title = state.audiobook.document;
+  const documentName = state.audiobook.document;
+  const type = documentType(documentName);
+  const chosen = `${documentName} · ${type || "not a type Hilde reads"}`;
+  $("book-summary").textContent = step !== "book" && done.book ? chosen : "";
+  $("book-summary").title = documentName;
   $("book-change").classList.toggle("hidden", step === "book");
+  $("book-chosen").textContent = done.book ? `Chosen: ${chosen}` : "";
+  $("book-chosen").classList.toggle("hidden", !done.book || !!state.audiobook.source_url.trim());
+  const problem = bookProblemText
+    || (done.book && !type ? "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt." : "");
+  $("book-problem").textContent = problem;
+  $("book-problem").classList.toggle("hidden", !problem);
   const voiceName = facts.clone_server
     ? state.audiobook.server_voice.trim() : state.audiobook.voice;
   $("voice-summary").textContent = step !== "voice" && done.voice ? voiceName : "";
@@ -18461,15 +19093,11 @@ function renderCreate() {
   $("book-continue").classList.toggle("hidden", !!(existing && existing.has_text) && step === "book");
   $("book-continue").disabled =
     submitting || !(done.book || state.audiobook.source_url.trim());
-  $("adapt").closest(".field").classList.toggle("hidden", voiceOnly);
-  // Adapting needs a model, so its choice sits with the choice to adapt.
-  $("adaptation-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
-  // Error correction checks what adapting writes; its model only matters when on.
-  $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
-  $("verify-model-row").classList.toggle("hidden", !state.audiobook.verify);
-  // Figures are read from their pictures only when ticked; the figure model only matters then.
+  $("option-adapt").classList.toggle("hidden", voiceOnly);
+  // Figures and checking are part of adapting; they show while it is on.
   $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
-  $("figure-model-row").classList.toggle("hidden", !state.audiobook.interpret_figures);
+  $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
+  renderOptionPlaces();
   $("run").textContent = voiceOnly ? "Add this voice" : overwrite ? "Overwrite audiobook" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
@@ -18477,50 +19105,245 @@ function renderCreate() {
   $("shared-voice-row").classList.toggle("hidden", !!facts.clone_server);
   // Facts belong to the tab of the last sync; hold Create until its own arrive.
   const current = facts.tab === "audiobook";
-  const problem = step === "create" && state.tab === "audiobook" && current ? facts.problem : "";
-  $("create-problem").textContent = problem || "";
-  $("create-problem").classList.toggle("hidden", !problem);
-  $("run").disabled = submitting || !current || !!facts.problem;
+  const createProblem = step === "create" && state.tab === "audiobook" && current ? facts.problem : "";
+  $("create-problem").textContent = createProblem || "";
+  $("create-problem").classList.toggle("hidden", !createProblem);
+  // Adapting with the default model waits for the catalog, which says where it runs.
+  const placeUnknown = !voiceOnly && state.audiobook.adapt && !paperCatalog.loaded;
+  $("run").disabled = submitting || !current || !!facts.problem || placeUnknown;
   $("create-note").textContent = voiceOnly
-    ? `Reads ${existing.title} in this voice, from the book's own text; no model is used.`
+    ? `Reads ${existing.title} in this voice, from the book's own text; no text model is used.`
     : overwrite
       ? `Makes ${existing.title} again from this document with these settings, in place of the book you have.`
       : "";
+  $("create-note").classList.toggle("hidden", !$("create-note").textContent);
+  if (step === "create") renderSummary(voiceOnly);
   renderSelectedVoice();
 }
-
-function renderProgress() {
-  const finished = !running && resultInfo && resultInfo.code === 0;
-  const current = STAGES.indexOf(runStage);
-  for (const node of $("stages").children) {
-    const index = STAGES.indexOf(node.dataset.stage);
-    const status = finished || index < current ? "done"
-      : index === current ? "active" : "pending";
-    node.classList.toggle("is-done", status === "done");
-    node.classList.toggle("is-active", status === "active");
-    node.querySelector(".stage-icon").textContent = status === "done" ? "✓" : "";
-    node.querySelector(".stage-state").textContent =
-      status === "done" ? " (done)" : status === "active" ? " (in progress)" : "";
+// Each step 3 option names its model and where it runs, ticked or not.
+function renderOptionPlaces() {
+  const place = (nameId, badgeId, model) => {
+    $(nameId).textContent = model ? (model.isDefault ? `Default: ${model.short}` : model.short) : "";
+    const badge = $(badgeId), text = model ? model.badge : "No model yet";
+    badge.textContent = text;
+    badge.classList.toggle("cloud", text.startsWith("Cloud"));
+  };
+  const text = textModel(state.audiobook.model);
+  place("adapt-model-name", "adapt-badge", text);
+  place("figure-model-name", "figure-badge", textModel(state.audiobook.figure_model || state.audiobook.model));
+  place("verify-model-name", "verify-badge", textModel(state.audiobook.verify_model || state.audiobook.model));
+}
+// Above Create audiobook: the document, the voice, and each option with where it runs.
+function renderSummary(voiceOnly) {
+  const rows = [];
+  const add = (term, ...parts) => {
+    const item = document.createElement("div"); item.className = "summary-item";
+    const dt = document.createElement("dt"); dt.textContent = term;
+    const dd = document.createElement("dd"); dd.append(...parts);
+    item.append(dt, dd);
+    rows.push(item);
+  };
+  const documentName = state.audiobook.document;
+  add("Document", `${documentName} (${documentType(documentName) || "unknown type"})`);
+  add("Voice", facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice);
+  if (voiceOnly) add("Text", "The book's own text; no text model", " ", badgeElement("Local"));
+  else if (!state.audiobook.adapt) add("Text", "Read as written; no text model", " ", badgeElement("Local"));
+  else {
+    const text = textModel(state.audiobook.model);
+    add("Text", "Adapted for listening by ", ...(text ? [text.short, " ", badgeElement(text.badge)]
+      : ["no model yet"]));
+    const figure = textModel(state.audiobook.figure_model || state.audiobook.model);
+    add("Figures", ...(state.audiobook.interpret_figures && figure
+      ? ["Read from their pictures by ", figure.short, " ", badgeElement(figure.badge)]
+      : ["Described from their captions and the text"]));
+    const check = textModel(state.audiobook.verify_model || state.audiobook.model);
+    add("Checking", ...(state.audiobook.verify && check
+      ? ["On, by ", check.short, " ", badgeElement(check.badge)] : ["Off"]));
   }
-  $("progress-subject").textContent = progressSubject();
-  $("stop").disabled = !running;
+  const narration = configuration.clone;
+  if (narration && narration.source === "server")
+    add("Narration", badgeElement(`Speech server: ${narration.model}`, "Where the text is sent to be spoken"));
+  $("create-summary").replaceChildren(...rows);
 }
 
+// The job this browser follows: its stages, its real counts, and an estimate
+// only from the current stage's own pace.
+function renderProgress() {
+  const following = running && runKind === "audiobook" && !!runHistory;
+  $("create-progress").classList.toggle("hidden", !following);
+  if (!following) return;
+  const job = jobs.find((item) => item.id === currentJobId);
+  $("progress-title").textContent = job ? jobTitle(job) : "Your audiobook";
+  $("progress-subject").textContent = job ? `${job.document} · read by ${job.voice}` : "";
+  const states = stageStates(runHistory, "running");
+  [...$("stages").children].forEach((node, index) => {
+    const status = states[index], stage = STAGES[index];
+    for (const name of ["done", "active", "skipped"])
+      node.classList.toggle(`is-${name}`, status === name);
+    node.querySelector(".stage-icon").textContent = status === "done" ? "✓" : status === "skipped" ? "–" : "";
+    node.querySelector(".stage-note").textContent = status === "skipped" ? "Skipped"
+      : status === "active" ? runHistory.detail
+      : status === "done" ? countText(runHistory.counts[stage]) : "";
+  });
+  const latest = runHistory.latest;
+  const meter = $("progress");
+  if (latest && latest.total > 0) {
+    meter.max = latest.total; meter.value = latest.done;
+    $("progress-count").textContent = `${latest.done.toLocaleString()} of ${latest.total.toLocaleString()} `
+      + `${UNIT_NOUNS[latest.unit]} · ${Math.floor(latest.done * 100 / latest.total)}%`;
+  } else {
+    meter.removeAttribute("value");
+    $("progress-count").textContent = "";
+  }
+  $("progress-detail").textContent = runHistory.current ? "" : runHistory.detail;
+  const workers = consumers.filter((consumer) => consumer.job_id === currentJobId);
+  $("progress-workers").textContent = workers.length
+    ? `Narrating on ${workers.map((worker) => worker.label).join(", ")}` : "";
+  $("stop").disabled = !currentJobId;
+}
+
+// A ready book's card on Create: listen, download, or AirDrop it.
 function renderResult() {
   const info = resultInfo;
+  $("create-result").classList.toggle("hidden", !resultShown || !info);
   if (!info) return;
-  const ok = info.code === 0, stopped = info.code === 130;
-  $("result-title").textContent = ok ? "Your audiobook is ready"
-    : stopped ? "Stopped" : "We couldn't finish this audiobook";
-  $("result-text").textContent = ok ? (info.title || "")
-    : stopped ? "Everything finished so far is kept. Continue whenever you like."
-    : "Everything finished so far is kept, so trying again continues from there.";
-  $("result-time").textContent = ok && info.total_time ? `Total time: ${info.total_time}.` : "";
-  $("result-primary").textContent = ok ? "Start listening" : stopped ? "Continue" : "Try again";
-  $("result-details").classList.toggle("hidden", ok || stopped || !resultDetail);
-  $("result-detail-text").textContent = resultDetail;
-  $("download").classList.toggle("hidden", !ok);
-  $("airdrop").classList.toggle("hidden", !ok || !caps.airdrop || !info.artifact);
+  $("result-text").textContent = info.title || "";
+  $("result-time").textContent = info.total_time ? `Total time: ${info.total_time}.` : "";
+  $("airdrop").classList.toggle("hidden", !caps.airdrop || !info.artifact);
+}
+
+// --- A stopped or failed job, also after a reload: the newest one this
+// server finished (recent) that is not running again and was not dismissed here.
+const jobHistories = new Map();
+function problemKey(entry) { return `${entry.id}@${entry.finished_at}`; }
+function latestProblem() {
+  const dismissed = stored("dismissedJobs") || [], newer = new Set();
+  for (const entry of recent) {
+    if (newer.has(entry.id)) continue;
+    newer.add(entry.id);
+    if (entry.status === "done" || dismissed.includes(problemKey(entry))) continue;
+    if (jobs.some((job) => job.id === entry.id)) continue;
+    return entry;
+  }
+  return null;
+}
+function dismissProblem(entry) {
+  store("dismissedJobs", [problemKey(entry), ...(stored("dismissedJobs") || [])].slice(0, 50));
+  render();
+}
+// The job's own events, replayed by the server while it keeps the job: what
+// each stage did and the last log lines.
+function loadJobHistory(entry) {
+  const key = problemKey(entry);
+  if (jobHistories.has(key)) return;
+  jobHistories.set(key, "loading");
+  const history = newHistory();
+  const source = new EventSource(`/api/events?job=${encodeURIComponent(entry.id)}`);
+  const finish = (value) => { source.close(); jobHistories.set(key, value); renderFailureCards(); };
+  for (const type of ["log", "phase", "progress", "activity"])
+    source.addEventListener(type, (event) => recordEvent(history, type, JSON.parse(event.data)));
+  source.addEventListener("done", (event) => {
+    recordEvent(history, "done", JSON.parse(event.data));
+    finish(history);
+  });
+  source.onerror = () => finish(null);
+}
+function historyOf(entry) {
+  const known = jobHistories.get(problemKey(entry));
+  if (known && known !== "loading") return known;
+  // From the server's summary alone: the stage it ended in and its last count.
+  const history = newHistory();
+  history.partial = true;
+  const stage = stageFor(entry.stage, entry.progress ? entry.progress.unit : null);
+  if (stage) {
+    history.current = stage; history.seen.add(stage);
+    if (entry.progress) {
+      const unit = entry.progress.unit || "part";
+      history.counts[stage] = { [unit]:{ unit, done:entry.progress.done, total:entry.progress.total } };
+    }
+  }
+  return history;
+}
+function renderFailureCards() {
+  const entry = latestProblem();
+  if (entry) loadJobHistory(entry);
+  for (const id of ["create-failure", "progress-failure"]) fillFailureCard($(id), entry);
+}
+function fillFailureCard(card, entry) {
+  card.classList.toggle("hidden", !entry);
+  const known = entry ? jobHistories.get(problemKey(entry)) : undefined;
+  // Rebuilt only on change, so the two-second poll keeps focus and an open details.
+  const key = entry ? JSON.stringify([problemKey(entry), known === undefined ? "" : known === null ? "none"
+    : known === "loading" ? "loading" : "done", submitting, state.audiobook.adapt, state.audiobook.model,
+    paperCatalog.loaded]) : "";
+  if (card.dataset.key === key) return;
+  card.dataset.key = key;
+  if (!entry) { card.replaceChildren(); return; }
+  const history = historyOf(entry);
+  const stopped = entry.status === "stopped";
+  const title = document.createElement("h3");
+  title.textContent = `${stopped ? "Stopped" : "Couldn't finish"}: ${jobTitle(entry)}`;
+  const subject = document.createElement("p");
+  subject.className = "note";
+  subject.textContent = `${entry.document} · read by ${entry.voice}`;
+  const where = document.createElement("p");
+  where.textContent = history.current
+    ? `${stopped ? "Stopped" : "Failed"} at: ${STAGE_NAMES[history.current]}.`
+    : `${stopped ? "Stopped" : "Failed"} before its first stage.`;
+  const finished = document.createElement("p");
+  finished.textContent = `What was finished: ${finishedText(history)}`;
+  const resume = document.createElement("div");
+  resume.className = "failure-continue";
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "primary";
+  button.textContent = "Continue from the last completed part";
+  button.disabled = submitting || (entry.mode !== "voice" && state.audiobook.adapt && !paperCatalog.loaded);
+  button.addEventListener("click", () => continueJob(entry));
+  const condition = document.createElement("p");
+  condition.className = "note";
+  condition.textContent = "Changing the settings or the voice since then starts the changed steps again.";
+  const places = document.createElement("div");
+  places.className = "line";
+  places.append(...sendOutBadges(entry.mode === "voice" ? "voice" : entry.mode));
+  resume.append(button, condition, places);
+  const details = document.createElement("details");
+  details.className = "technical";
+  const summary = document.createElement("summary");
+  summary.textContent = "Technical details";
+  const pre = document.createElement("pre");
+  pre.textContent = known === "loading" || known === undefined ? "Loading…"
+    : known === null ? "The server no longer has this job's log."
+    : history.log.join("\n") || "No log lines.";
+  details.append(summary, pre);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const dismiss = document.createElement("button");
+  dismiss.type = "button"; dismiss.className = "link"; dismiss.textContent = "Dismiss";
+  dismiss.setAttribute("aria-label", `Dismiss: ${jobTitle(entry)}`);
+  dismiss.addEventListener("click", () => dismissProblem(entry));
+  actions.append(dismiss);
+  card.replaceChildren(title, subject, where, finished, resume, details, actions);
+}
+// Continue resubmits the job: the same document (or book), voice, and mode,
+// so the same job and its checkpoints, with this browser's current settings.
+async function continueJob(entry) {
+  if (submitting) return;
+  if (entry.mode !== "create" && entry.book) {
+    submitting = true; render();
+    try {
+      const answer = await requestRun(false, { book:entry.book, mode:entry.mode, voice:entry.voice });
+      if (answer) showStartedJob(answer);
+    } finally { submitting = false; render(); }
+    return;
+  }
+  state.audiobook.document = entry.document;
+  state.audiobook[facts.clone_server ? "server_voice" : "voice"] = entry.voice;
+  state.audiobook.source_url = ""; state.audiobook.download_name = "";
+  state.audiobook.step = "create";
+  overwriting = "";
+  for (const [id, path] of FIELDS) $(id).value = at(path);
+  populateAssets();
+  startAudiobook();
 }
 
 function openVoiceForm() {
@@ -18530,7 +19353,7 @@ function openVoiceForm() {
   $("voice-name").value = ""; $("instruct").value = "";
   voiceFormOpen = true; voiceDraft = null; voiceResult = null;
   render(); queueSync();
-  $("voice-name").focus();
+  $("instruct").focus();
 }
 function closeVoiceForm() {
   voiceFormOpen = false; voiceDraft = null; voiceResult = null; stopPreview();
@@ -18550,8 +19373,9 @@ function renderVoiceForm() {
   $("voice-close").classList.toggle("hidden", creating);
   const name = state.voice.name.trim();
   $("voice-form-title").textContent = voiceByName(name) ? `Edit ${name}` : "New voice";
-  $("voice-exists").textContent =
-    facts.voice_exists && name ? `Saving replaces the voice named ${name}.` : "";
+  const exists = !!name && (voiceByName(name) || (facts.tab === "voice" && facts.voice_exists));
+  $("voice-exists").textContent = exists
+    ? `A voice named '${name}' exists. Saving replaces it; its current version is kept in its history.` : "";
   // Designing a voice needs every narration worker, so it waits for an empty queue.
   const queued = !creating && jobs.length > 0;
   const typed = !!(name || state.voice.instruct.trim());
@@ -18559,19 +19383,29 @@ function renderVoiceForm() {
     : typed && state.tab === "voice" && facts.tab === "voice" ? facts.problem : "";
   $("voice-problem").textContent = problem || "";
   $("voice-problem").classList.toggle("hidden", !problem);
-  // Save keeps the clip that was heard, so it waits until the prompt is heard.
-  const heard = !!voiceDraft && voiceDraft.prompt.trim() === state.voice.instruct.trim();
+  // Save keeps the clip that was heard: the preview of this very description,
+  // played to its end or for at least 3 seconds.
+  const current = !!voiceDraft && voiceDraft.prompt.trim() === state.voice.instruct.trim();
+  const heard = current && voiceDraft.played;
   $("voice-listen").disabled =
     submitting || creating || queued || facts.tab !== "voice" || !!facts.problem;
   $("voice-listen").classList.toggle("primary", !heard);
-  $("voice-save").classList.toggle("hidden", !voiceDraft || creating);
+  $("voice-save").classList.toggle("hidden", creating);
   $("voice-save").classList.toggle("primary", heard);
   $("voice-save").disabled =
     !heard || submitting || creating || facts.tab !== "voice" || !!facts.problem;
+  $("voice-save-note").textContent = creating ? ""
+    : !voiceDraft ? "Save voice works once you have heard a preview of this description."
+    : !current ? "The description has changed since this preview. Generate a new preview before saving."
+    : !heard ? "Listen to the preview, to its end or for at least 3 seconds, before saving."
+    : "";
+  const where = speechWhere("design", "Voice design");
+  $("voice-where").textContent = where ? where.querySelector(".badge").textContent : "";
+  $("voice-where").classList.toggle("hidden", !where || creating);
   const result = $("voice-result");
   const shown = !creating && !!(voiceDraft || voiceResult);
   result.classList.toggle("hidden", !shown);
-  const key = shown ? JSON.stringify([voiceDraft, voiceResult, heard]) : "";
+  const key = shown ? JSON.stringify([voiceDraft, voiceResult, current, heard]) : "";
   if (result.dataset.key === key) return;
   result.dataset.key = key;
   result.replaceChildren();
@@ -18581,14 +19415,15 @@ function renderVoiceForm() {
   text.className = "voice-meta";
   const message = document.createElement("span");
   if (voiceDraft) {
-    message.textContent = heard
-      ? "This is the new version. Save it to keep it, or change the prompt and listen again."
-      : "The prompt has changed. Listen again before saving.";
+    message.textContent = !current
+      ? "This preview is of an earlier description."
+      : heard ? "This is the new voice. Save it to keep it, or change the description and generate another preview."
+      : "Here is the preview. Play it before saving.";
   } else {
     message.className = voiceResult.saved || voiceResult.stopped ? "" : "problem";
     message.textContent = voiceResult.saved ? `${voiceResult.saved} is saved.`
       : voiceResult.stopped ? "Stopped. Nothing was saved."
-      : "We couldn't design this voice. Try again, or change the prompt.";
+      : "We couldn't generate this preview. Try again, or change the description.";
   }
   text.append(message);
   if (voiceResult && voiceResult.detail) {
@@ -18603,99 +19438,166 @@ function renderVoiceForm() {
   }
   result.append(text);
 }
+// A draft counts as heard once its preview played to the end, or 3 seconds of it.
+function noteDraftPlayed(ended) {
+  if (!voiceDraft || voiceDraft.played || previewing !== `draft:${voiceDraft.id}`) return;
+  if (!ended && previewAudio.currentTime < 3) return;
+  voiceDraft.played = true;
+  renderVoiceForm();
+}
 
 function runKey(info) {
   return info ? (info.job_id || `kind:${info.kind}`) : "";
 }
 
-function describeModel(role, title) {
+// A speech model as the server's configuration names it, without host or path.
+function describeModel(role) {
   const model = configuration[role];
-  if (!model || !model.model) return `${title}: not configured`;
-  const place = model.source === "server" ? " (speech server)"
-    : model.device ? ` on ${model.device}` : "";
-  return `${title}: ${model.model}${place}`;
+  if (!model || !model.model) return "Not configured";
+  if (model.source === "server") return `Speech server: ${model.model}`;
+  return `${model.model}${model.device ? ` on ${model.device}` : ""}`;
 }
 
-function jobRow(job) {
+// The stage a running job is in, by name; the followed one from its events.
+function jobStage(job) {
+  if (job.status === "preparing") return "Getting ready";
+  if (job.status !== "running") return `Waiting (#${job.position})`;
+  if (job.id === currentJobId && runHistory && runHistory.current) return STAGE_NAMES[runHistory.current];
+  const run = runs.find((item) => item.active && item.job_id === job.id);
+  if (!run || !run.phase) return "Starting";
+  return run.phase === "extraction" ? "Reading and preparing the text" : STAGE_NAMES[stageFor(run.phase, null)];
+}
+// Create's rows: document, voice, and stage only; the rest is in the progress view.
+function createJobRow(job) {
   const row = document.createElement("div");
   row.className = "job-row";
   const name = document.createElement("div");
-  name.className = "clamp";
-  name.textContent = `${job.document} · ${job.voice}`;
+  name.className = "job-name";
+  name.textContent = `${jobTitle(job)} · ${job.voice}`;
+  const status = document.createElement("span");
+  status.className = "job-state";
+  status.textContent = jobStage(job);
+  const view = document.createElement("button");
+  view.type = "button"; view.textContent = "View progress";
+  view.setAttribute("aria-label", `View progress of ${jobTitle(job)}`);
+  view.addEventListener("click", () => viewJob(job.id));
+  row.append(name, status, view);
+  return row;
+}
+// The progress view's rows: running ones with their workers, View and Stop;
+// queued ones with their place and Cancel.
+function progressJobRow(job) {
+  const row = document.createElement("div");
+  row.className = "job-row";
+  const name = document.createElement("div");
+  name.className = "job-name";
+  name.textContent = `${jobTitle(job)} · read by ${job.voice}`;
   name.title = `${job.document}\n${job.id}`;
   const status = document.createElement("span");
   status.className = "job-state";
   const workers = consumers.filter((consumer) => consumer.job_id === job.id);
-  const workerLabel = workers.length > 1
-    ? `${workers.length} workers` : workers[0]?.label || "";
-  status.textContent = job.status === "running"
-    ? `Creating${workerLabel ? ` · ${workerLabel}` : ""}`
-    : job.status === "preparing" ? "Getting ready"
-    : `Waiting (#${job.position})`;
-  status.title = workers.map((worker) => worker.label).join("\n");
+  status.textContent = jobStage(job)
+    + (workers.length ? ` · on ${workers.map((worker) => worker.label).join(", ")}` : "");
   const actions = document.createElement("div");
   actions.className = "job-actions";
   if (job.status === "running") {
-    const viewing = currentJobId === job.id && state.tab === "progress";
     const view = document.createElement("button");
-    view.type = "button";
-    view.textContent = viewing ? "Viewing" : "View";
-    view.disabled = viewing;
+    view.type = "button"; view.textContent = "View";
+    view.setAttribute("aria-label", `View ${jobTitle(job)}`);
     view.addEventListener("click", () => viewJob(job.id));
     actions.append(view);
   }
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.textContent = job.status === "running" ? "Stop" : "Cancel";
-  cancel.setAttribute("aria-label", `${cancel.textContent} ${job.document}`);
-  cancel.addEventListener("click", () => cancelJob(job.id));
+  cancel.setAttribute("aria-label", `${cancel.textContent} ${jobTitle(job)}`);
+  cancel.addEventListener("click", () => job.status === "running" ? stopJob(job) : cancelJob(job.id));
   actions.append(cancel);
   row.append(name, status, actions);
   return row;
+}
+function workerChip(consumer) {
+  const chip = document.createElement("span");
+  chip.className = `worker-chip ${consumer.status}`;
+  const label = document.createElement("span");
+  label.textContent = consumer.label;
+  const status = document.createElement("span");
+  status.className = "worker-status";
+  status.textContent = consumer.status;
+  chip.append(label, status);
+  const job = jobs.find((item) => item.id === consumer.job_id);
+  chip.title = [
+    consumer.detail,
+    job ? `${job.document} · ${job.voice}` : "",
+    consumer.status === "reserved" ? "Reserved while a voice is created" : "",
+  ].filter(Boolean).join("\n");
+  return chip;
 }
 
 function renderQueue() {
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
-  const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab]);
+  const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab,
+    runHistory && runHistory.current, books.length, paperCatalog.default_model]);
   if (signature === queueSignature) return;
   queueSignature = signature;
-  $("compute-workers").replaceChildren(...consumers.map((consumer) => {
-    const chip = document.createElement("span");
-    chip.className = `worker-chip ${consumer.status}`;
-    const label = document.createElement("span");
-    label.textContent = consumer.label;
-    const status = document.createElement("span");
-    status.className = "worker-status";
-    status.textContent = consumer.status;
-    chip.append(label, status);
-    const job = jobs.find((item) => item.id === consumer.job_id);
-    chip.title = [
-      consumer.detail,
-      job ? `${job.document} · ${job.voice}` : "",
-      consumer.status === "reserved" ? "Reserved while a voice is created" : "",
-    ].filter(Boolean).join("\n");
-    return chip;
-  }));
-  // Identical GPUs share one description instead of repeating it per chip.
-  $("compute-detail").textContent = [...new Set(
-    consumers.map((consumer) => consumer.detail).filter(Boolean)
-  )].join("; ");
-  $("compute-models").textContent = [
-    describeModel("clone", "Narration"), describeModel("design", "Voice design"),
-  ].join(" · ");
-  // Create lists every job; Progress lists them under the one it follows.
+  // Settings: this machine's workers and other machines' in separate groups.
+  for (const [kind, list, detail] of [["local", "local-workers", "local-workers-detail"],
+                                      ["node", "node-workers", "node-workers-detail"]]) {
+    const own = consumers.filter((consumer) => consumer.kind === kind);
+    $(list).replaceChildren(...own.map(workerChip));
+    // Identical GPUs share one description instead of repeating it per chip.
+    $(detail).textContent = own.length
+      ? [...new Set(own.map((consumer) => consumer.detail).filter(Boolean))].join("; ") : "None.";
+  }
+  $("model-narration").textContent = describeModel("clone");
+  $("model-design").textContent = describeModel("design");
+  const text = textModel("");
+  $("model-text").replaceChildren(...(text
+    ? [`Default: ${text.short} `, badgeElement(text.badge)] : ["No text model yet"]));
+  // Create lists every job by document, voice, and stage; the progress view
+  // lists running and queued jobs apart.
   $("queue-panel").classList.toggle("hidden", !jobs.length);
-  $("job-queue").replaceChildren(...jobs.map(jobRow));
-  $("progress-queue").replaceChildren(...jobs.map(jobRow));
+  $("job-queue").replaceChildren(...jobs.map(createJobRow));
+  const running = jobs.filter((job) => job.status === "running");
+  const waiting = jobs.filter((job) => job.status !== "running");
+  const followed = $("create-progress").classList.contains("hidden") ? "" : currentJobId;
+  $("running-jobs").replaceChildren(...running.filter((job) => job.id !== followed).map(progressJobRow));
+  $("running-section").classList.toggle("hidden", !running.length && !followed);
+  $("queued-jobs").replaceChildren(...waiting.map(progressJobRow));
+  $("queued-section").classList.toggle("hidden", !waiting.length);
 }
 
+// The header's jobs indicator: every job on this server, on every page.
+function renderIndicator() {
+  const running = jobs.filter((job) => job.status === "running").length;
+  const queued = jobs.length - running;
+  const problem = latestProblem();
+  const parts = [];
+  if (running) parts.push(`${running} running`);
+  if (queued) parts.push(`${queued} queued`);
+  if (!parts.length && problem) parts.push(problem.status === "stopped" ? "1 stopped" : "1 failed");
+  const indicator = $("jobs-indicator");
+  indicator.textContent = parts.join(" · ");
+  indicator.classList.toggle("hidden", !parts.length);
+  indicator.classList.toggle("running", running > 0);
+  indicator.classList.toggle("problem", !running && !queued && !!problem);
+  indicator.setAttribute("aria-pressed", String(state.tab === "progress" && !settingsOpen));
+  indicator.setAttribute("aria-label", `${parts.join(", ")}: show progress`);
+}
+function progressAvailable() {
+  return jobs.length > 0 || (running && runKind === "audiobook") || !!latestProblem();
+}
+function openProgress() {
+  if (settingsOpen) setSettings(false);
+  setTab("progress");
+  render();
+  $("progress-heading").focus();
+}
 function viewJob(id) {
   const active = runs.find((item) => item.active && item.job_id === id);
   if (active) followActive(active, true);
-  setTab("progress");
-  render();
-  $("progress-title").focus();
+  openProgress();
 }
 
 function followActive(info, reconnecting) {
@@ -18706,12 +19608,11 @@ function followActive(info, reconnecting) {
   runKind = info.kind;
   // The "will start when…" notice is over once that job runs.
   if (info.job_id && info.job_id === waitingJobId) { waitingJobId = ""; setStatus(""); }
-  runStage = stageFor(info.phase, null); recentLog = [];
+  // The server replays the job's events from its start, so its history is rebuilt.
+  runHistory = newHistory(); recentLog = [];
+  runHistory.detail = reconnecting ? "Reconnecting…" : "Starting…";
   if (runKind === "voice") voiceResult = null;
-  beginEta(info.phase || runKind);
-  $("log").textContent = "";
-  $("progress").removeAttribute("value");
-  $("progress-detail").textContent = reconnecting ? "Reconnecting…" : "Starting…";
+  beginEta();
   render();
   watch(currentJobId);
 }
@@ -18719,8 +19620,8 @@ function followActive(info, reconnecting) {
 // What needs the server goes inert while it does not answer; the player, the
 // text, and its views stay, so a book already downloaded plays on.
 const SERVER_PARTS = [
-  "#advanced-panels", "#page-audiobook", "#page-progress", "#page-voice",
-  "#library-view", "#more-menu", "#reader-stale", "#change-voice", "#ask-hilde", "#chat-pane",
+  "#page-settings", "#page-audiobook", "#page-progress", "#page-voice", "#jobs-indicator",
+  "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#chat-pane",
   "#figure-view .panel-actions", "#selection-menu [data-action=ask]",
 ];
 let serverDown = false;
@@ -18743,12 +19644,11 @@ async function refreshJobs() {
     setServerDown(false);
     if (restart) { await startPage(); return; }
     jobs = current.queue || []; runs = current.runs || [];
-    consumers = current.consumers || [];
-    renderQueue();
+    consumers = current.consumers || []; recent = current.recent || [];
     const followed = runs.find(
       (item) => item.active && runKey(item) === followedRunKey
     );
-    if (followed) return;
+    if (followed) { renderQueue(); renderIndicator(); renderFailureCards(); return; }
     const active = runs.find((item) => item.active) || null;
     if (active) followActive(active, true);
     else if (!running) render();
@@ -18760,56 +19660,49 @@ async function refreshJobs() {
 
 function render() {
   if (!state) return;
-  // Progress exists only while an audiobook is being made; once none is,
-  // its page gives way to Create.
-  const making = (running && runKind === "audiobook")
-    || jobs.some((job) => job.status === "running" || job.status === "preparing");
-  $("tab-progress").classList.toggle("hidden", !making);
-  if (state.tab === "progress" && !making) state.tab = "audiobook";
+  // The progress view is there while a job is, or one stopped or failed.
+  if (state.tab === "progress" && !progressAvailable()) state.tab = "audiobook";
   const tab = state.tab;
-  for (const name of ["audiobook", "progress", "voice", "player"]) {
-    const selected = name === tab;
+  for (const name of ["audiobook", "voice", "player"]) {
+    const selected = name === tab && !settingsOpen;
     $(`tab-${name}`).setAttribute("aria-selected", String(selected));
-    $(`tab-${name}`).tabIndex = selected ? 0 : -1;
-    $(`page-${name}`).classList.toggle("hidden", !selected);
+    // One tab stays in the keyboard's way into the tab list.
+    $(`tab-${name}`).tabIndex = name === (["voice", "player"].includes(tab) ? tab : "audiobook") ? 0 : -1;
+    $(`page-${name}`).classList.toggle("hidden", name !== tab || settingsOpen);
   }
-  // On Progress, Advanced shows only This server: the other settings are
-  // for the next book, not the one being made.
-  const settings = tab === "audiobook" || tab === "voice";
-  const withAdvanced = settings || tab === "progress";
-  $("advanced").classList.toggle("hidden", !withAdvanced);
-  $("advanced").setAttribute("aria-expanded", String(withAdvanced && advancedOpen));
-  // While the extra settings show, the toggle names the way back.
-  $("advanced").textContent = withAdvanced && advancedOpen ? "Simple" : "Advanced";
-  $("advanced-panels").classList.toggle("hidden", !withAdvanced || !advancedOpen);
-  $("speech-advanced").classList.toggle("hidden", !settings);
-  $("narration-advanced").classList.toggle("hidden", tab !== "audiobook");
-  $("adaptation-advanced").classList.toggle(
-    "hidden", tab !== "audiobook" || !state.audiobook.adapt
-  );
-  $("voice-advanced").classList.toggle("hidden", tab !== "voice");
-  const activeServer = tab === "voice" ? facts.design_server : facts.clone_server;
-  for (const id of ["dtype","attn","language","seed"]) $(id).disabled = activeServer;
+  $("page-progress").classList.toggle("hidden", tab !== "progress" || settingsOpen);
+  // Settings is a view of its own, never above another page.
+  $("page-settings").classList.toggle("hidden", !settingsOpen);
+  $("settings-button").setAttribute("aria-pressed", String(settingsOpen));
+  // A speech server narrates without these; voice design may still use them.
+  for (const id of ["dtype", "attn", "language", "seed"])
+    $(id).disabled = facts.clone_server && facts.design_server;
   $("batch-size").disabled = facts.clone_server;
-  // The run log follows the work on every page but Listen.
-  $("log").classList.toggle("hidden", tab === "player");
-  const reading = tab === "player" && !!state.player.book;
+  $("narration-server-note").classList.toggle("hidden", !facts.clone_server);
+  const reading = tab === "player" && !!state.player.book && !settingsOpen;
   $("library-view").classList.toggle("hidden", reading);
   $("book-view").classList.toggle("hidden", !reading);
   document.querySelector("main").classList.toggle("reading", reading);
   document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
-  if (!reading) { hideSelectionMenu(); closeMenus(); }
+  // The book's menus go with the book; a row's ⋯ menu stays open through the
+  // two-second poll's repaint until its page changes (setTab, setSettings).
+  if (!reading) { hideSelectionMenu(); closeReaderMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
+  renderFailureCards(); renderIndicator();
 }
 
 // Leaving Listen for another tab and coming back keeps the text where it was.
 let listenPlace = null;
 function setTab(tab) {
-  if (!state || state.tab === tab) return;
-  stopPreview();
+  if (!state) return;
+  if (settingsOpen) setSettings(false, false);
+  if (state.tab === tab) { render(); return; }
+  stopPreview(); closeMenus();
   if (state.tab === "player") listenPlace = readingAnchor();
   state.tab = tab;
   setStatus("");
+  hideToast();
+  if (tab !== "voice") $("voice-chosen").classList.add("hidden");
   // Other browsers and the operator add voices and previews meanwhile.
   if (tab === "voice") { renderVoiceTable(); refreshVoices(); }
   if (tab === "player") {
@@ -18821,19 +19714,22 @@ function setTab(tab) {
     scrollPageBy(listenPlace.element.getBoundingClientRect().top - listenPlace.top);
   if (tab === "player") listenPlace = null;
 }
-function toggleAdvanced() {
-  advancedOpen = !advancedOpen;
-  render();
-  if (advancedOpen) refreshWorkers();
+// Settings opens over no page: it takes the page's place until closed or a
+// tab is chosen.
+function setSettings(open, draw = true) {
+  if (open === settingsOpen) return;
+  settingsOpen = open;
+  closeMenus();
+  if (open) { stopPreview(); refreshWorkers(); }
+  if (draw) render();
+  if (open) $("settings-title").focus();
 }
+function toggleSettings() { setSettings(!settingsOpen); }
+// A run's last lines carry a failure's cause, its summary, and where work is kept.
 function log(text) {
-  const box = $("log");
-  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
-  box.append(text);
-  if (atEnd) box.scrollTop = box.scrollHeight;
   const lines = String(text).split("\n").map((line) => line.trim()).filter(Boolean);
-  // A failure's last lines carry its cause, its summary, and where work is kept.
   recentLog = recentLog.concat(lines).slice(-4);
+  if (runHistory) recordEvent(runHistory, "log", text);
 }
 
 // `extra` names a book, with mode "voice" or "recreate" and the voice, for
@@ -18845,7 +19741,15 @@ async function requestRun(confirmed, extra) {
   });
   const answer = await response.json().catch(() => ({}));
   if (response.status === 409 && answer.confirmation_required) {
-    if (window.confirm(answer.message)) return requestRun(true, extra);
+    // The server asks before replacing a voice or a book; the question names it.
+    const book = extra && extra.book ? bookById(extra.book) : null;
+    const title = book ? book.title
+      : (facts.existing_book && facts.existing_book.title) || state.audiobook.document;
+    const ok = await askConfirm({
+      title:extra && extra.mode === "voice" ? `Make ${extra.voice} for '${title}' again?` : `Make '${title}' again?`,
+      text:answer.message, confirm:"Make it again", danger:true,
+    });
+    if (ok) return requestRun(true, extra);
     setStatus("Nothing was replaced.");
     return null;
   }
@@ -18869,10 +19773,12 @@ async function startAudiobook() {
     // Overwrite names the existing book, as Recreate on Listen does.
     const existing = facts.existing_book;
     const overwrite = existing && existing.has_text && overwriting === existing.id;
-    if (overwrite && !window.confirm(
-      `Overwrite ${existing.title}? Its text and descriptions are written again from this `
-      + "document with these settings, and its other voices will need to be made again."
-    )) return;
+    if (overwrite && !(await askConfirm({
+      title:`Overwrite '${existing.title}'?`,
+      text:"Its text and descriptions are written again from this document with these settings, "
+        + "and its other voices will need to be made again. Notes stay; the conversation is cleared.",
+      confirm:"Overwrite", danger:true, where:sendOutBadges("recreate"),
+    }))) return;
     const voice = facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice;
     const answer = await requestRun(false, overwrite ? { book: existing.id, mode: "recreate", voice } : undefined);
     if (!answer) return;
@@ -18932,7 +19838,13 @@ async function listenVoice() {
 }
 
 async function saveVoice(button) {
-  if (!voiceDraft) return;
+  if (!voiceDraft || !voiceDraft.played) return;
+  const name = state.voice.name.trim();
+  if ((voiceByName(name) || facts.voice_exists) && !(await askConfirm({
+    title:`Replace voice '${name}'?`,
+    text:`A voice named '${name}' exists. Saving replaces it; its current version is kept in its history.`,
+    confirm:"Replace it", danger:true,
+  }))) return;
   button.disabled = true;
   try {
     const answer = await jsonRequest("/api/voices/save", {
@@ -18986,62 +19898,59 @@ function watch(jobId="") {
   source.addEventListener("log", (event) => log(JSON.parse(event.data)));
   source.addEventListener("phase", (event) => {
     const info = JSON.parse(event.data);
-    beginEta(info.phase);
-    runStage = stageFor(info.phase, null) || runStage;
-    $("progress").removeAttribute("value");
-    $("progress-detail").textContent = "";
-    renderProgress();
+    beginEta();
+    if (runHistory) { recordEvent(runHistory, "phase", info); runHistory.detail = ""; }
+    renderProgress(); renderQueue();
   });
   source.addEventListener("progress", (event) => {
     const info = JSON.parse(event.data);
-    $("progress").max = info.total; $("progress").value = info.done;
-    updateEta(
-      info.done, info.total, info.phase_elapsed,
-      info.phase_stream_elapsed, info.unit
-    );
-    runStage = stageFor(info.phase, info.unit) || runStage;
-    $("progress-detail").textContent = progressDetail(info);
+    if (!runHistory) return;
+    const stage = runHistory.current;
+    recordEvent(runHistory, "progress", info);
+    if (runHistory.current !== stage) beginEta();
+    if (info.unit !== "document")
+      updateEta(info.done, info.total, info.phase_elapsed, info.phase_stream_elapsed, info.unit);
+    runHistory.detail = progressDetail(info);
     renderProgress();
+    if (runHistory.current !== stage) renderQueue();
   });
   source.addEventListener("activity", (event) => {
     const info = JSON.parse(event.data);
-    $("progress-detail").textContent = progressDetail({
-      unit:"paragraph", done:info.completed, total:info.total,
-    });
+    if (!runHistory) return;
+    recordEvent(runHistory, "activity", info);
+    runHistory.detail = progressDetail({ unit:"paragraph", done:info.completed, total:info.total });
+    renderProgress();
   });
   source.addEventListener("done", async (event) => {
     const info = JSON.parse(event.data);
     const job = jobs.find((item) => item.id === currentJobId);
+    const finished = runHistory;
+    if (finished) recordEvent(finished, "done", info);
     source.close(); if (stream === source) stream = null;
-    running = false; currentJobId = ""; followedRunKey = "";
+    running = false; currentJobId = ""; followedRunKey = ""; runHistory = null;
     endEta();
     let focus = null, toCreate = false;
     // The outcome replaces this browser's "Stopping…" notice.
     if (stopping) { stopping = false; setStatus(""); }
     if (info.kind === "audiobook") {
-      // Show the outcome where its progress was being watched: on Create, above
-      // the steps, since Progress follows only work still going.
-      if (state.tab === "progress") {
+      if (info.code === 0 && state.tab === "progress") {
+        // A ready book shows on Create, above the steps, ready to play.
         resultShown = true; toCreate = true;
-        // Continue and Try again resubmit this job, whatever the form holds by then.
-        resultInfo = {
-          ...info, document:job ? job.document : "", voice:job ? job.voice : info.voice,
-          book:info.book || (job ? job.book : ""), mode:job ? job.mode : "create",
-        };
-        resultDetail = info.code !== 0 && info.code !== 130 ? recentLog.join("\n") : "";
+        resultInfo = { ...info, voice:job ? job.voice : info.voice, book:info.book || (job ? job.book : "") };
         focus = "result-title";
       } else if (info.code === 0) {
         if (info.title) {
           setStatus(`${info.title} is ready in Listen.`
             + (info.total_time ? ` Total time: ${info.total_time}.` : ""));
         }
-      } else {
-        // Away from its progress card, a stop or failure is only a notice.
-        const subject = job ? `${job.document} with ${job.voice}` : "An audiobook";
+      } else if (state.tab !== "progress" && state.tab !== "audiobook") {
+        // Away from Create and the progress view, which show it, a stop or
+        // failure is a notice.
+        const subject = job ? `${jobTitle(job)} with ${job.voice}` : "An audiobook";
         const stopped = info.code === 130 || info.code === -15;
         setStatus(
           `${subject} ${stopped ? "stopped" : "couldn't be finished"}. ` +
-          "Create it again to continue where it left off.",
+          "Continue it from the last completed part on Create.",
           !stopped,
         );
       }
@@ -19050,7 +19959,7 @@ function watch(jobId="") {
       // Stop terminates the voice process, which then reports SIGTERM.
       const stopped = info.code === 130 || info.code === -15;
       voiceDraft = info.code === 0 && info.name
-        ? { id:info.name, prompt:draftPrompt ?? state.voice.instruct } : null;
+        ? { id:info.name, prompt:draftPrompt ?? state.voice.instruct, played:false } : null;
       voiceResult = voiceDraft ? null : {
         ok:false, stopped, detail:info.code && !stopped ? recentLog.join("\n") : "",
       };
@@ -19065,10 +19974,13 @@ function watch(jobId="") {
       if (synced === syncSeq) { state = current.state; facts = current.derived; }
       assets = current.assets || assets;
       jobs = current.queue || []; runs = current.runs || [];
-      consumers = current.consumers || [];
+      consumers = current.consumers || []; recent = current.recent || recent;
       nextRun = runs.find((item) => item.active) || null;
       populateAssets();
     } catch (_) {}
+    // The events this page followed are the finished job's whole history.
+    const entry = finished && job ? recent.find((item) => item.id === job.id) : null;
+    if (entry) jobHistories.set(problemKey(entry), finished);
     if (info.kind === "audiobook" && info.code === 0) refreshLibrary();
     if (toCreate) setTab("audiobook");
     render();
@@ -19086,14 +19998,26 @@ function watch(jobId="") {
   };
 }
 
+// Stop on a running audiobook asks first: what is finished is kept, and
+// Continue goes on from it. A voice preview stops at once.
 async function stopRun() {
-  if (currentJobId) return cancelJob(currentJobId);
+  if (currentJobId) {
+    const job = jobs.find((item) => item.id === currentJobId);
+    return job ? stopJob(job) : cancelJob(currentJobId);
+  }
   try {
     const answer = await jsonRequest("/api/stop", {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     });
     if (answer.stopping) { stopping = true; setStatus("Stopping…"); }
   } catch (error) { setStatus(error.message, true); }
+}
+async function stopJob(job) {
+  if (await askConfirm({
+    title:`Stop making '${jobTitle(job)}'?`,
+    text:"What is finished is kept: Continue goes on from the last completed part.",
+    confirm:"Stop", danger:true,
+  })) cancelJob(job.id);
 }
 
 async function cancelJob(id) {
@@ -19104,17 +20028,17 @@ async function cancelJob(id) {
     });
     jobs = answer.queue || []; runs = answer.runs || [];
     consumers = answer.consumers || [];
-    renderQueue();
+    render();
     if (answer.job.status === "running" && currentJobId === id) {
       stopping = true; setStatus("Stopping…");
     }
   } catch (error) { setStatus(error.message, true); }
 }
 
-function downloadArtifact() {
+function downloadArtifact(button) {
   if (resultInfo && resultInfo.code === 0 && resultInfo.book)
-    location.href = "/api/download?book=" + encodeURIComponent(resultInfo.book)
-      + "&voice=" + encodeURIComponent(resultInfo.voice);
+    startDownload("/api/download?book=" + encodeURIComponent(resultInfo.book)
+      + "&voice=" + encodeURIComponent(resultInfo.voice), button);
 }
 async function sendAirdrop() {
   try {
@@ -19146,7 +20070,8 @@ function fillModelSelect(select, selected, first, catalog) {
       groups.set(name, group); select.append(group);
     }
     const option = document.createElement("option");
-    option.value = model.selector; option.textContent = model.label || model.selector;
+    option.value = model.selector;
+    option.textContent = `${model.label || model.selector}${model.badge ? ` · ${model.badge}` : ""}`;
     groups.get(name).append(option);
   }
   if (selected && ![...select.options].some((option) => option.value === selected)) {
@@ -19158,9 +20083,11 @@ function fillModelSelect(select, selected, first, catalog) {
 }
 
 function applyPaperCatalog(catalog) {
+  paperCatalog = { ...catalog, loaded:true };
+  const fallback = textModel("");
   fillModelSelect($("paper-model"), state.audiobook.model,
-    catalog.default_model ? `Default — ${catalog.default_model}`
-      : catalog.local_error ? "Default — your local servers, once one answers"
+    fallback ? `Default: ${fallback.short} · ${fallback.badge}`
+      : catalog.local_error ? "Default: your local servers, once one answers"
       : "No model yet: connect a provider or add a local server",
     catalog);
   fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
@@ -19181,6 +20108,8 @@ function applyPaperCatalog(catalog) {
     `${(catalog.models || []).length} models`;
   $("paper-model-status").classList.toggle("bad", !!problem);
   fillChatModels(catalog);
+  // Each option's short name and badge come from the catalog.
+  render();
 }
 async function refreshPaperModels(refresh) {
   $("paper-model-status").textContent = "Loading models…";
@@ -19188,6 +20117,8 @@ async function refreshPaperModels(refresh) {
   catch (error) {
     $("paper-model-status").textContent = error.message;
     $("paper-model-status").classList.add("bad");
+    // Without a catalog the page knows no default model; it says so.
+    if (!paperCatalog.loaded) { paperCatalog = { ...paperCatalog, loaded:true }; render(); }
   }
 }
 
@@ -19379,8 +20310,11 @@ function renderWorkers() {
   const local = !!caps.manage_workers;
   const available = !!(workerNodes && workerNodes.available);
   $("workers-open").classList.toggle("hidden", !local || !available);
-  $("nodes-note").textContent = !local
-    ? "Added in a browser on the server's own machine."
+  // Server-only actions say so in one line; nothing works around it.
+  $("gpus-server-only").classList.toggle("hidden", local);
+  $("nodes-server-only").classList.toggle("hidden", local);
+  $("nodes-applies").classList.toggle("hidden", !local || !available);
+  $("nodes-note").textContent = !local ? ""
     : workerNodes && !available
       ? "They need a local narration model (--voice-clone-model)."
       : workerNodes && !workerNodes.nodes.length ? "None yet." : "";
@@ -19577,7 +20511,11 @@ async function addWorkerNode() {
   }
 }
 async function removeWorkerNode(host) {
-  if (!confirm(`Stop narrating on ${host}? You can add it again later.`)) return;
+  if (!(await askConfirm({
+    title:`Stop narrating on '${host}'?`,
+    text:"It stops narrating now and leaves workers.yaml. You can add it again later.",
+    confirm:"Remove", danger:true,
+  }))) return;
   try {
     applyWorkers(await jsonRequest("/api/workers/remove", {
       method:"POST", headers:{ "Content-Type":"application/json" },
@@ -19587,6 +20525,9 @@ async function removeWorkerNode(host) {
   } catch (error) { setStatus(error.message, true); }
 }
 
+// A new choice or link in step 1 clears the last problem adding a document.
+for (const id of ["document", "source-url", "download-name"])
+  $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => { bookProblemText = ""; });
 for (const [id] of FIELDS) {
   const node = $(id);
   node.addEventListener(node.tagName === "SELECT" ? "change" : "input", () => {
@@ -19635,12 +20576,12 @@ previewAudio.addEventListener("play", syncPreviewButtons);
 oneSoundAtATime(previewAudio);
 oneSoundAtATime(chatVoice);
 previewAudio.addEventListener("pause", syncPreviewButtons);
-previewAudio.addEventListener("ended", () => { previewing = ""; syncPreviewButtons(); });
+previewAudio.addEventListener("timeupdate", () => noteDraftPlayed(false));
+previewAudio.addEventListener("ended", () => { noteDraftPlayed(true); previewing = ""; syncPreviewButtons(); });
 $("tab-list").addEventListener("keydown", (event) => {
   // Arrow keys, Home, and End move between tabs, as in native tab strips.
-  const order = ["audiobook", "progress", "voice", "player"]
-    .filter((name) => !$(`tab-${name}`).classList.contains("hidden"));
-  const index = order.indexOf(state.tab);
+  const order = ["audiobook", "voice", "player"];
+  const index = Math.max(0, order.indexOf(state.tab));
   const next = {
     ArrowRight:order[(index + 1) % order.length],
     ArrowLeft:order[(index + order.length - 1) % order.length],
@@ -19651,13 +20592,11 @@ $("tab-list").addEventListener("keydown", (event) => {
   setTab(next);
   $(`tab-${next}`).focus();
 });
-$("add-tabs").addEventListener("keydown", (event) => {
-  // Two tabs: any arrow, Home, or End moves to the other one.
-  const next = { ArrowRight:"file", ArrowLeft:"url", Home:"url", End:"file" }[event.key];
-  if (!next) return;
+// Enter in the dialog's text field confirms, as its button does.
+$("confirm-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
   event.preventDefault();
-  setAddVia(next);
-  $(`add-tab-${next}`).focus();
+  $("confirm-dialog").close("ok");
 });
 
 $("chat-model").addEventListener("change", (event) => {
@@ -19772,14 +20711,22 @@ $("player-volume").addEventListener("input", (event) => {
   readerAudio.muted = readerAudio.volume === 0;
 });
 document.addEventListener("click", (event) => {
-  if (!event.target.closest(".menu-wrap")) closeMenus();
+  if (!event.target.closest(".menu-wrap, #row-menu, .row-more")) closeMenus();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
+  if (!$("row-menu").classList.contains("hidden")) {
+    const button = rowMenuButton;
+    closeMenus(); event.preventDefault();
+    button?.focus();
+  } else if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
     closeMenus(); event.preventDefault();
   } else if (!$("selection-menu").classList.contains("hidden")) hideSelectionMenu();
 });
+// A row's menu stays under its button only while nothing scrolls.
+window.addEventListener("scroll", () => {
+  if (!$("row-menu").classList.contains("hidden") && !playerDocked()) closeMenus();
+}, { passive:true });
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   if (!event.target.closest("#selection-menu")) hideSelectionMenu();
@@ -20100,7 +21047,7 @@ def main():
         "--https", action="store_true",
         help=(
             "Serve over HTTPS with Hilde's own certificate authority, kept in ~/.hilde/tls. "
-            "Install it once on each device you browse from (Advanced › This server)."
+            "Install it once on each device you browse from (Settings › Models and connection)."
         ),
     )
     secure.add_argument("--tls-cert", type=Path, metavar="FILE",
@@ -20266,7 +21213,7 @@ def main():
     if authority:
         print(
             f"HTTPS: install Hilde's certificate authority ({authority}) once on each device "
-            "you browse from: Advanced › This server › Download Hilde's certificate.",
+            "you browse from: Settings › Models and connection › Download Hilde's certificate.",
             flush=True,
         )
     print("State: per-browser cookies", flush=True)

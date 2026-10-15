@@ -1,53 +1,93 @@
 # Web UI
 
 Open the address the server prints when it starts, for example
-`http://127.0.0.1:8800/`; `--open` opens it for you. The page has three tabs,
-**Create**, **Voices**, and **Listen**, plus **Advanced** for settings.
+`http://127.0.0.1:8800/`; `--open` opens it for you.
+
+## Header and navigation
+
+The header shows Hilde's name and "Listen to your documents. Follow the text.
+Ask to understand." (smaller on a phone). Below it are three tabs: **Create**,
+**Voices**, and **Listen**. **Listen** opens the **Library**, the list of your
+audiobooks, or the book you had open.
+
+At the right of the header:
+
+- **Settings** opens the settings in place of the page; **Close settings**, or
+  any tab, closes them again. See [Settings](#settings).
+- While anything is being made, or after an audiobook stopped or failed, a
+  small indicator counts every job on this server, from any browser, for
+  example `1 running · 2 queued` (or `1 failed`, `1 stopped`). It opens the
+  [progress view](#following-an-audiobook-being-made).
 
 ## Create an audiobook
 
 **Create** walks through three steps, one at a time: **Add the source document**,
-**Choose a voice**, and **Create audiobook**. A finished step collapses to a
-summary with **Change**.
+**Choose a voice**, and **How Hilde prepares the text**. A finished step
+collapses to a summary with **Change**; going back to a step keeps what you
+chose in the others.
 
-A book is made from a document chosen under **Your documents**, or a new one
-added under **Or add a new one**, which has two tabs. **URL**, selected first,
-downloads a document from a direct HTTP(S) link when you press **Continue**.
-**File** holds **Upload a file**; a file dropped anywhere on the first step's
-panel uploads from either tab. Switching to **File** clears a link you typed.
-The save-as filename under **URL** is optional: the server infers
-the document type and adds the matching extension when needed, including for
-extensionless PDF URLs such as arXiv `/pdf/<id>` links. Files are limited to
-64 MiB. Supported document types are PDF (`.pdf`), Markdown (`.md` or
-`.markdown`), and plain text (`.txt` or `.text`), rather than HTML landing
-pages. The voice step is a dropdown of your saved voices, with a card that
-previews the one you choose.
+The first step offers three separate ways to choose a document:
 
-**Delete** beside the dropdown removes the chosen document after you confirm.
-Audiobooks made from it are kept, and a job already queued keeps its own copy.
+- **Saved document**: one you added before. **Delete** beside it removes the
+  chosen document after you confirm. Audiobooks made from it are kept, and a
+  job already queued keeps its own copy.
+- **From a URL**: a direct HTTP(S) link to a PDF, Markdown, or text file,
+  downloaded when you press **Continue**. **Save as** is optional: the server
+  works out the document type and adds the matching extension when needed,
+  including for PDF links without one, such as arXiv `/pdf/<id>` links.
+- **Upload a file**: **Choose a file…**, or drop a file anywhere on the step.
+
+Files are limited to 64 MiB. Supported document types are PDF (`.pdf`),
+Markdown (`.md` or `.markdown`), and plain text (`.txt` or `.text`), not HTML
+web pages. Once chosen, the step shows **Chosen:** with the file name and its
+type (PDF, Markdown, or Text). A problem, such as a link that is not a
+document or a file type Hilde can't read, is said in a short sentence inside
+the step. Adding a document under a name you already have asks first, naming
+the file it would replace.
+
+The voice step is a dropdown of your saved voices (the same choice as
+**Select** on **Voices**), with a card that previews the one you choose.
+
+The third step, **How Hilde prepares the text**, lists three options. Each
+says in one line what it does and in another what it can change, and shows the
+model it uses with a badge saying where the text goes: **Local** (your own
+machine or a model server you added) or **Cloud: <provider>**. **More** under
+an option holds the longer explanation and the full model choice:
+
+- **Adapt the text for listening**: the **Text model**, with **Providers** and
+  **Add local** to connect models. When you have not chosen one, the line
+  names the default, for example `Default: <model> · Cloud: OpenAI`.
+- **Interpret and narrate figures/charts (Experimental)**: the **Figure model**.
+- **Check and correct descriptions**: the **Checking model**.
+
+A **Summary** above **Create audiobook** lists the document, the voice, and
+what each option will do, with the same badges, so you see where the text goes
+before you send it. While Hilde is still finding out which models you have,
+the badges read **Checking…** and, with adapting on, **Create audiobook**
+waits until it knows where the text would go. When a speech server narrates, the summary names it
+("Speech server: <model>") without a Local or Cloud badge, because the page
+cannot know where that server runs.
 
 Long document names and book titles take at most two lines, ending in an
-ellipsis, in the step summaries, the progress card, the **In progress** list,
-and the **Listen** table. Hover over one in the step summary, the list, or the
-table to see the full name.
+ellipsis, in the step summaries, the progress view, the **In progress** list,
+and the **Library**. Hover over one to see the full name.
 
 A document whose content is already a book, under any file name, shows **You
 already have this one** with **Open**, **Overwrite**, and **Change voice**.
 Change voice continues to the voice step, and **Add this voice** reads the
 book's own text in that voice: no model runs and nothing is written again.
-Overwrite continues through the voice and adaptation steps as for a new book,
-and **Overwrite audiobook** asks, then makes the book again from this document
-with those settings, as **Recreate with the latest Hilde** does on Listen: its
-text is written again, and its other voices will need to be made again. A link
-typed under **URL** is the next book whatever the dropdown shows, so that
-notice gives way to **Continue**.
+Overwrite continues through the voice and preparation steps as for a new book,
+and **Overwrite audiobook** asks (naming the book), then makes the book again
+from this document with those settings, as **Recreate with the latest Hilde**
+does on Listen: its text is written again, and its other voices will need to
+be made again. A link typed under **From a URL** is the next book whatever the
+dropdown shows, so that notice gives way to **Continue**.
 
 Once **Create audiobook** has queued a book, the first step is empty again,
 ready for the next one; **Start listening** empties it too. You can queue as
 many books as you like; Hilde starts them in the order you add them. Below the
-steps, **In progress** lists every book in the queue: **View** follows a
-running one on **Progress**, **Stop** ends it, and **Cancel** takes a waiting
-one out of the queue.
+steps, **In progress** lists every book in the queue with its document, voice,
+and stage; **View progress** opens the progress view.
 
 **Create audiobook** starts the job when a compatible narration worker is idle,
 or it waits in the shared queue:
@@ -73,41 +113,62 @@ or it waits in the shared queue:
 
 Output folders and filenames are derived; the form never asks for either.
 For a remote narration backend, the configured server voice ID is used as the
-voice name. When a job you are watching finishes, **Create** shows its card
-above the steps: **Start listening** opens the book in
+voice name. When a job you are watching finishes, **Create** shows **Your
+audiobook is ready** above the steps: **Start listening** opens the book in
 **Listen** and **Download MP3** saves the voice's audio as
 `<book title> - <voice>.mp3` (a long title is shortened at a word; a book
-without a title uses its document's name). The card also gives the total time, counted from
-when the job left the queue, and each stage's share: for example
+without a title uses its document's name). The MP3 is there as soon as the
+book is, so the download starts at once; the button then reads **Download
+started** for a few seconds. It never says the file was saved, because only
+the browser knows that. The card also gives the total time, counted from when
+the job left the queue, and each stage's share: for example
 `Total time: 6m 03s (363.2 s): reading 12s, adapting 1m 30s, narrating 4m 00s,
 aligning 21s`. The job log ends with the same line. A run continued after a
 stop counts only its own work.
 
-While an audiobook is being made, a **Progress** tab appears after **Create**,
-and it opens when a book you start begins at once. At its top, a large orange
-**Create another book** returns to **Create** with the first step empty. Below
-it, the followed book's stage is named in plain words: Reading your
-document, Preparing the narration, Creating the audio, and Finishing your
-audiobook. Under the bar, a line says what is happening: reading page 3 of
-12, rewriting paragraph 40 of 135, speaking part 900 of 35,226, joining the
-parts into one recording after the last one is spoken, and matching the words
-to the audio for the follow-along view. Each step has its own time left,
-worked out from its average pace so far, so it settles instead of jumping as
-chunks finish in bursts; until a stage is a little way in, the browser counts
-down how long that stage took last time. **Stop** ends the book, and **Queue**
-lists everything else waiting. The tab goes away once nothing is being made. A
-reload keeps following the running job and reconnects to its server-sent event
-stream without duplicating received log lines.
+### Following an audiobook being made
+
+The progress view opens from the header indicator or **View progress**, and by
+itself when a book you start begins at once. **Create another book** returns to
+**Create** with the first step empty. The view lists every job on this server
+under **Running** and **Queued**, each with its document and voice; a running
+one also names the workers narrating it, and a queued one its place in line.
+
+The book you follow shows five stages: **Reading the document**, **Preparing
+the text for listening**, **Generating audio**, **Aligning text and audio**,
+and **Ready**. A finished stage has a check mark and what it did, such as
+`212 of 840 paragraphs`; a stage the job does not need shows **Skipped**: a
+text or Markdown file is not read page by page, so **Reading the document** is
+skipped (and so is preparing, when it is not adapted), and a new voice of an
+existing book skips both. Under
+the bar the count reads, for example, `900 of 35,226 parts · 2%`, and a line
+says what is happening. Counts come only from the work itself. A time
+estimate, "About N min left at the current pace", appears only once the
+current stage has made headway; there is none before.
+
+**Stop** ends a running book after you confirm ("Stop making '<title>'?");
+what is finished is kept. **Cancel** takes a waiting one out of the queue. A
+reload keeps following the running job without repeating its log.
+
+When a book stopped or failed, both **Create** and the progress view show a
+card for the latest one, also after a reload: the stage it stopped or failed
+in, what was finished (for example `Reading the document: done · Preparing the
+text: 212 of 840 paragraphs`), **Continue from the last completed part** (with
+"Changing the settings or the voice since then starts the changed steps
+again." and where the text goes), **Technical details** with its last log
+lines, and **Dismiss**, which hides the card in this browser only. The server
+forgets these when it restarts; a job you were following then says "The
+server restarted, so this work stopped", and starting it again continues
+where it left off.
 
 The queue is global across browsers. Every web submission uses the
 server-owned pool of [narration workers](configuration.md#narration-workers): one job claims
 all currently idle compatible workers, and each worker dynamically pulls chunk
 batches from that audiobook. A second job waits when the first has claimed the
-whole pool. Browsers see each worker's device (GPU index, model, memory) and
-live state plus active and waiting jobs. GPUs of other machines appear as
-`Node 1 · GPU 2` and so on. Speech-server URLs and filesystem paths are not
-published; the nodes' hosts and paths are shown only to a browser on the
-server's own machine.
+whole pool. The progress view and **Settings** show each worker's device and
+live state. GPUs of other machines appear as `Node 1 · GPU 2` and so on.
+Speech-server URLs and filesystem paths are not published; the nodes' hosts
+and paths are shown only to a browser on the server's own machine.
 
 A job ID is derived only from the selected document's content version and the
 voice version, plus whether it makes a new voice or remakes the book. Submitting
@@ -115,8 +176,8 @@ the same job while it is preparing, queued, or running returns the existing
 job, even through another browser or under renamed assets. The first accepted
 submission supplies the display names and runtime settings used by that job.
 
-Documents and voices may replace an existing asset with the same name. Making
-a voice the book already has asks for confirmation first.
+Documents and voices may replace an existing asset with the same name, after a
+confirmation that names it. Making a voice the book already has asks first too.
 
 Extraction and narration are resumable:
 
@@ -125,9 +186,9 @@ Extraction and narration are resumable:
 - each completed narration chunk is an independently validated WAV checkpoint;
 - restarting the server or pressing **Stop** leaves the job under
   `in_progress`;
-- choosing **Create audiobook** again (or **Continue** / **Try again**) with the
-  same document and voice versions reuses matching checkpoints and publishes
-  the finished book in one step;
+- choosing **Create audiobook** again (or **Continue from the last completed
+  part**) with the same document and voice versions reuses matching
+  checkpoints and publishes the finished book in one step;
 - checkpoint manifests still reject incompatible extraction or inference
   settings even though those settings are not part of the public job ID.
 
@@ -137,35 +198,48 @@ restart, submit unfinished document/voice pairs again to resume their durable
 
 ## Listen
 
-Open **Listen** to find a completed audiobook in a table of titles, durations,
-source names, and when a voice of it was last made. A title is the book's first heading, or its document's name
+**Listen** opens the **Library**: a table of your audiobooks with **Title**,
+**Duration**, **Source file**, **Voice** (with `(+2)` when other voices read
+it too), **Last position (this device)**, for example `12:45 of 43:53` or
+`Not started`, and **Open**, which reads **Continue** when this browser has a
+place in the book. Continue opens the book in the voice you last heard, paused
+at that place. A title is the book's first heading, or its document's name
 when that heading is a section such as Abstract. Search looks only at titles;
-every word you type must
-appear, in any order and case. **Delete** removes an audiobook, every voice of
-it, and its text after you confirm. **Listen**, or a click anywhere on a book's
-row, opens the book: **← Library** (as does the **Listen** tab pressed while a
-book is open; from another tab, **Listen** brings back the book you had open),
-the title, and one line with the voice, the length, and the source file. A
-book read by more than one voice shows a voice picker in that line. Above the
-text, and staying on screen while it scrolls, are **Follow along**, the
-**Narration text | Source text** switch, **⋯** (More), and the player: play,
-the seek bar, the time, the speed (it shows, for example, **1.25×**; click it
-to choose 0.75× to 2×), mute and volume, and **Ask Hilde**. On a phone the
-player sits at the bottom of the screen instead and never covers the text.
-The text runs in a comfortable reading column; on a wide screen the panel for
-the chat, a figure, or a source page opens beside it.
+every word you type must appear, in any order and case. **⋯** on a row holds
+**Delete…**, which removes the audiobook, every voice of it, its text, its
+notes, and its conversation after a confirmation naming the book. With no
+audiobooks yet, the Library says so and offers **Create your first
+audiobook**.
 
-**⋯** holds **Download MP3** (the voice being played), **Download source**
-(the document the book was made from, under the name it was added with; only
-while that document is still there: the book's own copy, or a document with
-the same content in **Documents**), **Change voice…**, **Recreate with the
-latest Hilde…**, and **Keyboard shortcuts**. **Change voice** reads the same
-text in another saved voice: nothing is rewritten, and the voice you have
-keeps playing until the new one is ready. **Recreate with the latest Hilde**
-writes the book again from its document with the current text adaptation,
-after you confirm; it is the only way a book's text changes. Voices made from
-the earlier text are kept but no longer play against the new one: the book
-offers **Make <voice> again** for each.
+A click anywhere on a book's row opens it too: **← Library** (as does the
+**Listen** tab pressed while a book is open; from another tab, **Listen**
+brings back the book you had open), the title, and one line with the voice,
+the length, and the source file. A book read by more than one voice shows a
+voice picker in that line. Above the text, and staying on screen while it
+scrolls, are **Follow along**, the **Narration text | Source text** switch,
+**⋯** (More), and the player: play, the seek bar, the time, the speed (it
+shows, for example, **1.25×**; click it to choose 0.75× to 2×), mute and
+volume, and **Ask Hilde**. On a phone the player sits at the bottom of the
+screen instead and never covers the text. The text runs in a comfortable
+reading column; on a wide screen the panel for the chat, a figure, or a source
+page opens beside it.
+
+**⋯** holds **Download MP3** (the voice being played; the button reads
+**Download started** for a few seconds), **Download source** (the document the
+book was made from, under the name it was added with; only while that document
+is still there: the book's own copy, or a document with the same content in
+**Documents**), **Change voice…**, **Recreate with the latest Hilde…**, and
+**Keyboard shortcuts**. **Change voice** asks in a dialog which saved voice
+should read the book and says what happens: "Read '<title>' with <voice>? The
+text stays the same; <voice> is added beside the voices it has. Nothing is
+replaced." Nothing is rewritten, and the voice you have keeps playing until
+the new one is ready. **Recreate with the latest Hilde** asks first, naming
+the text model and where it runs: Hilde prepares the text again from the
+document with your current settings and records it with the voice you are
+playing; the current text and that voice's recording are replaced. It is the
+only way a book's text changes. Voices made from the earlier text are kept but
+no longer play against the new one: the book offers **Make <voice> again** for
+each. Notes stay; the conversation is cleared.
 
 Your browser remembers, for each book, where you were (the sentence and the
 time) and the speed you chose, and the width of the side panel: opening the
@@ -212,7 +286,8 @@ paragraph it cites, such as ¶12,
 is a link that scrolls the book to it. When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what
-it used; those links open in a new tab. Its answer streams in as it writes;
+it used; those links open in a new tab, and the chat's header shows **Web
+search on**. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it at the top of the chat,
 from the models you connected under **Providers** or the models of every
 server you added under **Add local** on **Create**; a local model answers
@@ -261,11 +336,16 @@ citation such as ¶12 is read as "paragraph 12". Reading aloud needs the
 server's own narration model (`--voice-clone-model`); without it, neither
 shows.
 
-The files Hilde writes are listed as download links under the book's title,
-and stay until you ask Hilde to delete one. **Recreate with the latest
-Hilde** keeps them and starts a new conversation, since paragraph numbers
-change. Books made before this version of Hilde have no paragraph summaries:
-the chat says to recreate the book first.
+Notes Hilde writes are listed under the book's title in **Notes Hilde
+wrote**. Each shows its file name, the book, the section you asked about when
+it was written (or "No section"), that it is kept in this book's files on the
+server, and its size, with **Copy text** and **Download .md**. In the chat, a
+note's line reads "· Saved" only once the server has written it. Hilde never
+overwrites a note: it writes a new one under a new name. Notes stay until you
+ask Hilde to delete one. **Recreate with the latest Hilde** keeps them and
+starts a new conversation, since paragraph numbers change. Books made before
+this version of Hilde have no paragraph summaries: the chat says to recreate
+the book first.
 
 The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
@@ -323,33 +403,58 @@ that does not establish that the generated file is silent.
 
 ## Voices
 
-**Voices** lists every saved voice in a compact table: Preview, Voice name,
-Prompt, Modified (when its sample, transcript, or prompt last changed), and
-**Select**, **Rename**, and **Delete** buttons, 50 rows at a time. The
-prompt is the voice description given to VoiceDesign, and search looks only at
-prompts: every word you type must appear, in any order and case, so
-`warm british female` finds voices whose prompt contains all three. The
-preview plays in place. A book's voice is chosen in **Create**, and the voice
-chosen there shows **In use**. **Delete** removes a
-voice after you confirm; audiobooks made with it are kept, and a job already
-queued keeps its own copy. **Rename** gives a voice a new name and keeps
-everything else: its sample, transcript, and prompt stay as they are, and the
-audiobooks it read show the new name too. It waits while an audiobook is being
-made with the voice, and refuses a name another voice already has.
+**Voices** lists every saved voice in a compact table: a preview button,
+**Voice name**, **Voice description**, **Modified** (when its sample,
+transcript, or description last changed; hidden on a phone), and **Select**,
+50 rows at a time. Each description shows one line; **Full description** under
+it opens the whole text in place, and **Show less** closes it, without
+selecting the voice. The preview plays in place; playing another stops the
+first, and a preview never changes which voice is selected.
 
-A new library comes with eight stock voices, each with its prompt: Balder,
-Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun (female).
+**Select** chooses the voice for your next audiobook: the same choice as the
+voice step on **Create**. The chosen voice shows **✓ Selected** instead, and a
+line says it is selected, with **Back to Create**. **⋯** on a row holds
+**Edit**, **Rename…**, and **Delete…**:
 
-To change a voice, choose **Select**: its name and prompt load into the editor
-at the top. Change the prompt and choose **Listen**. VoiceDesign makes a new
-version, which plays as soon as it is ready, while the saved voice stays as it
-was. Listen again after each change until you like it, then choose **Save**,
-which keeps exactly the version you heard. The version it replaces is kept
-inside the voice's folder, in `.versions/v1`, `v2`, and so on, so books made
-with it still count as read by this voice. Save under another name to keep both
-voices. **New voice** opens the same editor empty, and **Stop** cancels a
-version being made. Every voice reads the same fixed passage, so previews
-compare pace, tone, and naturalness on the same words; the passage is saved as
+- **Delete** removes a voice after a confirmation naming it; audiobooks made
+  with it keep their audio, and a job already queued keeps its own copy.
+- **Rename** asks for the new name in a dialog and keeps everything else: its
+  sample, transcript, and description stay as they are, and the audiobooks it
+  read show the new name too. It waits while an audiobook is being made with
+  the voice, and refuses a name another voice already has.
+- **Edit** opens the voice in the editor at the top.
+
+Search looks only at descriptions: every word you type must begin a word of
+the description, in any order, ignoring case and accents, so
+`warm british female` finds voices whose description contains all three. When
+none matches, the page says "No voice description contains all of: warm,
+british, female." with **Clear search**.
+
+A new library comes with eight stock voices, each with its description:
+Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun
+(female).
+
+### Making a new voice
+
+**New voice** opens the editor. **Describe the voice** takes a description
+such as "Warm British female narrator in her thirties; calm, clear, and
+unhurried.", and **Name** the voice's name. **Generate preview** has
+VoiceDesign make a version, which plays as soon as it is ready; **Stop**
+cancels it. Voices can be designed only while no audiobook is being made.
+**Save voice** turns on once you have heard this preview to its end or for at
+least 3 seconds, and only while the description is the one previewed; change
+the description and you generate a new preview first. Save keeps exactly the
+version you heard. **Edit** on a voice opens the same editor with its name and
+description, as **Edit <name>**; the saved voice stays as it was until you
+save.
+
+When the name is taken, the editor says "A voice named '<name>' exists.
+Saving replaces it; its current version is kept in its history.", and **Save
+voice** asks first, naming the voice. The version it replaces is kept inside
+the voice's folder, in `.versions/v1`, `v2`, and so on, so books made with it
+still count as read by this voice. Save under another name to keep both
+voices. Every voice reads the same fixed passage, so previews compare pace,
+tone, and naturalness on the same words; the passage is saved as
 `transcript.txt` beside `reference.wav` and is neither shown nor editable.
 
 Voices made before the fixed passage read other words. Render their comparable
@@ -363,51 +468,64 @@ python audiobook_tts_web.py \
 
 This narrates the fixed passage with each such voice into its `preview.wav`
 and exits; the voices themselves are unchanged. Until then, **Voices** notes
-that their previews read an older passage. Voices made before prompts were
-saved have none, so search cannot find them; write the prompt into the voice
-folder's `description.txt` to make one searchable.
+that their previews read an older passage. Voices made before descriptions were
+saved have none, so search cannot find them; write the description into the
+voice folder's `description.txt` to make one searchable.
 
-## Advanced
+## Settings
 
-**Advanced**, beside the tabs and hidden on **Listen**, shows the server's
-narration workers and the settings a browser may change; while they show, the
-button reads **Simple** and hides them again. On **Progress** it shows only
-**This server**, to watch the workers while a book is made:
+**Settings**, in the header, replaces the page until you choose **Close
+settings** or a tab. Each setting says when it takes effect: "Applies to the
+next audiobook" (some also to the next voice preview) or "Applies now". The
+groups:
 
-- **This server** shows the narration workers as live chips, for example
-  `GPU 0 idle` through `GPU 3 running`, followed by the device model and
-  memory; hover a chip for its job. **This machine narrates on** has a box for
-  each of the server's own devices: untick one and its chip reads `off`, and
-  it takes no book until ticked again. **Other machines** lists the nodes that
-  narrate over SSH, each with **Remove**, and **Add workers** adds one: enter
+- **Narration**: precision, attention, language, text encoding, an optional
+  seed, [**Batch size**](configuration.md#batch-size), **Chunking** (the
+  longest chunk in characters; a book's new voice keeps the book's own), and
+  **MP3 compression**. Settings a speech server cannot use are turned off.
+- **Text preparation**: how many workers adapt the text at once and how many
+  paragraphs each takes; see [Text adaptation](text-adaptation.md).
+- **Voices**: **Reference WAV encoding**. It remains because the generated
+  sample is required for local voice cloning; it is not an output-location
+  choice.
+- **This machine's GPUs**: the server's own narration workers as live chips,
+  for example `GPU 0 idle` or `GPU 3 running`, with the device model and
+  memory; hover a chip for its job. **Narrates on** has a box for each device:
+  untick one and its chip reads `off`, and it takes no book until ticked again
+  (applies now).
+- **Other machines**: the workers of the nodes that narrate over SSH, each node
+  with **Remove** (after a confirmation naming it), and **Add workers**: enter
   its address, **Connect**, **Set up** if it lacks Hilde's Python or the speech
   model, untick any GPU to leave alone, **Add node**; see
-  [Narration workers on other machines](ssh-workers.md). Only a browser on
-  the server's own machine sees the hosts and may change them. It also names
-  the narration and voice-design models and the device voice creation uses.
-  **Connection** says whether this browser will warn about downloads (plain
-  HTTP from another device does) and, when the server runs with `--https`,
-  offers **Download Hilde's certificate** to install once on this device; see
-  [HTTPS](../README.md#https).
-- **Speech tuning**: precision and attention implementation, language, text
-  encoding, and an optional seed.
-- **Narration**, on **Create**: **Chunking**, the longest chunk in characters;
-  [**Batch size**](configuration.md#batch-size); and **MP3 compression**.
-- **Text adaptation**, on **Create** while adaptation is selected: how many
-  batches run at once; see [Text adaptation](text-adaptation.md).
-- **Voice files**, on **Voices**: **Reference WAV encoding**. It remains
-  because the generated sample is required for local voice cloning; it is not
-  an output-location choice.
+  [Narration workers on other machines](ssh-workers.md). Changes apply now; a
+  running audiobook keeps its workers.
+- **Models and connection**, shown but not changed here: the narration,
+  voice-design, and text models, and **Connection**, which says whether this
+  browser will warn about downloads (plain HTTP from another device does) and,
+  when the server runs with `--https`, offers **Download Hilde's certificate**
+  to install once on this device; see [HTTPS](../README.md#https).
 
-Settings a remote speech server cannot use are disabled. Browsers cannot
-select, pin, or name devices.
+Only a browser on the server's own machine sees the nodes' hosts and may change
+the GPUs and machines; elsewhere those groups say "Only a browser on the
+server's own machine can change this." Browsers cannot select, pin, or name
+devices.
+
+## Asking before risky actions
+
+Deleting a voice, a book, or a document, renaming a voice, recreating or
+overwriting a book, replacing a voice's recording, saving a voice or adding a
+document over an existing name, stopping a book, removing a machine, and
+starting a new conversation each ask first in a dialog on the page that names
+what is affected. Previewing, opening, and playing never ask.
 
 ## Browser state
 
 Editable form settings, the local model servers added under **Add local**
 among them, are stored in bounded `HttpOnly; SameSite=Strict`
-cookies per browser. Model paths, model IDs, speech-server endpoints, worker
-devices/hosts, credentials, storage paths, and output paths remain
+cookies per browser. This browser alone also remembers, in its local storage,
+each book's place and speed, the side panel's width, and which stopped or
+failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
+worker devices/hosts, credentials, storage paths, and output paths remain
 server-owned; only a browser on the server's machine may add or remove the
 nodes in `workers.yaml`. Public API responses name local devices and models but omit
 hostnames, SSH targets, speech-server URLs, and paths; only `/api/workers`,
@@ -419,6 +537,6 @@ clients use **Download MP3**.
 When Hilde's server stops answering, for example while the machine restarts,
 the page says so at the top and turns off everything that needs the server:
 creating, saving, deleting, settings, and Chat. The tabs, the player, and the
-text stay, so a book already downloaded plays on. The page checks every two
-seconds and, once the server answers, reloads its state and turns everything
-back on by itself; there is no need to refresh.
+text stay, so a book already loaded in this browser plays on. The page checks
+every two seconds and, once the server answers, reloads its state and turns
+everything back on by itself; there is no need to refresh.

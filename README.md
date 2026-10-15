@@ -157,7 +157,7 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   records, for each local model a book was made with, whether it did
   (`local_vision`).
 - **Cloud providers receive your document.** A document goes to OpenAI,
-  Anthropic (directly, or through Claude Code), or Google when you choose one of their models, or, with **Model** left on
+  Anthropic (directly, or through Claude Code), or Google when you choose one of their models, or, with **Text model** left on
   Default, when you have added no local server. The text and figures of each
   adapted document are then sent to that provider. Use a local model server for
   private documents.
@@ -184,7 +184,7 @@ downloading the models ahead of time.
 ## Configuration
 
 The server takes its configuration from command-line options when it starts;
-each browser changes only its own settings, under **Advanced**.
+each browser changes only its own settings, under **Settings**.
 [Configuration](docs/configuration.md) covers:
 
 - [starting the server](docs/configuration.md#start-the-server) and every
@@ -195,7 +195,7 @@ each browser changes only its own settings, under **Advanced**.
   server;
 - [narration workers](docs/configuration.md#narration-workers): every GPU the
   server sees, plus the GPUs of [other machines](docs/ssh-workers.md), added
-  under **Advanced**;
+  under **Settings**;
 - [batch size](docs/configuration.md#batch-size) and GPU memory.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a
@@ -227,7 +227,7 @@ machine's names, never for another website, and its key stays in
 to the `https://` one.
 
 Each device trusts the authority once: open Hilde (the browser warns the first
-time; continue to the page), choose **Advanced**, then under **This server**
+time; continue to the page), choose **Settings**, then under **Models and connection**
 **Download Hilde's certificate**, and install it:
 
 - **macOS**: open the file, add it to the System keychain, then in Keychain
@@ -250,11 +250,16 @@ device must install again.
 
 ## Web UI
 
-**Create** turns a document into an audiobook, **Listen** plays it with its
-synchronized text, its source text, and its figures as printed in the PDF,
-remembering where you were in each book, **Ask Hilde** answers questions
-about what you are hearing and writes Markdown notes, and **Voices** designs
-narrators: see [Web UI](docs/web-ui.md).
+The page has three tabs. **Create** turns a document into an audiobook in
+three steps, showing before you start which model prepares the text and
+whether it runs locally or in the cloud. **Voices** lists your narrators,
+searchable by description, and designs new ones. **Listen** opens the
+**Library**, where each book shows its last position on this device, and
+plays a book with its synchronized text, its source text, and its figures as
+printed in the PDF; **Ask Hilde** answers questions about what you are hearing
+and writes Markdown notes. A header indicator counts the audiobooks being
+made and opens their progress, and **Settings** holds the narration, text
+preparation, and machine settings: see [Web UI](docs/web-ui.md).
 
 ## Command line
 

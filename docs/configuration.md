@@ -4,7 +4,7 @@
 server-side library. Its configuration comes from command-line options when the
 server starts; browsers cannot replace that process-wide configuration.
 Settings each browser may change, such as precision, chunking, and batch size,
-are under **Advanced** in the page; see [Advanced](web-ui.md#advanced). The
+are under **Settings** in the page; see [Settings](web-ui.md#settings). The
 text-adaptation model is on **Create**, under **Adapt the text for listening**.
 
 ## Start the server
@@ -213,12 +213,12 @@ example to keep narration off GPU 0 even when it has room:
 CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 ```
 
-Without a restart, **This machine narrates on** under **Advanced** turns each
+Without a restart, **Narrates on** under **Settings** › **This machine's GPUs** turns each
 local device off or on; with a node added, every local device can be off, so
 only the other machines narrate.
 
 Remote membership comes from the nodes in `workers.yaml`, which **Add workers**
-under **Advanced** writes; nodes added or removed there take effect without a
+under **Settings** writes; nodes added or removed there take effect without a
 restart. See [Narration workers on other machines](ssh-workers.md).
 
 The server probes PyTorch-visible CUDA and MPS devices in a short-lived child.
@@ -250,7 +250,7 @@ All batch sizes reuse the same voice prompt. Batching controls memory use and th
 submits the whole book on one device. In distributed mode it is the number of
 chunks one worker takes at a time, and `0` becomes one chunk per worker so
 faster workers can pull more work. The web app's **Batch size** (under
-**Advanced**) defaults to 2.
+**Settings**) defaults to 2.
 
 Larger batches narrate faster until GPU memory runs out. On an RTX PRO 6000
 with about 6 GiB left beside another model, one sentence per call narrated at
@@ -260,7 +260,7 @@ needed about 0.7 GiB on top of the 4 GiB model.
 A batch that runs out of CUDA memory is retried one chunk at a time, so a batch
 size that is too large costs time rather than the book. If the log often says
 so, lower the batch size to skip the wasted attempt, and reduce
-`--chunk-max-chars` (**Chunking** under **Advanced**) when individual chunks are
+`--chunk-max-chars` (**Chunking** under **Settings**) when individual chunks are
 too expensive. Other GPU processes, such as another model server, leave less
 memory for narration. A single chunk that still does not fit fails a
 single-device run; with several workers, that GPU hands its chunks to the others

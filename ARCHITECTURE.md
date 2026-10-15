@@ -37,7 +37,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `docs/installation.md` | User guide to installing: the one-command installer and its settings, then by hand: environment, PyTorch/TorchAudio builds, dependencies, FlashAttention 2, and model downloads. |
 | `docs/configuration.md` | User reference for the web server: starting it and its options, storage, speech models, narration workers, and batch size. |
 | `docs/text-adaptation.md` | User guide to text adaptation: what it changes, models and providers, local servers and images, workers, and what the job log reports. |
-| `docs/web-ui.md` | User guide to the page: creating an audiobook, the Listen reader, Voices, Advanced, and browser state. The README links to it. |
+| `docs/web-ui.md` | User guide to the page: header and navigation, creating an audiobook and following its progress, the Library and the Listen reader, Voices and new voices, Settings, confirmation dialogs, and browser state. The README links to it. |
 | `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
 | `docs/ssh-workers.md` | User guide to narration workers on other machines: requirements, **Add workers** and `workers.yaml`, and the CLI form. The README links to it. |
 | `docs/command-line-options.md` | User reference listing every `audiobook_tts.py` flag with its default. The README links to it. |
@@ -329,8 +329,9 @@ first served (`release_migration_backup()`). The empty `.versions` and
   book without a title uses its document's stem. A non-ASCII name goes in
   `filename*` (RFC 5987) with an ASCII `filename` fallback (`send_file()`).
 - Unfinished workflow: `in_progress/<job-id>/`.
-- Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
-  **Save** stores under a voice name. Listen keeps only the newest ten drafts.
+- Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Generate preview**
+  made that **Save voice** stores under a voice name. Only the newest ten
+  drafts are kept.
 - Workers: `workers.yaml`, a `nodes:` list of `host`, `python`, `model`, and
   `devices` (`cuda:N`, `mps`, or `cpu`) and an optional `local_off:` list of
   this machine's devices that do not narrate, with a comment header, written
@@ -352,12 +353,12 @@ needs the text written again. The browser asks and retries with
 
 ## Canonical browser state
 
-`normalize()` accepts tabs `audiobook` (Create), `voice` (Voices), and `player` (Listen) and rebuilds four known sections:
+`normalize()` accepts tabs `audiobook` (Create), `progress` (the progress view), `voice` (Voices), and `player` (Listen); Settings is page-local, never a saved tab. It and rebuilds four known sections:
 
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, `local_servers`, the local model servers added under **Add local**, in the order added: at most `LOCAL_SERVERS_MAX` (8) `{"server", "provider", "vision"}`, one per server, the server an origin from `normalize_local_server()`, `provider` `ollama` or `lm-studio`, `vision` whether its models see images, true only when stored as `true`; `normalize_local_servers()` drops invalid and repeated entries, and a state from before the list, with `local_server`, `local_provider`, and `local_vision`, becomes its one entry, those keys dropped; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed and the side panel's width are this browser's alone, in `localStorage` (see Reader), never in cookies or on the server.
+- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -697,8 +698,8 @@ stage with the job that made the book. Filenames, browser identity, and
 inference controls are not part of the job identity. A submission matching a
 preparing, queued, or running job returns that existing record; the first
 submission owns its labels and execution settings. A job record names its
-`book` and `mode`, so **Continue** and **Try again** resubmit a new voice or a
-remake as one.
+`book` and `mode`, so **Continue from the last completed part** resubmits a
+new voice or a remake as one.
 
 For a local narration model, `audiobook_consumers()` creates one worker
 descriptor per CUDA GPU visible to the server process and, through
@@ -743,189 +744,310 @@ after restart resumes compatible extraction and narration checkpoints.
 
 `/api/events?job=<id>` honors `Last-Event-ID`, replays only missing history for
 that job, and adds stream-time elapsed values. A page reload follows one active
-run; the queue's **View** controls switch the progress panel between concurrent
-runs, and polling follows another active job after the viewed one ends. If the
-server restarted, the browser reports interruption and directs the user to
+run; **View** in the progress view switches the followed run between
+concurrent ones, and polling follows another active job after the viewed one
+ends. The progress view's stopped or failed card replays a finished job's
+events the same way (`loadJobHistory()`) while the server keeps the job. If
+the server restarted, the browser reports interruption and directs the user to
 resubmit; durable audiobook work then resumes from its version-pair stage.
 
-The page resets ETA at every phase boundary. Until a step has made headway it counts down the phase's historical duration from browser `localStorage`, or shows `Estimating time…`; a later step of the phase, such as joining after speaking, starts at `Estimating time…`. A step is one series of progress reports with the same unit and total (extraction reads pages, then paragraphs). `updateEta()` estimates from the step's average pace: the seconds since the step's first report over the units finished since it, which leaves out work a resumed narration kept. Workers finish chunks in bursts, so a pace measured between reports, or smoothed from them, swung between minutes and hours; the step's average moves little with each report. It replaces the historical countdown once the step has finished 5% of its remaining units, and at least three. The page renders a one-second countdown (`About 3m 10s left`) and shows `Almost done…` at the end. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines; the narrator's `Joined chunk N/T` lines (`JOIN_LINE`) become progress of their own step, unit `join`. `progressDetail()` says what each step does: "Reading page N of T", "Rewriting for listening: paragraph N of T", "Speaking part N of T", "Joining the parts into one recording: N of T", and "Matching the words to the audio: sentence N of T", with thousands separators, so a long step never looks stuck.
+The page resets ETA at every step: one series of progress reports with the same unit and total (extraction reads pages, then paragraphs; narration speaks parts, then joins them). There is no estimate before the step has made headway, and none from an earlier run. `updateEta()` estimates from the step's average pace: the seconds since the step's first report over the units finished since it, which leaves out work a resumed narration kept. Workers finish chunks in bursts, so a pace measured between reports, or smoothed from them, swung between minutes and hours; the step's average moves little with each report. It shows once the step has finished 5% of its remaining units, and at least three, as `About N min left at the current pace` (`renderEta()`, every five seconds), and disappears when the step completes. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines; the narrator's `Joined chunk N/T` lines (`JOIN_LINE`) become progress of their own step, unit `join`. `progressDetail()` says what each step does: "Reading page N of T", "Preparing the text for listening: paragraph N of T", "Generating audio: part N of T", "Joining the parts into one recording: N of T", and "Aligning text and audio: sentence N of T", with thousands separators, so a long step never looks stuck.
 
 ## UI contract
 
-The browser app is **Hilde**. The Hilde logo (`assets/hilde-dark.png`) and
-name head the page above a small "Audiobook Studio" tagline, and a small
-**by Zeki Works** signature with `assets/zeki.jpg` closes it. The palette is
-one charcoal ground, off-white text, one gray surface family, and one warm
-orange accent reserved for the selected tab or voice, the primary action,
-progress, and playback. Each view shows at most one primary (orange) button.
+The browser app is **Hilde**. The header holds the Hilde logo
+(`assets/hilde-dark.png`), the name, and the tagline "Listen to your
+documents. Follow the text. Ask to understand." (shown on phones too, smaller);
+at its right are the jobs indicator and **Settings**. A small **by Zeki
+Works** signature with `assets/zeki.jpg` closes the page. No model names or
+GPU details appear on Create; they are in the progress view and Settings. The
+palette is one charcoal ground, off-white text, one gray surface family, and
+one warm orange accent reserved for the selected tab or voice, the primary
+action, progress, and playback. Each view shows at most one primary (orange)
+button: Create's step **Continue** or **Create audiobook**, **New voice** on
+Voices, **Create your first audiobook** on an empty Library, none in Settings.
+Secondary buttons are neutral; destructive or rare actions are text buttons or
+sit in a row's **⋯** menu, always behind a confirmation dialog.
 
-Three pages, and a fourth while an audiobook is being made, form an ARIA
-tablist of folder tabs on a baseline (Arrow, Home, and End keys move between
-the shown ones). Inactive tabs stand slightly raised with a bevel;
-the active tab is flush with an accent top edge and opens into the page below.
-**Advanced** is a separate toggle at the right of the strip, shown on
-**Create**, **Progress**, and **Voices**, that reads **Simple** while its
-panels are open. On **Progress** it opens only **This server**: the other
-panels set up the next book, not the one being made.
-The run log shows below every page but **Listen**. Each page:
+Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
+folder tabs on a baseline (Arrow, Home, and End keys move between them).
+Inactive tabs stand slightly raised with a bevel; the active tab is flush with
+an accent top edge and opens into the page below. Two more views have no tab:
+
+- The **progress view** (`#page-progress`, tab `progress` in state) opens from
+  the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from
+  **View progress** on Create, and by itself when this browser starts a job
+  that runs at once (`showStartedJob()`). `renderIndicator()` counts every job
+  on the server, from `/api/jobs`'s `queue`: "1 running · 2 queued" (preparing
+  counts as queued), or "1 failed" / "1 stopped" while nothing is queued and
+  the latest problem (below) is not dismissed; it is hidden otherwise.
+  `progressAvailable()` is the same condition, and `render()` returns an open
+  progress view to Create without it.
+- **Settings** (`#page-settings`, `settingsOpen`, page-local) opens from the
+  header button (`toggleSettings()`) in place of the current page, never above
+  it, and closes with **Close settings** or any tab (`setTab()`,
+  `chooseListen()` call `setSettings(false)`). See [Settings and
+  devices](#settings-and-devices).
+
+Each page:
 
 - **Create** shows three steps, one open at a time; a finished step collapses
-  to a summary with **Change**, and a later step opens only after the earlier
-  ones are complete.
-  1. **Add the source document**: choose one under **Your documents**, or add
-     a new one under **Or add a new one**, a two-tab panel (`#add-tabs`,
-     `addVia`, page-local): **URL** (first and selected) takes a link and an
-     optional save-as name, which **Continue** downloads first; **File** holds
-     **Upload a file**. A file dropped anywhere on the step's panel uploads
-     from either tab. Switching to **File** clears a typed link, which would
-     otherwise act unseen. **Delete** beside the dropdown removes the chosen
-     document. A typed link outranks the dropdown: it hides **You already have
-     this one** and shows **Continue**. `clearBookChoice()` empties the step
-     (document, link, and
-     save-as name) once **Create audiobook** has queued a book, and when
-     **Create another book** or **Start listening** begins the next one.
-  2. **Choose a voice**: the saved-voice dropdown and a card previewing the
-     chosen voice. A narration speech server takes a server voice ID instead.
-  3. **Create audiobook**: **Adapt the text for listening** with, while it is
-     ticked, the adaptation **Model**, **Providers** (the OpenAI sign-in,
-     Claude Code's status, and the Anthropic, OpenAI, and Google Gemini API
-     keys, which share `renderPaperKey()`, `savePaperKey()`, and
-     `removePaperKey()`), and **Add local** (`renderPaperLocal()`: the local
+  to a summary with **Change**, a later step opens only after the earlier
+  ones are complete, and going back resets nothing.
+  1. **Add the source document**: three separate `.source` sections, **Saved
+     document** (the dropdown, with **Delete**), **From a URL** (a link and an
+     optional save-as name, which **Continue** downloads first), and **Upload
+     a file** (**Choose a file…**; a file dropped anywhere on the step uploads
+     too). `#book-chosen` then reads "Chosen: <name> · PDF|Markdown|Text";
+     **Continue** refuses other types. Server errors for links and uploads
+     become short plain sentences in `#book-problem`. An upload or link whose
+     predicted file name (`documentNamesFor()`) is already in Documents asks
+     first (`replaceDocumentOk()`). A typed link outranks the dropdown: it
+     hides **You already have this one** and shows **Continue**.
+     `clearBookChoice()` empties the step (document, link, and save-as name)
+     once **Create audiobook** has queued a book, and when **Create another
+     book** or **Start listening** begins the next one.
+  2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
+     state Voices' **Select** sets) and a card previewing the chosen voice. A
+     narration speech server takes a server voice ID instead.
+  3. **How Hilde prepares the text**: three `.option`s, **Adapt the text for
+     listening**, **Interpret and narrate figures/charts (Experimental)**, and
+     **Check and correct descriptions**. Each has a line on what it does, a
+     "Can change:" line, the model's short name and its Local/Cloud badge
+     (`#adapt-badge`, `#figure-badge`, `#verify-badge`; the default model
+     reads "Default: <short>"), and a closed **More** `<details>` holding the
+     longer text and the full selector: **Text model** with **Providers** (the
+     OpenAI sign-in, Claude Code's status, and the Anthropic, OpenAI, and
+     Google Gemini API keys, which share `renderPaperKey()`, `savePaperKey()`,
+     and `removePaperKey()`) and **Add local** (`renderPaperLocal()`: the local
      model servers added, each with its address, type, a **This model sees
      images** box saved at once, and **Remove**, then a form whose **Check and
      add** asks `/api/paper/local/check` and appends the server; the button
-     reads **Local (N)** once N are added) under
-     it, since adapting cannot run without a model; then **Create audiobook**.
-     Every model picker (`fillModelSelect()`) groups a local server's models
-     under "<provider> · <host:port>", each labelled "<model> · <host:port>".
-     Step 3's missing-model problem comes from the server's check of the saved
-     providers, so connecting or removing one (the OpenAI sign-in completing,
-     an API key saved or removed, **Check again** for Claude Code) syncs
-     again to replace it, as choosing another model already did.
+     reads **Local (N)** once N are added), **Figure model**, and **Checking
+     model**. Every model picker (`fillModelSelect()`) groups a local server's
+     models under "<provider> · <host:port>", each labelled
+     "<model> · <host:port>". Step 3's missing-model problem comes from the
+     server's check of the saved providers, so connecting or removing one (the
+     OpenAI sign-in completing, an API key saved or removed, **Check again**
+     for Claude Code) syncs again to replace it, as choosing another model
+     already did. `renderSummary()` fills the **Summary** above **Create
+     audiobook**: document and type, voice, and text, figures, and checking
+     with their models and badges; a narration speech server shows as
+     "Speech server: <model>" with no Local/Cloud claim. Until the text-model
+     catalog has loaded (`paperCatalog.loaded`), the default model reads
+     "Checking the models…" with the badge "Checking…", and with adapting on
+     **Create audiobook** and the failure card's **Continue** stay disabled,
+     since where the text goes is not yet known. With details closed
+     the step fits a 1600 × 900 window.
 
-  Below the steps, an **In progress** list shows every job in the queue with
-  **View** (a running job; opens **Progress** following it), **Stop**, or
-  **Cancel**. A finished run that was being watched returns to **Create**
-  with its card above the steps (`resultShown`): its total time, from
-  leaving the queue (`Run.start()` sets `work_started_at`) to the published
-  book, then each stage it timed (`RUN_STAGES`: reading, adapting, narrating,
-  aligning); `total_time_summary()` writes it, and the log's last line
-  repeats it as `Total time: 6m 03s (363.2 s): …`. A resumed run counts only
-  its own work. Its outcome offers **Start listening** (opens the book on
+  Below the steps, **In progress** (`createJobRow()`) shows every job in the
+  queue with its title, voice, and stage only (`jobStage()`), and **View
+  progress**. A finished run that was being watched returns to **Create**
+  with **Your audiobook is ready** above the steps (`resultShown`): its total
+  time, from leaving the queue (`Run.start()` sets `work_started_at`) to the
+  published book, then each stage it timed (`RUN_STAGES`: reading, adapting,
+  narrating, aligning); `total_time_summary()` writes it, and the log's last
+  line repeats it as `Total time: 6m 03s (363.2 s): …`. A resumed run counts
+  only its own work. Its outcome offers **Start listening** (opens the book on
   **Listen**) and **Download MP3**, both tied to that result even after the
-  next queued run starts; a stopped run offers **Continue** and a failed one
-  **Try again**, with its last log lines under **Technical details**. Both
-  resubmit the reported job's book and voice, whatever the steps hold by
-  then. A run's outcome away from **Progress** is only a notice.
-- **Progress** appears only while an audiobook job is running or getting
-  ready (`render()` hides `#tab-progress` otherwise and returns an open
-  **Progress** to **Create**); the server keeps `progress` as a tab, and
-  starting a job from it is refused. It opens when this browser starts a job
-  that runs at once, or with **View**. At its top, a large primary **Create
-  another book** (`createAnother()`) returns to **Create** with the first
-  step empty, beside a note that books queue without limit and start in the
-  order added (`JobQueue.pending` is first in, first out). Below it the
-  followed run shows four plain stages: Reading your document (PDF pages),
-  Preparing the narration (adaptation paragraphs or reused text), Creating
-  the audio (narration), and Finishing your audiobook (alignment), with
-  progress, ETA, and **Stop**; then **Queue** lists every job like **In
-  progress**, the followed one marked **Viewing**. Focus moves to the
-  followed run's heading.
-- **Voices** is a compact table: Preview, Voice name, Prompt, Modified, and **Select**,
-  **Rename**, and **Delete** buttons, 50 rows at a time with **Show more**. The
-  prompt is the VoiceDesign description
-  saved as `description.txt`. Search reads prompts only: every typed word must
-  begin a prompt word (AND, any order, case- and accent-insensitive, so `male`
-  does not match `female`). One shared player previews in place, ignoring
-  clips replaced before they start. A book's voice is chosen only in Create's
-  dropdown; the voice it holds shows **In use** here.
-  **Select** loads a voice's name and prompt into the editor at the top, titled
-  "Edit <name>"; **New voice** opens it empty. **Listen** designs a draft from
-  the prompt without touching the saved voice and plays it when ready. **Save**
-  stores exactly that draft under the name and is enabled only while the prompt
-  matches the one heard; saving under another name keeps both voices. **Stop**
-  cancels a draft. **Rename** (`window.prompt`, then `POST /api/voices/rename`)
+  next queued run starts.
+- The **progress view** has **Create another book** (`createAnother()`) at its
+  top, beside a note that it lists every job on this server, which start in
+  the order added (`JobQueue.pending` is first in, first out). Under
+  **Running**, the followed run's card (`renderProgress()`) shows its title,
+  "<document> · read by <voice>", and five stages (`STAGES`, from
+  `stageStates()` over the run's own events): Reading the document
+  (`extraction`, unit `page`), Preparing the text for listening (`extraction`,
+  unit `paragraph` or `document`), Generating audio (`narration`), Aligning
+  text and audio (`alignment`, which also publishes the book), and Ready
+  (`done`, code 0). A done stage shows ✓ and its last real count; a stage the
+  job never reached before a later one shows "Skipped" (a text document
+  without adaptation, a new voice of an existing book). Reading the document
+  counts as reached only from a `page` count, not the extraction `phase`
+  event alone, so a text or Markdown file shows it Skipped. The meter shows
+  "N of T <unit> · P%" only from a real count, the detail line, the ETA
+  above, the workers narrating it, and **Stop**, which asks "Stop making
+  '<title>'?" first. Other running jobs (`progressJobRow()`) show their stage
+  and workers with **View** and **Stop**; **Queued** lists the waiting ones
+  with their place and **Cancel**. Focus moves to the heading.
+
+  Stopped and failed jobs: `/api/jobs`'s `recent` lists this server process's
+  finished jobs, newest first. `latestProblem()` takes the newest entry per job
+  that is `failed` or `stopped`, not running again, and not dismissed in this
+  browser; `fillFailureCard()` shows it on Create (`#create-failure`) and in
+  the progress view (`#progress-failure`), so it survives a reload: "Stopped:"
+  or "Couldn't finish: <title>", the stage it ended in, what was finished
+  (`finishedText()`, e.g. "Reading the document: done · Preparing the text: 212
+  of 840 paragraphs"), **Continue from the last completed part** with "Changing
+  the settings or the voice since then starts the changed steps again." and
+  its send-out badges (`continueJob()` resubmits the same document or book,
+  voice, and mode, so the same job and its checkpoints), **Technical
+  details** (the job's log, replayed from `/api/events?job=`; "The server no
+  longer has this job's log." once it is gone), and **Dismiss**, which adds
+  `<id>@<finished_at>` to `hilde.dismissedJobs`. A server restart empties
+  `recent`; the followed run's "The server restarted…" notice stays.
+- **Voices** is a compact table (`voiceRow()`): a preview button, Voice name,
+  Voice description, Modified (hidden on phones), and **Select**, 50 rows at a
+  time with **Show more**. The description is the VoiceDesign prompt saved as
+  `description.txt`; it shows one line until **Full description** (an
+  `aria-expanded` toggle, kept across re-renders in `expandedVoices`) opens the
+  whole text in place, and **Show less** closes it; neither selects the voice
+  nor opens the editor. Search (placeholder "Search voice descriptions, e.g.
+  warm british female") reads descriptions only: every typed word must begin a
+  description word (AND, any order, case- and accent-insensitive, so `male`
+  does not match `female`); no match reads "No voice description contains all
+  of: <terms>." with **Clear search**. One shared player previews in place,
+  ignoring clips replaced before they start; a second preview stops the first,
+  and a preview never changes the selection. **Select** (`chooseVoice()`) sets
+  `audiobook.voice`, the state Create's step 2 uses; that voice's row shows
+  "✓ Selected" instead, and a banner offers **Back to Create**. Each row's
+  **⋯** (`rowMoreButton()`, one shared `#row-menu`) holds **Edit** (opens the
+  editor on that voice, titled "Edit <name>"), **Rename…**, and **Delete…**.
+  Rename (a confirm dialog with a name field, then `POST /api/voices/rename`)
   moves the voice to its new name and carries the browser's selected voice,
   open book's voice, and editor name along.
-- **Listen** is a compact table: Title, Duration, Source name, Modified, and **Listen**
-  and **Delete** buttons, newest first, 50 rows at a time. Search reads titles
-  only, with the same rules.
-  Without audiobooks it shows a short explanation and **Create your first
-  audiobook**. Each row is a book; its note lists the voices that read its
-  current text. **Listen**, or a click anywhere else on its row (not on a
-  button, nor one ending a text selection), opens the book view. Its top row
-  is **← Library** (a back link, as is the **Listen** tab pressed while
-  Listen is shown: `chooseListen()`; from another page the tab opens Listen
-  as it was left, with its book), the title, and one meta line: "Read by
-  <voice>" (a voice picker instead when more than one voice is ready),
-  duration, source file; then the **Files** links, the stale-voice notice
-  (**Make <voice> again**), and **Change voice**'s picker when open. Pinned
-  above the text (`#listen-bar`, sticky) are **Follow along**, the
-  **Narration text | Source text** switch (each option says what it shows),
-  **⋯ More** (**Download MP3**, **Download source** when `has_source`,
-  **Change voice…** for books with their own text, **Recreate with the latest
-  Hilde…**, **Keyboard shortcuts**), and the player bar. **Change voice**
-  lists the saved voices the book does not have yet; **Recreate** asks first;
-  both start a job whose progress shows on **Progress**. Menus open on a
-  click or tap, never on hover, one at a time; Escape or a click elsewhere
-  closes them. While a book is open, `playerKey()`, a capturing `keydown`
-  listener on the document, gives the player YouTube's shortcuts (Space or K,
-  J and L 10 seconds, ← and → 5, ↑ and ↓ volume only while focus is in
-  `#artifact-player`, M, 0 to 9, Home and End, < and > through
-  `PLAYER_SPEEDS`, ? opening and closing the **Keyboard shortcuts** dialog)
-  and announces volume and speed in `#player-key-status`. Text inputs,
-  selects, the volume slider, and tab strips keep their keys (the seek bar
-  takes the player's), Space still presses a focused button, link, summary,
-  or box, and a key with Ctrl, Alt, or Meta is left alone.
+- **New voice** (primary) opens the editor (`#voice-form`): **Describe the
+  voice**, with an example, and **Name**. **Generate preview** designs a draft
+  from the description without touching any saved voice and plays it when
+  ready; **Stop** cancels it; it is refused while any audiobook is queued.
+  **Save voice** stores exactly that draft under the name; it is enabled only
+  once the draft was played to its end or for 3 seconds (`noteDraftPlayed()`)
+  and while the description still equals the previewed one, and
+  `#voice-save-note` says which condition is missing. A name that exists shows
+  "A voice named '<name>' exists. Saving replaces it; its current version is
+  kept in its history." and Save asks "Replace voice '<name>'?" first. Saving
+  under another name keeps both voices.
+- **Listen** opens the **Library** (`#library-view`): a compact table
+  (`bookRow()`) of Title, Duration, Source file, Voice (the voice last heard
+  here, else the book's; "(+N)" for more ready voices, all named in its
+  tooltip), Last position (this device) (`hilde.book.<id>`'s time as "12:45 of
+  43:53", else "Not started"), and **Open**, which reads **Continue** when a
+  position exists and opens the book at that voice and time, paused. Its
+  accessible name stays "Listen to <title>". **⋯** holds **Delete…**. Newest
+  first, 50 rows at a time; search reads titles only, with the same rules.
+  Without audiobooks it shows "No audiobooks yet", a sentence, and **Create
+  your first audiobook**. A click anywhere else on a row (not on a button, nor
+  one ending a text selection) opens the book view. Its top row is **←
+  Library** (a back link, as is the **Listen** tab pressed while Listen is
+  shown: `chooseListen()`; from another page the tab opens Listen as it was
+  left, with its book), the title, and one meta line: "Read by <voice>" (a
+  voice picker instead when more than one voice is ready), duration, source
+  file; then **Notes Hilde wrote** (below), the stale-voice notice (**Make
+  <voice> again**). Pinned above the text (`#listen-bar`, sticky) are
+  **Follow along**, the **Narration text | Source text** switch (each option
+  says what it shows), **⋯ More** (**Download MP3**, **Download source** when
+  `has_source`, **Change voice…** for books with their own text, **Recreate
+  with the latest Hilde…**, **Keyboard shortcuts**), and the player bar.
+  **Change voice** opens `#change-voice-dialog`: the saved voices the book
+  does not have ready, the title "Read '<title>' with <voice>?", and
+  `changeVoiceText()`: "The text stays the same; <voice> is added beside the
+  voices it has. Nothing is replaced." (or "this replaces <voice>'s
+  recording." when the book has that voice), with its badges. **Recreate**
+  asks (`recreateBook()`): "Make '<title>' again from its document? Hilde
+  prepares the text again with your current settings (<model> · <badge>) and
+  records it with <voice>. The current text and <voice>'s recording are
+  replaced.", plus "Its other voices are kept but must be made again before
+  they play." when it has others, and "Notes stay; the conversation is
+  cleared." Both start a job whose progress shows in the progress view.
+  Menus open on a click or tap, never on hover, one at a time; Escape or a
+  click elsewhere closes them. While a book is open, `playerKey()`, a
+  capturing `keydown` listener on the document, gives the player YouTube's
+  shortcuts (Space or K, J and L 10 seconds, ← and → 5, ↑ and ↓ volume only
+  while focus is in `#artifact-player`, M, 0 to 9, Home and End, < and >
+  through `PLAYER_SPEEDS`, ? opening and closing the **Keyboard shortcuts**
+  dialog) and announces volume and speed in `#player-key-status`. Text
+  inputs, selects, the volume slider, and tab strips keep their keys (the
+  seek bar takes the player's), Space still presses a focused button, link,
+  summary, or box, and a key with Ctrl, Alt, or Meta is left alone.
 - On **Create**, a document whose content is already a book shows **You
   already have this one** with **Open**, **Overwrite**, and **Change voice**
   in step 1. For a book with its own text, Change voice makes step 3 hide
   adaptation and offer **Add this voice**, which reads the book's text without
   any model. Overwrite (`overwriting`, page-local, the book's ID; another
   document or a queued book clears it) keeps adaptation in step 3, whose
-  **Overwrite audiobook** confirms, then sends the book with mode `recreate`
-  and the step 2 voice, the request Listen's **Recreate** sends.
+  **Overwrite audiobook** asks "Overwrite '<title>'?", then sends the book
+  with mode `recreate` and the step 2 voice, the request Listen's **Recreate**
+  sends.
+
+**Download MP3** (`startDownload()`) is ready as soon as the book exists: it
+navigates to `/api/download`, shows the toast "Download started", and reads
+"Download started" for four seconds, never claiming the file was saved. The
+player's in-browser copy reads "Loading in this browser: N%", then "Loaded in
+this browser".
+
+**Notes Hilde wrote** (`#book-files`, `renderChatFiles()`) is a collapsed
+`<details>` listing each note's file name, the book's title, "Section: <s>"
+from the files listing's `section` (else "No section"), "In this book's files
+on the server" with its size, **Copy text**, and **Download .md**. A chat
+tool row that wrote a note gains "· Saved" only after the server's confirmed
+tool result. The chat header shows "Web search on" when `chat_payload`'s
+`web_search` is true.
 
 Document names and book titles wrap to at most two lines, the second ending in
 an ellipsis when cut (the `.clamp` class, which also breaks a name with no
-spaces): the step summaries, the progress subject and banner, the **In
-progress** list, the result card, the **Listen** table, and an open book's
-title. Step 1's summary,
-the **In progress** list, and **Listen** rows show the full name as a tooltip.
-The document dropdown is a native `<select>`, which shows one line and clips
-it at its width.
+spaces): the step summaries, the progress subject, the **In progress** list,
+the result card, the Library table, and an open book's title. Step 1's
+summary, the **In progress** list, and Library rows show the full name as a
+tooltip. The document dropdown is a native `<select>`, which shows one line and
+clips it at its width.
 
-Every **Delete** asks for confirmation (`window.confirm`) and disables itself
-while its request runs. Deleting the selected voice or document clears that
-selection, so Create reopens the step that needs it, and deleting a voice just
-saved clears its message.
+### Confirmation dialogs
+
+`askConfirm({title, text, confirm, danger, input, where})` opens the one
+in-page `#confirm-dialog` (no `window.confirm` or `window.prompt` remain) and
+resolves to true, false, or the entered text. Every title names its target:
+"Delete voice '<name>'?", "Delete audiobook '<title>'?", "Delete document
+'<name>'?", "Rename voice '<name>'" (with a **New name** field), "Make
+'<title>' again?" (Recreate, and the server's 409 replace questions), "Make
+<voice> for '<title>' again?", "Overwrite '<title>'?", "Replace voice
+'<name>'?", "Replace document '<name>'?", "Stop making '<title>'?", "Stop
+narrating on '<host>'?" (removing a node), and "Start a new conversation
+about '<title>'?". `where` adds Local/Cloud badges. Destructive confirms use
+the danger style; preview, open, and play never ask. Each action's button
+disables itself while its request runs. Deleting the selected voice or
+document clears that selection, so Create reopens the step that needs it, and
+deleting a voice just saved clears its message.
 
 The page polls `/api/jobs` every 2 seconds (`refreshJobs()`), which doubles as
 the server probe: a `fetch()` that fails with a `TypeError` (the server cannot
 be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
-shows `#server-down` and makes `SERVER_PARTS` inert (Advanced, Create,
-Progress, Voices, the Listen table, an open book's **More** menu, stale-voice
-notice and **Change voice**, **Ask Hilde**, the chat, **Ask about this
+shows `#server-down` and makes `SERVER_PARTS` inert (Settings, Create, the
+progress view, Voices, the jobs indicator, the Library, an open book's
+**More** menu, stale-voice notice, **Ask Hilde**, the chat, **Ask about this
 figure**, and the selection menu's **Ask about this**), so nothing that needs
 the server can be pressed or focused; the tabs, the player, the text, its
-views, and the figure and page already shown stay, so a downloaded book plays on. The first poll that
-answers again, or answers before the page ever loaded (served from the
-browser's cache while the server was down), lifts it and runs `startPage()`,
-which takes the state, catalogs, and workers afresh, since the server may
-have restarted.
+views, and the figure and page already shown stay, so a book loaded in this
+browser plays on. The first poll that answers again, or answers before the
+page ever loaded (served from the browser's cache while the server was down),
+lifts it and runs `startPage()`, which takes the state, catalogs, and workers
+afresh, since the server may have restarted.
 
-Buttons that start work disable themselves while their request is in flight,
-so a double click starts one job or voice. A refresh restores the page, Create
-step, selections, the book open on Listen, and a running job's progress. A
-sync response older than a newer local change is ignored, and derived checks
-apply only to the page they were computed for. The run log stays visible
-below Create and Voices; it shows the fixed passage as
-`<fixed preview passage>`.
+Buttons that start work disable themselves while their request is in flight
+(`submitting`), so a double click starts one job or voice, and the job ID (a
+hash of document, voice, and mode) deduplicates on the server. A refresh
+restores the page, Create step, selections, the book open on Listen, and a
+running job's progress without sending a request. A sync response older than
+a newer local change is ignored, and derived checks apply only to the page
+they were computed for. Logs shown under **Technical details** show the fixed
+passage as `<fixed preview passage>`.
 
-Phones (up to 640 px) reduce the header to the logo and name and turn both
-tables into list rows. On phones and coarse pointers every control is at least
-44 px tall. Focus is always visible, and selection, step state, and errors
-never rely on color alone (check marks, "Selected", ⚠ prefixes, and
+### Browser storage
+
+Besides the cookie state above, the page keeps three `localStorage` keys, all
+through `stored()`/`store()` (JSON under the `hilde.` prefix), never sent to
+the server:
+
+- `hilde.book.<id>`: a book's place and speed (see Reader).
+- `hilde.panelWidth`: the side panel's width (`setPanelWidth()`).
+- `hilde.dismissedJobs`: the `<job id>@<finished_at>` keys of stopped or
+  failed jobs dismissed here, newest first, at most 50.
+
+Phones (up to 640 px) keep the tagline, smaller, and turn the tables, step
+heads, and summary into stacked rows; grid and flex children may shrink
+(`minmax(0, 1fr)`, `min-width: 0`) and long text wraps, so no screen is wider
+than a 390 px viewport. On phones and coarse pointers every control is at
+least 44 px tall. Focus is always visible, and selection, step state, and
+errors never rely on color alone (check marks, "Selected", ⚠ prefixes, and
 visually hidden step states).
 
 Listen below 768 px: the text takes the full width, the player docks at the
@@ -957,15 +1079,27 @@ has one, **Voices** labels its preview as reading an older passage.
 The stock voices read the fixed passage too, so changing `VOICE_REFERENCE_TEXT`
 means designing them again; a test checks each one.
 
-### Advanced and devices
+### Settings and devices
 
-**Advanced** shows **This server**: one live chip per narration worker (`GPU 0
+**Settings** has six groups, each setting with an "Applies …" line: to the
+next audiobook (and, for precision, attention, language, and seed, the next
+voice preview), or now. **Narration**: precision, attention, language, text
+encoding, seed, batch size, chunking, and MP3 compression; with a narration
+speech server, batch size is off, and precision, attention, language, and seed
+are off only when voice design uses a speech server too. **Text preparation**:
+adaptation workers and paragraphs per worker. **Voices**: reference-WAV
+encoding, kept because the generated WAV is required for local cloning.
+**This machine's GPUs** and **Other machines** split the narration workers by
+the consumers' `kind` (`local` or `node`): one live chip per worker (`GPU 0
 idle`, `running`, `reserved` during voice creation, or `off`; the tooltip adds
-the device and job; a node's GPU reads `Node 1 · GPU 2`) followed by the shared
-device description, **This machine narrates on** (a box per local device, for a
-browser on the server's machine only: `POST /api/workers/local`), **Other
-machines**, and the narration and voice-design models plus the device voice
-creation uses.
+the device and job; a node's GPU reads `Node 1 · GPU 2`) followed by the
+shared device description; **Narrates on** (a box per local device, for a
+browser on the server's machine only: `POST /api/workers/local`) applies now.
+**Models and connection** shows, read-only, the narration and voice-design
+models plus the device voice creation uses, the text model, and the
+connection note with **Download Hilde's certificate**. A browser not on the
+server's machine sees "Only a browser on the server's own machine can change
+this." in both worker groups.
 
 **Other machines** lists the nodes of `workers.yaml` with **Remove**, and
 **Add workers** opens a dialog: the machine's address, **Connect**, then the
@@ -1003,11 +1137,7 @@ Only a browser whose address is loopback
 (`capabilities.manage_workers`, `GET /api/workers`) or may probe, set up, add,
 or remove; others get HTTP 403 and see only the chips.
 
-**Advanced** also holds
-precision/attention tuning, language, encoding, and seed; narration
-chunk/batch/MP3 settings on Create; adaptation concurrency while adaptation is
-on; and reference-WAV encoding on Voices, kept because the
-generated WAV is required for local cloning. Browser state contains no device
+Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
 node workers; a GPU whose worker waits for memory inside the job
 still shows `running`, and the job's log names it. Voice design runs on the
@@ -1218,7 +1348,8 @@ mute and volume, and **Ask Hilde**. The `<audio>` element has no controls.
 This browser keeps each book's place and speed in `localStorage`
 (`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`; saved about
 every second while playing, on pause, seek, and leaving the page), and the
-panel width (`hilde.panelWidth`); never in the book, the voice, or the
+panel width (`hilde.panelWidth`; see [Browser storage](#browser-storage));
+never in the book, the voice, or the
 server. Opening the book, or reloading, sets the speed and, once the audio's
 metadata and the reader are in, the saved time with the same voice (else the
 start of the saved passage), paused, and brings that sentence on screen.
@@ -1465,12 +1596,12 @@ last answer of a finished turn is read.
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
 | `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
-| `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Listen**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
+| `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
 | `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later is not a change. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
-| `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
+| `GET /api/voices/draft?id=...` | A draft's clip, so the editor can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<title> - <voice>.mp3` (`book_download_name()`). `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
@@ -1498,7 +1629,7 @@ last answer of a finished turn is read.
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
-HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key` it serves the user's certificate; with `--https`, `ensure_tls_files()` (the `cryptography` package) keeps Hilde's own authority in `~/.hilde/tls` (`ca.pem`, `ca-key.pem`, mode 0600 in a 0700 folder) and a certificate for `machine_names()`: localhost, the host name with and without `.local`, and the machine's private addresses (the one its default route leaves by, and its host name's). Browsers treat only `localhost` as secure, so downloads from a page opened over plain HTTP from another device warn, and no public authority certifies a private address. The authority is an EC P-256 key valid `TLS_CA_DAYS`, path length 0, with critical name constraints permitting only `TLS_PRIVATE_NETWORKS` and the names it was made with, so a device that installs it trusts it for nothing else. The server certificate lasts `TLS_SERVER_DAYS` (397, under Apple's 825-day limit for user-installed authorities) and is made again, under the same authority, when under `TLS_RENEW_DAYS` remain or the names or addresses change, so devices keep trusting the server. `HildeServer.finish_request()`, in the request's own thread, peeks at the first byte: a TLS handshake is wrapped (TLS 1.2 or later), and plain HTTP gets a 307 to the same host and path over `https://`, with `Cache-Control: no-store`, so old bookmarks open; a handshake the browser refuses ends quietly. The redirect is temporary and never cached: a 301 stayed in Chrome after the server went back to plain HTTP, which it then could not reach. A new host name outside the authority's names needs a new authority: delete `~/.hilde/tls`. The page's **This server** shows whether this connection will flag downloads and offers **Download Hilde's certificate** (`renderConnection()`).
+HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key` it serves the user's certificate; with `--https`, `ensure_tls_files()` (the `cryptography` package) keeps Hilde's own authority in `~/.hilde/tls` (`ca.pem`, `ca-key.pem`, mode 0600 in a 0700 folder) and a certificate for `machine_names()`: localhost, the host name with and without `.local`, and the machine's private addresses (the one its default route leaves by, and its host name's). Browsers treat only `localhost` as secure, so downloads from a page opened over plain HTTP from another device warn, and no public authority certifies a private address. The authority is an EC P-256 key valid `TLS_CA_DAYS`, path length 0, with critical name constraints permitting only `TLS_PRIVATE_NETWORKS` and the names it was made with, so a device that installs it trusts it for nothing else. The server certificate lasts `TLS_SERVER_DAYS` (397, under Apple's 825-day limit for user-installed authorities) and is made again, under the same authority, when under `TLS_RENEW_DAYS` remain or the names or addresses change, so devices keep trusting the server. `HildeServer.finish_request()`, in the request's own thread, peeks at the first byte: a TLS handshake is wrapped (TLS 1.2 or later), and plain HTTP gets a 307 to the same host and path over `https://`, with `Cache-Control: no-store`, so old bookmarks open; a handshake the browser refuses ends quietly. The redirect is temporary and never cached: a 301 stayed in Chrome after the server went back to plain HTTP, which it then could not reach. A new host name outside the authority's names needs a new authority: delete `~/.hilde/tls`. **Connection** under **Settings** › **Models and connection** shows whether this connection will flag downloads and offers **Download Hilde's certificate** (`renderConnection()`).
 
 ## Core invariants
 
@@ -1506,7 +1637,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Chat's web tools exist only when the operator passes `--search-server`; the page a model asks to read is fetched only from a public address, checked on the connection itself at every redirect.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
-- **Listen** never changes a saved voice; **Save** stores exactly the draft clip that was heard, with the prompt that made it.
+- **Generate preview** never changes a saved voice; **Save voice** stores exactly the draft clip that was heard, with the prompt that made it.
 - A resumable narration never mixes checkpoints from different text/chunk/voice/inference identities.
 - A local narration worker starts only on a GPU measured to have room, and measuring never opens a CUDA context; a local worker that runs out of GPU memory returns its chunks to the queue instead of failing the book.
 - Public audiobook job identity contains only the document content version and voice version.
@@ -1552,7 +1683,7 @@ python audiobook_tts_web.py \
   --port 8800
 ```
 
-Add passwordless SSH workers to the web server under **Advanced** › **Add
+Add passwordless SSH workers to the web server under **Settings** › **Add
 workers** in a browser on its machine, or by listing nodes in
 `<storage-root>/workers.yaml` while it is stopped.
 
@@ -1676,7 +1807,7 @@ older browser state, and deletion of voices (a link, never its target),
 documents, and whole books with every voice, refusing traversal, missing
 assets, and other origins, stock voices that seed only a new library, stock
 voices that each preview the fixed passage with a prompt, and voice drafts:
-Listen leaves the saved voice alone, Save keeps exactly the clip heard and
+Generate preview leaves the saved voice alone, Save voice keeps exactly the clip heard and
 refuses missing drafts, bad names, and linked voices, and old drafts are
 pruned, voice design on the GPU with the most free memory, matched to
 `nvidia-smi` by UUID, and distributed narration in which a full GPU joins only

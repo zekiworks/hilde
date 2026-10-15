@@ -106,7 +106,7 @@ Use a matching [official FlashAttention wheel](https://github.com/Dao-AILab/flas
 
 The GPU workflow has been exercised on Linux with Python 3.12, PyTorch/TorchAudio 2.10.0 + CUDA 13.0, Qwen TTS 0.1.1, SoundFile 0.14.0, and FlashAttention 2.8.3. These versions are a tested combination, not a guarantee for every platform.
 
-You can skip FlashAttention and select SDPA attention instead: `--attn-implementation sdpa`, or `sdpa` under **Advanced** in the web UI. CPU inference with SDPA has also been exercised.
+You can skip FlashAttention and select SDPA attention instead: `--attn-implementation sdpa`, or **sdpa** as **Attention** under **Settings** in the web UI. CPU inference with SDPA has also been exercised.
 
 ### 5. Download the models
 

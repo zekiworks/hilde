@@ -6093,6 +6093,39 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertFalse(fresh.exists())
 
 
+class DocumentUploadTests(unittest.TestCase):
+    def test_a_refused_upload_leaves_its_connection_usable(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.daemon_threads = True
+            server.storage = storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            try:
+                # A file Hilde does not read is refused by its name; its body
+                # must not become the start of the next request.
+                connection.request("POST", "/api/documents/upload?name=notes.docx", body=b"PK\x03\x04 not a document",
+                                   headers={"Content-Type": "application/octet-stream"})
+                refused = connection.getresponse()
+                refused_answer = (refused.status, json.loads(refused.read())["error"])
+                connection.request("POST", "/api/documents/upload?name=notes.txt", body=b"Plain text.",
+                                   headers={"Content-Type": "application/octet-stream"})
+                accepted = connection.getresponse()
+                accepted_answer = (accepted.status, json.loads(accepted.read())["name"])
+            finally:
+                connection.close()
+                server.shutdown()
+                thread.join()
+        self.assertEqual(refused_answer, (400, "Document filename must end in PDF, text, or Markdown."))
+        self.assertEqual(accepted_answer, (201, "notes.txt"))
+        self.assertEqual((storage.documents / "notes.txt").read_text(), "Plain text.")
+
+
 class ReaderAudioIndexTests(unittest.TestCase):
     def test_reader_mp4_indexes_every_mp3_frame_on_the_decoded_timeline(self):
         temporary = tempfile.TemporaryDirectory()
