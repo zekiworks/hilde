@@ -373,18 +373,30 @@ class PaperWorkflowTests(unittest.TestCase):
             devices,
         )
 
+        # A node is kind "node" and its number only; the GPUs here are "local".
         self.assertEqual(
             [
-                (worker["label"], worker["detail"], worker["status"])
+                (worker["label"], worker["detail"], worker["kind"], worker["status"])
                 for worker in public["consumers"]
             ],
             [
-                ("GPU 0", "Accelerator · 96 GiB", "idle"),
-                ("GPU 1", "Accelerator · 96 GiB", "idle"),
-                ("Node 1 · GPU 0", "", "idle"),
-                ("Node 1 · GPU 2", "", "idle"),
+                ("GPU 0", "Accelerator · 96 GiB", "local", "idle"),
+                ("GPU 1", "Accelerator · 96 GiB", "local", "idle"),
+                ("Node 1 · GPU 0", "", "node", "idle"),
+                ("Node 1 · GPU 2", "", "node", "idle"),
             ],
         )
+        # The one worker of a speech server or of no model is this server's own.
+        for clone_model in (
+            {"source": "server", "server": "http://10.1.2.3:9000/v1", "server_model": "tts-1"},
+            {"source": "missing"},
+        ):
+            self.assertEqual(
+                [worker["kind"] for worker in web.JobQueue(
+                    web.audiobook_consumers(clone_model, devices, nodes)
+                ).public_consumers_snapshot()],
+                ["local"],
+            )
         self.assertEqual(public["configuration"], {
             "design": {"source": "server", "model": "gpt-4o-mini-tts"},
             "clone": {"source": "local", "model": "Base"},
@@ -1905,6 +1917,68 @@ class SharedLibraryTests(unittest.TestCase):
         renamed.write_text("A new source version.", encoding="utf-8")
         self.assertIsNone(web.derived(state, models, self.storage)["existing_book"])
 
+    def test_two_requests_at_once_for_one_document_and_voice_make_one_job(self):
+        document = self.storage.documents / "paper.txt"
+        document.write_text("One short paper.", encoding="utf-8")
+        voice = self.storage.voices / "Narrator"
+        save_voice(
+            voice, np.linspace(-0.5, 0.5, 1200, dtype=np.float32), 24000,
+            "Reference passage.", "FLOAT",
+        )
+        model = self.root / "clone-model"
+        model.mkdir()
+        models = {
+            "design": {"source": "missing"},
+            "clone": {"source": "local", "model": str(model), "allow_downloads": False},
+        }
+        state = normalize({"audiobook": {"document": document.name, "voice": voice.name, "adapt": False}})
+        real_prepare = web.AudiobookRun.prepare
+
+        def slow_prepare(run):
+            # The second request arrives while the first is still preparing.
+            time.sleep(0.3)
+            return real_prepare(run)
+
+        answers = []
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, \
+                mock.patch.object(web.AudiobookRun, "prepare", slow_prepare), \
+                mock.patch.object(web.AudiobookRun, "start", lambda run: None):
+            server.daemon_threads = True
+            server.jobs = web.JobQueue()
+            self.addCleanup(server.jobs.shutdown)
+            server.tts_models = models
+            server.storage = self.storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            together = threading.Barrier(2)
+
+            def post():
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/run",
+                    data=json.dumps({"state": state}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                together.wait()
+                with urllib.request.urlopen(request) as response:
+                    answers.append(json.load(response))
+
+            try:
+                posts = [threading.Thread(target=post) for _ in range(2)]
+                for item in posts:
+                    item.start()
+                for item in posts:
+                    item.join(10)
+                queue = server.jobs.snapshot()
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual(len(answers), 2)
+        self.assertEqual(len({answer["job"]["id"] for answer in answers}), 1)
+        self.assertEqual(sorted(answer["duplicate"] for answer in answers), [False, True])
+        self.assertEqual([job["id"] for job in queue], [answers[0]["job"]["id"]])
+
     def test_no_half_made_book_is_ever_visible(self):
         book = store_book(self.storage, voice="Martin")
         before = (self.storage.audiobooks / book / "book.json").read_bytes()
@@ -2117,6 +2191,71 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(second.started.wait(1))
         self.assertIs(jobs.current_run(), second)
         second.close(0)
+
+    def test_recent_lists_finished_jobs_newest_first_with_their_last_stage_and_count(self):
+        jobs = web.JobQueue()
+        self.addCleanup(jobs.shutdown)
+
+        def finish(document_version, steps, code, result=None):
+            record, _ = self.reserve(jobs, document_version)
+            run = self.ControlledRun(f"{document_version}.mp3")
+            jobs.commit(record, run)
+            self.assertTrue(run.started.wait(1))
+            steps(run)
+            run.result = result or {}
+            run.close(code)
+            deadline = time.monotonic() + 2
+            while record["status"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return record
+
+        def failed_in_narration(run):
+            run.set_phase("extraction", "Extraction")
+            run.publish("progress", {"done": 12, "total": 12, "unit": "page"})
+            run.publish("progress", {"done": 840, "total": 840, "unit": "paragraph"})
+            run.set_phase("narration", "Narration")
+            run.publish("progress", {"done": 5, "total": 20})
+
+        def stopped_after_reusing_its_text(run):
+            run.set_phase("extraction", "Extraction")
+            run.publish("progress", {"done": 3, "total": 3, "unit": "page"})
+            # "Using the text prepared earlier" is no count of what was done.
+            run.publish("progress", {"done": 1, "total": 1, "unit": "document"})
+
+        def aligned(run):
+            run.set_phase("alignment", "Word alignment")
+            run.publish("progress", {"done": 40, "total": 40, "unit": "sentence", "failed": 0})
+
+        failed = finish("failed", failed_in_narration, 1)
+        stopped = finish("stopped", stopped_after_reusing_its_text, 130)
+        done = finish("done", aligned, 0, {"book": "made--0123456789ab", "voice": "Narrator"})
+        # Voice design, a queued job canceled, and a running job are not listed.
+        voice = self.ControlledRun("voice.wav")
+        self.assertTrue(jobs.start_voice(voice))
+        voice.close(0)
+        deadline = time.monotonic() + 2
+        while jobs.exclusive is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        running_record, _ = self.reserve(jobs, "running")
+        jobs.commit(running_record, self.ControlledRun("running.mp3"))
+        canceled_record, _ = self.reserve(jobs, "canceled")
+        jobs.commit(canceled_record, self.ControlledRun("canceled.mp3"))
+        jobs.cancel(canceled_record["id"])
+
+        recent = jobs.recent_snapshot()
+        for job in recent:
+            self.assertRegex(job.pop("finished_at"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(recent, [
+            {"id": done["id"], "document": "done.txt", "voice": "Narrator",
+             "book": "made--0123456789ab", "mode": "create", "status": "done",
+             "stage": "alignment", "progress": {"done": 40, "total": 40, "unit": "sentence"}},
+            {"id": stopped["id"], "document": "stopped.txt", "voice": "Narrator", "book": "",
+             "mode": "create", "status": "stopped",
+             "stage": "extraction", "progress": {"done": 3, "total": 3, "unit": "page"}},
+            {"id": failed["id"], "document": "failed.txt", "voice": "Narrator", "book": "",
+             "mode": "create", "status": "failed",
+             "stage": "narration", "progress": {"done": 5, "total": 20, "unit": None}},
+        ])
 
     def test_auto_job_claims_all_gpu_workers_before_next_job(self):
         consumers = (
@@ -5241,6 +5380,10 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
         storage.ensure()
         payload = b"retained audiobook bytes"
         book = store_book(storage, title="Kept Book", voice="Eir", audio=payload)
+        # A title with a path separator, a colon, quotes, and a letter beyond ASCII.
+        titled = store_book(
+            storage, title='Rivers/Deltas: Å "short" study', source_sha256="b" * 64, voice="Eir",
+        )
 
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             server.daemon_threads = True
@@ -5255,6 +5398,10 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
                 ) as response:
                     downloaded = response.read()
                     disposition = response.headers["Content-Disposition"]
+                with urllib.request.urlopen(
+                    f"{origin}/api/download?book={titled}&voice=Eir"
+                ) as response:
+                    titled_disposition = response.headers["Content-Disposition"]
                 with self.assertRaises(urllib.error.HTTPError) as refused:
                     urllib.request.urlopen(
                         f"{origin}/api/download?book=..%2F{book}&voice=Eir"
@@ -5264,8 +5411,27 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
                 thread.join()
 
         self.assertEqual(downloaded, payload)
-        self.assertIn('filename="Kept Book-Eir.mp3"', disposition)
+        self.assertIn('filename="Kept Book - Eir.mp3"', disposition)
+        self.assertIn("""filename="Rivers-Deltas - ? 'short' study - Eir.mp3";""", titled_disposition)
+        encoded = titled_disposition.split("filename*=UTF-8''", 1)[1]
+        self.assertEqual(
+            urllib.parse.unquote(encoded), "Rivers-Deltas - Å 'short' study - Eir.mp3"
+        )
+        self.assertNotIn("/", encoded)
         self.assertEqual(refused.exception.code, 400)
+
+    def test_a_long_title_is_cut_at_a_word_and_a_book_without_one_uses_its_document(self):
+        title = "Sediment " + "transport and storage in large river deltas " * 5
+        name = web.book_download_name({"title": title}, "book--id", "Eir")
+        stem = name.removesuffix(" - Eir.mp3")
+        self.assertLessEqual(len(stem), web.BOOK_DOWNLOAD_TITLE_CHARS)
+        self.assertGreater(len(stem), web.BOOK_DOWNLOAD_TITLE_CHARS // 2)
+        self.assertTrue(title.startswith(stem + " "), stem)
+        self.assertEqual(
+            web.book_download_name({"source_filenames": ["deltas\x07 2024.pdf"]}, "book--id", "Eir"),
+            "deltas 2024 - Eir.mp3",
+        )
+        self.assertEqual(web.book_download_name({}, "book--id", "Eir"), "book--id - Eir.mp3")
 
     def test_a_books_document_downloads_from_listen_only_when_kept(self):
         temporary = tempfile.TemporaryDirectory()
@@ -7500,7 +7666,10 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(results[0]["content"], "¶2\nParagraph 2 text.")
         self.assertEqual((path / "files" / "dams.md").read_text(), "# Dams\n")
         # The page heard each step, and the conversation survives a reload.
-        self.assertIn({"type": "files", "files": web.chat_files(path)}, events)
+        # The question named no part of the book, so the note has no section.
+        self.assertIn({"type": "files", "files": [
+            {**item, "section": None} for item in web.chat_files(path)
+        ]}, events)
         payload = web.chat_payload(self.storage, chats, book)
         self.assertFalse(payload["running"])
         self.assertEqual(
@@ -7511,6 +7680,62 @@ class ChatTests(unittest.TestCase):
         self.assertIn('<a href="#" class="chat-cite" data-passage="2">¶2</a>',
                       payload["conversation"][-1]["html"])
         self.assertEqual(payload["passages"], {"1": 0, "2": 1})
+
+    def test_a_files_section_is_the_question_whose_turn_last_wrote_it(self):
+        book, path = self.book(chat_narration("S."))
+        passages = web.chat_book(self.storage, book)[2]
+        entries = []
+
+        def ask(section, *writes):
+            entries.append({"role": "user", "text": "Note this.", "at": "2026-10-15T10:00:00Z",
+                            **({"context": {"section": section}} if section else {})})
+            for number, (name, mode) in enumerate(writes):
+                call = {"id": str(number), "name": "write_file",
+                        "arguments": {"name": name, "mode": mode, "content": "x\n"}}
+                entries.append({"role": "assistant", "text": "", "calls": [call]})
+                content, label, _ = web.chat_tool(path, passages, call)
+                entries.append({"role": "tool", "id": call["id"], "name": "write_file",
+                                "content": content, "label": label})
+            entries.append({"role": "assistant", "text": "Done."})
+
+        ask("2 Methods", ("notes", "create"), ("summary", "create"))
+        # Appending moves notes.md to this question; creating summary.md again is refused.
+        ask("3 Results", ("notes", "append"), ("summary", "create"))
+        # The latest question wrote nothing, and one that named no section wrote plain.md.
+        ask(None, ("plain", "create"))
+        ask("4 Discussion")
+        # A file no recorded turn wrote has no section.
+        (path / "files" / "by hand.md").write_text("# Mine\n")
+        web.write_json_atomic(path / "chat.json", {"schema": 1, "book": book, "entries": entries})
+
+        files = web.chat_payload(self.storage, web.ChatRegistry(), book)["files"]
+        self.assertEqual(
+            {item["name"]: item["section"] for item in files},
+            {"notes.md": "3 Results", "summary.md": "2 Methods", "plain.md": None, "by hand.md": None},
+        )
+
+    def test_the_chat_says_whether_the_server_searches_the_web(self):
+        book, _ = self.book(chat_narration("S."))
+        answers = {}
+        for search_server in ("", "http://127.0.0.1:8890"):
+            with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+                server.daemon_threads = True
+                server.storage = self.storage
+                server.chats = web.ChatRegistry()
+                server.chat_speaker = None
+                server.search_server = search_server
+                server.verbose = False
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{server.server_port}/api/chat?book={book}"
+                    ) as response:
+                        answers[search_server] = json.load(response)["web_search"]
+                finally:
+                    server.shutdown()
+                    thread.join()
+        self.assertEqual(answers, {"": False, "http://127.0.0.1:8890": True})
 
     def run_turn(self, turn):
         """Start a turn and wait for it; return its events."""

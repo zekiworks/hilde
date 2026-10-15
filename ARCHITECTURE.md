@@ -323,7 +323,11 @@ first served (`release_migration_backup()`). The empty `.versions` and
 
 - Saved voice: `Voices/<voice-name>/reference.wav` plus `transcript.txt`, with `description.txt`, an optional rendered `preview.wav`, and the versions it replaced in `.versions/vN/`. Job snapshots copy only `reference.wav` and `transcript.txt`.
 - Book: `Audiobooks/<slug>--<hash12>/`, as above. A voice's download is named
-  `<document-stem>-<voice-name>.mp3` (`narration_output_name()`).
+  `<title> - <voice-name>.mp3` (`book_download_name()`): path separators become
+  `-`, `:` becomes ` -`, `"` becomes `'`, control characters and `*?<>|` go,
+  and a title longer than `BOOK_DOWNLOAD_TITLE_CHARS` (120) is cut at a word; a
+  book without a title uses its document's stem. A non-ASCII name goes in
+  `filename*` (RFC 5987) with an ASCII `filename` fallback (`send_file()`).
 - Unfinished workflow: `in_progress/<job-id>/`.
 - Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Listen** made that
   **Save** stores under a voice name. Listen keeps only the newest ten drafts.
@@ -1394,6 +1398,13 @@ an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
 error or a stop ends the turn with a `notice`.
 
+The files listing (`chat_file_listing()`, in `chat_payload()` and the `files`
+event) gives each file `name`, `bytes`, `modified`, and `section`: the
+`context.section` of the user entry of the latest turn whose `write_file`
+wrote or appended to it, found in `chat.json` (`CHAT_FILE_WRITTEN` matches the
+tool's success result), or `null` when that question named no section or no
+recorded turn wrote the file.
+
 ### Reading answers aloud
 
 With a local narration model (`--voice-clone-model`), each answer has
@@ -1447,8 +1458,8 @@ last answer of a finished turn is read.
 | Route | Behavior |
 | --- | --- |
 | `GET /` | Embedded HTML/CSS/JS page served with `Cache-Control: no-store` so a refresh cannot retain an obsolete player implementation. |
-| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, per-worker device descriptions and state, active model names, and non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install). |
-| `GET /api/jobs` | Active-run list, consumer state, and preparing/running/waiting audiobook records. |
+| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, and non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install). |
+| `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status`, `job_id`; never a host). `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
@@ -1462,7 +1473,7 @@ last answer of a finished turn is read.
 | `GET /api/voices/draft?id=...` | A draft's clip, so **Listen** can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
-| `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
+| `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<title> - <voice>.mp3` (`book_download_name()`). `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
 | `GET /api/source-page?book=...&page=N` | Page N (1-based) of the book's PDF (`book_source()`) as PNG at `SOURCE_PAGE_DPI`, cached in memory. HTTP 404 when the book has no PDF or no such page, or for an invalid id or page. |
 | `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
@@ -1473,10 +1484,10 @@ last answer of a finished turn is read.
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate one local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and answer its normalized `server` and `provider`; the page then appends it to `audiobook.local_servers` and asks for the catalog. HTTP 400 once the browser has `LOCAL_SERVERS_MAX` servers and this is not one of them, 502 when the server does not list models. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no added server of its type ("Add a local server of this model's type under Add local."). |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
-| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips, `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
+| `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with), `running`, the streaming `partial` answer and `event_index`, `files`, and `passages` (passage number to first reader paragraph). |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with), `running`, the streaming `partial` answer and `event_index`, `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). |
 | `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
@@ -1556,7 +1567,7 @@ python audiobook_tts_web.py --voice-clone-model /path/to/Base --render-voice-pre
 python -m unittest -v test_audiobook_tts
 ```
 
-The regression suite currently has 206 tests. It covers voice persistence
+The regression suite currently has 212 tests. It covers voice persistence
 (including stale prompts and previews on replacement, and each replaced
 version kept in `.versions/`), voice renames that keep the version and carry
 the name into every book read by any of its versions while refusing taken
@@ -1592,8 +1603,11 @@ caption above a table not taken for the table's, listings
 kept whole across a page break or a table and
 never joined to a sentence, a sentence continued behind a code mark,
 internal device pinning, FIFO scheduling and
-deduplication, GPU enumeration when CUDA cannot open one device, public worker
-and model configuration without hosts or paths, GPU-preferred resolution, extensionless document
+deduplication (two requests at once for one document and voice make one job),
+finished jobs listed newest first with the stage they ended in and its last
+real count, GPU enumeration when CUDA cannot open one device, public worker
+and model configuration without hosts or paths, each worker marked local or
+node, GPU-preferred resolution, extensionless document
 URL inference, remote chunk reuse, resumable paragraph adaptation with bounded
 concurrency and context and ordered commits, real PDF
 extraction flowing directly into a book folder and an exact sentence reader through a
@@ -1614,8 +1628,12 @@ reader, Original view, and text, idempotently, keeping a backup until they
 play, legacy sentence-cue conversion, persisted word cues,
 Markdown table and embedded-image readers, lossless exactly indexed MP4 reader
 audio in the `.mp3` sample entry Safari plays, with keep-alive byte ranges, safe
-book downloads, Ask Hilde (Markdown file names only inside the book's
+book downloads named `<title> - <voice>.mp3` (a title with a slash, a colon,
+quotes, and non-ASCII letters, a long one cut at a word, and none), Ask Hilde
+(Markdown file names only inside the book's
 `files/`, create refusing an existing file and append a missing one, delete,
+each file's section from the question whose turn last wrote it, whether the
+chat says web search is on,
 reads cut at their cap, trimming past 80% that keeps a tool call with its
 result and the latest message, a book without summaries refused, a rebuilt
 book keeping its files and dropping its conversation, a turn against a

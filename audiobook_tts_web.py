@@ -2076,6 +2076,31 @@ def narration_output_name(input_name, voice_name):
     )
 
 
+BOOK_DOWNLOAD_TITLE_CHARS = 120
+
+
+def _file_name_text(value):
+    """Text made safe as part of a file name on any system: no path
+    separators, control characters, or characters Windows refuses."""
+    text = re.sub(r"[/\\]", "-", str(value)).replace('"', "'").replace(":", " -")
+    text = re.sub(r"[\x00-\x1f\x7f*?<>|]", " ", text)
+    return " ".join(text.split()).strip(" .-")
+
+
+def book_download_name(record, book, voice_name):
+    """Name the MP3 a book's voice downloads as: `<title> - <voice>.mp3`, the
+    title cut at a word to about BOOK_DOWNLOAD_TITLE_CHARS, or the document's
+    stem for a book without a title."""
+    title = _file_name_text(record.get("title") or "")
+    if len(title) > BOOK_DOWNLOAD_TITLE_CHARS:
+        cut = title[:BOOK_DOWNLOAD_TITLE_CHARS + 1].rpartition(" ")[0]
+        title = (cut if len(cut) > BOOK_DOWNLOAD_TITLE_CHARS // 2 else title[:BOOK_DOWNLOAD_TITLE_CHARS])
+        title = title.rstrip(" .,;-")
+    if not title:
+        title = _file_name_text(Path((record.get("source_filenames") or [book])[0]).stem) or "audiobook"
+    return f"{title} - {_file_name_text(voice_name) or 'voice'}.mp3"
+
+
 def read_json_file(path):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -9225,6 +9250,25 @@ def chat_files(path):
     ]
 
 
+# What a write_file call that succeeded tells the model (chat_tool()).
+CHAT_FILE_WRITTEN = re.compile(r"(?:Wrote|Appended to) (.+)\.")
+
+
+def chat_file_listing(path, entries):
+    """chat_files() for the page: each file with `section`, the section of
+    the question whose turn last wrote or appended to it (its user entry's
+    `context`), or None when that question named none."""
+    sections, section = {}, None
+    for entry in entries:
+        if entry.get("role") == "user":
+            section = (entry.get("context") or {}).get("section") or None
+        elif entry.get("role") == "tool" and entry.get("name") == "write_file":
+            written = CHAT_FILE_WRITTEN.fullmatch(str(entry.get("content") or ""))
+            if written:
+                sections[written.group(1)] = section
+    return [{**item, "section": sections.get(item["name"])} for item in chat_files(path)]
+
+
 def _chat_arguments(raw):
     """A tool call's arguments as a dict, from the JSON text or dict a model sent."""
     if isinstance(raw, dict):
@@ -10202,7 +10246,7 @@ class ChatTurn:
                         "content": content, "label": label,
                     })
                     if changed:
-                        self.publish({"type": "files", "files": chat_files(path)})
+                        self.publish({"type": "files", "files": chat_file_listing(path, entries)})
         except InterruptedError:
             self.notice("Stopped.")
         except ChatTooLong as exc:
@@ -10281,8 +10325,9 @@ class ChatRegistry:
         return False
 
 
-def chat_payload(storage, chats, book):
-    """What the page shows for a book's chat."""
+def chat_payload(storage, chats, book, search_server=""):
+    """What the page shows for a book's chat; `web_search` says whether
+    Chat may search the web (the server's --search-server)."""
     path, record = read_book(storage, book)
     try:
         _, _, passages = chat_book(storage, book)
@@ -10293,7 +10338,8 @@ def chat_payload(storage, chats, book):
     # Read together with the turn's events, so no message falls between them.
     with turn.condition if turn is not None else contextlib.nullcontext():
         running = turn is not None and not turn.done
-        conversation = [chat_display_entry(entry) for entry in read_chat(path)]
+        entries = read_chat(path)
+        conversation = [chat_display_entry(entry) for entry in entries]
         partial = turn.partial if running else ""
         event_index = len(turn.events) if running else 0
     return {
@@ -10303,7 +10349,8 @@ def chat_payload(storage, chats, book):
         "running": running,
         "partial": partial,
         "event_index": event_index,
-        "files": chat_files(path),
+        "files": chat_file_listing(path, entries),
+        "web_search": bool(search_server),
         # Where each paragraph starts in the reader, for ¶ links.
         "passages": {
             str(number): passage["paragraphs"][0]
@@ -10641,6 +10688,9 @@ class Run:
         self.started_at = time.monotonic()
         self.current_phase = None
         self.phase_label = None
+        # The current phase's latest real count, {done, total, unit}: what a
+        # stopped or failed job had finished in the phase it ended in.
+        self.last_count = None
         self.phase_started_at = self.started_at
         # When the work began: a queued job starts once it leaves the queue.
         self.work_started_at = self.started_at
@@ -10654,11 +10704,17 @@ class Run:
     def set_phase(self, phase, label):
         self.current_phase = phase
         self.phase_label = label
+        self.last_count = None
         self.phase_started_at = time.monotonic()
         self.publish("phase", {"phase": phase, "label": label})
 
     def publish(self, event, data):
         if event == "progress" and isinstance(data, dict):
+            # "Using the text prepared earlier" (unit "document") counts nothing.
+            if data.get("unit") != "document":
+                self.last_count = {
+                    "done": data["done"], "total": data["total"], "unit": data.get("unit"),
+                }
             data = {
                 **data,
                 "elapsed": self.elapsed(),
@@ -11192,6 +11248,8 @@ class JobQueue:
                 else "stopped" if code == 130
                 else "failed"
             )
+            record["finished_at"] = utc_timestamp()
+            record["finished_clock"] = time.monotonic()
             if self.exclusive is record:
                 self.exclusive = None
             else:
@@ -11258,11 +11316,15 @@ class JobQueue:
             ]
 
     def public_consumers_snapshot(self):
-        """Return each worker's device and state without hosts or paths."""
+        """Return each worker's device and state without hosts or paths.
+
+        `kind` is "node" for a workers.yaml node, else "local" (this
+        machine's GPUs, its one generic worker, or the speech server)."""
         with self.lock:
             return [
                 {
                     **consumer["public"],
+                    "kind": "node" if consumer["kind"] == "ssh" else "local",
                     "status": snapshot["status"],
                     "job_id": snapshot["job_id"],
                 }
@@ -11295,6 +11357,34 @@ class JobQueue:
                 for index, record in enumerate(preparing, start=1)
             )
             return result
+
+    def recent_snapshot(self):
+        """This process's finished audiobook jobs, newest first: how each
+        ended, and the phase it ended in with that phase's last real count."""
+        with self.lock:
+            finished = sorted(
+                (
+                    record for record in self.records.values()
+                    if record["status"] in ("done", "failed", "stopped")
+                ),
+                key=lambda record: record["finished_clock"],
+                reverse=True,
+            )
+            return [
+                {
+                    "id": record["id"],
+                    "document": record["document"],
+                    "voice": record["voice"],
+                    # A new book has its ID only once it is made.
+                    "book": record["run"].result.get("book") or record["book"],
+                    "mode": record["mode"],
+                    "status": record["status"],
+                    "stage": record["run"].current_phase,
+                    "progress": record["run"].last_count,
+                    "finished_at": record["finished_at"],
+                }
+                for record in finished
+            ]
 
     def run_for(self, job_id=""):
         with self.lock:
@@ -13292,6 +13382,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "runs": self.server.jobs.active_snapshots(),
                     "queue": self.server.jobs.snapshot(),
+                    "recent": self.server.jobs.recent_snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                 },
                 extra=(("Cache-Control", "no-store"),),
@@ -13308,6 +13399,7 @@ class Handler(BaseHTTPRequestHandler):
                     "assets": asset_catalog(self.server.storage),
                     "runs": self.server.jobs.active_snapshots(),
                     "queue": self.server.jobs.snapshot(),
+                    "recent": self.server.jobs.recent_snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                     "configuration": public_configuration(
                         self.server.tts_models
@@ -13415,9 +13507,8 @@ class Handler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
             if route == "/api/download":
-                filenames = record.get("source_filenames") or [record.get("title") or book]
                 return self.send_file(
-                    str(target), True, narration_output_name(filenames[0], voice)
+                    str(target), True, book_download_name(record, book, voice)
                 )
             # A migrated book's earlier files go once it has played.
             if record.get("migration_backup"):
@@ -13951,7 +14042,9 @@ class Handler(BaseHTTPRequestHandler):
     def reply_chat(self, book):
         """Answer with a book's conversation, files, and whether Hilde is answering."""
         try:
-            payload = chat_payload(self.server.storage, self.server.chats, book)
+            payload = chat_payload(
+                self.server.storage, self.server.chats, book, self.server.search_server
+            )
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
         payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE

@@ -76,7 +76,8 @@ For a remote narration backend, the configured server voice ID is used as the
 voice name. When a job you are watching finishes, **Create** shows its card
 above the steps: **Start listening** opens the book in
 **Listen** and **Download MP3** saves the voice's audio as
-`<document>-<voice>.mp3`. The card also gives the total time, counted from
+`<book title> - <voice>.mp3` (a long title is shortened at a word; a book
+without a title uses its document's name). The card also gives the total time, counted from
 when the job left the queue, and each stage's share: for example
 `Total time: 6m 03s (363.2 s): reading 12s, adapting 1m 30s, narrating 4m 00s,
 aligning 21s`. The job log ends with the same line. A run continued after a
