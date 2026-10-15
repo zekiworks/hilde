@@ -182,22 +182,26 @@ to the start of the sentence. Selecting text (dragging, or a long press on a
 phone) never seeks: a small menu offers **Ask about this**, **Listen from
 here** (from the first selected word), and **Copy**.
 
-Nothing you do in the view moves the audio or your place: opening or closing
-the chat, switching between Narration and Source text, opening a figure or a
+Nothing you do in the view moves the audio or your place: closing the chat,
+switching between Narration and Source text, opening a figure or a
 page, going to another tab and back. If you scroll away while **Follow
 along** is on, it stops following and **Back to where you're listening**
 appears; it appears too after you open a figure or a page or follow a ¶ link.
 With **Follow along** off, the page never scrolls by itself.
 
 A figure shows on a light card with its caption under **From the paper**. On
-a wide screen a figure of several panels shows as it is laid out in the PDF;
-on a phone its panels stack, each named by its place, such as "Left panel of
-the source figure". Click a figure to see it large beside the text with its
-caption, a link to its PDF page, **Hilde's description**, and **Ask about this
-figure**.
+a wide screen it shows as printed in the PDF: its part of the page, with the
+titles, labels and legend printed around its panels, without the caption or
+the text around it; on a phone the panels of a figure of several stack, each
+its own part of the page with its title, named by its place, such as "Left
+panel of the source figure". Click a figure to see it large beside the text
+with its caption, a link to its PDF page, **Hilde's description**, and **Ask
+about this figure**.
 
 **Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
-in its place, with **← Back to the book**); the book keeps playing. Ask
+in its place, with **← Back to the book**) and pauses the book, as **Ask about
+this** on selected words and **Ask about this figure** do; it waits at that
+sentence until you press play. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
 the paragraphs it needs before answering. For a long book on a model with a
@@ -226,7 +230,8 @@ remembers, and the chat says so.
 Ask Hilde attaches the part being read (or the words you selected) above the
 message box: its section, its first words, **×** to remove it, and
 **Replace** to attach what you have selected, or else what is playing now.
-It stays as attached while the book plays on. It lists exactly what goes with
+It stays as attached while you write, even if you play the book again. It
+lists exactly what goes with
 your question, each piece labelled with where it comes from: Hilde's narration
 of those paragraphs and, where the adaptation changed them, the paper's own
 text ("From the paper · section, PDF p. N"), and words you selected as "Your

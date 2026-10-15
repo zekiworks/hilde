@@ -7915,9 +7915,11 @@ class FigureAndContextTests(unittest.TestCase):
             [(detail["section"], detail["label"]) for detail in payload["passages"].values()],
             [("1 Model", "")] * 3 + [("1 Model", "Figure 1")] + [("1 Model", "")] * 2,
         )
+        link = f"/api/figure?book={self.book}&passage=4"
         self.assertEqual(payload["figures"], {4: {
-            "label": "Figure 1", "page": 1, "composite": f"/api/figure?book={self.book}&passage=4",
-            "panels": [{"block": 3, "image": 0, "position": "left"}, {"block": 3, "image": 1, "position": "right"}],
+            "label": "Figure 1", "page": 1, "composite": link,
+            "panels": [{"block": 3, "image": 0, "position": "left", "picture": f"{link}&panel=0"},
+                       {"block": 3, "image": 1, "position": "right", "picture": f"{link}&panel=1"}],
         }})
 
     def test_panel_positions_follow_the_boxes_as_printed(self):
@@ -7950,16 +7952,18 @@ class FigureAndContextTests(unittest.TestCase):
                     self.get(server, f"/api/source-page?book={self.book}&page={number}")[0]
                     for number in ("0", "2", "x")
                 ] + [self.get(server, f"/api/source-page?book={bare}&page=1")[0],
-                     self.get(server, f"/api/figure?book={bare}&passage=1")[0]]
+                     self.get(server, f"/api/figure?book={bare}&passage=1")[0],
+                     self.get(server, f"/api/figure?book={self.book}&passage=4&panel=2")[0]]
             finally:
                 server.shutdown()
                 thread.join()
         self.assertEqual((status, kind), (200, "image/png"))
         composite = cv2.imdecode(np.frombuffer(body, np.uint8), cv2.IMREAD_GRAYSCALE)
-        # One picture: the union of both panels' boxes, at the render dpi.
+        # One picture: the panels' region with its margin, at the render dpi.
         scale = web.FIGURE_RENDER_DPI / 72
-        self.assertAlmostEqual(composite.shape[1], (504 - 72) * scale, delta=2)
-        self.assertAlmostEqual(composite.shape[0], (288 - 96) * scale, delta=2)
+        margin = web.FIGURE_REGION_MARGIN
+        self.assertAlmostEqual(composite.shape[1], (504 - 72 + 2 * margin) * scale, delta=2)
+        self.assertAlmostEqual(composite.shape[0], (288 - 96 + 2 * margin) * scale, delta=2)
         # Each panel sits where the PDF prints it: side by side, left then right.
         found = []
         for crop in self.crops:
@@ -7969,12 +7973,46 @@ class FigureAndContextTests(unittest.TestCase):
             _, score, _, at = cv2.minMaxLoc(cv2.matchTemplate(composite, template, cv2.TM_CCOEFF_NORMED))
             self.assertGreater(score, 0.8)
             found.append(at)
-        self.assertAlmostEqual(found[0][0], 0, delta=3)
-        self.assertAlmostEqual(found[1][0], (312 - 72) * scale, delta=3)
-        self.assertAlmostEqual(found[0][1], (120 - 96) * scale, delta=3)
+        self.assertAlmostEqual(found[0][0], margin * scale, delta=3)
+        self.assertAlmostEqual(found[1][0], (312 - 72 + margin) * scale, delta=3)
+        self.assertAlmostEqual(found[0][1], (120 - 96 + margin) * scale, delta=3)
         self.assertEqual(not_figure, 404)
         self.assertEqual((page[0], page[1]), (200, "image/png"))
-        self.assertEqual(missing, [404] * 5)
+        self.assertEqual(missing, [404] * 6)
+
+    def test_two_figures_side_by_side_keep_apart_with_their_titles_and_without_their_captions(self):
+        import pymupdf
+
+        # Two pictures 9 pt apart, each titled just above and captioned just
+        # below, over the paper's running text, which spans both.
+        left, right = (72, 100, 290, 250), (299, 100, 480, 250)
+        path = Path(self.storage.root) / "two-figures.pdf"
+        rng = np.random.default_rng(3)
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            for rect in (left, right):
+                pixels = rng.integers(0, 256, (40, 40, 3), dtype=np.uint8)
+                page.insert_image(pymupdf.Rect(rect), pixmap=pymupdf.Pixmap(pymupdf.csRGB, 40, 40, pixels.tobytes(), False))
+            page.insert_text((120, 94), "Encoder stack", fontsize=9)
+            page.insert_text((360, 94), "Decoder stack", fontsize=9)
+            page.insert_text((72, 266), "Figure 1: The encoder.", fontsize=9)
+            page.insert_text((299, 266), "Figure 2: The decoder.", fontsize=9)
+            for line in range(5):
+                page.insert_text((72, 300 + 13 * line), "The running text of the paper goes on here, line by line, "
+                                 "across the whole width of its column.", fontsize=10)
+            titles = [page.search_for(text)[0] for text in ("Encoder stack", "Decoder stack")]
+            captions = [page.search_for(text)[0] for text in ("Figure 1:", "Figure 2:")]
+            pdf.save(path)
+        first, first_panels = web.figure_regions(path, 1, [left], [right])
+        second, second_panels = web.figure_regions(path, 1, [right], [left])
+        for region, title, caption in ((first, titles[0], captions[0]), (second, titles[1], captions[1])):
+            self.assertLessEqual(region[1], title.y0)
+            self.assertLessEqual(region[3], caption.y0)
+            self.assertTrue(region[0] <= title.x0 and title.x1 <= region[2])
+        self.assertLessEqual(first[2], second[0])
+        self.assertLess(first[2], right[0])
+        self.assertGreater(second[0], left[2])
+        self.assertEqual((first_panels, second_panels), ((first,), (second,)))
 
     def test_a_figure_brings_its_caption_the_passages_naming_it_and_its_description(self):
         manifest, images = self.figure("anthropic/claude-test")

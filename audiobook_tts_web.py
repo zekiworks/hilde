@@ -51,6 +51,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import statistics
 import struct
 import subprocess
 import sys
@@ -3907,11 +3908,17 @@ FIGURE_CROP_DPI = 150
 TABLE_CROP_DPI = 200
 # A crop counts as found where it matches its page this closely.
 FIGURE_MATCH_SCORE = 0.9
-# A figure as laid out on its page, and a whole source page, are rendered
+# A figure as printed on its page, and a whole source page, are rendered
 # from the PDF at these.
 FIGURE_RENDER_DPI = 200
 SOURCE_PAGE_DPI = 150
 FIGURE_PASSAGE_TYPES = frozenset({"figure", "table"})
+# A figure's region (figure_regions()) takes in the marks printed within
+# this many points of it, and keeps this margin of white around it.
+FIGURE_REGION_GAP = 12.0
+FIGURE_REGION_MARGIN = 3.0
+# A section heading numbered as "3.2.1 Title" or "A.1 Title".
+NUMBERED_HEADING_PATTERN = re.compile(r"^(?:\d+(?:\.\d+)*\.?|[A-Z](?:\.\d+)*\.?)\s+[A-Z]")
 
 
 def passage_details(passages):
@@ -3980,44 +3987,58 @@ def _pdf_version(pdf):
 
 def figure_boxes(pdf, passage, crops):
     """Where a figure's or table's crops sit on its PDF page, in points
-    (x0, y0, x1, y1), crop by crop; None when one cannot be found."""
+    (x0, y0, x1, y1), crop by crop; None when one cannot be found. A crop is
+    looked for at its kind's dpi first, then at the other's: extraction cuts
+    whatever its table finder found at the table dpi, captioned "Figure" or not."""
     if not crops:
         return None
-    dpi = TABLE_CROP_DPI if passage.get("type") == "table" else FIGURE_CROP_DPI
-    return _figure_boxes(str(pdf), _pdf_version(pdf), passage.get("page"), dpi, tuple(crops))
+    dpis = (FIGURE_CROP_DPI, TABLE_CROP_DPI)
+    if passage.get("type") == "table":
+        dpis = dpis[::-1]
+    return _figure_boxes(str(pdf), _pdf_version(pdf), passage.get("page"), dpis, tuple(crops))
 
 
 @functools.lru_cache(maxsize=64)
-def _figure_boxes(pdf, version, page, dpi, crops):
+def _figure_boxes(pdf, version, page, dpis, crops):
     import cv2
     import numpy
     import pymupdf
 
+    renders = {}
     try:
         with pymupdf.open(pdf) as document:
             if type(page) is not int or not 1 <= page <= document.page_count:
                 return None
             sheet = document[page - 1]
             origin = sheet.rect.tl
-            pixmap = sheet.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
+            boxes = []
+            for crop in crops:
+                template = cv2.imdecode(numpy.frombuffer(crop, numpy.uint8), cv2.IMREAD_GRAYSCALE)
+                if template is None:
+                    return None
+                for dpi in dpis:
+                    if dpi not in renders:
+                        pixmap = sheet.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY, alpha=False)
+                        renders[dpi] = numpy.frombuffer(pixmap.samples, numpy.uint8).reshape(
+                            pixmap.height, pixmap.stride
+                        )[:, :pixmap.width]
+                    rendered = renders[dpi]
+                    if template.shape[0] > rendered.shape[0] or template.shape[1] > rendered.shape[1]:
+                        continue
+                    _, score, _, (x, y) = cv2.minMaxLoc(cv2.matchTemplate(rendered, template, cv2.TM_CCOEFF_NORMED))
+                    # A blank crop scores NaN, which fails here too.
+                    if score >= FIGURE_MATCH_SCORE:
+                        height, width = template.shape
+                        scale = 72 / dpi
+                        boxes.append((
+                            origin.x + x * scale, origin.y + y * scale,
+                            origin.x + (x + width) * scale, origin.y + (y + height) * scale,
+                        ))
+                        break
+                else:
+                    return None
     except (RuntimeError, ValueError):
         return None
-    rendered = numpy.frombuffer(pixmap.samples, numpy.uint8).reshape(pixmap.height, pixmap.stride)[:, :pixmap.width]
-    boxes = []
-    for crop in crops:
-        template = cv2.imdecode(numpy.frombuffer(crop, numpy.uint8), cv2.IMREAD_GRAYSCALE)
-        if template is None or template.shape[0] > rendered.shape[0] or template.shape[1] > rendered.shape[1]:
-            return None
-        _, score, _, (x, y) = cv2.minMaxLoc(cv2.matchTemplate(rendered, template, cv2.TM_CCOEFF_NORMED))
-        # A blank crop scores NaN, which fails here too.
-        if not score >= FIGURE_MATCH_SCORE:
-            return None
-        height, width = template.shape
-        scale = 72 / dpi
-        boxes.append((
-            origin.x + x * scale, origin.y + y * scale,
-            origin.x + (x + width) * scale, origin.y + (y + height) * scale,
-        ))
     return tuple(boxes)
 
 
@@ -4043,12 +4064,275 @@ def figure_panel_positions(boxes):
     return positions
 
 
-def figure_png(pdf, passage, boxes):
-    """A figure as laid out in the PDF: its boxes' union rendered from the page."""
-    clip = (
-        min(box[0] for box in boxes), min(box[1] for box in boxes),
-        max(box[2] for box in boxes), max(box[3] for box in boxes),
+def _box_union(a, b):
+    return min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])
+
+
+def _box_overlap(a, b):
+    """The area two boxes share."""
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def _box_area(box):
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def _box_inside(inner, outer, slack=1.0):
+    return (
+        inner[0] >= outer[0] - slack and inner[1] >= outer[1] - slack
+        and inner[2] <= outer[2] + slack and inner[3] <= outer[3] + slack
     )
+
+
+def _weighted_median(pairs):
+    pairs = sorted(pairs)
+    half, total = sum(weight for _, weight in pairs) / 2, 0
+    for value, weight in pairs:
+        total += weight
+        if total >= half:
+            return value
+    return None
+
+
+def _page_layout(sheet):
+    """What a figure's region is told apart by on a PDF page: its text blocks,
+    each a "caption" ("Figure 2: …", "Table 1 …"), "prose" (the paper's
+    running text), "heading", "furniture" (running heads and page numbers)
+    or "label" (short text, as a figure's titles and labels are); the marks a
+    figure may be made of (each label's lines, each picture and drawing);
+    and the frame the page's text fills."""
+    import pymupdf
+
+    width, height = sheet.rect.width, sheet.rect.height
+    blocks = []
+    for block in sheet.get_text("dict", flags=pymupdf.TEXTFLAGS_TEXT)["blocks"]:
+        if block["type"] != 0:
+            continue
+        lines = []
+        for line in block["lines"]:
+            spans = [span for span in line["spans"] if span["text"].strip()]
+            if not spans:
+                continue
+            lines.append({
+                "bbox": tuple(line["bbox"]),
+                "text": " ".join("".join(span["text"] for span in line["spans"]).split()),
+                "size": _weighted_median([(span["size"], len(span["text"].strip())) for span in spans]),
+                "font": max(spans, key=lambda span: len(span["text"].strip()))["font"],
+                "bold": all(
+                    span["flags"] & 16 or re.search(r"bold|black|heavy|medi", span["font"], re.IGNORECASE)
+                    for span in spans
+                ),
+            })
+        if not lines:
+            continue
+        # A caption starts a block of its own, even when the page set it
+        # right under a figure's last labels.
+        starts = [0] + [
+            index for index, line in enumerate(lines) if index and CAPTION_NUMBER_PATTERN.match(line["text"])
+        ]
+        for start, end in zip(starts, starts[1:] + [len(lines)]):
+            part = lines[start:end]
+            blocks.append({
+                "bbox": functools.reduce(_box_union, (line["bbox"] for line in part)), "lines": part,
+                "text": " ".join(line["text"] for line in part),
+                "size": _weighted_median([(line["size"], len(line["text"])) for line in part]),
+            })
+    # The running text's size, font, column width and left edges, from its
+    # long lines.
+    long_lines = [line for block in blocks for line in block["lines"] if len(line["text"].split()) >= 8]
+    body = _weighted_median([(line["size"], len(line["text"])) for line in long_lines]) or 10.0
+    fonts = collections.Counter()
+    for line in long_lines:
+        fonts[line["font"]] += len(line["text"])
+    font = fonts.most_common(1)[0][0] if fonts else None
+    column = statistics.median(
+        line["bbox"][2] - line["bbox"][0] for line in long_lines
+    ) if long_lines else 0.4 * width
+    edges = [edge for edge, count in collections.Counter(
+        round(line["bbox"][0]) for line in long_lines
+    ).items() if count >= 2]
+
+    def prose_line(line):
+        return (
+            len(line["text"].split()) >= 6 and line["size"] >= 0.7 * body
+            and line["bbox"][2] - line["bbox"][0] >= 0.3 * column
+        ) or (
+            # A short line of running text ("Note that:") starts where it does.
+            line["font"] == font and abs(line["size"] - body) <= 0.3
+            and any(abs(line["bbox"][0] - edge) <= 1.5 for edge in edges)
+        )
+
+    for block in blocks:
+        x0, y0, x1, y1 = block["bbox"]
+        count, characters = len(block["lines"]), len(block["text"])
+        if CAPTION_NUMBER_PATTERN.match(block["text"]):
+            block["kind"] = "caption"
+        elif y1 < 0.08 * height or y0 > 0.93 * height or count == 1 and characters < 80 and not any(
+            # The page's last line, as a running foot or page number is.
+            other["bbox"][1] >= y1 for other in blocks
+        ):
+            block["kind"] = "furniture"
+        elif any(map(prose_line, block["lines"])) or block["size"] >= 0.7 * body and (
+            count >= 2 and x1 - x0 >= 0.6 * column and characters >= 80 or characters >= 160
+        ):
+            block["kind"] = "prose"
+        elif count <= 2 and characters < 100 and (
+            NUMBERED_HEADING_PATTERN.match(block["text"])
+            or all(line["bold"] for line in block["lines"]) and block["size"] >= 1.1 * body
+        ):
+            block["kind"] = "heading"
+        else:
+            block["kind"] = "label"
+    text = [block["bbox"] for block in blocks if block["kind"] != "furniture"]
+    frame = functools.reduce(_box_union, text) if text else tuple(sheet.rect)
+    marks = [line["bbox"] for block in blocks if block["kind"] == "label" for line in block["lines"]]
+    marks += [tuple(image["bbox"]) for image in sheet.get_image_info()]
+    marks += [tuple(drawing["rect"]) for drawing in sheet.get_drawings()]
+    return blocks, marks, frame
+
+
+def figure_regions(pdf, page, boxes, others=(), label=""):
+    """A figure's region on its PDF page as printed, and each panel's, in
+    points: (region, (panel region, …)); None when the page can't be read.
+
+    The region starts as the box around the figure's crops (`boxes`). A crop
+    that took in its own caption ("Figure 2", `label`) ends at it, above it
+    for a figure and below it for a table, so a crop cut across two figures
+    keeps the one captioned; one that took in an edge of other text gives
+    that edge back. Then it takes in, mark by mark, every label line, picture
+    and drawing printed within FIGURE_REGION_GAP of it: the panel titles
+    above, the labels between and beside the panels, a legend, a table's
+    rules. It never grows into more of a caption, the paper's prose, a
+    heading, a running head, or another figure's crops (`others`) than its
+    crops already cover, and a rule extends it only across the rule, never
+    along it. Each panel's region is its crop with the marks nearest to it
+    that keep it clear of the other panels."""
+    return _figure_regions(str(pdf), _pdf_version(pdf), page, tuple(boxes), tuple(others), label)
+
+
+@functools.lru_cache(maxsize=64)
+def _figure_regions(pdf, version, page, boxes, others, label):
+    import pymupdf
+
+    try:
+        with pymupdf.open(pdf) as document:
+            if type(page) is not int or not 1 <= page <= document.page_count:
+                return None
+            sheet = document[page - 1]
+            blocks, marks, frame = _page_layout(sheet)
+            bounds = tuple(sheet.rect)
+    except (RuntimeError, ValueError):
+        return None
+    seed = functools.reduce(_box_union, boxes)
+    named = CAPTION_NUMBER_PATTERN.match(label)
+    for block in blocks:
+        caption = CAPTION_NUMBER_PATTERN.match(block["text"]) if block["kind"] == "caption" else None
+        if not named or not caption or not _box_overlap(block["bbox"], seed) or (
+            caption.group(1)[0].lower(), int(caption.group(2))
+        ) != (named.group(1)[0].lower(), int(named.group(2))):
+            continue
+        above = (seed[0], seed[1], seed[2], min(seed[3], block["bbox"][1]))
+        below = (seed[0], max(seed[1], block["bbox"][3]), seed[2], seed[3])
+        sides = (below, above) if named.group(1)[0].lower() == "t" else (above, below)
+        seed = next((side for side in sides if _box_area(side)), seed)
+    # A crop that took in an edge of a caption or of the text beside it
+    # gives that edge back: the side cut that keeps the most of it, when it
+    # keeps three quarters. Other text mostly inside the crops is the
+    # figure's own, whatever it looks like.
+    for block in blocks:
+        inside = _box_overlap(block["bbox"], seed) >= 0.5 * _box_area(block["bbox"])
+        if block["kind"] == "label" or not _box_overlap(block["bbox"], seed) or inside and block["kind"] != "caption":
+            continue
+        x0, y0, x1, y1 = block["bbox"]
+        cuts = [
+            (seed[0], seed[1], seed[2], min(seed[3], y0)), (seed[0], max(seed[1], y1), seed[2], seed[3]),
+            (seed[0], seed[1], min(seed[2], x0), seed[3]), (max(seed[0], x1), seed[1], seed[2], seed[3]),
+        ]
+        cut = max(cuts, key=_box_area)
+        if _box_area(cut) >= 0.75 * _box_area(seed):
+            seed = cut
+    boxes = tuple(
+        clipped if _box_area(clipped := (max(box[0], seed[0]), max(box[1], seed[1]),
+                                         min(box[2], seed[2]), min(box[3], seed[3]))) else box
+        for box in boxes
+    )
+    gap = FIGURE_REGION_GAP
+    frame = _box_union(frame, seed)
+    frame = (frame[0] - 6, frame[1] - 6, frame[2] + 6, frame[3] + 6)
+    barriers = [
+        block["bbox"] for block in blocks
+        if block["kind"] != "label" and _box_overlap(block["bbox"], seed) < 0.5 * _box_area(block["bbox"])
+    ] + list(others)
+    covered = [_box_overlap(seed, barrier) for barrier in barriers]
+
+    def blocked(box, apart=()):
+        return any(
+            _box_overlap(box, barrier) > before + 0.5 for barrier, before in zip(barriers, covered)
+        ) or any(_box_overlap(box, other) > 0 for other in apart)
+
+    region, taken = seed, []
+    pending = [mark for mark in marks if not _box_inside(mark, seed) and _box_inside(mark, frame, 0)]
+    grew = True
+    while grew:
+        grew = False
+        for mark in list(pending):
+            if max(mark[0] - region[2], region[0] - mark[2]) > gap or max(mark[1] - region[3], region[1] - mark[3]) > gap:
+                continue
+            # A rule beside the figure that runs past it is the page's.
+            if mark[3] - mark[1] < 2 and (mark[0] < region[0] - gap or mark[2] > region[2] + gap):
+                continue
+            if mark[2] - mark[0] < 2 and (mark[1] < region[1] - gap or mark[3] > region[3] + gap):
+                continue
+            grown = _box_union(region, mark)
+            if blocked(grown):
+                continue
+            region = grown
+            taken.append(mark)
+            pending.remove(mark)
+            grew = True
+    # Each panel takes the marks nearest to it that keep it off the others.
+    panels = list(boxes)
+    loose = taken + [
+        mark for mark in marks
+        if _box_inside(mark, seed) and not any(_box_inside(mark, box) for box in boxes)
+    ]
+
+    def distance(box, mark):
+        return max(0.0, mark[0] - box[2], box[0] - mark[2]) + max(0.0, mark[1] - box[3], box[1] - mark[3])
+
+    for mark in sorted(loose, key=lambda mark: min(distance(box, mark) for box in boxes)):
+        nearest = min(range(len(boxes)), key=lambda index: distance(boxes[index], mark))
+        grown = _box_union(panels[nearest], mark)
+        if not any(_box_overlap(grown, box) > 0 for index, box in enumerate(boxes) if index != nearest):
+            panels[nearest] = grown
+    # A margin of white, as far as it stays off the text and the other figures.
+    near = [(box[0] - FIGURE_REGION_MARGIN, box[1] - FIGURE_REGION_MARGIN,
+             box[2] + FIGURE_REGION_MARGIN, box[3] + FIGURE_REGION_MARGIN) for box in others]
+
+    def margin(box):
+        box = list(box)
+        for side, sign in ((0, -1), (1, -1), (2, 1), (3, 1)):
+            for width in (FIGURE_REGION_MARGIN, FIGURE_REGION_MARGIN / 2):
+                trial = list(box)
+                trial[side] += sign * width
+                trial = [max(bounds[0], trial[0]), max(bounds[1], trial[1]),
+                         min(bounds[2], trial[2]), min(bounds[3], trial[3])]
+                if not blocked(tuple(trial), near):
+                    box = trial
+                    break
+        return tuple(box)
+
+    return margin(region), tuple(margin(panel) for panel in panels)
+
+
+def figure_png(pdf, passage, boxes, others=(), panel=None):
+    """A figure as printed in the PDF, or one of its panels: its region
+    (figure_regions()) rendered from the page; None without one."""
+    label = passage_details([passage])[1]["label"]
+    regions = figure_regions(pdf, passage.get("page"), boxes, others, label)
+    if regions is None or panel is not None and not 0 <= panel < len(regions[1]):
+        return None
+    clip = regions[0] if panel is None else regions[1][panel]
     return _pdf_png(str(pdf), _pdf_version(pdf), passage.get("page"), FIGURE_RENDER_DPI, clip)
 
 
@@ -4075,10 +4359,11 @@ def _pdf_png(pdf, version, page, dpi, clip=None):
 
 def reader_figures(book, pdf, passages, details, sources, block_passages):
     """Each figure or table passage with pictures, by number: its label, PDF
-    page, the link of its picture as laid out in the PDF, and its panels
-    (each crop's block, index in the block, and place in the figure). Without
-    a PDF, or with a crop not found on its page, the link is None and the
-    panels empty."""
+    page, the link of its picture as printed in the PDF (figure_regions()),
+    and its panels (each crop's block, index in the block, place in the
+    figure, and, in a figure of several, the link of the panel as printed).
+    Without a PDF, or with a crop not found on its page, the link is None
+    and the panels empty."""
     figures = {}
     for number, passage in enumerate(passages, 1):
         if passage.get("type") not in FIGURE_PASSAGE_TYPES:
@@ -4087,25 +4372,27 @@ def reader_figures(book, pdf, passages, details, sources, block_passages):
         if not images:
             continue
         boxes = figure_boxes(pdf, passage, [image[3] for image in images]) if pdf else None
+        link = f"/api/figure?book={urllib.parse.quote(book)}&passage={number}"
         figures[number] = {
             "label": details[number]["label"],
             "page": passage.get("page"),
-            "composite": (
-                f"/api/figure?book={urllib.parse.quote(book)}&passage={number}" if boxes else None
-            ),
+            "composite": link if boxes else None,
             "panels": [
-                {"block": block, "image": index, "position": position}
-                for (block, index, _, _), position in zip(images, figure_panel_positions(boxes))
+                {
+                    "block": block, "image": index, "position": position,
+                    "picture": f"{link}&panel={panel}" if len(boxes) > 1 else None,
+                }
+                for panel, ((block, index, _, _), position) in enumerate(zip(images, figure_panel_positions(boxes)))
             ] if boxes else [],
         }
     return figures
 
 
-def book_figure(storage, book, number):
+def book_figure(storage, book, number, panel=None):
     """A book's figure or table passage `number` as the reader shows it: the
-    passage, its crops (reader_passage_images()), and its picture as laid
-    out in the source PDF, or None without one. FileNotFoundError when the
-    book has no such passage or no text of its own."""
+    passage, its crops (reader_passage_images()), and its picture as printed
+    in the source PDF (or panel `panel`'s), or None without one.
+    FileNotFoundError when the book has no such passage or no text of its own."""
     path, record = read_book(storage, book)
     narration, narration_sha256 = read_narration(path)
     if narration is None or narration_sha256 != record.get("narration_sha256"):
@@ -4118,13 +4405,24 @@ def book_figure(storage, book, number):
     sources = _reader_markdown_sources((path / "reader.md").read_text(encoding="utf-8"))
     synchronization = read_json_file(voice_folder(path, voice) / "timings.json") or {}
     paragraphs = synchronization.get("paragraphs") or list(range(len(sources)))
-    crops = reader_passage_images(sources, reader_block_passages(paragraphs, passages), number)
+    block_passages = reader_block_passages(paragraphs, passages)
+    crops = reader_passage_images(sources, block_passages, number)
     pdf = book_source(storage, path, record)
-    boxes = (
-        figure_boxes(pdf, passage, [crop[3] for crop in crops])
-        if pdf is not None and pdf.suffix.lower() == ".pdf" else None
-    )
-    return passage, crops, figure_png(pdf, passage, boxes) if boxes else None
+    if pdf is None or pdf.suffix.lower() != ".pdf":
+        return passage, crops, None
+    boxes = figure_boxes(pdf, passage, [crop[3] for crop in crops])
+    if not boxes:
+        return passage, crops, None
+    # The other figures and tables printed on the same page bound its region.
+    others = [
+        box
+        for other, item in enumerate(passages, 1)
+        if other != number and item.get("type") in FIGURE_PASSAGE_TYPES and item.get("page") == passage.get("page")
+        for box in figure_boxes(
+            pdf, item, [image[3] for image in reader_passage_images(sources, block_passages, other)]
+        ) or ()
+    ]
+    return passage, crops, figure_png(pdf, passage, boxes, others, panel)
 
 
 def _render_reader_originals(originals, paragraphs):
@@ -13141,10 +13439,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return None
         if route == "/api/figure":
-            # A figure or table as laid out on its page of the book's PDF.
+            # A figure or table as printed on its page of the book's PDF, or
+            # one panel of it (&panel=N, 0-based).
             try:
+                panel = query.get("panel", [""])[0]
                 _, _, picture = book_figure(
                     self.server.storage, query.get("book", [""])[0], int(query.get("passage", [""])[0]),
+                    int(panel) if panel else None,
                 )
             except (ValueError, FileNotFoundError, OSError):
                 picture = None
@@ -14647,8 +14948,8 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-block td { overflow-wrap:normal; word-break:normal; }
 .reader-block code { white-space:pre-wrap; }
 /* A figure: a light paper card, never inverted, at its own aspect ratio.
-   The PDF's layout on a wide screen; on a phone its panels stack, each named
-   by its place in the source figure. */
+   Its region of the PDF page on a wide screen; on a phone the panels of a
+   figure of several stack, each named by its place in the source figure. */
 .figure-card { display:block; margin:12px 0; padding:12px; background:#f6f3ec; color:#26231f;
                border-radius:8px; cursor:zoom-in; }
 .figure-card img { display:block; max-width:100%; height:auto; margin:0 auto; border-radius:0; }
@@ -14717,8 +15018,8 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
   .book-controls .text-switch { order:1; flex-basis:100%; }
   .player-seek { order:10; flex-basis:100%; height:28px; }
   body:has(main.reading) { padding-bottom:var(--dock-h, 120px); }
-  .figure-card.has-composite .figure-panels { display:block; }
-  .figure-card.has-composite .figure-composite { display:none; }
+  .figure-card.has-composite.stacks .figure-panels { display:block; }
+  .figure-card.has-composite.stacks .figure-composite { display:none; }
   .menu { position:fixed; right:8px; left:8px; top:auto; bottom:calc(var(--dock-h, 0px) + 8px); }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
@@ -16069,9 +16370,11 @@ function seekReaderBlock(event, block) {
   setDetached(false);
 }
 
-// A figure's panels as the PDF lays them out: one picture of the whole
-// figure (shown on a wide screen) beside its crops, each named by its place
-// in the source figure (shown stacked on a phone), and the paper's caption.
+// A figure as printed in the PDF: one picture of its region of the page
+// (shown on a wide screen, and on a phone for a figure of one panel), its
+// panels, each its own region named by its place in the source figure
+// (stacked on a phone), and the paper's caption. Without the PDF the panels
+// are the pictures extraction cut.
 function figureCaption(number) {
   const detail = readerPayload.passages[number] || {};
   const caption = document.createElement("p");
@@ -16102,7 +16405,8 @@ function buildFigureCard(visual, number, block) {
     const holder = image.parentElement;
     const panel = document.createElement("div");
     panel.className = "figure-panel";
-    const name = panelName((panels.find((item) => item.image === index) || {}).position);
+    const item = panels.find((entry) => entry.image === index) || {};
+    const name = panelName(item.position);
     if (name) {
       const label = document.createElement("p");
       label.className = "figure-panel-label";
@@ -16110,13 +16414,21 @@ function buildFigureCard(visual, number, block) {
       panel.append(label);
     }
     image.alt = image.alt || name || figure.label || "";
+    if (item.picture) {
+      // The panel as printed, with its titles; the cut picture if it fails.
+      const cut = image.src;
+      image.loading = "lazy";
+      image.addEventListener("error", () => { image.src = cut; }, { once:true });
+      image.src = item.picture;
+    }
     panel.append(image);
     box.append(panel);
     if (holder !== visual && !holder.textContent.trim() && !holder.querySelector("img")) holder.remove();
   });
   visual.prepend(box);
-  // Every panel here: show the figure as one picture, as in the PDF.
-  if (figure.composite && figure.panels.length > 1 && panels.length === figure.panels.length) {
+  visual.classList.toggle("stacks", figure.panels.length > 1);
+  // Every panel here: show the figure as one picture, as printed.
+  if (figure.composite && panels.length && panels.length === figure.panels.length) {
     const composite = document.createElement("img");
     composite.className = "figure-composite";
     composite.loading = "lazy";
@@ -16896,6 +17208,7 @@ function openFigure(number) {
 }
 function askAboutFigure() {
   if (!figureShown) return;
+  pauseBookForQuestion();
   attachAbout({ kind:"figure", passage:figureShown });
   setPanel(true, "chat");
   focusChatInput();
@@ -17466,12 +17779,19 @@ function readerSelection() {
   if (!text) return null;
   return { text, range, first:readerPassageOf(range.startContainer), last:readerPassageOf(range.endContainer) };
 }
+// Asking pauses the book (only a pause: the time and the sentence stay) and
+// nothing resumes it; Play does. A question is about what was playing at
+// the press.
+function pauseBookForQuestion() {
+  if (readerAudio && !readerAudio.paused) readerAudio.pause();
+}
 // Ask Hilde opens the panel's chat as it was left. With text selected, that
 // text is attached; with nothing attached and nothing written, the part
-// playing is. The book keeps playing.
+// playing is.
 async function askHilde() {
   const picked = askSelection || readerSelection();
   askSelection = null;
+  pauseBookForQuestion();
   setPanel(true, "chat");
   if (!chatData) loadChat();
   if (picked) attachAbout(selectionAbout(picked));
@@ -19387,6 +19707,7 @@ $("selection-menu").addEventListener("click", (event) => {
   window.getSelection().removeAllRanges();
   if (action === "listen") listenFromSelection(picked);
   else {
+    pauseBookForQuestion();
     attachAbout(selectionAbout(picked));
     setPanel(true, "chat");
     focusChatInput();

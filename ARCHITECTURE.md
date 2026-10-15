@@ -1075,24 +1075,55 @@ sources' text without Markdown marks, else ""), and `sources` (`type`, `page`,
 `text`). `figures` (`reader_figures()`) lists each figure or table passage with
 pictures: `label`, `page`, `composite` (`/api/figure?book=…&passage=N`, or
 `null`) and `panels`, one per crop in reader order: its `block`, `image` (its
-index among the block's pictures), and `position` among the others
+index among the block's pictures), `position` among the others
 (`figure_panel_positions()`: `left`, `right`, `top`, `bottom`, combinations
 such as `top left`, `center` or `middle` between others, `whole` for a single
-crop). PDF extraction cuts figures into separate crops, so Attention's Figure 2
-comes out as two pictures that stack on a narrow screen. `figure_boxes()` finds
-each crop on its source page by template matching (OpenCV
-`TM_CCOEFF_NORMED`, at least `FIGURE_MATCH_SCORE`) against the page rendered at
-the dpi it was cut at: `FIGURE_CROP_DPI` (150, pymupdf4llm's default, which the
-converter keeps) for figures, `TABLE_CROP_DPI` (200, the converter's own
-table render) for tables. `GET /api/figure` renders the union of the boxes
-from the PDF at `FIGURE_RENDER_DPI` (`figure_png()`), so the panels keep the
-printed layout; `GET /api/source-page` renders a whole page at
-`SOURCE_PAGE_DPI` (`source_page_png()`). Both, and the boxes, are cached in
-memory only (`functools.lru_cache`, keyed by the PDF's size and modification
-time); nothing is written into the book. Without a PDF (`book_source()`), or
-with a crop not found, `composite` is `null`, `panels` empty, and
-`/api/figure` answers 404. `/api/figure` finds the crops through the default
-voice's paragraphs (`book_figure()`).
+crop), and `picture`, the panel as printed (`…&panel=I`, its 0-based index;
+`null` in a figure of one crop). PDF extraction cuts figures into separate
+crops, and cuts away what the page prints around them as text: Attention's
+Figure 2 comes out as two pictures without the titles "Scaled Dot-Product
+Attention" and "Multi-Head Attention" above them. `figure_boxes()` finds each
+crop on its source page by template matching (OpenCV `TM_CCOEFF_NORMED`, at
+least `FIGURE_MATCH_SCORE`) against the page rendered at the dpi it was cut
+at: `FIGURE_CROP_DPI` (150, pymupdf4llm's default, which the converter keeps)
+for figures, `TABLE_CROP_DPI` (200, the converter's own table render) for
+tables, trying the other when that fails, since the converter's table finder
+also cuts figures.
+
+`GET /api/figure` renders the figure's region of the page at
+`FIGURE_RENDER_DPI` (`figure_png()`): one crop of the PDF page, never the
+pictures put together. `figure_regions()` finds it from the page layout
+(`_page_layout()`, PyMuPDF text blocks, pictures, and drawings). Each text
+block is a caption (it opens "Figure N", "Fig. N" or "Table N"; a caption line
+starts a block of its own), running text (a line of six or more words at
+least 0.7 times the body size over 0.3 of a column, a block of two or more
+lines over 0.6 of a column, 160 characters, or a line in the body font and
+size starting at a left edge two long lines start at), a heading (numbered,
+or bold and larger than the body), page furniture (the top 8% and bottom 7% of
+the page, and the page's last line when short), or a label, a figure's short
+text. The region starts as the box around the crops. When the passage's own
+caption lies inside it (`label`), it ends at the caption: above it for a
+figure, below for a table, so a crop cut across two figures keeps the one
+captioned. Another caption, running text, heading or furniture the crops took
+an edge of is given back by the side cut that keeps the most, if it keeps
+three quarters. Then the region takes in, mark by mark, each label line,
+picture and drawing within `FIGURE_REGION_GAP` (12 pt) of it and inside the
+frame of the page's text: titles above the panels, labels between and beside
+them, legends, a table's rules. A mark is refused when taking it in would
+cover more of a caption, running text, heading, furniture, or another figure
+or table printed on the page (their crops' boxes, `others`) than the crops
+already do; a rule (thinner than 2 pt) only widens the region across itself.
+The region keeps a `FIGURE_REGION_MARGIN` (3 pt) of white where that covers
+none of those. Each panel's region is its crop plus the marks nearest to it
+that keep it off the other crops, so a panel's own title goes with it.
+`GET /api/source-page` renders a whole page at `SOURCE_PAGE_DPI`
+(`source_page_png()`). Both, the boxes, and the regions are cached in memory
+only (`functools.lru_cache`, keyed by the PDF's size and modification time);
+nothing is written into the book. Without a PDF (`book_source()`), or with a
+crop not found, `composite` is `null`, `panels` empty, and `/api/figure`
+answers 404. `/api/figure` finds the crops, its own and those of the other
+figures and tables on the page, through the default voice's paragraphs
+(`book_figure()`).
 
 The reader player requests `/api/audio?book=...&voice=...&container=mp4` first. Browsers
 seek VBR MP3 through its coarse 100-entry Xing table and then report the
@@ -1167,13 +1198,15 @@ Figures: a figure or table passage with pictures (`figures`) shows them on a
 light paper card that is never inverted, at their own aspect ratio, with its
 caption under **From the paper · PDF p. N**. When all its crops are in one
 block and the PDF layout was found, a wide screen shows `composite` (the
-`/api/figure` picture) instead of the crops; below 768 px the crops stack,
-each labeled by its `position` ("Left panel of the source figure"), the word
-the narration uses. A click opens the figure large in the side panel
-(`openFigure()`): the picture as the PDF lays it out, **From the paper** (the
-caption and a link to its PDF page) and **Hilde's description** (its
-narration), and **Ask about this figure**. No badge says a description was
-checked.
+`/api/figure` picture of its region) instead of the crops; below 768 px a
+figure of several panels stacks them, each its `picture` (its own region of
+the page, with its title; the extracted crop if that fails to load) labeled
+by its `position` ("Left panel of the source figure"), the word the narration
+uses, and a figure of one panel shows `composite`. A click opens the figure
+large in the side panel (`openFigure()`): the picture as the PDF lays it out,
+**From the paper** (the caption and a link to its PDF page) and **Hilde's
+description** (its narration), and **Ask about this figure**. No badge says a
+description was checked.
 
 The player bar is the page's own: play/pause, a seek bar, elapsed and total
 time, a speed button showing the speed ("1.25×") that opens 0.75× to 2×,
@@ -1205,12 +1238,15 @@ arriving, which keeps streaming into the hidden conversation. Under the
 book's title, `#book-files` lists the book's `files/` as download links.
 
 **Ask Hilde**, in the player bar, is the one way in. `askHilde()` opens the
-chat as it was left; the book keeps playing. Text selected in
+chat as it was left and, if the book plays, pauses it
+(`pauseBookForQuestion()`, a plain pause: the time and the sentence stay);
+nothing resumes it but Play. **Ask about this** on a selection and **Ask
+about this figure** pause it the same way. Text selected in
 `#reader-content` (taken on `pointerdown`, before the press can clear it) is
-attached; else, with no chip and no draft, the passage playing is (a figure
-passage as a figure). The chat's head shows the book, the section of the
-chip (else of the passage playing), the model picker (the adaptation
-catalog, `fillChatModels()`, kept as `player.chat_model`) with its
+attached; else, with no chip and no draft, the passage playing at the press
+is (a figure passage as a figure). The chat's head shows the book, the
+section of the chip (else of the passage playing), the model picker (the
+adaptation catalog, `fillChatModels()`, kept as `player.chat_model`) with its
 **Local** / **Cloud: <provider>** badge (the catalog's `badge`,
 `model_badge()`), **Read answers aloud**, and **New conversation**; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
@@ -1429,9 +1465,9 @@ last answer of a finished turn is read.
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<document-stem>-<voice>.mp3`. `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
 | `GET /api/source-page?book=...&page=N` | Page N (1-based) of the book's PDF (`book_source()`) as PNG at `SOURCE_PAGE_DPI`, cached in memory. HTTP 404 when the book has no PDF or no such page, or for an invalid id or page. |
-| `GET /api/figure?book=...&passage=N` | Figure or table passage N as laid out in the book's PDF: the union of its crops' boxes, found by template matching (`figure_boxes()`), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, or when a crop is not found on its page. |
+| `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
-| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position}]}}`; see Reader). |
+| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). |
 | `GET /api/paper/models` | Adaptation model catalog: the browser's added local servers' models, server by server in the order added, each `{provider, selector, server, label: "<model> · <host:port>"}` (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, each with its `badge` (`model_badge()`: `Local`, or `Cloud: <provider>`, as Ask Hilde shows it before sending), with the default a job uses when none is chosen, Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
@@ -1591,7 +1627,8 @@ its message, a figure's context bringing its caption, every passage naming it
 carrying exactly that manifest, with the picture only when the model takes
 pictures and only on the turn that attached it, the reader placing blocks in
 passages and a two-panel figure's crops found on its PDF page and rendered
-side by side, missing source pages refused,
+side by side, two figures side by side on one page kept apart, each with the
+title printed above it and without its caption, missing source pages refused,
 web pages on this machine or the local network never fetched, directly or by
 redirect, a page read as its main content in pieces, SearXNG results listed
 with their links, no web tools without a search server, an answer read
