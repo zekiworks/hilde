@@ -762,8 +762,15 @@ at its right are the jobs indicator and **Settings**. A small **by Zeki
 Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
-one warm orange accent reserved for the selected tab or voice, the primary
-action, progress, and playback. Each view shows at most one primary (orange)
+one vivid cobalt blue, used only through tokens: `--accent` (#2a5fe0) fills
+primary buttons, the play button, the active step marker, and a pressed
+preview, with white ink (`--accent-ink`, 5.5:1); `--accent-light` (#5aa2ff,
+6.6:1 on the #1b1b1b ground) draws the thin light of pressed and selected
+states (tab and switch underlines, the focus outline, links, badges,
+indicators, a card's border, the reading highlight); `--accent-soft` mixes
+16% of it. No orange is left; the jobs lamp is lit without a glow; an answer
+being read aloud (`.chat-speaking`) is white on `--accent`; danger buttons
+are dark ink (`var(--bg)`) on `--bad`. Each view shows at most one primary (blue)
 button: Create's step **Continue** or **Create audiobook**, **New voice** on
 Voices, **Create your first audiobook** on an empty Library, none in Settings.
 Secondary buttons are neutral; destructive or rare actions are text buttons or
@@ -772,7 +779,7 @@ sit in a row's **⋯** menu, always behind a confirmation dialog.
 Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
 folder tabs on a baseline (Arrow, Home, and End keys move between them).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
-an accent top edge and opens into the page below. Two more views have no tab:
+an `--accent-light` top edge and opens into the page below. Two more views have no tab:
 
 - The **progress view** (`#page-progress`, tab `progress` in state) opens from
   the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from
@@ -813,20 +820,38 @@ Each page:
   3. **How Hilde prepares the text**: three `.option`s, **Adapt the text for
      listening**, **Interpret and narrate figures/charts (Experimental)**, and
      **Check and correct descriptions**. Each has a line on what it does, a
-     "Can change:" line, the model's short name and its Local/Cloud badge
-     (`#adapt-badge`, `#figure-badge`, `#verify-badge`; the default model
-     reads "Default: <short>"), and a closed **More** `<details>` holding the
-     longer text and the full selector: **Text model** with **Providers** (the
+     "Can change:" line, a closed **More** `<details>` with the longer text,
+     and under its title a model row (`MODEL_OPTIONS`,
+     `renderOptionPlaces()`): "Model: <short> · <Local|Cloud: provider> ▾",
+     for figures and checking by default "Model: Same as the text model
+     (<short> · <badge>) ▾"; a local model's short name is the model's own
+     name, without org or server. A press opens the model list in place
+     (`toggleModelList()`: the `fillModelSelect()` list as a listbox, with
+     **Add local** and **Connect a provider** links at its foot); clicking a
+     model chooses it and closes the list, and Enter or Escape closes it.
+     The model selects are no longer under More. When the browser has local
+     servers and none answers, the catalog has no default (nothing moves to
+     the cloud silently): the row reads "Model: choose a model ▾" with "Your
+     local server is not running."; with no model at all, "No model
+     available" with "Add a local server or connect a provider.". Until every
+     turned-on option has a model, **Create audiobook** is disabled with the
+     reason beside it (`#run-reason`, `modelProblem()`: "Choose a model for
+     <option>." or "No model available: …"). **Connect a provider** opens
+     **Providers** (the
      OpenAI sign-in, Claude Code's status, and the Anthropic, OpenAI, and
      Google Gemini API keys, which share `renderPaperKey()`, `savePaperKey()`,
-     and `removePaperKey()`) and **Add local** (`renderPaperLocal()`: the local
-     model servers added, each with its address, type, a **This model sees
-     images** box saved at once, and **Remove**, then a form whose **Check and
-     add** asks `/api/paper/local/check` and appends the server; the button
-     reads **Local (N)** once N are added), **Figure model**, and **Checking
-     model**. Every model picker (`fillModelSelect()`) groups a local server's
-     models under "<provider> · <host:port>", each labelled
-     "<model> · <host:port>". Step 3's missing-model problem comes from the
+     and `removePaperKey()`); **Add local** (`renderPaperLocal()`) lists the
+     servers registered on the server (`--local-server`, "added on the
+     server", no **Remove**), then this browser's, each with its address,
+     type, a **This model sees images** box saved at once, and **Remove**,
+     then a form whose **Check and add** asks `/api/paper/local/check` and
+     appends the server. Every model picker (`fillModelSelect()`, shared by
+     step 3 and Ask Hilde) puts the default first ("Default: <short> ·
+     <badge>"), then groups per provider and per local server
+     ("<provider> · <host:port>", with " · added on the server" for a
+     registered one), local options "<model> · Local", cloud ones "<model> ·
+     Cloud: <provider>"; a local server that does not answer is a disabled
+     option "<host:port> — not running". Step 3's missing-model problem comes from the
      server's check of the saved providers, so connecting or removing one (the
      OpenAI sign-in completing, an API key saved or removed, **Check again**
      for Claude Code) syncs again to replace it, as choosing another model
@@ -924,13 +949,15 @@ Each page:
   43:53", else "Not started"), and **Open**, which reads **Continue** when a
   position exists and opens the book at that voice and time, paused. Its
   accessible name stays "Listen to <title>". **⋯** holds **Delete…**. Newest
-  first, 50 rows at a time; search reads titles only, with the same rules.
+  first, 50 rows at a time; search (placeholder "Search titles") reads titles only, with the same rules.
   Without audiobooks it shows "No audiobooks yet", a sentence, and **Create
   your first audiobook**. A click anywhere else on a row (not on a button, nor
-  one ending a text selection) opens the book view. Its top row is **←
-  Library** (a back link, as is the **Listen** tab pressed while Listen is
-  shown: `chooseListen()`; from another page the tab opens Listen as it was
-  left, with its book), the title, and one meta line: "Read by <voice>" (a
+  one ending a text selection) opens the book view. Its header holds the
+  title and one meta line, and at its top right (on desktop and phone alike)
+  **Library**, a bordered secondary button with an icon that returns to the
+  list in one press (`closeBook()`), as does the **Listen** tab pressed while
+  Listen is shown (`chooseListen()`; from another page the tab opens Listen as
+  it was left, with its book). The meta line reads "Read by <voice>" (a
   voice picker instead when more than one voice is ready), duration, source
   file; then **Notes Hilde wrote** (below), the stale-voice notice (**Make
   <voice> again**). Pinned above the text (`#listen-bar`, sticky) are
@@ -1059,7 +1086,7 @@ replaces the reading view (`.side-panel` fixed over it, `html.sheet-open`
 stopping the page from scrolling beneath), with **← Back to the book**. Its
 height follows the visual viewport (`fitVisualViewport()` sets `--vv-height`
 and `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of
-the screen leaves out the chat's book and section lines, and a chip scrolls
+the screen leaves out the chat's book and section lines, and a context card scrolls
 within a quarter of the visible height), so the message box and **Send** stay
 visible with an on-screen keyboard. Every Listen control is at least 44 px on
 phones and coarse pointers.
@@ -1163,9 +1190,9 @@ shared `<p>` (or heading line), while lists, tables, and images stay blocks
 attached to their sentence. New sidecars record each block's paragraph in a
 `paragraphs` array; paragraph-era sidecars derive it from their original
 paragraph blocks; sentence sidecars written before the array existed show one
-sentence per paragraph. The paragraph being read carries a 2 px accent rail
-and a 5% accent background; the word being read a 25% accent background and a
-2 px accent underline, its text color unchanged; the sentence itself is not
+sentence per paragraph. The paragraph being read carries a 2 px
+`--accent-light` rail and a 5% background of it; the word being read a 25%
+background and a 2 px underline of it, its text color unchanged; the sentence itself is not
 tinted. The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
@@ -1325,7 +1352,7 @@ A click on a word seeks; a click that ends a drag selection does not
 (`seekReaderBlock()` ignores a non-collapsed selection), nor does a long
 press. A finished selection in the text shows a small menu above it (below
 it on a touch screen, whose own menu is above): **Ask about this** (a
-selection chip), **Listen from here** (the first selected word, by
+context card), **Listen from here** (the first selected word, by
 `readerWordSeekSample()`, else its sentence or passage), and **Copy**.
 
 Figures: a figure or table passage with pictures (`figures`) shows them on a
@@ -1378,46 +1405,61 @@ chat as it was left and, if the book plays, pauses it
 nothing resumes it but Play. **Ask about this** on a selection and **Ask
 about this figure** pause it the same way. Text selected in
 `#reader-content` (taken on `pointerdown`, before the press can clear it) is
-attached; else, with no chip and no draft, the passage playing at the press
-is (a figure passage as a figure). The chat's head shows the book, the
-section of the chip (else of the passage playing), the model picker (the
-adaptation catalog, `fillChatModels()`, kept as `player.chat_model`) with its
-**Local** / **Cloud: <provider>** badge (the catalog's `badge`,
-`model_badge()`), **Read answers aloud**, and **New conversation**; then the
+attached; else, with no card and no draft, the passage playing at the press
+is (a figure passage as a figure). `selectedPassages()` takes only passages
+the selection takes words from, so a triple-click ending at offset 0 of the
+next paragraph does not attach it. The chat's head shows the book, the
+section of the card (else of the passage playing), the model picker
+(`fillChatModels()` fills it with the same `fillModelSelect()` list as Create
+step 3; `chatModel()` is its value or the catalog default; kept as
+`player.chat_model`) with an **Add local** link beside it,
+**Read answers aloud**, and **New conversation**; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
 **Providers** and **Add local**), the conversation, the hint line
-(`#chat-hint`, `chatHint()`), the chip, and directly under it the compose
-box: Enter sends, Shift+Enter breaks the line, **Stop** replaces **Send**
-while Hilde answers.
+(`#chat-hint`, `chatHint()`), the context card, and directly under it the
+compose box, empty for the listener's own question, whose placeholder says
+what Enter does: "Type a question, or press Enter to explain the selection"
+(or "… the figure", "… this part"), and with nothing attached "Ask about this
+book, or ask Hilde to write a summary file". Enter sends, Shift+Enter breaks
+the line, **Stop** replaces **Send** while Hilde answers.
 
-A chip (`attachAbout()`) is the `about` of the question, frozen when
+The context card (`attachAbout()`) is the `about` of the question, frozen when
 attached: playback moving on never changes it. The page asks
-`POST /api/chat/context` for its manifest and draws the chip only from it
-(`chipElement()`): the section (a figure's label first), the preview, and
-each item's label and passage, opening to its text, plus whether the
+`POST /api/chat/context` for its manifest and draws the card only from it
+(`chipElement()`), one per attached part: `chipHead()` titles it with the
+section heading as in the book, with a small **Change** (attaches the text
+selected in the book instead, or else the part playing) and **×** (removes
+it); `chipPreview()` shows the selected text in quotes, else the part's
+preview, cut to 80 characters by `cutText()`; `chipDetails()` is a collapsed
+**Context details** listing exactly the manifest's items, grouped by label,
+each label once ("Your selection", "Hilde's narration", "From the paper",
+"Hilde's description", "Picture"), then each piece with its ¶ number and
+page or place (the card's own section not repeated), plus whether the
 figure's picture goes ("Not sent: the figure's picture." and why, when it
-does not). **×** removes it; **Replace** attaches the text selected in the
-book instead, or else the part playing. Choosing another model asks for the
+does not). Past questions show the same card, collapsed, without controls.
+Choosing another model asks for the
 manifest again, since the picture depends on the model. A newly attached
-chip pulses (`pulseChip()`: the `.attached` class for 1.6 s, a background
+card pulses (`pulseChip()`: the `.attached` class for 1.6 s, a background
 animation plus an outline; the outline alone under `prefers-reduced-motion`).
-Until the manifest arrives the chip reads **Preparing…**; the wait for it,
+Until the manifest arrives the card reads **Preparing…**; the wait for it,
 including fetching the model list when none is loaded, is cut at
 `CHAT_CONTEXT_TIMEOUT` (10 s) by an `AbortController`, and a timed-out or
-failed request leaves a **Couldn't attach: Retry · Remove** chip (Retry asks
+failed request leaves a **Couldn't attach: Retry · Remove** card (Retry asks
 for the same `about` again).
 
 Enter and **Send** both call `sendChat()`, which never returns without a
-word in the hint line: an empty box with no chip ("Type a question first."),
+word in the hint line: an empty box with no card ("Type a question first."),
 a request still in flight, Hilde still answering, no model (loading, or none
-available). While the chip prepares, **Send** reads **Preparing context…**
+available). While the card prepares, **Send** reads **Preparing context…**
 and a press sets `chatQueued`; `attachAbout()` (or **×**) sends it when the
-chip settles. A failed chip stays and the question goes without it ("Sent
-without the selected text."); with an empty box and a failed chip, the hint
-asks for Retry or a question. An empty box with a ready chip sends
-`DEFAULT_QUESTION` ("Explain this part."), which the placeholder offers.
+card settles. A failed card stays and the question goes without it ("Sent
+without the selected text."); with an empty box and a failed card, the hint
+asks for Retry or a question. With a ready card and an empty box the button
+reads **Explain this part** (`renderSendButton()`, **Send** once something
+is typed, **Sending…** while it goes), and Enter or a click sends
+`DEFAULT_QUESTION` ("Explain this part.").
 The sent `about` is the manifest's; the stored question keeps the manifest,
-so past questions show the same chip. The box is cleared (and a sent chip
+so past questions show the same card. The box is cleared (and a sent card
 removed) only once `POST /api/chat/send` succeeds; an error shows in the
 hint line and the text stays.
 
@@ -1477,7 +1519,7 @@ A message may be about part of the book: `about` is
 `{"kind": "selection", "start", "end", "quote"}`, or
 `{"kind": "figure", "passage"}` (a figure or table passage), checked by
 `chat_about()`. `chat_attachment()` turns it into a manifest, the same for
-`POST /api/chat/context` (the page's context chip) and `POST /api/chat/send`:
+`POST /api/chat/context` (the page's context card) and `POST /api/chat/send`:
 `about`, `section`, `preview` (at most `CHAT_PREVIEW_CHARS`), `items` (each
 `kind`, `label`, `text`, and the `passage` it comes from, except a selection),
 `image` (`sent`, `count` of pictures the figure has, `why` when not sent), and
@@ -1543,7 +1585,7 @@ when a stream drops, reloads the conversation. `ChatTurn.keep()` saves an
 entry to `chat.json` and publishes it under the turn's lock, which
 `chat_payload()` reads the conversation, the partial answer, and
 `event_index` under, so a page sees each message once. `chat_display_entry()` keeps
-a listener's message's `context` manifest, for the chip on past questions, and renders
+a listener's message's `context` manifest, for the card on past questions, and renders
 an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
 `.chat-cite` links; `chat_payload()` maps each passage number to its first
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
@@ -1630,7 +1672,7 @@ last answer of a finished turn is read.
 | `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). |
-| `GET /api/paper/models` | Adaptation model catalog: the browser's added local servers' models, server by server in the order added, each `{provider, selector, server, label: "<model> · <host:port>"}` (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, each with its `badge` (`model_badge()`: `Local`, or `Cloud: <provider>`, as Ask Hilde shows it before sending), with the default a job uses when none is chosen, Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
+| `GET /api/paper/models` | Adaptation model catalog: the local servers' models (`local_servers_of()`: those registered with `--local-server` first, then the browser's added ones), server by server, each `{provider, selector, server, label: "<model> · <host:port>"}`, with `on_server` for a registered server's (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, each with its `badge` (`model_badge()`: `Local`, or `Cloud: <provider>`, as Ask Hilde shows it before sending), with the default a job uses when none is chosen (the first answering local server's first model; none when local servers are set and none answers), `local_servers` (each `{label, server, provider, vision, on_server, running, error}`, so a picker shows one not running), Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate one local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and answer its normalized `server` and `provider`; the page then appends it to `audiobook.local_servers` and asks for the catalog. HTTP 400 once the browser has `LOCAL_SERVERS_MAX` servers and this is not one of them, 502 when the server does not list models. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no added server of its type ("Add a local server of this model's type under Add local."). |
@@ -1644,10 +1686,12 @@ last answer of a finished turn is read.
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
-| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are the browser's own `audiobook.local_servers`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_servers_of()` the browser's `audiobook.local_servers`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
+
+`--local-server PROVIDER=URL[,vision]` (repeatable; `local_server_option()`) registers a local model server for every browser: PROVIDER `ollama` or `lm-studio` (any OpenAI-compatible server), the URL checked by `normalize_local_server()`, `vision` when its models see images. The servers are kept in `SERVER_LOCAL_SERVERS`, and `local_servers_of()` puts them, marked `on_server`, before each browser's own **Add local** servers (a server listed once) for the catalog, chat context and send, and job values (`values_of()`). Pickers label their group " · added on the server"; **Add local** shows them as "added on the server" without **Remove**. Startup prints "Local model servers for every browser: …".
 
 HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key` it serves the user's certificate; with `--https`, `ensure_tls_files()` (the `cryptography` package) keeps Hilde's own authority in `~/.hilde/tls` (`ca.pem`, `ca-key.pem`, mode 0600 in a 0700 folder) and a certificate for `machine_names()`: localhost, the host name with and without `.local`, and the machine's private addresses (the one its default route leaves by, and its host name's). Browsers treat only `localhost` as secure, so downloads from a page opened over plain HTTP from another device warn, and no public authority certifies a private address. The authority is an EC P-256 key valid `TLS_CA_DAYS`, path length 0, with critical name constraints permitting only `TLS_PRIVATE_NETWORKS` and the names it was made with, so a device that installs it trusts it for nothing else. The server certificate lasts `TLS_SERVER_DAYS` (397, under Apple's 825-day limit for user-installed authorities) and is made again, under the same authority, when under `TLS_RENEW_DAYS` remain or the names or addresses change, so devices keep trusting the server. `HildeServer.finish_request()`, in the request's own thread, peeks at the first byte: a TLS handshake is wrapped (TLS 1.2 or later), and plain HTTP gets a 307 to the same host and path over `https://`, with `Cache-Control: no-store`, so old bookmarks open; a handshake the browser refuses ends quietly. The redirect is temporary and never cached: a 301 stayed in Chrome after the server went back to plain HTTP, which it then could not reach. A new host name outside the authority's names needs a new authority: delete `~/.hilde/tls`. **Connection** under **Settings** › **Models and connection** shows whether this connection will flag downloads and offers **Download Hilde's certificate** (`renderConnection()`).
 

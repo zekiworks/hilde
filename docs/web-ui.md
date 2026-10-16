@@ -49,16 +49,25 @@ The voice step is a dropdown of your saved voices (the same choice as
 **Select** on **Voices**), with a card that previews the one you choose.
 
 The third step, **How Hilde prepares the text**, lists three options. Each
-says in one line what it does and in another what it can change, and shows the
-model it uses with a badge saying where the text goes: **Local** (your own
-machine or a model server you added) or **Cloud: <provider>**. **More** under
-an option holds the longer explanation and the full model choice:
+says in one line what it does and in another what it can change; **More**
+under an option holds the longer explanation. Under each option's title a
+model row names the model it uses with a badge saying where the text goes:
+**Local** (your own machine or a model server you added) or **Cloud:
+<provider>**, for example `Model: gpt-5 · Cloud: OpenAI ▾`. A local model is
+shown by its own name. The figure and checking options start at `Model: Same
+as the text model (<model> · <badge>) ▾`.
 
-- **Adapt the text for listening**: the **Text model**, with **Providers** and
-  **Add local** to connect models. When you have not chosen one, the line
-  names the default, for example `Default: <model> · Cloud: OpenAI`.
-- **Interpret and narrate figures/charts (Experimental)**: the **Figure model**.
-- **Check and correct descriptions**: the **Checking model**.
+Press the row to open the model list in place: models grouped by provider and
+by local server, with **Add local** and **Connect a provider** at the bottom.
+Click a model to choose it and close the list; Enter or Escape closes it too.
+
+When you added local servers and none of them answers, Hilde does not move
+your text to the cloud on its own: the row reads `Model: choose a model ▾`
+with "Your local server is not running." With no model at all it reads **No
+model available** with "Add a local server or connect a provider."
+**Create audiobook** stays disabled until every option you turned on has a
+model, and says why beside it, for example "Choose a model for Check and
+correct descriptions."
 
 A **Summary** above **Create audiobook** lists the document, the voice, and
 what each option will do, with the same badges, so you see where the text goes
@@ -204,17 +213,18 @@ it too), **Last position (this device)**, for example `12:45 of 43:53` or
 `Not started`, and **Open**, which reads **Continue** when this browser has a
 place in the book. Continue opens the book in the voice you last heard, paused
 at that place. A title is the book's first heading, or its document's name
-when that heading is a section such as Abstract. Search looks only at titles;
-every word you type must appear, in any order and case. **⋯** on a row holds
+when that heading is a section such as Abstract. Search (**Search titles**)
+looks only at titles; every word you type must appear, in any order and case. **⋯** on a row holds
 **Delete…**, which removes the audiobook, every voice of it, its text, its
 notes, and its conversation after a confirmation naming the book. With no
 audiobooks yet, the Library says so and offers **Create your first
 audiobook**.
 
-A click anywhere on a book's row opens it too: **← Library** (as does the
-**Listen** tab pressed while a book is open; from another tab, **Listen**
-brings back the book you had open), the title, and one line with the voice,
-the length, and the source file. A book read by more than one voice shows a
+A click anywhere on a book's row opens it too: its header shows the title and
+one line with the voice, the length, and the source file, with a **Library**
+button at its top right (on a phone too) that goes back to the list in one
+press, as does the **Listen** tab pressed while a book is open (from another
+tab, **Listen** brings back the book you had open). A book read by more than one voice shows a
 voice picker in that line. Above the text, and staying on screen while it
 scrolls, are **Follow along**, the **Narration text | Source text** switch,
 **⋯** (More), and the player: play, the seek bar, the time, the speed (it
@@ -247,9 +257,9 @@ book again, or reloading the page, finds it paused at that sentence. This is
 kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
-Text keeps its paragraphs: the paragraph being read is marked by a thin
-accent line at its left, and the word being read by a soft accent mark under
-it; the text keeps its color. Sentence-era readers created before paragraph
+Text keeps its paragraphs: the paragraph being read is marked by a thin blue
+line at its left and a faint blue tint, and the word being read by a soft blue
+background and underline; the text keeps its color. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically. Clicking a word seeks to that
 word (just before its aligned onset); clicking elsewhere in a sentence seeks
@@ -288,12 +298,13 @@ is a link that scrolls the book to it. When the server has web search (see
 search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's header shows **Web
 search on**. Its answer streams in as it writes;
-**Stop** ends it. The model is one of yours: pick it at the top of the chat,
-from the models you connected under **Providers** or the models of every
-server you added under **Add local** on **Create**; a local model answers
-from the server that offers it. Beside it, **Local** or **Cloud: <provider>**
-says where your question goes before you send it. With none, the chat asks
-you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
+**Stop** ends it. The model is one of yours: pick it at the top of the chat
+from the same list as on **Create**, grouped by provider and by local server;
+a local server that does not answer is listed as "<host:port> — not running"
+and cannot be chosen. **Add local** beside the picker adds a server; a local
+model answers from the server that offers it. Each model shows **Local** or
+**Cloud: <provider>**, so you see where your question goes before you send
+it. With none, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
 keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
@@ -303,22 +314,23 @@ close the chat and open it again; an answer keeps arriving meanwhile. When a
 conversation grows long, its oldest messages and reads leave what Hilde
 remembers, and the chat says so.
 
-Ask Hilde attaches the part being read (or the words you selected) above the
-message box: its section, its first words, **×** to remove it, and
-**Replace** to attach what you have selected, or else what is playing now.
-It stays as attached while you write, even if you play the book again. It
-lists exactly what goes with
-your question, each piece labelled with where it comes from: Hilde's narration
-of those paragraphs and, where the adaptation changed them, the paper's own
-text ("From the paper · section, PDF p. N"), and words you selected as "Your
-selection". A question about a figure or table brings its caption, every
+Ask Hilde attaches the part being read (or the words you selected) as a card
+above the message box: the section heading as in the book, below it your
+selected words in quotes or the part's first words, **Change** to attach what
+you have selected, or else what is playing now, and **×** to remove it. It
+stays as attached while you write, even if you play the book again. Its
+collapsed **Context details** list exactly what goes with
+your question, grouped by where it comes from, each with its ¶ number and
+page: "Your selection", "Hilde's narration" of those paragraphs and, where the
+adaptation changed them, "From the paper". A selection brings only the
+paragraphs it takes words from, never their neighbours. A question about a figure or table brings its caption, every
 paragraph of the paper that names it by number ("Figure 2", "Fig. 2",
-"Figures 1 and 2"; never one only printed near it), and Hilde's description.
+"Figures 1 and 2"; never one only printed near it), and "Hilde's description".
 Its picture, laid out as in the PDF, goes too when the chosen model takes
 pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys do, a local model
-only when its server is marked as seeing images; otherwise the list says the
+only when its server is marked as seeing images; otherwise the details say the
 picture is not sent. The picture goes with that question only. Past questions
-keep their lists.
+show the same card, collapsed and without its buttons.
 
 The attached part sits directly above the message box and lights up briefly
 when attached (a steady outline instead when your system asks for reduced
@@ -327,9 +339,13 @@ motion). It reads **Preparing…** while Hilde gathers it; **Send** then reads
 as the part is ready. If gathering takes longer than 10 seconds or fails, the
 part reads **Couldn't attach: Retry · Remove**: **Retry** asks for the same
 part again, **Remove** drops it. A question sent then goes without it, and the
-chat says **Sent without the selected text**. With a part attached and nothing
-typed, Enter or **Send** asks Hilde to explain that part ("Explain this part."),
-as the box's hint says. Your question stays in the box until Hilde has it: if
+chat says **Sent without the selected text**. The box stays empty for your own
+question; its hint says what Enter does, for example "Type a question, or
+press Enter to explain the selection" (or the figure, or this part), and with
+nothing attached "Ask about this book, or ask Hilde to write a summary file".
+With a part attached and nothing typed, the button reads **Explain this part**
+and it, or Enter, sends "Explain this part."; once you type it reads **Send**.
+Your question stays in the box until Hilde has it: if
 sending fails, the chat says why above the box and the text is still there.
 The chat also says why when nothing can go yet: an empty box, models still
 loading or none added, or Hilde still answering.
@@ -536,7 +552,10 @@ what is affected. Previewing, opening, and playing never ask.
 
 Editable form settings, the local model servers added under **Add local**
 among them, are stored in bounded `HttpOnly; SameSite=Strict`
-cookies per browser. This browser alone also remembers, in its local storage,
+cookies per browser. Local servers the operator started Hilde with
+(`--local-server`) are offered to every browser: they come first in the model
+lists, marked "added on the server", and **Add local** shows them without
+**Remove**. This browser alone also remembers, in its local storage,
 each book's place and speed, the side panel's width, and which stopped or
 failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
 worker devices/hosts, credentials, storage paths, and output paths remain

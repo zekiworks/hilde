@@ -14708,19 +14708,16 @@ PAGE = r"""<!doctype html>
 <link rel="apple-touch-icon" href="/hilde-dark.png">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, and two colors, each
-           used only through these tokens:
-           --accent, a vivid cobalt blue: the fill of buttons and chosen
-           things, white ink on it (5.5:1); --accent-light: the thin light of
-           a pressed or selected state, links and indicators (6.6:1 on the
-           ground). No glow stays lit.
-           --highlight: the reading highlight, amber, so the word and the
-           paragraph being read never look like a text selection. */
+        /* One charcoal ground, one neutral gray family, and one color, a
+           vivid cobalt blue, used only through these tokens: --accent, the
+           fill of buttons and chosen things, white ink on it (5.5:1);
+           --accent-light, the thin light of a pressed or selected state,
+           links, indicators, and the reading highlight (6.6:1 on the
+           ground). No glow stays lit. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
-        --highlight:#f0a245; --highlight-ink:#1b1b1b;
         --bad:#ff8a80; --radius:12px; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -15155,8 +15152,8 @@ button.chat-listen { min-height:36px; padding:0 14px; border-style:dashed; borde
 button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent-light); }
 .chat-restart, .chat-resume-book { font-size:14px; }
 /* The block being read, in the book's spoken-word colors. */
-.chat-assistant .chat-speaking { color:var(--highlight-ink); background:var(--highlight);
-                                 box-shadow:0 0 0 3px var(--highlight); border-radius:3px; }
+.chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent);
+                                 box-shadow:0 0 0 3px var(--accent); border-radius:3px; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
@@ -15214,7 +15211,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-content { font-size:18px; line-height:1.6; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
-  border-left-color:var(--highlight); background:color-mix(in srgb, var(--highlight) 5%, transparent);
+  border-left-color:var(--accent-light); background:color-mix(in srgb, var(--accent-light) 5%, transparent);
 }
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
@@ -15222,8 +15219,8 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
-.reader-word.active { background:color-mix(in srgb, var(--highlight) 25%, transparent);
-                      box-shadow:inset 0 -2px 0 var(--highlight); }
+.reader-word.active { background:color-mix(in srgb, var(--accent-light) 25%, transparent);
+                      box-shadow:inset 0 -2px 0 var(--accent-light); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
 .reader-block img { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:5px; }
