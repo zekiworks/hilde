@@ -233,9 +233,10 @@ server-owned pool of [narration workers](configuration.md#narration-workers): on
 all currently idle compatible workers, and each worker dynamically pulls chunk
 batches from that audiobook. A second job waits when the first has claimed the
 whole pool. The progress view and **Settings** show each worker's device and
-live state. GPUs of other machines appear as `Node 1 · GPU 2` and so on.
+live state. GPUs of other machines appear as `Machine 1 · GPU 2` and so on.
 Speech-server URLs and filesystem paths are not published; the nodes' hosts
-and paths are shown only to a browser on the server's own machine.
+and paths are shown only to a browser on the server's own machine. The
+server's own short host name is shown to every browser.
 
 A job ID is derived only from the selected document's content version and the
 voice version, plus whether it makes a new voice or remakes the book. Submitting
@@ -564,47 +565,72 @@ voice folder's `description.txt` to make one searchable.
 ## Settings
 
 **Settings**, in the header, replaces the page until you choose **Close
-settings** or a tab. Each setting says when it takes effect: "Applies to the
-next audiobook" (some also to the next voice preview) or "Applies now". The
-groups:
+settings** or a tab. Each group of settings ends with one note on when it
+takes effect: "Applies to the next audiobook" or "Applies now". The groups:
 
 - **Reading**: **Highlight style**, A (the word being read underlined) or B
   (underlined, with a faint fill behind it), applies now and is remembered by
   this browser. It is a temporary test: one style will stay and the choice
   will go.
-- **Narration**: precision, attention, language, text encoding, an optional
-  seed, [**Batch size**](configuration.md#batch-size), **Chunking** (the
-  longest chunk in characters; a book's new voice keeps the book's own), and
-  **MP3 compression**. Settings a speech server cannot use are turned off.
-- **Text preparation**: how many workers adapt the text at once and how many
-  paragraphs each takes; see [Text adaptation](text-adaptation.md).
-- **Voices**: **Reference WAV encoding**. It remains because the generated
-  sample is required for local voice cloning; it is not an output-location
-  choice.
-- **This machine's GPUs**: the server's own narration workers as live chips,
-  for example `GPU 0 idle` or `GPU 3 running`, with the device model and
-  memory; hover a chip for its job. **Narrates on** has a box for each device:
-  untick one and its chip reads `off`, and it takes no book until ticked again
-  (applies now).
-- **Other machines**: the workers of the nodes that narrate over SSH, each node
-  with **Remove** (after a confirmation naming it), and **Add workers**: enter
-  its address, **Connect**, **Set up** if it lacks Hilde's Python or the speech
-  model, untick any GPU to leave alone, **Add node**; see
+- **Speech tuning**: precision (**auto (recommended)**), attention (**sdpa
+  (recommended)**), language, and an optional seed. They change speed, memory
+  use, and small details of the sound, never the voice. They apply to the next
+  audiobook and the next voice preview you generate under **New voice**; saved
+  voices' previews and answers read aloud always use the defaults. With a
+  speech server narrating they apply only to the previews you generate, and
+  with speech servers narrating and designing they are turned off.
+- **Narration**: text encoding, [**Batch size**](configuration.md#batch-size)
+  (off with a speech server), **Chunking** (the longest chunk in characters;
+  when you give an existing book a new voice, the book keeps its own
+  chunking), and **MP3 compression**, for the next audiobook.
+- **Text preparation**: **Parallel text requests** (how many requests adapt
+  the text at once) and **Paragraphs per request**; see
+  [Text adaptation](text-adaptation.md).
+- **Voices**: **Reference WAV encoding** (FLOAT unless changed), under the
+  collapsed **Advanced voice settings**: the format of the reference recording
+  saved with a new voice, which local voice cloning reads.
+- **Machines and devices**: only what the server reports. **This server** is
+  the machine Hilde runs on, by its short host name, with every device its
+  probe found: a CUDA GPU by its name, memory, and a stable ID (the start of
+  its UUID, such as `GPU-7a85a208`, which stays when GPUs are added or
+  hidden), an Apple GPU (MPS), or the CPU, each saying whether it is a
+  narration worker and whether that worker is idle, narrating, held while a
+  voice is designed, or off, excluded in settings. On the server's own machine
+  each narration worker has a box: untick it and it takes no book until ticked
+  again (applies now). **Other machines** lists the nodes that narrate over
+  SSH, each with its devices as `workers.yaml` names them (Hilde does not know
+  their model or ID) and, on the server's own machine, **Remove** (after a
+  confirmation naming it) and **Add narration workers**: enter its address,
+  **Connect**, **Set up** if it lacks Hilde's Python or the speech model,
+  untick any GPU to leave alone, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a
-  running audiobook keeps its workers.
-- **Models and connection**: the narration and voice-design models, shown in
-  the model picker's look but not changed here (the server's startup
-  configuration), with **Local** or **Speech server**; the **Text model**, the
-  same picker and choice as Create's text model; and **Connection**, which
-  says whether this browser will warn about downloads (plain HTTP from another
-  device does) and, when the server runs with `--https`, offers **Download
-  Hilde's certificate** to install once on this device; see
-  [HTTPS](../README.md#https).
+  running audiobook keeps its narration workers. With none: "No other
+  machines connected." Each machine lists each job on its own: **Text
+  preparation**, **Narration**, and **Voice design**, each "available", "not
+  available" (with the reason), or "not tested". This server can prepare
+  text when the model list has a model it can reach (the model itself runs
+  on its own server), narrates while one of its narration workers is on, and
+  designs voices with a local voice-design model; other machines only
+  narrate.
+- **Models and connection**: the narration and voice-design models by
+  readable name (such as `Qwen3-TTS 1.7B (Base)`; the model ID is in the
+  tooltip), with **Local** or **Speech server**. Voice design adds the device
+  its last design ran on, by name and ID, or "Device chosen on first use"
+  before the first; with several GPUs, each design takes the one with the
+  most free memory. Hilde sets these when it starts; to change them, restart
+  Hilde with different settings. **Default text model** is the same picker
+  and choice as Create's text model, which a book can change. **Connection**
+  says "local (this computer)" on this computer, "HTTPS" over HTTPS, or, over
+  plain HTTP from another device, that browsers may warn about or block
+  downloads such as audiobook exports, with a link to
+  [HTTPS](../README.md#https); when the server runs with `--https`, it offers
+  **Download Hilde's certificate** to install once on this device.
 
 Only a browser on the server's own machine sees the nodes' hosts and may change
-the GPUs and machines; elsewhere those groups say "Only a browser on the
-server's own machine can change this." Browsers cannot select, pin, or name
-devices.
+the devices and machines; elsewhere one note at the top of **Machines and
+devices** says "Read-only from this device. Manage machines from a browser on
+the Hilde server.", and other machines appear as `Machine 1` and so on.
+Browsers cannot select, pin, or name devices.
 
 ## Asking before risky actions
 

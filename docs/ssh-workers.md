@@ -31,8 +31,8 @@ memory fails the run. Leave a GPU unticked when another program fills it.
 ## Web server
 
 Open **Settings** in a browser on the server's own machine, at
-`http://127.0.0.1:8800/`. **Other machines** lists the nodes, and **Add
-workers** adds one:
+`http://127.0.0.1:8800/`. **Other machines**, under **Machines and devices**,
+lists the nodes, and **Add narration workers** adds one:
 
 1. Enter the machine as an IP address, a host name, or `user@host`, and press
    **Connect**. Hilde connects over SSH, or says why it could not: SSH does not
@@ -57,10 +57,10 @@ The node narrates from the next book on, without a restart; a book already
 being narrated keeps its workers. Adding a machine again replaces its settings
 and GPUs. **Remove** takes a node away, except while it narrates a book.
 
-The server's own devices narrate too. **Narrates on**, under
-**This machine's GPUs** in **Settings**, has a box for each; untick one to keep it out of narration
-from the next book on, for example to time a book on one Spark alone. Its chip
-then reads `off`. A GPU narrating a book cannot be unticked until the book is
+The server's own devices narrate too. Under **Machines and devices** ›
+**This server** in **Settings**, each narration worker has a box; untick one to keep it out of narration
+from the next book on, for example to time a book on one Spark alone. It then
+reads `off, excluded in settings`. A GPU narrating a book cannot be unticked until the book is
 done, and one worker always stays: the last local device cannot be unticked
 without a node, nor the last node removed while every local device is off.
 
@@ -81,9 +81,9 @@ hand, stop the server first; it reads the file when it starts and refuses to
 start if a node is invalid or no worker would be left.
 
 The server has no sign-in, so only a browser on its own machine sees the hosts
-and paths or changes the nodes. A browser on another device sees the node's
-GPUs as chips such as `Node 1 · GPU 2`, and the server refuses its requests to
-change them.
+and paths or changes the nodes. A browser on another device sees each node as
+`Machine 1` and so on, its GPUs as `Machine 1 · GPU 2`, and the server refuses
+its requests to change them.
 
 ## Command line
 

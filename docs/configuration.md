@@ -234,11 +234,11 @@ example to keep narration off GPU 0 even when it has room:
 CUDA_VISIBLE_DEVICES=1,2,3 ./example_run.sh
 ```
 
-Without a restart, **Narrates on** under **Settings** › **This machine's GPUs** turns each
+Without a restart, each narration worker's box under **Settings** › **Machines and devices** › **This server** turns each
 local device off or on; with a node added, every local device can be off, so
 only the other machines narrate.
 
-Remote membership comes from the nodes in `workers.yaml`, which **Add workers**
+Remote membership comes from the nodes in `workers.yaml`, which **Add narration workers**
 under **Settings** writes; nodes added or removed there take effect without a
 restart. See [Narration workers on other machines](ssh-workers.md).
 

@@ -343,6 +343,7 @@ class PaperWorkflowTests(unittest.TestCase):
                 "label": "CUDA 1 — Accelerator",
                 "name": "Accelerator",
                 "memory": 96 * GIB,
+                "uuid": "7a85a208-0c1d-4e2f-8a9b-0123456789ab",
             },
         ]
         jobs = web.JobQueue(web.audiobook_consumers(clone, devices, nodes))
@@ -376,14 +377,15 @@ class PaperWorkflowTests(unittest.TestCase):
         # A node is kind "node" and its number only; the GPUs here are "local".
         self.assertEqual(
             [
-                (worker["label"], worker["detail"], worker["kind"], worker["status"])
+                (worker["label"], worker["detail"], worker["kind"], worker["status"],
+                 worker["device"], worker.get("machine"))
                 for worker in public["consumers"]
             ],
             [
-                ("GPU 0", "Accelerator · 96 GiB", "local", "idle"),
-                ("GPU 1", "Accelerator · 96 GiB", "local", "idle"),
-                ("Node 1 · GPU 0", "", "node", "idle"),
-                ("Node 1 · GPU 2", "", "node", "idle"),
+                ("GPU 0", "Accelerator · 96 GiB", "local", "idle", "cuda:0", None),
+                ("GPU 1", "Accelerator · 96 GiB", "local", "idle", "cuda:1", None),
+                ("Machine 1 · GPU 0", "", "node", "idle", "cuda:0", 1),
+                ("Machine 1 · GPU 2", "", "node", "idle", "cuda:2", 1),
             ],
         )
         # The one worker of a speech server or of no model is this server's own.
@@ -401,11 +403,29 @@ class PaperWorkflowTests(unittest.TestCase):
             "design": {"source": "server", "model": "gpt-4o-mini-tts"},
             "clone": {"source": "local", "model": "Base"},
         })
-        self.assertEqual(local_design["design"], {
-            "source": "local",
-            "model": "Qwen/VoiceDesign",
-            "device": "the GPU with the most free memory",
+        # Before any voice design, no device; then the one the last design ran on,
+        # by name, memory, and the start of its GPU UUID.
+        self.assertEqual(local_design["design"], {"source": "local", "model": "Qwen/VoiceDesign"})
+        designed = web.public_configuration(
+            {"design": {"source": "local", "model": "Qwen/VoiceDesign", "allow_downloads": True},
+             "clone": {"source": "missing"}},
+            devices,
+            design_device="cuda:1",
+        )
+        self.assertEqual(designed["design"]["device"], {
+            "device": "cuda:1", "kind": "cuda", "name": "Accelerator",
+            "memory": "96 GiB", "id": "GPU-7a85a208",
         })
+        self.assertEqual(
+            [web.machine_device(device) for device in (
+                {"value": "cpu", "label": "CPU"}, {"value": "mps", "label": "Apple MPS"},
+            )],
+            [
+                {"device": "cpu", "kind": "cpu", "name": "", "memory": "", "id": ""},
+                {"device": "mps", "kind": "mps", "name": "", "memory": "", "id": ""},
+            ],
+        )
+        self.assertEqual(web.machine_name(), socket.gethostname().split(".")[0])
         serialized = json.dumps(public)
         for private in ("spark-one", "narrator", "/srv/private", "10.1.2.3"):
             self.assertNotIn(private, serialized)
@@ -5336,7 +5356,7 @@ class GeminiProviderTests(unittest.TestCase):
         def finished(reason):
             return {"candidates": [{"content": {"parts": [{"text": "Half"}]}, "finishReason": reason}]}
 
-        with self.assertRaisesRegex(RuntimeError, "output limit; lower Paragraphs per worker"):
+        with self.assertRaisesRegex(RuntimeError, "output limit; lower Paragraphs per request"):
             read(finished("MAX_TOKENS"))
         with self.assertRaisesRegex(RuntimeError, "SAFETY"):
             read(finished("SAFETY"))
@@ -5889,7 +5909,8 @@ class HttpsTests(unittest.TestCase):
 
         # A browser that trusts Hilde's authority gets the page, and its
         # settings cookies are sent over HTTPS only.
-        with urllib.request.urlopen(f"https://localhost:{port}/api/state", context=trusting) as response:
+        with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]), \
+                urllib.request.urlopen(f"https://localhost:{port}/api/state", context=trusting) as response:
             self.assertIs(json.load(response)["capabilities"]["certificate"], True)
         request = urllib.request.Request(
             f"https://localhost:{port}/api/sync", data=json.dumps({"state": {}}).encode(),
@@ -6385,6 +6406,9 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             deadline = time.monotonic() + 30
             while self.jobs.exclusive is not None and time.monotonic() < deadline:
                 time.sleep(0.05)
+            # Settings learns the device the design ran on from the job poll.
+            with urllib.request.urlopen(f"{origin}/api/jobs") as response:
+                designed = json.load(response)["configuration"]["design"]
         [draft] = list(self.storage.drafts.iterdir())
         with urllib.request.urlopen(f"{origin}/api/voices/draft?id={draft.name}") as response:
             heard, _ = sf.read(io.BytesIO(response.read()), dtype="float32")
@@ -6395,6 +6419,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         saved = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Freyja"})
 
         self.assertEqual(status, 200)
+        self.assertEqual(designed["device"], {"device": "cpu", "kind": "cpu", "name": "", "memory": "", "id": ""})
         self.assertTrue(untouched)
         self.assertEqual(saved[0], 200)
         np.testing.assert_array_equal(sf.read(freyja / "reference.wav", dtype="float32")[0], heard)
@@ -9138,7 +9163,13 @@ class WorkerNodeTests(unittest.TestCase):
         ):
             self.assertEqual(web.is_loopback_address(address), local, address)
         server, origin = self.serve([self.NODE])
+        devices = [{"value": "cpu", "label": "CPU"}, {
+            "value": "cuda:0", "label": "CUDA 0 — Accelerator", "name": "Accelerator",
+            "memory": 96 * GIB, "uuid": "5c0ffee1-0000-4000-8000-000000000001",
+        }]
         with mock.patch.object(web, "is_loopback_address", return_value=False), \
+                mock.patch.object(web, "_DEVICE_OPTIONS", devices), \
+                mock.patch.object(web, "machine_name", return_value="studio"), \
                 mock.patch.object(web, "probe_worker_node") as probe:
             self.assertEqual(self.request(origin, "/api/workers")[0], 403)
             for path, body in (
@@ -9152,6 +9183,15 @@ class WorkerNodeTests(unittest.TestCase):
             state = self.request(origin, "/api/state")[1]
         probe.assert_not_called()
         self.assertFalse(state["capabilities"]["manage_workers"])
+        # Every browser sees this server's name and devices; another machine only by number.
+        self.assertEqual(state["machine"], {"name": "studio", "devices": [
+            {"device": "cpu", "kind": "cpu", "name": "", "memory": "", "id": ""},
+            {"device": "cuda:0", "kind": "cuda", "name": "Accelerator", "memory": "96 GiB", "id": "GPU-5c0ffee1"},
+        ]})
+        self.assertEqual(
+            [(worker["label"], worker.get("machine")) for worker in state["consumers"] if worker["kind"] == "node"],
+            [(f"Machine 1 · GPU {device[5:]}", 1) for device in self.NODE["devices"]],
+        )
         self.assertEqual(server.worker_nodes, [self.NODE])
         self.assertFalse(server.workers_path.exists())
         serialized = json.dumps(state)

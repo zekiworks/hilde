@@ -1329,6 +1329,27 @@ def public_device(choice):
     return {
         "label": public_device_label(choice["value"]),
         "detail": " · ".join(detail),
+        "device": choice["value"],
+    }
+
+
+def machine_name():
+    """This server's short host name: Settings shows it to every browser."""
+    return socket.gethostname().split(".")[0]
+
+
+def machine_device(choice):
+    """One device the probe found, for Settings: its kind, the name and memory
+    the probe reports, and for a GPU a stable identifier, the start of its
+    UUID (a runtime index changes when GPUs are added or hidden)."""
+    value = choice["value"]
+    uuid = choice.get("uuid", "").removeprefix("GPU-")
+    return {
+        "device": value,
+        "kind": "cuda" if value.startswith("cuda:") else value,
+        "name": choice.get("name", ""),
+        "memory": f"{choice['memory'] / GIB:.0f} GiB" if choice.get("memory") else "",
+        "id": f"GPU-{uuid[:8]}" if uuid else "",
     }
 
 
@@ -1399,10 +1420,12 @@ def remote_consumers(nodes):
             "kind": "ssh",
             "device": None,
             "label": f"SSH {node['host']} — {device}",
-            # Browsers see the node's number, never its host.
+            # Browsers see the machine's number, never its host.
             "public": {
-                "label": f"Node {number} · {public_device_label(device)}",
+                "label": f"Machine {number} · {public_device_label(device)}",
                 "detail": "",
+                "device": device,
+                "machine": number,
             },
             "worker": {
                 "kind": "ssh",
@@ -1606,7 +1629,7 @@ exec "$found" - "$MODEL" <<'HILDE_PROBE'
 
 
 WORKERS_LOCAL_ONLY = (
-    "Workers on other machines are added and removed in a browser on the "
+    "Narration workers on other machines are added and removed in a browser on the "
     "server's own machine."
 )
 
@@ -5450,7 +5473,7 @@ def connect_anthropic(key):
 
 
 def _anthropic_text(response, on_text=None, calls=None,
-                    limit="Anthropic stopped at its output limit; lower Paragraphs per worker."):
+                    limit="Anthropic stopped at its output limit; lower Paragraphs per request."):
     """Collect the answer of one streamed Messages response: its text, handed
     to `on_text` as it arrives, and its tool uses, added to `calls`."""
     parts, stop_reason, tools = [], None, {}
@@ -5701,7 +5724,7 @@ def deepseek_response(model, system_prompt, text, images, open_stream, pause):
     def read(response):
         answer, _, _, reason = _chat_completion_stream(response, "DeepSeek")
         if reason == "length":
-            raise RuntimeError("DeepSeek stopped at its output limit; lower Paragraphs per worker.")
+            raise RuntimeError("DeepSeek stopped at its output limit; lower Paragraphs per request.")
         return answer
     return deepseek_request({
         "model": model,
@@ -5794,7 +5817,7 @@ def connect_gemini(key):
 
 
 def _gemini_text(response, on_text=None, calls=None,
-                 limit="Gemini stopped at its output limit; lower Paragraphs per worker.", parts=None):
+                 limit="Gemini stopped at its output limit; lower Paragraphs per request.", parts=None):
     """Collect the answer of one streamed generateContent response: its text,
     handed to `on_text` as it arrives, its function calls, added to `calls`,
     and every part as received, added to `parts`. Thoughts are never text."""
@@ -8629,8 +8652,11 @@ def model_summary(model, role):
     return f"{label}: {model['model']}{downloads}"
 
 
-def public_configuration(tts_models, devices=None):
-    """Describe the active speech backends for browsers without paths or hosts."""
+def public_configuration(tts_models, devices=None, design_device=None):
+    """Describe the active speech backends for browsers without paths or hosts.
+
+    `design_device` is the device the last voice design ran on (none before
+    the first since the server started)."""
     configuration = {}
     for role, model in tts_models.items():
         entry = {"source": model["source"]}
@@ -8640,14 +8666,14 @@ def public_configuration(tts_models, devices=None):
             # Local directories are stored resolved; Hugging Face IDs are relative.
             path = Path(model["model"])
             entry["model"] = path.name if path.is_absolute() else model["model"]
-            if role == "design":
-                # Voice design runs alone on the GPU with the most free memory.
+            if role == "design" and design_device:
+                # Each design takes the GPU with the most free memory then, so
+                # this is the last one's device, not a promise for the next.
                 choices = devices if devices is not None else available_devices()
-                gpus = sum(choice["value"].startswith("cuda:") for choice in choices)
-                entry["device"] = (
-                    "the GPU with the most free memory" if gpus > 1
-                    else public_device_label(resolve_device("auto", devices))
-                )
+                entry["device"] = machine_device(next(
+                    (choice for choice in choices if choice["value"] == design_device),
+                    {"value": design_device},
+                ))
         configuration[role] = entry
     return configuration
 
@@ -8887,12 +8913,12 @@ def _adaptation_problem(values):
         (
             "in_flight",
             PAPER_MAX_IN_FLIGHT,
-            f"In-flight requests must be an integer from 1 to {PAPER_MAX_IN_FLIGHT}.",
+            f"Parallel text requests must be an integer from 1 to {PAPER_MAX_IN_FLIGHT}.",
         ),
         (
             "paragraphs_per_worker",
             PAPER_MAX_PARAGRAPHS_PER_WORKER,
-            "Paragraphs per worker must be an integer from 1 to "
+            "Paragraphs per request must be an integer from 1 to "
             f"{PAPER_MAX_PARAGRAPHS_PER_WORKER}.",
         ),
     )
@@ -11272,6 +11298,8 @@ class JobQueue:
         self.exclusive = None
         # This machine's devices taken out of narration under Settings.
         self.local_off = frozenset()
+        # The device the last voice design ran on, for Settings.
+        self.design_device = None
         self.pending = []
         self.records = {}
         self.sequence = 0
@@ -11301,6 +11329,8 @@ class JobQueue:
                 "public": {
                     "label": str(public.get("label") or f"Worker {index}"),
                     "detail": str(public.get("detail") or ""),
+                    # Which device, and a node's number: never its host.
+                    **{key: public[key] for key in ("device", "machine") if public.get(key) is not None},
                 },
                 "worker": dict(worker) if worker is not None else None,
             })
@@ -13806,6 +13836,8 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": self.server.jobs.snapshot(),
                     "recent": self.server.jobs.recent_snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
+                    # The device of a voice design started since the last poll.
+                    "configuration": self.configuration_payload(),
                 },
                 extra=(("Cache-Control", "no-store"),),
             )
@@ -13823,9 +13855,12 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": self.server.jobs.snapshot(),
                     "recent": self.server.jobs.recent_snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
-                    "configuration": public_configuration(
-                        self.server.tts_models
-                    ),
+                    "configuration": self.configuration_payload(),
+                    # This server's own name and devices: no host of another machine.
+                    "machine": {
+                        "name": machine_name(),
+                        "devices": [machine_device(choice) for choice in available_devices()],
+                    },
                     "capabilities": {
                         "airdrop": airdrop_available(),
                         "manage_workers": self.local_client(),
@@ -14154,6 +14189,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- handlers
 
+    def configuration_payload(self):
+        return public_configuration(
+            self.server.tts_models, design_device=self.server.jobs.design_device
+        )
+
     def workers_payload(self):
         busy = self.server.jobs.busy_consumer_ids()
         return {
@@ -14181,7 +14221,7 @@ class Handler(BaseHTTPRequestHandler):
         if clone["source"] != "local":
             return self.fail(
                 HTTPStatus.CONFLICT,
-                "Workers on other machines narrate with the Base model, and this "
+                "Narration workers on other machines narrate with the Base model, and this "
                 "server has no --voice-clone-model.",
             )
         if action == "setup/stop":
@@ -14744,6 +14784,8 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.CONFLICT,
                     "voice creation requires an empty audiobook queue",
                 )
+            if values["design"]["source"] == "local":
+                self.server.jobs.design_device = values["device"]
             return self.reply(
                 HTTPStatus.OK,
                 {
@@ -15280,6 +15322,8 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
 /* A long name wraps, then is cut short after two lines; the badge stays. */
 .picker-name { display:-webkit-box; min-width:0; overflow:hidden; overflow-wrap:anywhere;
                -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+/* Settings' read-only boxes show all of it: voice design names its device and that device's ID. */
+.picker-box.static .picker-name { display:block; }
 .picker-box .badge { flex:0 0 auto; }
 button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-none { display:flex; flex-wrap:wrap; gap:4px 16px; }
@@ -15394,29 +15438,40 @@ fieldset { min-width:0; margin:0; padding:16px 22px 12px; background:var(--surfa
 legend { float:left; width:100%; margin-bottom:12px; padding:0; font-weight:650; }
 /* Everything after the floated legend starts below it, also behind a hidden note. */
 legend ~ * { clear:both; }
-.row { display:grid; grid-template-columns:170px minmax(0,1fr); gap:10px 14px;
+.row { display:grid; grid-template-columns:170px minmax(0,1fr); gap:10px 18px;
        align-items:center; margin-bottom:10px; }
 .row > label:first-child, .row > .row-label { color:var(--dim); text-align:right; }
-/* Settings: one view of its own, each setting with when it applies. */
+/* Settings: one view of its own; each group of settings ends with when they apply. */
 .settings { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
 .settings .page-head { margin-bottom:4px; }
 .settings fieldset > p.note { margin-bottom:12px; }
+.settings fieldset > p.group-note { margin:2px 0 10px 188px; }
 .setting { display:grid; grid-template-columns:minmax(0,1fr); justify-items:start; gap:4px; min-width:0; }
 .setting > select, .setting > input { width:min(100%, 320px); }
 .setting > input.short { width:min(100%, 120px); }
 .applies { color:var(--dim); font-size:12px; }
 .applies::before { content:"↻ "; color:var(--accent-light); }
 .server-only { margin-top:4px; }
-.worker-list { display:flex; flex-wrap:wrap; gap:6px; }
-.worker-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
-               border:1px solid var(--line); border-radius:999px; font-size:12px;
-               white-space:nowrap; }
-.worker-chip::before { content:""; width:7px; height:7px; border-radius:50%;
-                       background:var(--dim); }
-.worker-chip.running, .worker-chip.reserved { border-color:var(--accent-light); }
-.worker-chip.running::before, .worker-chip.reserved::before { background:var(--accent-light); }
-.worker-chip.off { opacity:.55; }
-.worker-status { color:var(--dim); }
+#advanced-voice > .row { margin-top:10px; }
+/* Machines and devices: this server, then the others, each with its devices and jobs. */
+.machines-part { display:grid; gap:10px; margin-top:6px; padding:12px 0 6px; border-top:1px solid var(--line); }
+.part-title { margin:0; font-size:15px; font-weight:650; }
+.machine { display:grid; gap:10px; min-width:0; padding:12px 14px; border:1px solid var(--line);
+           border-radius:10px; }
+.machine-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; min-width:0; }
+.machine-name { font-weight:650; overflow-wrap:anywhere; }
+.device-list { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.device { display:grid; gap:2px; min-width:0; }
+.device-name { overflow-wrap:anywhere; }
+.device-id { color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }
+.device-meta { color:var(--dim); font-size:13px; }
+.device label.check { font-size:13px; }
+.machine-jobs { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:4px 14px; margin:0; }
+.machine-jobs dt { color:var(--dim); }
+.machine-jobs dd { margin:0; min-width:0; }
+.machine-jobs .job-availability { font-weight:600; }
+.machine-jobs .job-availability:not([data-state=available]) { color:var(--dim); font-weight:400; }
+.machine-jobs .note { display:block; }
 .search { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
 .search input { flex:1 1 280px; }
 .data-table { width:100%; border-collapse:collapse; table-layout:auto; }
@@ -15807,6 +15862,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .picker-box, .picker-none button.link, .picker-option, button.picker-change { min-height:44px; }
   .row { grid-template-columns:minmax(0,1fr); }
   .row > label:first-child, .row > .row-label { text-align:left; }
+  .settings fieldset > p.group-note { margin-left:0; }
   .job-row { grid-template-columns:minmax(0,1fr); }
   /* A step's head: its marker, its title, and what was chosen on a line of its own. */
   .step-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:2px 12px; }
@@ -15912,94 +15968,97 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
         <span class="applies">Applies now, in this browser</span></div></div>
     </fieldset>
+    <fieldset id="settings-speech">
+      <legend>Speech tuning</legend>
+      <p class="note">The voice comes from the voice you choose. These settings change speed, memory
+        use and small details of the sound, not the voice.</p>
+      <p id="speech-server-note" class="note hidden"></p>
+      <div class="row"><label for="dtype">Precision</label><div class="setting">
+        <select id="dtype"><option value="auto">auto (recommended)</option><option>float32</option>
+          <option>float16</option><option>bfloat16</option></select></div></div>
+      <div class="row"><label for="attn">Attention</label><div class="setting">
+        <select id="attn"><option value="sdpa">sdpa (recommended)</option>
+          <option>eager</option><option>flash_attention_2</option></select></div></div>
+      <div class="row"><label for="language">Language</label><div class="setting">
+        <input id="language" type="text" placeholder="Auto"></div></div>
+      <div class="row"><label for="seed">Seed</label><div class="setting">
+        <input id="seed" type="text" placeholder="Optional seed"></div></div>
+      <p id="speech-applies" class="applies group-note">Applies to the next audiobook and the next
+        voice preview you generate. Saved voices' previews and read-aloud answers use the defaults.</p>
+    </fieldset>
     <fieldset id="settings-narration">
       <legend>Narration</legend>
-      <p id="narration-server-note" class="note hidden">A speech server narrates, so precision,
-        attention, and batch size do not apply.</p>
-      <div class="row"><label for="dtype">Precision</label><div class="setting">
-        <select id="dtype"><option>auto</option><option>float32</option>
-          <option>float16</option><option>bfloat16</option></select>
-        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
-      <div class="row"><label for="attn">Attention</label><div class="setting">
-        <select id="attn"><option>sdpa</option>
-          <option>eager</option><option>flash_attention_2</option></select>
-        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
-      <div class="row"><label for="language">Language</label><div class="setting">
-        <input id="language" type="text" placeholder="Auto">
-        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+      <p id="narration-server-note" class="note hidden">A speech server narrates, so batch size does
+        not apply.</p>
       <div class="row"><label for="encoding">Text encoding</label><div class="setting">
-        <input id="encoding" type="text" placeholder="utf-8-sig">
-        <span class="applies">Applies to the next audiobook</span></div></div>
-      <div class="row"><label for="seed">Seed</label><div class="setting">
-        <input id="seed" type="text" placeholder="Optional seed">
-        <span class="applies">Applies to the next audiobook and the next voice preview</span></div></div>
+        <input id="encoding" type="text" placeholder="utf-8-sig"></div></div>
       <div class="row"><label for="batch-size">Batch size</label><div class="setting">
-        <input id="batch-size" type="text" class="short">
-        <span class="applies">Applies to the next audiobook</span></div></div>
+        <input id="batch-size" type="text" class="short"></div></div>
       <div class="row"><label for="chunk-max-chars">Chunking</label><div class="setting">
         <input id="chunk-max-chars" type="text" class="short">
-        <span class="applies">Applies to the next audiobook; a book's new voice keeps the
-          book's own</span></div></div>
+        <span class="note">When you give an existing book a new voice, the book keeps its own
+          chunking.</span></div></div>
       <div class="row"><label for="mp3-level">MP3 compression</label><div class="setting">
-        <input id="mp3-level" type="text" class="short">
-        <span class="applies">Applies to the next audiobook</span></div></div>
+        <input id="mp3-level" type="text" class="short"></div></div>
+      <p class="applies group-note">Applies to the next audiobook</p>
     </fieldset>
     <fieldset id="settings-adaptation">
       <legend>Text preparation</legend>
       <p class="note">Used when "Adapt the text for listening" is on. Changing either prepares
         the text again on Continue.</p>
-      <div class="row"><label for="paper-in-flight">Workers</label><div class="setting">
-        <input id="paper-in-flight" type="number" min="1" max="32" step="1" class="short">
-        <span class="applies">Applies to the next audiobook</span></div></div>
-      <div class="row"><label for="paper-paragraphs-per-worker">Paragraphs per worker</label><div class="setting">
-        <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1" class="short">
-        <span class="applies">Applies to the next audiobook</span></div></div>
+      <div class="row"><label for="paper-in-flight">Parallel text requests</label><div class="setting">
+        <input id="paper-in-flight" type="number" min="1" max="32" step="1" class="short"></div></div>
+      <div class="row"><label for="paper-paragraphs-per-worker">Paragraphs per request</label><div class="setting">
+        <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1" class="short"></div></div>
+      <p class="applies group-note">Applies to the next audiobook</p>
     </fieldset>
     <fieldset id="settings-voices">
       <legend>Voices</legend>
-      <div class="row"><label for="wav-subtype">Reference WAV encoding</label><div class="setting">
-        <select id="wav-subtype"><option>FLOAT</option><option>PCM_16</option>
-          <option>PCM_24</option><option>PCM_32</option><option>DOUBLE</option></select>
-        <span class="applies">Applies to the next voice preview. The reference clip is what
-          narration clones.</span></div></div>
+      <details id="advanced-voice">
+        <summary>Advanced voice settings</summary>
+        <div class="row"><label for="wav-subtype">Reference WAV encoding</label><div class="setting">
+          <select id="wav-subtype"><option>FLOAT</option><option>PCM_16</option>
+            <option>PCM_24</option><option>PCM_32</option><option>DOUBLE</option></select>
+          <span class="note">Format of the reference recording saved with a new voice.</span></div></div>
+      </details>
     </fieldset>
-    <fieldset id="settings-gpus">
-      <legend>This machine's GPUs</legend>
-      <div class="row"><span class="row-label">Workers</span>
-        <div class="setting"><span id="local-workers" class="worker-list"></span>
-          <span id="local-workers-detail" class="note"></span></div></div>
-      <div id="local-devices" class="row hidden"><span class="row-label">Narrates on</span>
-        <div class="setting"><span id="local-device-list" class="line"></span>
-          <span class="applies">Applies now: to queued and new audiobooks</span></div></div>
-      <p id="gpus-server-only" class="note server-only hidden">Only a browser on the server's
-        own machine can change this.</p>
-    </fieldset>
-    <fieldset id="settings-nodes">
-      <legend>Other machines</legend>
-      <div class="row"><span class="row-label">Workers</span>
-        <div class="setting"><span id="node-workers" class="worker-list"></span>
-          <span id="node-workers-detail" class="note"></span></div></div>
-      <div class="row"><span class="row-label">Machines</span>
-        <div class="setting"><div id="node-list" class="stack"></div>
-          <div class="line">
-            <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add workers</button>
-            <span id="nodes-note" class="note"></span>
-          </div>
-          <span id="nodes-applies" class="applies hidden">Applies now: a running audiobook keeps
-            its workers</span></div></div>
-      <p id="nodes-server-only" class="note server-only hidden">Only a browser on the server's
-        own machine can change this.</p>
+    <fieldset id="settings-machines">
+      <legend>Machines and devices</legend>
+      <p id="machines-read-only" class="note server-only hidden">Read-only from this device. Manage
+        machines from a browser on the Hilde server.</p>
+      <p class="note">Text models (Gemma, Qwen, …) are chosen in the model picker. This section shows
+        the machines that do the work.</p>
+      <section class="machines-part" aria-labelledby="machine-here-title">
+        <h3 id="machine-here-title" class="part-title">This server</h3>
+        <div id="machine-here"></div>
+        <p id="local-devices-applies" class="applies hidden">Applies now: to queued and new
+          audiobooks</p>
+      </section>
+      <section class="machines-part" aria-labelledby="machine-others-title">
+        <h3 id="machine-others-title" class="part-title">Other machines</h3>
+        <div id="node-list" class="stack"></div>
+        <div id="nodes-actions" class="line hidden">
+          <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add narration
+            workers</button>
+          <span id="nodes-note" class="note"></span>
+        </div>
+        <p id="nodes-applies" class="applies hidden">Applies now: a running audiobook keeps its
+          narration workers</p>
+      </section>
     </fieldset>
     <fieldset id="settings-models">
       <legend>Models and connection</legend>
-      <p class="note">Narration and voice design are set when the server starts: shown here, not changed.</p>
-      <div class="row"><span class="row-label">Narration</span><span id="model-narration" class="model-pick"></span></div>
-      <div class="row"><span class="row-label">Voice design</span><span id="model-design" class="model-pick"></span></div>
-      <div class="row"><span class="row-label">Text model</span><div class="setting">
+      <div class="row"><span class="row-label">Narration</span><div id="model-narration" class="model-pick"></div></div>
+      <div class="row"><span class="row-label">Voice design</span><div id="model-design" class="model-pick"></div></div>
+      <p class="note group-note">Hilde sets these when it starts. To change them, restart Hilde with
+        different settings.</p>
+      <div class="row"><span class="row-label">Default text model</span><div class="setting">
         <div class="model-pick" data-picker="settings"></div>
         <span class="applies">Applies to the next audiobook: the text model Create preselects</span></div></div>
       <div class="row"><span class="row-label">Connection</span>
-        <div class="setting"><span id="connection-note" class="note"></span>
+        <div class="setting"><span id="connection-note"></span>
+          <span id="certificate-note" class="note hidden">Hilde's own certificate: install it once on
+            each device you browse from, and its browser stops warning.</span>
           <a id="certificate-download" class="hidden" href="/api/certificate"
             download="hilde-certificate.crt">Download Hilde's certificate</a></div></div>
     </fieldset>
@@ -16728,7 +16787,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 </dialog>
 
 <dialog id="workers-dialog">
-  <h2>Add workers</h2>
+  <h2>Add narration workers</h2>
   <p class="note">Another machine narrates with its own GPUs once this server can
     reach it with ssh and no password. <strong>Set up</strong> installs what it
     needs there.</p>
@@ -16783,6 +16842,8 @@ let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], cons
 // Jobs this server process finished, newest first: done, failed, or stopped.
 let recent = [];
 let configuration = {}, voices = [], books = [];
+// This server's name and the devices its probe found (Settings).
+let machine = { name:"", devices:[] };
 // The text-model catalog, for each choice's short name and Local/Cloud badge.
 // Until it has loaded, the default model's place is unknown, so nothing that
 // would send text to it starts.
@@ -16894,6 +16955,7 @@ function load(data) {
   state = data.state; facts = data.derived; assets = data.assets || assets;
   caps = data.capabilities || caps; jobs = data.queue || [];
   configuration = data.configuration || configuration;
+  machine = data.machine || machine;
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
@@ -20392,20 +20454,40 @@ function choosePickerOption(name, option) {
   if (chatAbout) attachAbout(chatAbout.about);
 }
 // Narration and voice design in Settings: the picker's look, read-only
-// (server startup configuration): the model's name and where it runs.
+// (server startup configuration): a readable name with the model ID in its
+// tooltip, and for voice design the device the last design ran on.
+function speechModelName(id) {
+  // Qwen/Qwen3-TTS-12Hz-1.7B-Base reads "Qwen3-TTS 1.7B (Base)".
+  const match = /^(?:.*\/)?(Qwen3-TTS)-(?:\d+Hz-)?(\d+(?:\.\d+)?B)-([A-Za-z]+)$/.exec(id);
+  return match ? `${match[1]} ${match[2]} (${match[3]})` : id;
+}
 function staticPicker(node, role) {
   const model = configuration[role];
   const known = !!(model && model.model && model.source !== "missing");
-  const name = !known ? "Not configured"
-    : model.source === "server" ? model.model : `${model.model}${model.device ? ` on ${model.device}` : ""}`;
+  const local = known && model.source === "local";
+  const where = local && role === "design" && model.device ? ` on ${deviceText(model.device)}` : "";
+  const name = !known ? "Not configured" : `${local ? speechModelName(model.model) : model.model}${where}`;
   const box = document.createElement("span");
   box.className = "picker-box static";
+  box.title = known ? `Model ID: ${model.model}` : "";
   const label = document.createElement("span");
-  label.className = "picker-name"; label.textContent = name; label.title = name;
+  label.className = "picker-name"; label.textContent = name;
   box.append(label);
   if (known) box.append(badgeElement(model.source === "server" ? "Speech server" : "Local",
     model.source === "server" ? "Where the text is sent to be spoken" : "On this server's own workers"));
-  node.replaceChildren(box);
+  const parts = [box];
+  if (local && role === "design") {
+    // Each design takes the GPU with the most free memory, so the next may differ.
+    const gpus = machine.devices.filter((device) => device.kind === "cuda").length;
+    const text = !model.device ? "Device chosen on first use"
+      : gpus > 1 ? "The last design's GPU: each design takes the one with the most free memory." : "";
+    if (text) {
+      const note = document.createElement("span");
+      note.className = "note"; note.textContent = text;
+      parts.push(note);
+    }
+  }
+  node.replaceChildren(...parts);
 }
 // Above Create audiobook: the document, the voice, and each option with where it runs.
 function renderSummary(voiceOnly) {
@@ -20786,40 +20868,14 @@ function progressJobRow(job) {
   row.append(name, status, actions);
   return row;
 }
-function workerChip(consumer) {
-  const chip = document.createElement("span");
-  chip.className = `worker-chip ${consumer.status}`;
-  const label = document.createElement("span");
-  label.textContent = consumer.label;
-  const status = document.createElement("span");
-  status.className = "worker-status";
-  status.textContent = consumer.status;
-  chip.append(label, status);
-  const job = jobs.find((item) => item.id === consumer.job_id);
-  chip.title = [
-    consumer.detail,
-    job ? `${job.document} · ${job.voice}` : "",
-    consumer.status === "reserved" ? "Reserved while a voice is created" : "",
-  ].filter(Boolean).join("\n");
-  return chip;
-}
-
 function renderQueue() {
+  renderMachines();
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
   const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab,
     runHistory && runHistory.current, books.length]);
   if (signature === queueSignature) return;
   queueSignature = signature;
-  // Settings: this machine's workers and other machines' in separate groups.
-  for (const [kind, list, detail] of [["local", "local-workers", "local-workers-detail"],
-                                      ["node", "node-workers", "node-workers-detail"]]) {
-    const own = consumers.filter((consumer) => consumer.kind === kind);
-    $(list).replaceChildren(...own.map(workerChip));
-    // Identical GPUs share one description instead of repeating it per chip.
-    $(detail).textContent = own.length
-      ? [...new Set(own.map((consumer) => consumer.detail).filter(Boolean))].join("; ") : "None.";
-  }
   staticPicker($("model-narration"), "clone");
   staticPicker($("model-design"), "design");
   // Create lists every job by document, voice, and stage; the progress view
@@ -20912,6 +20968,7 @@ async function refreshJobs() {
     if (restart) { await startPage(); return; }
     jobs = current.queue || []; runs = current.runs || [];
     consumers = current.consumers || []; recent = current.recent || [];
+    configuration = current.configuration || configuration;
     const followed = runs.find(
       (item) => item.active && runKey(item) === followedRunKey
     );
@@ -20945,6 +21002,11 @@ function render() {
   for (const id of ["dtype", "attn", "language", "seed"])
     $(id).disabled = facts.clone_server && facts.design_server;
   $("batch-size").disabled = facts.clone_server;
+  $("speech-server-note").textContent = !facts.clone_server ? ""
+    : facts.design_server ? "Speech servers narrate and design voices, so these do not apply."
+    : "A speech server narrates, so these apply only to the voice previews you generate.";
+  $("speech-server-note").classList.toggle("hidden", !facts.clone_server);
+  $("speech-applies").classList.toggle("hidden", !!facts.clone_server);
   $("narration-server-note").classList.toggle("hidden", !facts.clone_server);
   const reading = tab === "player" && !!state.player.book && !settingsOpen;
   $("library-view").classList.toggle("hidden", reading);
@@ -21594,8 +21656,9 @@ async function removePaperLocal(server) {
   await sync(); renderPaperLocal(); await refreshPaperModels();
 }
 
-// Workers on other machines: only a browser on the server's machine sees
-// their hosts and paths and may change them; others see numbered chips.
+// Narration workers on other machines: only a browser on the server's
+// machine sees their hosts and paths and may change them; others see
+// them by number ("Machine 1").
 let workerNodes = null, workerProbe = null, workerSetupStatus = "", workerSetupTimer = null;
 const MIN_NARRATION_MIB = 6 * 1024;
 function deviceName(value) {
@@ -21605,7 +21668,10 @@ function deviceName(value) {
 async function refreshWorkers() {
   if (!caps.manage_workers) { renderWorkers(); return; }
   try { applyWorkers(await jsonRequest("/api/workers")); }
-  catch (error) { $("nodes-note").textContent = error.message; }
+  catch (error) {
+    $("nodes-note").textContent = error.message;
+    $("nodes-actions").classList.remove("hidden");
+  }
 }
 function applyWorkers(answer) {
   workerNodes = answer;
@@ -21616,41 +21682,185 @@ function renderWorkers() {
   const local = !!caps.manage_workers;
   const available = !!(workerNodes && workerNodes.available);
   $("workers-open").classList.toggle("hidden", !local || !available);
-  // Server-only actions say so in one line; nothing works around it.
-  $("gpus-server-only").classList.toggle("hidden", local);
-  $("nodes-server-only").classList.toggle("hidden", local);
   $("nodes-applies").classList.toggle("hidden", !local || !available);
-  $("nodes-note").textContent = !local ? ""
-    : workerNodes && !available
-      ? "They need a local narration model (--voice-clone-model)."
-      : workerNodes && !workerNodes.nodes.length ? "None yet." : "";
-  const nodes = local && workerNodes ? workerNodes.nodes : [];
-  $("node-list").replaceChildren(...nodes.map((node, index) => {
-    const row = document.createElement("div");
-    row.className = "line";
-    const text = document.createElement("span");
-    text.textContent = `Node ${index + 1}: ${node.host} — ${node.devices.map(deviceName).join(", ")}`;
-    const remove = document.createElement("button");
-    remove.type = "button"; remove.className = "link"; remove.textContent = "Remove";
-    remove.disabled = node.busy;
-    remove.title = node.busy ? "It is narrating a book; remove it once the book is done." : "";
-    remove.setAttribute("aria-label", `Remove ${node.host}`);
-    remove.addEventListener("click", () => removeWorkerNode(node.host));
-    row.append(text, remove);
-    return row;
-  }));
-  // Each of this machine's devices narrates while its box is ticked.
-  const devices = local && workerNodes ? workerNodes.local || [] : [];
-  $("local-devices").classList.toggle("hidden", !devices.length);
-  $("local-device-list").replaceChildren(...devices.map((device) => {
+  $("nodes-note").textContent = local && workerNodes && !available
+    ? "Narration workers on other machines need a local narration model (--voice-clone-model)." : "";
+  $("nodes-actions").classList.toggle("hidden", !local || !workerNodes);
+  // A box the server refused to change shows its state again.
+  renderMachines(true);
+}
+// Settings › Machines and devices, only from what the server reports: this
+// server's name and the devices its probe found, each narration worker's
+// state, and which of Hilde's jobs each machine does. A job is "available"
+// only when the server says so; nothing is assumed from another job.
+let machinesSignature = "";
+const DEVICE_KINDS = { cuda:"CUDA GPU", mps:"Apple GPU (MPS)", cpu:"CPU" };
+const WORKER_STATES = { idle:"idle", running:"narrating", reserved:"held while a voice is designed",
+                        off:"off, excluded in settings" };
+// A device of another machine: workers.yaml names it, nothing more.
+function nodeDevice(value) {
+  return { device:value, kind:value.startsWith("cuda:") ? "cuda" : value, name:"", memory:"", id:"" };
+}
+// A GPU's short UUID; without one, its device on that machine.
+function deviceId(device) { return device.id || (device.kind === "cuda" ? device.device : ""); }
+function deviceText(device) {
+  const id = deviceId(device);
+  return `${device.name || DEVICE_KINDS[device.kind] || device.device}${id ? ` (${id})` : ""}`;
+}
+// One device: its name and identifier, what it is, and whether it narrates;
+// `own` (this server's device, for a browser on the server's machine) adds
+// the box that takes it out of narration.
+function deviceItem(device, worker, own, reported) {
+  const item = document.createElement("li");
+  item.className = "device";
+  const head = document.createElement("div");
+  head.className = "device-name";
+  head.textContent = device.name || DEVICE_KINDS[device.kind] || device.device;
+  const id = deviceId(device);
+  if (id) {
+    const tag = document.createElement("span");
+    tag.className = "device-id"; tag.textContent = id;
+    head.append(" ", tag);
+  }
+  item.append(head);
+  const meta = [device.name ? DEVICE_KINDS[device.kind] : "", device.memory,
+                reported ? "" : "model and ID not reported"].filter(Boolean);
+  if (meta.length) {
+    const line = document.createElement("span");
+    line.className = "device-meta"; line.textContent = meta.join(" · ");
+    item.append(line);
+  }
+  const doing = worker ? WORKER_STATES[worker.status] || worker.status : "";
+  if (own) {
     const label = document.createElement("label");
     label.className = "check";
     const box = document.createElement("input");
-    box.type = "checkbox"; box.checked = device.narrates;
-    box.addEventListener("change", () => setLocalDevice(device.device, box.checked));
-    label.append(box, " " + device.label);
-    return label;
-  }));
+    box.type = "checkbox"; box.checked = own.narrates;
+    box.setAttribute("aria-label", `Narration worker: ${deviceText(device)}`);
+    box.addEventListener("change", () => setLocalDevice(own.device, box.checked));
+    label.append(box, ` Narration worker${doing ? ` · ${doing}` : ""}`);
+    item.append(label);
+  } else {
+    const line = document.createElement("span");
+    line.className = "device-meta";
+    line.textContent = worker ? `Narration worker: ${doing}` : "Not a narration worker";
+    item.append(line);
+  }
+  return item;
+}
+// One machine: its name, devices, and each job's state with a short reason.
+function machineBlock(name, aside, devices, work, action) {
+  const block = document.createElement("div");
+  block.className = "machine";
+  const head = document.createElement("div");
+  head.className = "machine-head";
+  const title = document.createElement("span");
+  title.className = "machine-name"; title.textContent = name;
+  head.append(title);
+  if (aside) {
+    const note = document.createElement("span");
+    note.className = "note"; note.textContent = aside;
+    head.append(note);
+  }
+  if (action) head.append(action);
+  const list = document.createElement("ul");
+  list.className = "device-list";
+  list.setAttribute("aria-label", `Devices of ${name}`);
+  if (devices.length) list.append(...devices);
+  else {
+    const none = document.createElement("li");
+    none.className = "note"; none.textContent = "No devices reported.";
+    list.append(none);
+  }
+  const table = document.createElement("dl");
+  table.className = "machine-jobs";
+  table.setAttribute("aria-label", `Jobs on ${name}`);
+  for (const [job, availability, why] of work) {
+    const term = document.createElement("dt");
+    term.textContent = job;
+    const value = document.createElement("dd");
+    const word = document.createElement("span");
+    word.className = "job-availability"; word.dataset.state = availability; word.textContent = availability;
+    value.append(word);
+    if (why) {
+      const note = document.createElement("span");
+      note.className = "note"; note.textContent = why;
+      value.append(note);
+    }
+    table.append(term, value);
+  }
+  block.append(head, list, table);
+  return block;
+}
+function renderMachines(force = false) {
+  const manage = !!caps.manage_workers;
+  const models = (paperCatalog.models || []).length;
+  const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes,
+    paperCatalog.loaded, paperCatalog.error, models]);
+  if (!force && signature === machinesSignature) return;
+  machinesSignature = signature;
+  // Only a browser on the server's machine manages machines; others read.
+  $("machines-read-only").classList.toggle("hidden", manage);
+  const clone = configuration.clone || {}, design = configuration.design || {};
+  const own = manage && workerNodes ? workerNodes.local || [] : [];
+  $("local-devices-applies").classList.toggle("hidden", !own.length);
+  const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
+  // Text preparation runs on the chosen text model's server; this server
+  // sends it the text, so it can when the catalog lists a model it reaches.
+  const text = !paperCatalog.loaded || paperCatalog.error
+    ? ["not tested", "The text model list has not loaded."]
+    : models ? ["available", "Runs on the chosen text model's server; Hilde sends it the text."]
+    : ["not available", "No text model is reachable: add a local server or connect a provider."];
+  const narration = clone.source === "local"
+    ? workers.some((worker) => worker.status !== "off") ? ["available", ""]
+      : ["not available", "Every device is excluded in settings."]
+    : clone.source === "server" ? ["not available", "A speech server narrates."]
+    : ["not available", "No narration model is configured."];
+  const voiceDesign = design.source === "local" && design.model && machine.devices.length ? ["available", ""]
+    : design.source === "server" ? ["not available", "A speech server designs voices."]
+    : ["not available", "No voice design model is configured."];
+  $("machine-here").replaceChildren(machineBlock(machine.name || "Name not reported", "",
+    machine.devices.map((device) => deviceItem(device,
+      workers.find((worker) => worker.device === device.device),
+      own.find((entry) => entry.device === device.device), true)),
+    [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]));
+  // Other machines: by host for a browser on the server's machine, else by number.
+  const nodes = manage && workerNodes
+    ? workerNodes.nodes.map((node, index) => ({ ...node, number:index + 1 }))
+    : [];
+  if (!(manage && workerNodes))
+    for (const worker of consumers) {
+      if (worker.kind !== "node" || !worker.machine) continue;
+      let node = nodes.find((item) => item.number === worker.machine);
+      if (!node) nodes.push(node = { number:worker.machine, devices:[] });
+      node.devices.push(worker.device);
+    }
+  const blocks = nodes.map((node) => {
+    const theirs = consumers.filter((worker) => worker.kind === "node" && worker.machine === node.number);
+    let remove = null;
+    if (node.host) {
+      remove = document.createElement("button");
+      remove.type = "button"; remove.className = "link"; remove.textContent = "Remove";
+      remove.disabled = node.busy;
+      remove.title = node.busy ? "It is narrating a book; remove it once the book is done." : "";
+      remove.setAttribute("aria-label", `Remove ${node.host}`);
+      remove.addEventListener("click", () => removeWorkerNode(node.host));
+    }
+    return machineBlock(node.host || `Machine ${node.number}`, node.host ? `Machine ${node.number}` : "",
+      node.devices.map((value) => deviceItem(nodeDevice(value),
+        theirs.find((worker) => worker.device === value), null, false)),
+      [["Text preparation", "not available", "Other machines only narrate."],
+       theirs.some((worker) => worker.status !== "off") ? ["Narration", "available", ""]
+         : ["Narration", "not available", "Needs a local narration model (--voice-clone-model) on this server."],
+       ["Voice design", "not available", "Voice design runs on this server only."]],
+      remove);
+  });
+  if (!blocks.length) {
+    const none = document.createElement("p");
+    none.className = "note"; none.textContent = "No other machines connected.";
+    blocks.push(none);
+  }
+  $("node-list").replaceChildren(...blocks);
 }
 async function setLocalDevice(device, narrates) {
   try {
@@ -22120,18 +22330,23 @@ setHighlightStyle(stored("highlightStyle"), false);
 renderPlayer();
 
 
-// Whether downloads will warn here, and Hilde's certificate when it has one.
-// Browsers treat this machine (localhost) as secure, so only other devices
-// on plain HTTP warn.
-function renderConnection() {
-  const here = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+// The connection as this browser sees it, and Hilde's certificate when it
+// has one. Browsers treat this computer (localhost) as a secure context, so
+// only plain HTTP from another device warns about downloads.
+const HTTPS_DOCS = "https://github.com/zekiworks/hilde#https";
+function renderConnection(where = location, secure = window.isSecureContext) {
+  const host = where.hostname;
+  const here = ["localhost", "127.0.0.1", "[::1]"].includes(host) || host.endsWith(".localhost");
+  const note = $("connection-note");
+  if (!secure) {
+    const link = document.createElement("a");
+    link.href = HTTPS_DOCS; link.target = "_blank"; link.rel = "noopener";
+    link.textContent = "--https option";
+    note.replaceChildren("HTTP (not encrypted). Browsers may warn about or block downloads, such as "
+      + "audiobook exports. To avoid this, restart Hilde with the ", link, ".");
+  } else note.textContent = here ? "local (this computer)" : where.protocol === "https:" ? "HTTPS" : "HTTP";
+  $("certificate-note").classList.toggle("hidden", !caps.certificate);
   $("certificate-download").classList.toggle("hidden", !caps.certificate);
-  $("connection-note").textContent = caps.certificate
-    ? "HTTPS with Hilde's own certificate. Install it once on each device you browse "
-      + "from, and its browser stops warning."
-    : location.protocol === "https:" ? "HTTPS."
-    : here ? "This machine: browsers treat it as secure."
-    : "Plain HTTP: browsers on this device flag downloads. Start the server with --https.";
 }
 async function startPage() {
   load(await jsonRequest("/api/state"));

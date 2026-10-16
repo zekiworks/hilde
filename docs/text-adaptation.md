@@ -11,7 +11,7 @@ text, even without adaptation and even when the PDF runs the heading into the
 paragraph before it. Inline attributions and the sections after the
 bibliography, such as appendices, remain.
 **More** under that option holds **Text model**, **Providers**, and **Add
-local**, and **Settings** holds **Workers** under **Text preparation**. The
+local**, and **Settings** holds **Parallel text requests** under **Text preparation**. The
 option shows the chosen model and a **Local** or **Cloud: <provider>** badge
 saying where the document's text goes:
 
@@ -92,8 +92,8 @@ saying where the document's text goes:
   misread chart values and trends that it read right from the image. If a
   chosen local model is offered by none of your servers when a job starts,
   the job stops and says so.
-- **Workers** (default 4, at most 32) is how many paragraph batches are adapted
-  at once, and **Paragraphs per worker** (default 1, at most 32) is how many
+- **Parallel text requests** (default 4, at most 32) is how many paragraph batches are adapted
+  at once, and **Paragraphs per request** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
   the labels read from inside it, and its caption always go to the model
   together, so it is described once. A figure or table with a caption is
