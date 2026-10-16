@@ -250,6 +250,9 @@ LOCAL_SERVERS_MAX = 8
 # Local model servers registered for every browser with --local-server, as
 # {"server", "provider", "vision"}; set once at startup.
 SERVER_LOCAL_SERVERS = []
+# The server's own local default text model (--default-model), used when no
+# Gemma is installed; "" for none. Set once at startup.
+SERVER_DEFAULT_MODEL = ""
 # Local servers otherwise sample at the model's default, often 1.0, and the
 # same paper then reads differently on every run. Adapting the Attention paper
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
@@ -6016,6 +6019,25 @@ def local_server_option(value):
     return {"server": server, "provider": provider, "vision": bool(comma)}
 
 
+def default_model_option(value):
+    """--default-model SELECTOR: a LOCAL model, PROVIDER/MODEL with PROVIDER
+    ollama or lm-studio, as its server lists it; an API model is refused,
+    since a document goes to an API only when the user chooses one."""
+    selector = str(value).strip()
+    provider, slash, name = selector.partition("/")
+    if slash and name.strip() and provider not in LOCAL_MODEL_PROVIDERS and "/" not in provider:
+        raise argparse.ArgumentTypeError(
+            f"{selector} is not a local model: the default text model must run on a local server "
+            f"({' or '.join(LOCAL_MODEL_PROVIDERS)}), such as lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4"
+        )
+    if not slash or not name.strip() or provider not in LOCAL_MODEL_PROVIDERS:
+        raise argparse.ArgumentTypeError(
+            f"use PROVIDER/MODEL with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
+            "such as lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4"
+        )
+    return selector
+
+
 def local_servers_of(added, on_server=None):
     """The local servers a browser's requests use: those registered on this
     server (--local-server, SERVER_LOCAL_SERVERS), marked "on_server", then
@@ -6157,12 +6179,15 @@ def paper_model_catalog(local_servers=(), refresh=False):
         OPENAI_API_MODEL_PROVIDER: (openai_api_connected, openai_api_error, "No API key"),
         GEMINI_MODEL_PROVIDER: (gemini_connected, gemini_error, "No API key"),
     }
+    default_model, default_status = default_local_model(local_models, local_status)
     return {
         "models": local_models + cloud_models,
         "rows": catalog_rows(local_status, connections),
-        # Without a chosen model: the largest Gemma running on a local
-        # server, else none. A document never goes to an API on its own.
-        "default_model": default_gemma(local_models),
+        # Without a chosen model: a local Gemma, else the server's local
+        # default (default_local_model()). A document never goes to an API
+        # on its own.
+        "default_model": default_model,
+        "default_status": default_status,
         "local_error": local_error,
         "local_servers": local_status,
         "openai_error": openai_error,
@@ -6194,24 +6219,33 @@ def model_size(name):
                 for number, unit in MODEL_SIZE.findall(name)), default=0)
 
 
-def default_gemma(local_models):
-    """The model a choice left open uses: of the Gemma models the local
-    servers list (only answering servers list any), one loaded now before
-    one that loads on first use, then the largest by the size in its name,
-    the first listed among equals; "" when no server lists a Gemma."""
+def default_local_model(local_models, local_status):
+    """The model a choice left open uses, and why, as (selector, status):
+    the largest Gemma a local server lists (installed counts: Ollama loads
+    it on first use; a loaded one first among equals) with "gemma"; else the
+    server's --default-model while a local server lists it, else the first
+    local model listed, with "gemma-not-running" when a local server does
+    not answer (it may hold the Gemma) or "no-gemma"; else ("", "none").
+    Never an API model."""
     gemmas = [model for model in local_models if GEMMA_NAME.search(model["selector"].partition("/")[2])]
     best = max(gemmas, default=None, key=lambda model: (
-        model.get("loaded") is not False, model_size(model["selector"].partition("/")[2])))
-    return best["selector"] if best else ""
+        model_size(model["selector"].partition("/")[2]), model.get("loaded") is not False))
+    if best:
+        return best["selector"], "gemma"
+    if not local_models:
+        return "", "none"
+    listed = [model["selector"] for model in local_models]
+    fallback = SERVER_DEFAULT_MODEL if SERVER_DEFAULT_MODEL in listed else listed[0]
+    return fallback, "gemma-not-running" if any(not status["running"] for status in local_status) else "no-gemma"
 
 
 # The providers a picker offers to connect, by their name under Providers.
 CONNECT_PROVIDER_LABELS = {
     OPENAI_MODEL_PROVIDER: "OpenAI (ChatGPT sign-in)",
     CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
-    ANTHROPIC_MODEL_PROVIDER: "Anthropic API",
+    ANTHROPIC_MODEL_PROVIDER: "Anthropic (Claude)",
     OPENAI_API_MODEL_PROVIDER: "OpenAI API",
-    GEMINI_MODEL_PROVIDER: "Google Gemini API",
+    GEMINI_MODEL_PROVIDER: "Google (Gemini)",
 }
 
 
@@ -13202,9 +13236,9 @@ class AudiobookRun(Run):
                 model = catalog["default_model"]
                 if not model:
                     raise RuntimeError(
-                        "No model was chosen and Gemma is not running on your local "
-                        "servers; a document goes to an API only when you choose one. "
-                        "Choose a model under Model for this book."
+                        "No model was chosen and no local model is reachable; a document "
+                        "goes to an API only when you choose one. Choose a model under "
+                        "Model for this book."
                         + (f" ({catalog['local_error']})" if catalog["local_error"] else "")
                     )
             self.paper_run = PaperRun(
@@ -14910,20 +14944,20 @@ input::placeholder, textarea::placeholder { color:#8a857e; }
 textarea { width:100%; min-height:96px; resize:vertical; }
 input:disabled, select:disabled, textarea:disabled { opacity:.5; }
 /* Raised buttons: a 1 px top highlight and a 2 px shadow below; pressed, the
-   button moves down 1 px onto a 1 px shadow and lights briefly (100 ms). Rules
-   that set their own box-shadow, and flat buttons (box-shadow:none), opt out. */
+   button moves down 1 px onto a 1 px shadow and lights briefly (100 ms fade).
+   Flat controls (links, tabs, switch segments, menu items) stay flat. */
 button { background:var(--raised); color:var(--text); border:1px solid var(--line);
          border-radius:8px; padding:9px 16px; min-height:40px; font:inherit;
          cursor:pointer; --lift:2px;
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab]) { --lift:1px; transform:translateY(1px);
-                                                      filter:brightness(1.18); transition:none; }
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .selection-menu button) {
+  --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
   button { transition:none; }
-  button:active:not(:disabled):not(.link, [role=tab]) { filter:none; }
+  button:active:not(:disabled) { filter:none !important; }
 }
 button.primary { background:var(--accent); border-color:var(--accent);
                  color:var(--accent-ink); font-weight:650; }
@@ -14934,11 +14968,13 @@ button.link { background:none; border-color:transparent; color:var(--text); box-
 button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--text); }
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
 label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
-/* A small steady LED (no glow) on what is on: a checked switch, the selected tab. */
-label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before {
+/* A small steady LED (no glow) on what is on: a checked switch, the selected
+   tab, the chosen highlight style. */
+label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before,
+#highlight-style [aria-checked=true] span::before {
   content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
-.tab-list [role=tab][aria-selected=true]::before { display:inline-block; margin-right:8px;
-                                                   vertical-align:2px; }
+.tab-list [role=tab][aria-selected=true]::before, #highlight-style [aria-checked=true] span::before {
+  display:inline-block; margin-right:8px; vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
@@ -15259,7 +15295,7 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .text-switch { display:flex; padding:3px; background:var(--field); border:1px solid var(--line);
                border-radius:10px; }
 .text-switch button { display:grid; justify-items:start; gap:0; min-height:0; padding:4px 12px;
-                      border:0; border-radius:7px; background:transparent; color:var(--dim);
+                      border:0; border-radius:7px; background:transparent; color:var(--dim); box-shadow:none;
                       line-height:1.25; text-align:left; }
 .text-switch button small { font-size:12px; }
 .text-switch button[aria-checked=true] { background:var(--raised); color:var(--text);
@@ -15270,7 +15306,7 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .menu { position:absolute; z-index:30; top:calc(100% + 4px); right:0; display:grid; min-width:200px;
         padding:4px; background:var(--raised); border:1px solid var(--line); border-radius:10px;
         box-shadow:0 10px 30px rgba(0,0,0,.45); }
-.menu button { min-height:36px; padding:6px 12px; border:0; border-radius:6px; background:transparent;
+.menu button { min-height:36px; padding:6px 12px; border:0; border-radius:6px; background:transparent; box-shadow:none;
                text-align:left; white-space:nowrap; }
 .menu button:hover:not(:disabled) { background:var(--hover); }
 .menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent-light); }
@@ -15327,7 +15363,7 @@ html:has(main.reading) { scrollbar-gutter:stable; }
               border-bottom:1px solid var(--line); }
 .panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
 .panel-tabs [role=tab] { min-height:36px; padding:4px 12px; border:0; border-radius:8px;
-                         background:transparent; color:var(--dim); white-space:nowrap; }
+                         background:transparent; color:var(--dim); white-space:nowrap; box-shadow:none; }
 .panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
                                              box-shadow:inset 0 -2px 0 var(--accent-light); }
 .panel-close { min-width:40px; padding:0 10px; font-size:18px; }
@@ -15486,7 +15522,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .selection-menu { position:fixed; z-index:40; display:flex; gap:2px; padding:4px;
                   background:var(--raised); border:1px solid var(--line); border-radius:10px;
                   box-shadow:0 10px 30px rgba(0,0,0,.5); }
-.selection-menu button { min-height:36px; padding:4px 12px; border:0; background:transparent;
+.selection-menu button { min-height:36px; padding:4px 12px; border:0; background:transparent; box-shadow:none;
                          white-space:nowrap; }
 .selection-menu button:hover:not(:disabled) { background:var(--hover); }
 .shortcut-table { border-collapse:collapse; font-size:14px; }
@@ -15650,6 +15686,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <h2 id="settings-title" tabindex="-1">Settings</h2>
       <button class="link" type="button" onclick="toggleSettings()">Close settings</button>
     </div>
+    <fieldset id="settings-reading">
+      <legend>Reading</legend>
+      <p class="note">A test for now: listen with each, then keep the one you prefer.</p>
+      <div class="row"><span id="highlight-style-label" class="row-label">Highlight style</span><div class="setting">
+        <div id="highlight-style" class="text-switch" role="radiogroup" aria-labelledby="highlight-style-label">
+          <button type="button" role="radio" aria-checked="true" data-style="A"
+            onclick="setHighlightStyle('A')"><span>A</span><small>underline</small></button>
+          <button type="button" role="radio" aria-checked="false" data-style="B"
+            onclick="setHighlightStyle('B')"><span>B</span><small>underline and a faint fill</small></button>
+        </div>
+        <span class="applies">Applies now, in this browser</span></div></div>
+    </fieldset>
     <fieldset id="settings-narration">
       <legend>Narration</legend>
       <p id="narration-server-note" class="note hidden">A speech server narrates, so precision,
@@ -17544,6 +17592,15 @@ function stored(key) {
 }
 function store(key, value) {
   try { localStorage.setItem(`hilde.${key}`, JSON.stringify(value)); } catch (_) {}
+}
+// The reading highlight's style (Settings, a temporary A/B test): A, an
+// underline; B, the underline and a faint fill. On <html data-highlight>.
+function setHighlightStyle(style, save = true) {
+  style = style === "B" ? "B" : "A";
+  document.documentElement.dataset.highlight = style;
+  for (const button of $("highlight-style").querySelectorAll("[role=radio]"))
+    button.setAttribute("aria-checked", String(button.dataset.style === style));
+  if (save) store("highlightStyle", style);
 }
 function bookPlace(book) { return stored(`book.${book}`) || {}; }
 let readerRestored = false, placeSavedAt = 0;
@@ -19781,11 +19838,20 @@ function renderPicker(name) {
   const badge = badgeElement(shown ? shown.badge : "");
   badge.id = `${name}-badge`;
   $(`${name}-badge`).replaceWith(badge);
-  const why = problem || (model || none ? "" : paperCatalog.error || "Gemma is not running. Choose a model.");
+  const why = problem || (model ? defaultStatus(name, shown)
+    : none ? "" : paperCatalog.error || "No local model is reachable. Choose a model.");
   $(`${name}-model-reason`).textContent = why;
   $(`${name}-model-reason`).classList.toggle("hidden", !why);
   $(`${name}-picker-none`).classList.toggle("hidden", !none);
   if (openPicker && openPicker.name === name) renderPickerList(name);
+}
+// On first use (nothing chosen for this option), which local model is in
+// use and why: the catalog's default_status (default_local_model()).
+function defaultStatus(name, shown) {
+  if (pickerValue(name) || PICKERS[name].same || !shown || shown.selector !== paperCatalog.default_model) return "";
+  const using = `using ${shown.short} (local)`;
+  return { gemma:`Using ${shown.short} (local)`, "no-gemma":`Gemma not installed: ${using}`,
+           "gemma-not-running":`Gemma not running: ${using}` }[paperCatalog.default_status] || "";
 }
 function renderPickers() {
   for (const name of Object.keys(PICKERS)) renderPicker(name);
@@ -21678,6 +21744,7 @@ window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();
 setPanelWidth(Number(stored("panelWidth")) || 440, false);
+setHighlightStyle(stored("highlightStyle"), false);
 renderPlayer();
 
 
@@ -21960,6 +22027,17 @@ def main():
             "For example lm-studio=http://127.0.0.1:8000,vision."
         ),
     )
+    parser.add_argument(
+        "--default-model",
+        metavar="SELECTOR",
+        type=default_model_option,
+        default=None,
+        help=(
+            "The server's own default text model, a LOCAL model such as "
+            "lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4: used when no Gemma is installed on the "
+            "local servers and the browser has not chosen a model. API models are refused."
+        ),
+    )
     models = parser.add_argument_group("voice model configuration")
     models.add_argument(
         "--allow-model-downloads",
@@ -22087,6 +22165,8 @@ def main():
         entry for index, entry in enumerate(args.local_server)
         if all(entry["server"] != earlier["server"] for earlier in args.local_server[:index])
     ]
+    global SERVER_DEFAULT_MODEL
+    SERVER_DEFAULT_MODEL = args.default_model or ""
     server.chat_speaker = (
         ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
     )
@@ -22114,6 +22194,7 @@ def main():
     print("Local model servers for every browser: "
           + (", ".join(f"{local_server_label(entry['server'])} ({entry['provider']})"
                        for entry in SERVER_LOCAL_SERVERS) or "none"), flush=True)
+    print(f"Default text model: {SERVER_DEFAULT_MODEL or 'none'} (after the largest Gemma installed)", flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)
     print(model_summary(tts_models["clone"], "clone"), flush=True)
     print(

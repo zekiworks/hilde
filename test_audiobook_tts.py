@@ -4010,7 +4010,7 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         self.assertEqual(names, ("deepseek-v4-flash:latest", "qwen3.8:27b"))
 
-    def test_a_local_server_without_gemma_gives_no_default_and_never_gives_way_to_the_cloud(self):
+    def test_without_gemma_a_local_model_is_the_default_and_never_gives_way_to_the_cloud(self):
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
@@ -4020,8 +4020,8 @@ class LocalPaperProviderTests(unittest.TestCase):
             added = [{"server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
             with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
                 catalog = web.paper_model_catalog(added)
-            # Only a running Gemma is chosen without the user.
-            self.assertEqual(catalog["default_model"], "")
+            # No Gemma: the first local model, never the API one.
+            self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
             self.assertEqual(
                 [model["selector"] for model in catalog["models"]],
                 ["lm-studio/deepseek", "openai-codex/gpt-a"],
@@ -4089,16 +4089,26 @@ class LocalPaperProviderTests(unittest.TestCase):
             [
                 ("not-running", "local", "127.0.0.1:9", None, "ollama"),
                 ("provider", "api", "Claude Code", "connect", "claude-code"),
-                ("provider", "api", "Anthropic API", "connect", "anthropic"),
+                ("provider", "api", "Anthropic (Claude)", "connect", "anthropic"),
                 ("provider", "api", "OpenAI API", "connect", "openai"),
             ],
         )
         self.assertEqual(catalog["rows"][1]["note"], "Claude Code is not installed.")
+        # Without a Gemini key, Google is a row to connect, with no model named.
+        with mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            bare = web.paper_model_catalog()
+        self.assertIn({"kind": "api", "row": "provider", "label": "Google (Gemini)", "provider": "gemini",
+                       "action": "connect", "note": "No API key"}, bare["rows"])
+        self.assertFalse(any(model["provider"] == "gemini" for model in bare["models"]))
         # A local model without the server's vision mark reads no images.
         plain = self.catalog_with([{"server": qwen, "provider": "lm-studio", "vision": False}], {qwen: ["llama-4"]})
         self.assertFalse(plain["models"][0]["images"])
 
-    def test_the_default_is_the_largest_gemma_running_and_never_an_api_model(self):
+    def test_the_default_is_the_largest_gemma_installed_then_the_server_default_never_an_api_model(self):
         one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
         servers = [{"server": one, "provider": "lm-studio", "vision": True},
                    {"server": two, "provider": "ollama", "vision": False}]
@@ -4106,23 +4116,38 @@ class LocalPaperProviderTests(unittest.TestCase):
             one: ["google/gemma-3-12b-it", "qwen3-32b", "embeddinggemma-300m"],
             two: ["gemma3:27b", "gemma3n:e4b"],
         })
-        self.assertEqual(catalog["default_model"], "ollama/gemma3:27b")
-        # The larger Gemma's server does not answer: the one running wins.
+        self.assertEqual((catalog["default_model"], catalog["default_status"]), ("ollama/gemma3:27b", "gemma"))
+        # The larger Gemma's server does not answer: the one listed wins.
         self.assertEqual(self.catalog_with(servers, {one: ["google/gemma-3-12b-it"]})["default_model"],
                          "lm-studio/google/gemma-3-12b-it")
-        # No Gemma running: no default, though other local and API models are there.
-        self.assertEqual(self.catalog_with(servers, {one: ["qwen3-32b"]})["default_model"], "")
-        # A Gemma served by an API is never the default.
-        self.assertEqual(self.catalog_with([], {})["default_model"], "")
-        # Installed is selectable; a Gemma loaded now comes before a larger
-        # one Ollama loads on first use.
-        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]},
-                                    {two: set()})
+        # Installed counts: Ollama loads the larger Gemma on its first request.
+        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]}, {two: set()})
         self.assertEqual([model["loaded"] for model in catalog["models"][:2]], [None, False])
-        self.assertEqual(catalog["default_model"], "lm-studio/google/gemma-3-12b-it")
-        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]},
-                                    {two: {"gemma3:27b"}})
         self.assertEqual(catalog["default_model"], "ollama/gemma3:27b")
+        # No Gemma: the server's --default-model while listed, else the first local model;
+        # "gemma-not-running" while a local server does not answer.
+        with mock.patch.object(web, "SERVER_DEFAULT_MODEL", "lm-studio/qwen3-32b"):
+            catalog = self.catalog_with(servers, {one: ["llama-4", "qwen3-32b"], two: ["phi-4"]})
+            self.assertEqual((catalog["default_model"], catalog["default_status"]), ("lm-studio/qwen3-32b", "no-gemma"))
+            catalog = self.catalog_with(servers, {one: ["llama-4", "qwen3-32b"]})
+            self.assertEqual((catalog["default_model"], catalog["default_status"]),
+                             ("lm-studio/qwen3-32b", "gemma-not-running"))
+            catalog = self.catalog_with(servers, {two: ["phi-4"]})
+            self.assertEqual(catalog["default_model"], "ollama/phi-4")
+        # No local model reachable: no default, though API models (a Gemma among them) are listed.
+        catalog = self.catalog_with(servers, {})
+        self.assertEqual((catalog["default_model"], catalog["default_status"]), ("", "none"))
+
+    def test_default_model_option_takes_only_a_local_model(self):
+        self.assertEqual(web.default_model_option(" lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4 "),
+                         "lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4")
+        self.assertEqual(web.default_model_option("ollama/gemma3:27b"), "ollama/gemma3:27b")
+        for api in ("openai-codex/gpt-5.6-sol", "anthropic/claude-new", "gemini/gemini-10-pro"):
+            with self.assertRaisesRegex(web.argparse.ArgumentTypeError, "is not a local model"):
+                web.default_model_option(api)
+        for bad in ("qwen", "lm-studio/"):
+            with self.assertRaises(web.argparse.ArgumentTypeError):
+                web.default_model_option(bad)
 
     def test_ollama_and_lm_studio_say_what_is_loaded(self):
         def answers(routes):

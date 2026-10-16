@@ -81,11 +81,16 @@ clicks: Runs on, API, the model. Each list, from the live model lists only:
   returns to its box.
 
 Each picker preselects the model this browser used last for that option. On
-first use it is the largest Gemma your local servers list (one loaded now
-before one that loads on first use); an API model is never preselected unless
-you chose it last time. With no Gemma and nothing chosen yet, the picker says
-"Gemma is not running", its list opens, and **Create audiobook** waits for
-your choice. A model chosen earlier that is no longer listed is shown with why
+first use it is the largest Gemma your local servers list (installed is
+enough: Ollama loads it on first use); without one, the server's
+`--default-model` (a local model, see [Configuration](configuration.md)),
+else the first local model listed. An API model is never preselected unless
+you chose it last time. Under the boxes the picker says which is in use:
+"Using Gemma 3 27B (local)", "Gemma not installed: using … (local)", or
+"Gemma not running: using … (local)" (a local server does not answer). With
+no local model reachable and nothing chosen, it says "No local model is
+reachable", its list opens, and **Create audiobook** waits for your choice.
+A model chosen earlier that is no longer listed is shown with why
 it can't be used. When one model serves all options and it can't read images,
 the figure option says so, and blocks Create only while it is ticked. With no
 model at all the picker reads **No model available**, with **Add local** and
@@ -282,8 +287,10 @@ kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
 Text keeps its paragraphs: the paragraph being read is marked by a thin blue
-line at its left and a faint blue tint, and the word being read by a soft blue
-background and underline; the text keeps its color. Sentence-era readers created before paragraph
+line at its left and a faint blue tint, and the word being read by a 2 px blue
+underline and slightly brighter text; with **Highlight style B** (Settings,
+**Reading**; a test for now) the word also gets a faint blue fill. Text you
+select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically. Clicking a word seeks to that
 word (just before its aligned onset); clicking elsewhere in a sentence seeks
@@ -532,6 +539,10 @@ settings** or a tab. Each setting says when it takes effect: "Applies to the
 next audiobook" (some also to the next voice preview) or "Applies now". The
 groups:
 
+- **Reading**: **Highlight style**, A (the word being read underlined) or B
+  (underlined, with a faint fill behind it), applies now and is remembered by
+  this browser. It is a temporary test: one style will stay and the choice
+  will go.
 - **Narration**: precision, attention, language, text encoding, an optional
   seed, [**Batch size**](configuration.md#batch-size), **Chunking** (the
   longest chunk in characters; a book's new voice keeps the book's own), and
@@ -582,7 +593,7 @@ cookies per browser. Local servers the operator started Hilde with
 (`--local-server`) are offered to every browser: they come first in the model
 lists, marked "added on the server", and **Add local** shows them without
 **Remove**. This browser alone also remembers, in its local storage,
-each book's place and speed, the side panel's width, and which stopped or
+each book's place and speed, the side panel's width, the highlight style, and which stopped or
 failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
 worker devices/hosts, credentials, storage paths, and output paths remain
 server-owned; only a browser on the server's machine may add or remove the

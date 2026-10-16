@@ -762,15 +762,30 @@ at its right are the jobs indicator and **Settings**. A small **by Zeki
 Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
-one vivid cobalt blue, used only through tokens: `--accent` (#2a5fe0) fills
-primary buttons, the play button, the active step marker, and a pressed
-preview, with white ink (`--accent-ink`, 5.5:1); `--accent-light` (#5aa2ff,
-6.6:1 on the #1b1b1b ground) draws the thin light of pressed and selected
-states (tab and switch underlines, the focus outline, links, badges,
-indicators, a card's border, the reading highlight); `--accent-soft` mixes
-16% of it. No orange is left; the jobs lamp is lit without a glow; an answer
-being read aloud (`.chat-speaking`) is white on `--accent`; danger buttons
-are dark ink (`var(--bg)`) on `--bad`. Each view shows at most one primary (blue)
+five colours, each in one role, used only through tokens: blue `--accent`
+(#2a5fe0) fills primary buttons, the play button, the active step marker, and
+a pressed preview, with white ink (`--accent-ink`, 5.5:1); `--accent-light`
+(#5aa2ff, 6.6:1 on the #1b1b1b ground) draws selected states (tab and switch
+underlines, the focus outline, links, indicators, a card's border, the LED
+dots, the reading highlight); `--accent-soft` mixes 16% of it; green `--local`
+(#3fb950) only the Local badge and Runs on Local, purple `--api` (#c678dd)
+only the API badge and Runs on API, gray `--off` (#8b8f98) disabled and "not
+running" items, red `--bad` (#e5534b) errors and destructive actions, always
+with an icon and text. Selected text (`::selection`) is a neutral gray fill
+(#5c5c5c). No orange is left; no glow stays lit (the jobs lamp and the LED dots
+are flat); an answer being read aloud (`.chat-speaking`) is white on
+`--accent`; danger buttons are dark ink (`var(--bg)`) on `--bad`.
+
+Buttons are raised: a 1 px top highlight (inset white 10%) and a 2 px shadow
+below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
+shadow and brightens, fading back in 100 ms; with `prefers-reduced-motion`
+only the 1 px move remains. Links, tabs, switch segments (`role=radio`), and
+menu items stay flat. A steady 6 px `--accent-light` LED dot marks what is on:
+the selected folder tab (`::before`), every `label.check` whose box is ticked
+(`::after`: Follow along, Create step 3's options, Settings' boxes), and the
+chosen highlight style. The player's time is monospace with tabular figures.
+
+Each view shows at most one primary (blue)
 button: Create's step **Continue** or **Create audiobook**, **New voice** on
 Voices, **Create your first audiobook** on an empty Library, none in Settings.
 Secondary buttons are neutral; destructive or rare actions are text buttons or
@@ -1077,7 +1092,7 @@ passage as `<fixed preview passage>`.
 
 ### Browser storage
 
-Besides the cookie state above, the page keeps three `localStorage` keys, all
+Besides the cookie state above, the page keeps four `localStorage` keys, all
 through `stored()`/`store()` (JSON under the `hilde.` prefix), never sent to
 the server:
 
@@ -1085,6 +1100,9 @@ the server:
 - `hilde.panelWidth`: the side panel's width (`setPanelWidth()`).
 - `hilde.dismissedJobs`: the `<job id>@<finished_at>` keys of stopped or
   failed jobs dismissed here, newest first, at most 50.
+- `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
+  Settings → Reading (`setHighlightStyle()`, applied at startup as
+  `<html data-highlight>`; anything else is A).
 
 Phones (up to 640 px) keep the tagline, smaller, and turn the tables, step
 heads, and summary into stacked rows; grid and flex children may shrink
@@ -1125,9 +1143,11 @@ means designing them again; a test checks each one.
 
 ### Settings and devices
 
-**Settings** has six groups, each setting with an "Applies …" line: to the
+**Settings** has seven groups, each setting with an "Applies …" line: to the
 next audiobook (and, for precision, attention, language, and seed, the next
-voice preview), or now. **Narration**: precision, attention, language, text
+voice preview), or now. **Reading** (temporary, for the highlight test):
+**Highlight style** A / B (`#highlight-style`, a radio switch), applies now,
+this browser only (`hilde.highlightStyle`). **Narration**: precision, attention, language, text
 encoding, seed, batch size, chunking, and MP3 compression; with a narration
 speech server, batch size is off, and precision, attention, language, and seed
 are off only when voice design uses a speech server too. **Text preparation**:
@@ -1208,8 +1228,10 @@ attached to their sentence. New sidecars record each block's paragraph in a
 `paragraphs` array; paragraph-era sidecars derive it from their original
 paragraph blocks; sentence sidecars written before the array existed show one
 sentence per paragraph. The paragraph being read carries a 2 px
-`--accent-light` rail and a 5% background of it; the word being read a 25%
-background and a 2 px underline of it, its text color unchanged; the sentence itself is not
+`--accent-light` rail and a 5% background of it; the word being read a 2 px
+`--accent-light` underline (`text-decoration`, 4 px offset) and white text
+(slightly brighter than `--text`), with no fill in style A and a 12%
+`--accent-light` fill in style B (`:root[data-highlight=B]`); the sentence itself is not
 tinted. The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
