@@ -247,6 +247,9 @@ PAPER_DOWNLOAD_TIMEOUT = 60
 LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
 # Local model servers one browser may add under Add local.
 LOCAL_SERVERS_MAX = 8
+# Local model servers registered for every browser with --local-server, as
+# {"server", "provider", "vision"}; set once at startup.
+SERVER_LOCAL_SERVERS = []
 # Local servers otherwise sample at the model's default, often 1.0, and the
 # same paper then reads differently on every run. Adapting the Attention paper
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
@@ -5972,6 +5975,43 @@ def normalize_local_servers(entries):
     return servers
 
 
+def local_server_option(value):
+    """--local-server PROVIDER=URL[,vision]: one local model server for
+    every browser, as {"server", "provider", "vision"}. PROVIDER is ollama or
+    lm-studio (any OpenAI-compatible server: LM Studio, vLLM, SGLang);
+    ",vision" says its models see images."""
+    provider, equals, rest = str(value).partition("=")
+    address, comma, flag = rest.partition(",")
+    provider = provider.strip()
+    if not equals or provider not in LOCAL_MODEL_PROVIDERS:
+        raise argparse.ArgumentTypeError(
+            f"use PROVIDER=URL[,vision] with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
+            "such as lm-studio=http://127.0.0.1:8000,vision"
+        )
+    if comma and flag.strip() != "vision":
+        raise argparse.ArgumentTypeError("the only option after the address is ,vision")
+    try:
+        server = normalize_local_server(address)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    if not server:
+        raise argparse.ArgumentTypeError("give the server's address after PROVIDER=")
+    return {"server": server, "provider": provider, "vision": bool(comma)}
+
+
+def local_servers_of(added, on_server=None):
+    """The local servers a browser's requests use: those registered on this
+    server (--local-server, SERVER_LOCAL_SERVERS), marked "on_server", then
+    the ones the browser added, without a server twice."""
+    servers = [
+        {**entry, "on_server": True}
+        for entry in (SERVER_LOCAL_SERVERS if on_server is None else on_server)
+    ]
+    servers += [entry for entry in added if all(entry["server"] != kept["server"] for kept in servers)]
+    return servers
+
+
+
 def local_server_label(server):
     """A local server as the user typed it: host:port, no http://."""
     return server.removeprefix("http://")
@@ -5993,15 +6033,23 @@ def local_route(selector, local_servers):
 
 
 def paper_model_catalog(local_servers=(), refresh=False):
-    """List the added local servers' models, server by server, then those of
-    this server's providers."""
-    local_models, cloud_models, local_errors = [], [], []
+    """List the local servers' models (local_servers_of()), server by
+    server, then those of this server's providers; and each local server's
+    status: whether it answered, so a picker can show one that is not
+    running, and whether it was registered on this server ("on_server"),
+    so the page offers no Remove for it."""
+    local_models, cloud_models, local_errors, local_status = [], [], [], []
     for entry in local_servers:
         label = local_server_label(entry["server"])
+        on_server = entry.get("on_server") is True
+        status = {"label": label, "server": entry["server"], "provider": entry["provider"],
+                  "vision": entry.get("vision") is True, "on_server": on_server, "running": True, "error": ""}
+        local_status.append(status)
         try:
             names = local_model_names(entry["server"], entry["provider"])
         except RuntimeError as exc:
             local_errors.append(f"{label}: {exc}")
+            status.update(running=False, error=str(exc))
             continue
         # A model two servers offer runs on the first (local_route()).
         listed = {model["selector"] for model in local_models}
@@ -6011,6 +6059,7 @@ def paper_model_catalog(local_servers=(), refresh=False):
                 "selector": f"{entry['provider']}/{name}",
                 "server": entry["server"],
                 "label": f"{name} · {label}",
+                **({"on_server": True} if on_server else {}),
             }
             for name in names
             if f"{entry['provider']}/{name}" not in listed
@@ -6079,6 +6128,7 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "models": local_models + cloud_models,
         "default_model": defaults[0]["selector"] if defaults else "",
         "local_error": local_error,
+        "local_servers": local_status,
         "openai_error": openai_error,
         "openai_connected": openai_connected,
         "anthropic_error": anthropic_error,
@@ -8825,7 +8875,8 @@ def values_of(state, tts_models, storage):
         "download_name": audiobook["download_name"].strip(),
         "adapt": audiobook["adapt"],
         "model": audiobook["model"].strip(),
-        "local_servers": audiobook["local_servers"],
+        # The server's registered local servers, then the browser's own.
+        "local_servers": local_servers_of(audiobook["local_servers"]),
         "verify": audiobook["verify"],
         "verify_model": audiobook["verify_model"].strip(),
         "interpret_figures": audiobook["interpret_figures"],
@@ -9384,7 +9435,8 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
     number (never one only near it), and Hilde's description; its picture as
     laid out in the PDF, else its crops, when the model takes pictures.
     Paragraphs bring Hilde's narration and, where the adaptation changed
-    them, the paper's text; a selection brings its words first."""
+    them, the paper's text, and nothing near them; a selection brings its
+    words first."""
     details = passage_details(passages)
     images, pictures = [], []
     if about["kind"] == "figure":
@@ -14110,7 +14162,7 @@ class Handler(BaseHTTPRequestHandler):
             return None, (HTTPStatus.BAD_REQUEST, str(exc))
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         return chat_attachment(
-            self.server.storage, book, passages, model, about, state["audiobook"]["local_servers"],
+            self.server.storage, book, passages, model, about, local_servers_of(state["audiobook"]["local_servers"]),
         ), None
 
     def chat_context_manifest(self, body):
@@ -14144,7 +14196,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(*failure)
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         turn = ChatTurn(
-            self.server.storage, book, text, model, state["audiobook"]["local_servers"], attachment,
+            self.server.storage, book, text, model, local_servers_of(state["audiobook"]["local_servers"]), attachment,
             self.server.search_server,
         )
         try:
@@ -14208,7 +14260,7 @@ class Handler(BaseHTTPRequestHandler):
         """Answer with the adaptation models this browser can choose from."""
         state = normalize(read_state_cookie(self.headers.get("Cookie")))
         try:
-            catalog = paper_model_catalog(state["audiobook"]["local_servers"], refresh)
+            catalog = paper_model_catalog(local_servers_of(state["audiobook"]["local_servers"]), refresh)
         except (RuntimeError, ValueError) as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, catalog)
@@ -14656,12 +14708,19 @@ PAGE = r"""<!doctype html>
 <link rel="apple-touch-icon" href="/hilde-dark.png">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, one warm accent. */
+        /* One charcoal ground, one neutral gray family, and two colors, each
+           used only through these tokens:
+           --accent, a vivid cobalt blue: the fill of buttons and chosen
+           things, white ink on it (5.5:1); --accent-light: the thin light of
+           a pressed or selected state, links and indicators (6.6:1 on the
+           ground). No glow stays lit.
+           --highlight: the reading highlight, amber, so the word and the
+           paragraph being read never look like a text selection. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
-        --accent:#e07b39; --accent-ink:#1b1b1b; --accent-soft:rgba(224,123,57,.16);
-        /* The spoken word: a lighter accent, so dark ink on it reads at 7.7:1. */
-        --accent-light:#e89c6a;
+        --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
+        --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
+        --highlight:#f0a245; --highlight-ink:#1b1b1b;
         --bad:#ff8a80; --radius:12px; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -14669,8 +14728,8 @@ body { margin:0; background:var(--bg); color:var(--text);
 main { max-width:960px; margin:0 auto; padding:24px 20px 8px; }
 h1, h2, h3 { margin:0; font-weight:650; line-height:1.25; }
 p { margin:0; }
-a { color:var(--accent); }
-:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+a { color:var(--accent-light); }
+:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
 .hidden { display:none !important; }
 .visually-hidden { position:absolute !important; width:1px; height:1px; margin:-1px;
                    padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap;
@@ -14689,14 +14748,14 @@ body.server-down [inert] { opacity:.5; }
 .header-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end;
                   gap:8px; margin-left:auto; }
 .header-actions button { min-height:0; padding:6px 12px; font-size:13px; }
-.settings-button[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent); }
-/* The jobs indicator: a small lamp that glows while something runs. */
+.settings-button[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent-light); }
+/* The jobs indicator: a small lamp, lit (no glow) while something runs. */
 .jobs-indicator { display:inline-flex; align-items:center; gap:8px;
                   font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .jobs-indicator::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--dim); }
-.jobs-indicator.running::before { background:var(--accent); box-shadow:0 0 6px var(--accent); }
+.jobs-indicator.running::before { background:var(--accent-light); }
 .jobs-indicator.problem::before { background:var(--bad); }
-.jobs-indicator[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent); }
+.jobs-indicator[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent-light); }
 /* Inline, not flex: flex drops the spaces around the mark, so copied text
    read "byZeki Works". */
 .signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
@@ -14742,7 +14801,7 @@ label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-col
 .tab-list [role=tab][aria-selected=true] { padding-top:7px; color:var(--text);
                                            font-weight:650; background:var(--bg);
                                            border-bottom-color:var(--bg);
-                                           box-shadow:inset 0 3px 0 var(--accent); }
+                                          box-shadow:inset 0 3px 0 var(--accent-light); }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
 .page { padding-top:24px; }
@@ -14764,7 +14823,7 @@ label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-col
          list-style:none; }
 .step { min-width:0; padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
 .step:not(.is-active) { padding-top:12px; padding-bottom:12px; }
-.step.drop-target { outline:2px dashed var(--accent); outline-offset:-2px; }
+.step.drop-target { outline:2px dashed var(--accent-light); outline-offset:-2px; }
 .step-head { display:flex; align-items:center; gap:14px; min-height:32px; min-width:0; }
 .step-marker { display:grid; place-items:center; flex:0 0 auto; width:30px; height:30px;
                border-radius:50%; background:var(--raised); color:var(--dim);
@@ -14785,14 +14844,24 @@ details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:
 .source-title { margin:0; font-size:14px; font-weight:650; }
 .source-card .line > select { flex:1 1 100%; }
 .chosen { overflow-wrap:anywhere; }
-/* Step 3: each option says what it does, what it can change, and where it runs. */
+/* Step 3: each option says what it does, what it can change, and, in its
+   model row, which model it uses and where that runs; the row opens the
+   model list in place. */
 .options { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
 .option { display:grid; grid-template-columns:minmax(0,1fr); gap:0; min-width:0;
           padding:8px 14px; border:1px solid var(--line); border-radius:10px; }
 .option-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
                gap:4px 12px; min-width:0; }
-.option-where { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
-.model-name { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.model-pick { display:grid; justify-items:start; gap:4px; padding-left:28px; min-width:0; }
+button.model-row { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px; min-height:0;
+                   padding:2px 0; border:0; background:none; color:var(--text); font-size:13px; text-align:left; }
+button.model-row:hover:not(:disabled) { background:none; text-decoration:underline; text-underline-offset:3px; }
+.model-caret { color:var(--accent-light); }
+.model-name { color:var(--dim); overflow-wrap:anywhere; }
+.model-reason { font-size:13px; }
+.model-list { display:grid; gap:6px; width:100%; max-width:560px; margin-bottom:4px; }
+.model-list select { width:100%; }
+.model-list .line { flex-wrap:wrap; gap:4px 12px; }
 .option-line { padding-left:28px; overflow-wrap:anywhere; }
 .option-line.note { font-size:13px; }
 .more-details { padding-left:28px; }
@@ -14837,13 +14906,13 @@ details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-spac
 .stage.is-skipped { opacity:.6; }
 .stage.is-skipped .stage-name { text-decoration:line-through; text-decoration-color:var(--dim); }
 .stage.is-active { color:var(--text); font-weight:600; }
-.stage.is-active .stage-icon { border-color:var(--accent); }
+.stage.is-active .stage-icon { border-color:var(--accent-light); }
 .stage.is-active .stage-icon::after { content:""; width:10px; height:10px;
-                                      border-radius:50%; background:var(--accent); }
+                                     border-radius:50%; background:var(--accent-light); }
 .progress-title { margin:0 0 4px; font-size:16px; overflow-wrap:anywhere; }
 .progress-meter { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px;
                   align-items:center; }
-progress { width:100%; height:8px; accent-color:var(--accent); }
+progress { width:100%; height:8px; accent-color:var(--accent-light); }
 #progress-count { white-space:nowrap; font-variant-numeric:tabular-nums; }
 #progress-detail, #progress-eta, #progress-workers { margin-top:6px; overflow-wrap:anywhere; }
 #progress-eta:empty, #progress-workers:empty { display:none; }
@@ -14885,7 +14954,7 @@ legend ~ * { clear:both; }
 .setting > select, .setting > input { width:min(100%, 320px); }
 .setting > input.short { width:min(100%, 120px); }
 .applies { color:var(--dim); font-size:12px; }
-.applies::before { content:"↻ "; color:var(--accent); }
+.applies::before { content:"↻ "; color:var(--accent-light); }
 .server-only { margin-top:4px; }
 .worker-list { display:flex; flex-wrap:wrap; gap:6px; }
 .worker-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
@@ -14893,8 +14962,8 @@ legend ~ * { clear:both; }
                white-space:nowrap; }
 .worker-chip::before { content:""; width:7px; height:7px; border-radius:50%;
                        background:var(--dim); }
-.worker-chip.running, .worker-chip.reserved { border-color:var(--accent); }
-.worker-chip.running::before, .worker-chip.reserved::before { background:var(--accent); }
+.worker-chip.running, .worker-chip.reserved { border-color:var(--accent-light); }
+.worker-chip.running::before, .worker-chip.reserved::before { background:var(--accent-light); }
 .worker-chip.off { opacity:.55; }
 .worker-status { color:var(--dim); }
 .search { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
@@ -14926,7 +14995,7 @@ button.description-toggle { padding:2px 0; min-height:0; color:var(--dim); font-
                         font-variant-numeric:tabular-nums; }
 .book-title { font-weight:600; }
 .selected-badge { display:inline-flex; align-items:center; gap:6px; padding:0 8px;
-                  color:var(--accent); font-weight:650; white-space:nowrap; }
+                  color:var(--accent-light); font-weight:650; white-space:nowrap; }
 .selected-badge svg { width:14px; height:14px; fill:currentColor; }
 button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1; }
 .more { display:block; margin:14px auto 0; }
@@ -14948,7 +15017,7 @@ button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1;
 .confirm-dialog p { overflow-wrap:anywhere; }
 .confirm-dialog .field { margin-top:12px; }
 /* The confirming button of a risky action: plain words, a warning color. */
-button.danger { background:var(--bad); border-color:var(--bad); color:var(--accent-ink); font-weight:650; }
+button.danger { background:var(--bad); border-color:var(--bad); color:var(--bg); font-weight:650; }
 button.danger:hover:not(:disabled) { background:var(--bad); filter:brightness(1.08); }
 #confirm-where, #change-voice-where { margin-top:10px; gap:6px 8px; }
 /* Where a job's text goes: a label, the model's short name, its badge. */
@@ -14965,10 +15034,13 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .listen-workspace { --panel-w:440px; }
 .reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
 .reading-column > :not(.reader-panel) { font-size:15px; }
-.book-top { display:grid; gap:6px; margin-bottom:12px; }
-button.back-link { justify-self:start; padding:4px 0; color:var(--dim); text-decoration:none; }
-button.back-link:hover:not(:disabled) { color:var(--text); }
-.book-top h2 { font-size:22px; }
+/* The book's title, with the way back to the library at its top right. */
+.book-top { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; margin-bottom:12px; }
+.book-top > * { grid-column:1 / -1; }
+.book-top > h2 { grid-column:1; grid-row:1; align-self:center; font-size:22px; }
+.book-top > .library-button { grid-column:2; grid-row:1; align-self:start; display:inline-flex;
+                              align-items:center; gap:8px; padding:6px 14px; }
+.library-button svg { width:16px; height:16px; fill:currentColor; }
 .book-meta { overflow-wrap:anywhere; }
 .book-meta select { margin:0 2px; padding:2px 8px; font-size:13px; }
 .book-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin-top:6px; }
@@ -14981,7 +15053,7 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
                       line-height:1.25; text-align:left; }
 .text-switch button small { font-size:12px; }
 .text-switch button[aria-checked=true] { background:var(--raised); color:var(--text);
-                                         box-shadow:inset 0 -2px 0 var(--accent); }
+                                         box-shadow:inset 0 -2px 0 var(--accent-light); }
 .text-switch button span { font-weight:600; }
 /* Small pop-up menus: More, playback speed, a text selection. */
 .menu-wrap { position:relative; }
@@ -14991,7 +15063,7 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .menu button { min-height:36px; padding:6px 12px; border:0; border-radius:6px; background:transparent;
                text-align:left; white-space:nowrap; }
 .menu button:hover:not(:disabled) { background:var(--hover); }
-.menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent); }
+.menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent-light); }
 .more-button { min-width:44px; padding:0 12px; font-size:20px; line-height:1; }
 .reading-column .notice { margin-top:4px; }
 /* The view's controls and the player stay on screen above the text while it
@@ -15011,8 +15083,8 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .player-play svg, .player-mute svg { width:18px; height:18px; fill:currentColor; }
 .player-time { color:var(--dim); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
                font-variant-numeric:tabular-nums; }
-.player-seek { flex:1 1 160px; min-width:100px; accent-color:var(--accent); }
-.player-volume { width:80px; accent-color:var(--accent); }
+.player-seek { flex:1 1 160px; min-width:100px; accent-color:var(--accent-light); }
+.player-volume { width:80px; accent-color:var(--accent-light); }
 .player-speed { min-width:64px; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .player-mute { display:grid; place-items:center; width:40px; padding:0 !important; }
 .player-status { flex-basis:100%; color:var(--dim); font-size:12px; }
@@ -15040,14 +15112,14 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .panel-resize { position:absolute; z-index:1; top:0; bottom:0; left:-5px; width:10px;
                 cursor:col-resize; touch-action:none; }
 .panel-resize:hover, .panel-resize:focus-visible { background:linear-gradient(90deg,
-  transparent 4px, var(--accent) 4px, var(--accent) 6px, transparent 6px); outline:0; }
+  transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
 .panel-head { display:flex; align-items:center; gap:8px; padding:8px 10px;
               border-bottom:1px solid var(--line); }
 .panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
 .panel-tabs [role=tab] { min-height:36px; padding:4px 12px; border:0; border-radius:8px;
                          background:transparent; color:var(--dim); white-space:nowrap; }
 .panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
-                                             box-shadow:inset 0 -2px 0 var(--accent); }
+                                             box-shadow:inset 0 -2px 0 var(--accent-light); }
 .panel-close { min-width:40px; padding:0 10px; font-size:18px; }
 .panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
 .panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
@@ -15059,7 +15131,7 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .chat-options button.link { padding:4px 0; font-size:13px; }
 .badge { padding:1px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim);
          font:12px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; }
-.badge.cloud { border-color:var(--accent); color:var(--accent-light); }
+.badge.cloud { border-color:var(--accent-light); color:var(--accent-light); }
 .badge:empty { display:none; }
 .chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
@@ -15074,17 +15146,17 @@ button.back-link:hover:not(:disabled) { color:var(--text); }
 .chat-assistant > * + * { margin-top:.6em; }
 .chat-assistant table { border-collapse:collapse; }
 .chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
-.chat-cite { color:var(--accent); }
+.chat-cite { color:var(--accent-light); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
 /* Reading an answer aloud: a speech control, unlike the book's round player. */
 .chat-voice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:.7em; }
 button.chat-listen { min-height:36px; padding:0 14px; border-style:dashed; border-radius:999px;
                      font-size:14px; }
-button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent); }
+button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent-light); }
 .chat-restart, .chat-resume-book { font-size:14px; }
 /* The block being read, in the book's spoken-word colors. */
-.chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent-light);
-                                 box-shadow:0 0 0 3px var(--accent-light); border-radius:3px; }
+.chat-assistant .chat-speaking { color:var(--highlight-ink); background:var(--highlight);
+                                 box-shadow:0 0 0 3px var(--highlight); border-radius:3px; }
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
@@ -15094,31 +15166,34 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 /* A part just attached: a short glow (none with reduced motion) and an outline. */
 @keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
 .chat-about.attached { animation:chip-pulse 1.6s ease-out; }
-.chat-about.attached .chip { outline:2px solid var(--accent); outline-offset:0; }
+.chat-about.attached .chip { outline:2px solid var(--accent-light); outline-offset:0; }
 @media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
 .chip-failed-title { font-weight:600; }
 .chip-failed .chip-head { flex-wrap:wrap; }
 /* The box grows with its text (or a long hint) where the browser can size a field to its content. */
 .chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; field-sizing:content; }
 .chat-compose button { flex:0 0 auto; max-width:8.5em; white-space:normal; line-height:1.2; }
-/* A context chip: the part of the book a question is about, and exactly
-   what goes with it. A long one scrolls within a share of the visible
-   viewport, so an on-screen keyboard leaves the message box and Send in sight. */
-.chip { display:grid; gap:4px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
-        border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px;
+/* The card of what a question is about: the section heading, a preview of
+   the selected text, and the collapsed Context details. Open, it scrolls
+   within a share of the visible viewport, so an on-screen keyboard leaves
+   the message box and Send in sight. */
+.chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
+        border:1px solid var(--line); border-left:3px solid var(--accent-light); border-radius:8px;
         background:var(--field); font-size:13px; }
-.chip-head { display:flex; align-items:center; gap:6px; }
+.chip-head { display:flex; align-items:center; gap:4px; }
 .chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
                 white-space:nowrap; }
-.chip-head button { min-height:28px; padding:0 8px; font-size:13px; }
-.chip-failed .chip-head button.link { padding:0 4px; }
+.chip-head button { min-height:24px; padding:0 6px; font-size:12px; }
+.chip-head button.link { padding:0 4px; color:var(--dim); }
 .chip-preview { color:var(--dim); overflow-wrap:anywhere; }
-.chip-items { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
-.chip-items li { color:var(--dim); }
-.chip-items details > summary { width:auto; }
-.chip-items details > summary::marker { color:var(--accent); }
-.chip-items details p { margin:4px 0 6px; padding-left:12px; color:var(--text); white-space:pre-wrap; }
-.chip-note { color:var(--dim); }
+.chip-details > summary { width:auto; color:var(--dim); font-size:12px; cursor:pointer; }
+.chip-details > summary::marker { color:var(--accent-light); }
+.chip-group { display:grid; gap:4px; margin-top:6px; }
+.chip-group-label { margin:0; font-size:12px; font-weight:650; }
+.chip-piece { display:grid; gap:2px; padding-left:10px; }
+.chip-where { color:var(--dim); font-size:12px; }
+.chip-piece p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.chip-note, .chip-image { padding-left:10px; color:var(--dim); }
 .chat-user .chip { background:var(--surface); }
 /* The figure and the source page, large. */
 .figure-view-title { margin-bottom:10px; font-size:16px; }
@@ -15139,7 +15214,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-content { font-size:18px; line-height:1.6; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
-  border-left-color:var(--accent); background:rgba(224,123,57,.05);
+  border-left-color:var(--highlight); background:color-mix(in srgb, var(--highlight) 5%, transparent);
 }
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
@@ -15147,7 +15222,8 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
-.reader-word.active { background:rgba(224,123,57,.25); box-shadow:inset 0 -2px 0 var(--accent); }
+.reader-word.active { background:color-mix(in srgb, var(--highlight) 25%, transparent);
+                      box-shadow:inset 0 -2px 0 var(--highlight); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
 .reader-block img { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:5px; }
@@ -15189,7 +15265,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-tag button.link { min-height:0; padding:0; color:var(--dim); font:inherit;
                           text-transform:inherit; }
 .reader-tag button.link:hover:not(:disabled) { color:var(--text); }
-.reader-flag { color:var(--accent); font-size:.92em; }
+.reader-flag { color:var(--accent-light); font-size:.92em; }
 .selection-menu { position:fixed; z-index:40; display:flex; gap:2px; padding:4px;
                   background:var(--raised); border:1px solid var(--line); border-radius:10px;
                   box-shadow:0 10px 30px rgba(0,0,0,.5); }
@@ -15258,7 +15334,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .page { padding-top:18px; }
   .card, .step, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
   .step-body { padding-left:0; }
-  .option-line, .more-details { padding-left:0; }
+  .option-line, .more-details, .model-pick { padding-left:0; }
+  button.model-row { min-height:44px; }
   .row { grid-template-columns:minmax(0,1fr); }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .job-row { grid-template-columns:minmax(0,1fr); }
@@ -15310,7 +15387,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-mute, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
   .player-seek, .chat-options select, .book-meta select { min-height:44px; }
-  .chip-items summary { min-height:44px; padding:12px 0; }
+  .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
   .keyboard-open .chat-where { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
@@ -15556,8 +15633,22 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <div id="option-adapt" class="option">
               <div class="option-head">
                 <label class="check"><input id="adapt" type="checkbox"> Adapt the text for listening</label>
-                <span class="option-where"><span id="adapt-model-name" class="model-name"></span>
-                  <span id="adapt-badge" class="badge" title="Where the document's text goes"></span></span>
+              </div>
+              <div class="model-pick" data-option="adapt">
+                <button id="adapt-model-row" class="model-row" type="button" aria-expanded="false"
+                  aria-controls="adapt-model-list" title="Where the document's text goes"
+                  onclick="toggleModelList('adapt')"></button>
+                <p id="adapt-model-reason" class="model-reason note hidden"></p>
+                <div id="adapt-model-list" class="model-list hidden">
+                  <label for="paper-model" class="visually-hidden">Text model</label>
+                  <select id="paper-model"><option value="">Loading models…</option></select>
+                  <div class="line">
+                    <button id="paper-local" class="link" type="button" onclick="openPaperLocal()">Add local</button>
+                    <button id="paper-providers" class="link" type="button"
+                      onclick="openPaperProviders()">Connect a provider</button>
+                    <span id="paper-model-status" class="note"></span>
+                  </div>
+                </div>
               </div>
               <p class="option-line">Rewrites the text so it reads naturally aloud. It takes longer.</p>
               <p class="option-line note">Can change: drops citation marks, page numbers, and reference
@@ -15571,17 +15662,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                     A table of contents or bibliography is removed from a PDF even without this.</p>
                   <p>The document's paragraphs, earlier summaries, captions, and figure images go to
                     the text model.</p>
-                  <div id="adaptation-model" class="field">
-                    <label for="paper-model">Text model</label>
-                    <div class="line">
-                      <select id="paper-model"><option value="">Loading models…</option></select>
-                    </div>
-                    <div class="line">
-                      <button id="paper-providers" type="button" onclick="openPaperProviders()">Providers</button>
-                      <button id="paper-local" type="button" onclick="openPaperLocal()">Add local</button>
-                      <span id="paper-model-status" class="note"></span>
-                    </div>
-                  </div>
                 </div>
               </details>
             </div>
@@ -15589,8 +15669,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <div class="option-head">
                 <label class="check"><input id="paper-interpret" type="checkbox"> Interpret and narrate
                   figures/charts (Experimental)</label>
-                <span class="option-where"><span id="figure-model-name" class="model-name"></span>
-                  <span id="figure-badge" class="badge" title="Where the figure pictures go"></span></span>
+              </div>
+              <div class="model-pick" data-option="figure">
+                <button id="figure-model-row" class="model-row" type="button" aria-expanded="false"
+                  aria-controls="figure-model-list" title="Where the figure pictures go"
+                  onclick="toggleModelList('figure')"></button>
+                <p id="figure-model-reason" class="model-reason note hidden"></p>
+                <div id="figure-model-list" class="model-list hidden">
+                  <label for="paper-figure-model" class="visually-hidden">Figure model</label>
+                  <select id="paper-figure-model"><option value="">Same as the text model</option></select>
+                  <div class="line">
+                    <button class="link" type="button" onclick="openPaperLocal()">Add local</button>
+                    <button class="link" type="button" onclick="openPaperProviders()">Connect a provider</button>
+                  </div>
+                </div>
               </div>
               <p class="option-line">The figure model reads every figure, chart, and table from its picture.</p>
               <p class="option-line note">Can change: more detail, and wrong values when a plot is misread.</p>
@@ -15600,20 +15692,26 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                   <p>Unticked, a chart is described from its caption and what the paper's text says
                     about it, never from values read off the picture. A strong vision model reads
                     plots far better than a small local one.</p>
-                  <div id="figure-model-row" class="field">
-                    <label for="paper-figure-model">Figure model</label>
-                    <div class="line">
-                      <select id="paper-figure-model"><option value="">Same as the text model</option></select>
-                    </div>
-                  </div>
                 </div>
               </details>
             </div>
             <div id="error-correction" class="option">
               <div class="option-head">
                 <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
-                <span class="option-where"><span id="verify-model-name" class="model-name"></span>
-                  <span id="verify-badge" class="badge" title="Where the descriptions go to be checked"></span></span>
+              </div>
+              <div class="model-pick" data-option="verify">
+                <button id="verify-model-row" class="model-row" type="button" aria-expanded="false"
+                  aria-controls="verify-model-list" title="Where the descriptions go to be checked"
+                  onclick="toggleModelList('verify')"></button>
+                <p id="verify-model-reason" class="model-reason note hidden"></p>
+                <div id="verify-model-list" class="model-list hidden">
+                  <label for="paper-verify-model" class="visually-hidden">Checking model</label>
+                  <select id="paper-verify-model"><option value="">Same as the text model</option></select>
+                  <div class="line">
+                    <button class="link" type="button" onclick="openPaperLocal()">Add local</button>
+                    <button class="link" type="button" onclick="openPaperProviders()">Connect a provider</button>
+                  </div>
+                </div>
               </div>
               <p class="option-line">Checks each description of a figure, table, or equation against the paper.</p>
               <p class="option-line note">Can change: a description with a problem is rewritten, kept only if a
@@ -15623,12 +15721,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <div class="more-body">
                   <p>Each check sends the description and the paper's text around it to the checking
                     model. It takes longer.</p>
-                  <div id="verify-model-row" class="field">
-                    <label for="paper-verify-model">Checking model</label>
-                    <div class="line">
-                      <select id="paper-verify-model"><option value="">Same as the text model</option></select>
-                    </div>
-                  </div>
                 </div>
               </details>
             </div>
@@ -15642,6 +15734,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div class="actions">
             <button id="run" class="primary" type="button"
               onclick="startAudiobook()">Create audiobook</button>
+            <span id="run-reason" class="note hidden"></span>
           </div>
         </div>
       </li>
@@ -15770,8 +15863,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div id="library-content" class="hidden">
         <div class="search">
           <label for="book-search" class="visually-hidden">Search titles</label>
-          <input id="book-search" type="search" autocomplete="off"
-            placeholder="Search titles, for example great expectations">
+          <input id="book-search" type="search" autocomplete="off" placeholder="Search titles">
           <span id="book-count" class="note" aria-live="polite"></span>
         </div>
         <table id="book-table" class="data-table book-table">
@@ -15797,7 +15889,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div id="book-view" class="listen-workspace hidden">
       <div class="reading-column">
         <header class="book-top">
-          <button class="link back-link" type="button" onclick="closeBook()">← Library</button>
+          <button class="library-button" type="button" onclick="closeBook()"><svg viewBox="0 0 16 16"
+            aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
           <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
           <p class="book-meta note">
             <span id="reader-voice-name"></span>
@@ -15895,6 +15988,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <label for="chat-model" class="note">Model</label>
               <select id="chat-model"></select>
               <span id="chat-badge" class="badge" title="Where your question and its context go"></span>
+              <button id="chat-add-local" class="link" type="button" onclick="openPaperLocal()">Add local</button>
               <span id="chat-web" class="badge cloud hidden"
                 title="Hilde may search the web and read public pages for an answer">Web search on</span>
               <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak"
@@ -17883,21 +17977,28 @@ function renderChatControls() {
   $("chat-add-model").classList.toggle("hidden", !problem || !!(chatData && chatData.problem));
   $("chat-send").classList.toggle("hidden", running);
   $("chat-stop").classList.toggle("hidden", !running);
-  const preparing = !!(chatAbout && !chatAbout.manifest && !chatAbout.error);
-  const send = $("chat-send");
-  // Pressed while the part is still being attached, Send waits for it.
-  send.textContent = chatSending ? "Sending…" : preparing ? "Preparing context…" : "Send";
-  send.disabled = chatSending || !!(chatData && chatData.problem);
+  renderSendButton();
+  $("chat-send").disabled = chatSending || !!(chatData && chatData.problem);
+  // The box stays the listener's own; with a part attached, Enter on an
+  // empty box asks Hilde to explain it.
   $("chat-input").placeholder = !chatAbout || chatAbout.error ? CHAT_PLACEHOLDER
-    : chatAbout.about.kind === "selection" ? "Ask about the selection, or press Enter to have it explained"
-    : chatAbout.about.kind === "figure" ? "Ask about the figure, or press Enter to have it explained"
-    : "Ask about this part, or press Enter to have it explained";
+    : chatAbout.about.kind === "selection" ? "Type a question, or press Enter to explain the selection"
+    : chatAbout.about.kind === "figure" ? "Type a question, or press Enter to explain the figure"
+    : "Type a question, or press Enter to explain this part";
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
   $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
   $("chat-speak").checked = state.player.chat_speak;
   // With the server's web search, a question's searches go out to the web too.
   $("chat-web").classList.toggle("hidden", !(chatData && chatData.web_search));
+}
+// Send says what a press does: waits for the part being attached, sends,
+// or, with a part attached and nothing typed, asks to explain it.
+function renderSendButton() {
+  const preparing = !!(chatAbout && !chatAbout.manifest && !chatAbout.error);
+  const explain = !!(chatAbout && chatAbout.manifest) && !$("chat-input").value.trim();
+  $("chat-send").textContent = chatSending ? "Sending…" : preparing ? "Preparing context…"
+    : explain ? "Explain this part" : "Send";
 }
 
 // Reading answers aloud: one audio element plays an answer's clips in turn,
@@ -18049,18 +18150,23 @@ function speakLatestAnswer() {
   if (button) speakAnswer(button);
 }
 
+// The chat's model picker is Create's (fillModelSelect()): the default
+// first ("" is the catalog's default model), then the models by provider
+// and by local server, each with its badge, and a local server that does
+// not answer as "not running". Add local sits beside it.
+let chatDefaultModel = "";
 function fillChatModels(catalog) {
-  const select = $("chat-model");
   chatModels = catalog.models || [];
-  select.replaceChildren(...chatModels.map((model) => new Option(model.label || model.selector, model.selector)));
-  const wanted = [state.player.chat_model, state.audiobook.model, catalog.default_model]
-    .find((selector) => selector && chatModels.some((model) => model.selector === selector));
-  if (wanted) select.value = wanted;
+  chatDefaultModel = catalog.default_model || "";
+  const listed = (selector) => selector && chatModels.some((model) => model.selector === selector);
+  const chosen = [state.player.chat_model, state.audiobook.model].find(listed) || "";
+  fillModelSelect($("chat-model"), chosen, defaultModelText(catalog), catalog);
   chatHasModels = chatModels.length > 0;
   chatModelsError = catalog.local_error || "";
   renderChatControls();
   renderChatHeader();
 }
+function chatModel() { return $("chat-model").value || chatDefaultModel; }
 let chatModelsLoading = false;
 async function refreshChatModels() {
   chatModelsLoading = true;
@@ -18077,7 +18183,7 @@ function renderChatHeader() {
   const detail = readerPayload && passage ? readerPayload.passages[passage] : null;
   $("chat-section").textContent = (chatAbout && chatAbout.manifest ? chatAbout.manifest.section
     : detail ? detail.section : "") || "";
-  const model = chatModels.find((item) => item.selector === $("chat-model").value);
+  const model = chatModels.find((item) => item.selector === chatModel());
   const badge = $("chat-badge");
   badge.textContent = model ? model.badge || "" : "";
   badge.classList.toggle("cloud", badge.textContent.startsWith("Cloud"));
@@ -18089,7 +18195,7 @@ function renderChatHeader() {
 // part still being attached, the press waits for it (at most the chip's
 // 10 seconds); a part that couldn't be attached stays behind, and the
 // question goes without it, saying so. An empty box with a part attached
-// asks Hilde to explain that part.
+// asks Hilde to explain that part (Send reads "Explain this part").
 const DEFAULT_QUESTION = "Explain this part.";
 const CHAT_PLACEHOLDER = "Ask about this book, or ask Hilde to write a summary file";
 let chatQueued = false, chatSending = false;
@@ -18125,7 +18231,7 @@ async function sendChat(event) {
     renderChatControls();
     return;
   }
-  const model = $("chat-model").value;
+  const model = chatModel();
   if (!model) {
     if (chatModelsLoading) chatHint("The models are still loading. Your question stays here; send it again in a moment.");
     else {
@@ -18143,7 +18249,8 @@ async function sendChat(event) {
   try {
     const data = await jsonRequest("/api/chat/send", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book, text:typed || DEFAULT_QUESTION, model,
+      body:JSON.stringify({ book:state.player.book, model,
+        text:typed || DEFAULT_QUESTION,
         ...(sent ? { about:sent.about } : {}) }),
     });
     // What was typed meanwhile stays.
@@ -18240,7 +18347,7 @@ function jumpToPassage(number) {
 // failed after 10 seconds (the wait for the model list included); a failed
 // one offers Retry (the same part again) and Remove.
 const CHAT_CONTEXT_TIMEOUT = 10000;
-let chatAbout = null, askSelection = null, replaceSelection = null, chipPulseTimer = 0;
+let chatAbout = null, askSelection = null, changeSelection = null, chipPulseTimer = 0;
 async function attachAbout(about) {
   if (!about) return;
   const fresh = !chatAbout || JSON.stringify(chatAbout.about) !== JSON.stringify(about);
@@ -18254,10 +18361,10 @@ async function attachAbout(about) {
     () => reject(new Error("It took longer than 10 seconds.")), { once:true }));
   stopped.catch(() => {});
   try {
-    if (!$("chat-model").value) await Promise.race([refreshChatModels(), stopped]);
+    if (!chatModel()) await Promise.race([refreshChatModels(), stopped]);
     const manifest = await Promise.race([jsonRequest("/api/chat/context", {
       method:"POST", headers:{ "Content-Type":"application/json" }, signal:controller.signal,
-      body:JSON.stringify({ book:state.player.book, model:$("chat-model").value, about }),
+      body:JSON.stringify({ book:state.player.book, model:chatModel(), about }),
     }), stopped]);
     current.manifest = manifest;
   } catch (error) {
@@ -18295,6 +18402,7 @@ function renderChatAbout() {
     const chip = document.createElement("div");
     chip.className = "chip chip-preparing";
     chip.append(chipHead("Preparing…", true));
+    if (chatAbout.about.kind === "selection") chip.append(chipPreview(chatQuote(chatAbout.about.quote)));
     box.append(chip);
   }
   box.classList.toggle("hidden", !chatAbout);
@@ -18327,6 +18435,14 @@ function failedChip(message) {
   chip.append(head, problem);
   return chip;
 }
+// Text cut to `most` characters, the last one an ellipsis.
+function cutText(text, most) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  return flat.length > most ? `${flat.slice(0, most - 1).trimEnd()}…` : flat;
+}
+function chatQuote(quote) { return `“${cutText(quote, 80)}”`; }
+// The card's title, the section heading as in the book, with small Change
+// and × controls on the draft's card.
 function chipHead(title, editable) {
   const head = document.createElement("div");
   head.className = "chip-head";
@@ -18335,60 +18451,98 @@ function chipHead(title, editable) {
   section.textContent = title; section.title = title;
   head.append(section);
   if (!editable) return head;
-  const replace = document.createElement("button");
-  replace.type = "button"; replace.className = "link";
-  replace.textContent = "Replace";
-  replace.title = "Attach the text selected in the book instead, or else the part playing now";
+  const change = document.createElement("button");
+  change.type = "button"; change.className = "link chip-change";
+  change.textContent = "Change";
+  change.title = "Attach the text selected in the book instead, or else the part playing now";
   // Taken before the press can clear the selection.
-  replace.addEventListener("pointerdown", () => { replaceSelection = readerSelection(); });
-  replace.addEventListener("click", () => {
-    const picked = replaceSelection || readerSelection();
-    replaceSelection = null;
+  change.addEventListener("pointerdown", () => { changeSelection = readerSelection(); });
+  change.addEventListener("click", () => {
+    const picked = changeSelection || readerSelection();
+    changeSelection = null;
     attachAbout(picked ? selectionAbout(picked) : playingAbout());
   });
   const remove = document.createElement("button");
-  remove.type = "button";
+  remove.type = "button"; remove.className = "chip-remove";
   remove.textContent = "×";
   remove.setAttribute("aria-label", "Remove the attached part");
   remove.addEventListener("click", () => { clearAbout(); focusChatInput(); });
-  head.append(replace, remove);
+  head.append(change, remove);
   return head;
 }
+function chipPreview(text) {
+  const preview = document.createElement("p");
+  preview.className = "chip-preview";
+  preview.textContent = text;
+  return preview;
+}
+// Context details: everything the manifest lists, which is exactly what
+// goes with the question, grouped by what it is ("Hilde's narration" once,
+// then each of its paragraphs), without the card's section again.
+function chipDetails(manifest) {
+  const details = document.createElement("details");
+  details.className = "chip-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "Context details";
+  details.append(summary);
+  const groups = new Map();
+  const group = (title) => {
+    if (!groups.has(title)) {
+      const section = document.createElement("section");
+      section.className = "chip-group";
+      const name = document.createElement("h5");
+      name.className = "chip-group-label";
+      name.textContent = title;
+      section.append(name);
+      groups.set(title, section);
+      details.append(section);
+    }
+    return groups.get(title);
+  };
+  for (const item of manifest.items || []) {
+    const [title, ...rest] = String(item.label || "").split(" · ");
+    let where = rest.join(" · ");
+    if (manifest.section && where === manifest.section) where = "";
+    else if (manifest.section && where.startsWith(`${manifest.section}, `)) where = where.slice(manifest.section.length + 2);
+    const piece = document.createElement("div");
+    piece.className = "chip-piece";
+    piece.dataset.label = item.label || "";
+    if (item.passage) piece.dataset.passage = item.passage;
+    const place = [item.passage ? `¶${item.passage}` : "", where].filter(Boolean).join(" · ");
+    if (place) {
+      const at = document.createElement("span");
+      at.className = "chip-where";
+      at.textContent = place;
+      piece.append(at);
+    }
+    const text = document.createElement("p");
+    text.textContent = item.text;
+    piece.append(text);
+    group(title).append(piece);
+  }
+  const image = manifest.image || {};
+  if (image.sent || image.count) {
+    const note = document.createElement("p");
+    note.className = image.sent ? "chip-image" : "chip-note";
+    note.textContent = image.sent
+      ? (image.count > 1 ? `Sent: the figure's ${image.count} pictures` : "Sent: the figure's picture")
+      : `Not sent: the figure's picture. ${image.why || ""}`.trim();
+    group("Picture").append(note);
+  }
+  return details;
+}
+// One card for what a question is about: the section heading, a short
+// preview of the selected text (else of the part), and the collapsed
+// Context details. Past questions show the same card, without controls.
 function chipElement(manifest, editable = false) {
   const chip = document.createElement("div");
   chip.className = "chip";
   const about = manifest.about || {};
-  const label = about.kind === "figure" && readerPayload
-    ? (readerPayload.passages[about.passage] || {}).label : "";
-  const section = manifest.section || "Before the first heading";
-  chip.append(chipHead(label ? `${label} · ${section}` : section, editable));
-  const preview = document.createElement("p");
-  preview.className = "chip-preview";
-  preview.textContent = manifest.preview || "";
-  const list = document.createElement("ul");
-  list.className = "chip-items";
-  list.setAttribute("aria-label", "What Hilde gets with the question");
-  for (const item of manifest.items || []) {
-    const entry = document.createElement("li");
-    const details = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = item.passage ? `${item.label} (¶${item.passage})` : item.label;
-    const text = document.createElement("p");
-    text.textContent = item.text;
-    details.append(summary, text);
-    entry.append(details);
-    list.append(entry);
-  }
-  const image = manifest.image || {};
-  if (image.sent || image.count) {
-    const entry = document.createElement("li");
-    entry.className = image.sent ? "chip-image" : "chip-note";
-    entry.textContent = image.sent
-      ? (image.count > 1 ? `The figure's ${image.count} pictures` : "The figure's picture")
-      : `Not sent: the figure's picture. ${image.why || ""}`.trim();
-    list.append(entry);
-  }
-  chip.append(preview, list);
+  chip.append(
+    chipHead(manifest.section || "Before the first heading", editable),
+    chipPreview(about.kind === "selection" ? chatQuote(about.quote) : cutText(manifest.preview, 80)),
+    chipDetails(manifest),
+  );
   return chip;
 }
 // What the listener is at: the passage playing (a figure as a figure), or
@@ -18409,12 +18563,24 @@ function selectionAbout(picked) {
   const end = Math.min(Math.max(start, picked.last || start), start + 5);
   return { kind:"selection", start, end, quote:picked.text.slice(0, 8000) };
 }
-// The passage a node of the text belongs to: its paragraph's, or its source's.
-function readerPassageOf(node) {
-  const element = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
-  const holder = element && element.closest("[data-passage]");
-  return holder ? Number(holder.dataset.passage) || null : null;
+// The passages the selection takes words from, in order. A selection that
+// ends at the very start of the next paragraph (as a triple click leaves
+// it) does not take that paragraph.
+function selectedPassages(range) {
+  const numbers = [];
+  for (const element of $("reader-content").querySelectorAll(
+    ".reader-paragraph[data-passage], .reader-original[data-passage]")) {
+    if (!shown(element) || !range.intersectsNode(element)) continue;
+    const part = document.createRange();
+    part.selectNodeContents(element);
+    if (range.compareBoundaryPoints(Range.START_TO_START, part) > 0) part.setStart(range.startContainer, range.startOffset);
+    if (range.compareBoundaryPoints(Range.END_TO_END, part) < 0) part.setEnd(range.endContainer, range.endOffset);
+    const number = Number(element.dataset.passage);
+    if (number && part.toString().trim() && !numbers.includes(number)) numbers.push(number);
+  }
+  return numbers;
 }
+// The selection in the text, with the passages it takes words from.
 function readerSelection() {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
@@ -18422,7 +18588,10 @@ function readerSelection() {
   if (!$("reader-content").contains(range.commonAncestorContainer)) return null;
   const text = selection.toString().replace(/\s+/g, " ").trim();
   if (!text) return null;
-  return { text, range, first:readerPassageOf(range.startContainer), last:readerPassageOf(range.endContainer) };
+  const passages = selectedPassages(range);
+  return { text, range,
+           first:passages.length ? Math.min(...passages) : null,
+           last:passages.length ? Math.max(...passages) : null };
 }
 // Asking pauses the book (only a pause: the time and the sentence stay) and
 // nothing resumes it; Play does. A question is about what was playing at
@@ -18430,18 +18599,28 @@ function readerSelection() {
 function pauseBookForQuestion() {
   if (readerAudio && !readerAudio.paused) readerAudio.pause();
 }
+// A selection asked about: its card, the panel's chat, and the box left as
+// it was, for the listener's own question.
+function askAboutSelection(picked) {
+  attachAbout(selectionAbout(picked));
+  setPanel(true, "chat");
+  if (!chatData) loadChat();
+  focusChatInput();
+}
 // Ask Hilde opens the panel's chat as it was left. With text selected, that
-// text is attached; with nothing attached and nothing written, the part
-// playing is.
+// text is attached, as Ask about this does; with nothing attached and
+// nothing written, the part playing is.
 async function askHilde() {
   const picked = askSelection || readerSelection();
   askSelection = null;
   pauseBookForQuestion();
-  setPanel(true, "chat");
-  if (!chatData) loadChat();
-  if (picked) attachAbout(selectionAbout(picked));
-  else if (!chatAbout && !$("chat-input").value.trim()) attachAbout(playingAbout());
-  focusChatInput();
+  if (picked) askAboutSelection(picked);
+  else {
+    setPanel(true, "chat");
+    if (!chatData) loadChat();
+    if (!chatAbout && !$("chat-input").value.trim()) attachAbout(playingAbout());
+    focusChatInput();
+  }
   refreshChatModels();
 }
 
@@ -19106,13 +19285,15 @@ const PROVIDER_CLOUD = {
   "claude-code":"Claude Code",
 };
 // A model choice ("" is the default) as its short name and the catalog's badge.
-function textModel(selector) {
-  const chosen = selector || paperCatalog.default_model || "";
-  if (!chosen) return paperCatalog.loaded ? null
+function textModel(selector, catalog = paperCatalog) {
+  const chosen = selector || catalog.default_model || "";
+  if (!chosen) return catalog.loaded ? null
     : { selector:"", short:"Checking the models…", badge:"Checking…", isDefault:false };
-  const model = (paperCatalog.models || []).find((item) => item.selector === chosen);
+  const model = (catalog.models || []).find((item) => item.selector === chosen);
   const [provider, ...rest] = chosen.split("/");
-  const short = model && model.label ? model.label
+  // A local model by its own name (its server and organization are in the list).
+  const short = model && model.server ? rest.join("/").split("/").pop()
+    : model && model.label ? model.label
     : `${PROVIDER_SHORT[provider] || provider} ${rest.join("/")}`.trim();
   const badge = model && model.badge ? model.badge
     : ["ollama", "lm-studio"].includes(provider) ? "Local" : `Cloud: ${PROVIDER_CLOUD[provider] || provider}`;
@@ -19233,9 +19414,13 @@ function renderCreate() {
   const createProblem = step === "create" && state.tab === "audiobook" && current ? facts.problem : "";
   $("create-problem").textContent = createProblem || "";
   $("create-problem").classList.toggle("hidden", !createProblem);
-  // Adapting with the default model waits for the catalog, which says where it runs.
+  // Adapting with the default model waits for the catalog, which says where it runs;
+  // every option turned on needs a model, its reason beside the button.
   const placeUnknown = !voiceOnly && state.audiobook.adapt && !paperCatalog.loaded;
-  $("run").disabled = submitting || !current || !!facts.problem || placeUnknown;
+  const needsModel = voiceOnly ? "" : modelProblem();
+  $("run-reason").textContent = needsModel;
+  $("run-reason").classList.toggle("hidden", !needsModel);
+  $("run").disabled = submitting || !current || !!facts.problem || placeUnknown || !!needsModel;
   $("create-note").textContent = voiceOnly
     ? `Reads ${existing.title} in this voice, from the book's own text; no text model is used.`
     : overwrite
@@ -19245,18 +19430,68 @@ function renderCreate() {
   if (step === "create") renderSummary(voiceOnly);
   renderSelectedVoice();
 }
-// Each step 3 option names its model and where it runs, ticked or not.
+// Each step 3 option's model row: "Model: <short name> · <badge> ▾", the
+// figure and checking options "Same as the text model (…)" by default.
+// A browser with local servers that do not answer is never moved to the
+// cloud without a word (paper_model_catalog() gives no default then): the
+// row asks for a choice, with why. A press opens the model list in place.
+const MODEL_OPTIONS = {
+  adapt:{ key:"model", title:"Adapt the text for listening", why:"Where the document's text goes" },
+  figure:{ key:"figure_model", title:"Interpret and narrate figures/charts", why:"Where the figure pictures go" },
+  verify:{ key:"verify_model", title:"Check and correct descriptions", why:"Where the descriptions go to be checked" },
+};
+function optionModel(name) {
+  const own = state.audiobook[MODEL_OPTIONS[name].key];
+  const same = name !== "adapt" && !own;
+  return { same, model:textModel(same ? state.audiobook.model : own) };
+}
+function noModelAvailable() { return paperCatalog.loaded && !(paperCatalog.models || []).length; }
+// Why Create can't start for want of a model, or "".
+function modelProblem() {
+  if (!state.audiobook.adapt || !paperCatalog.loaded) return "";
+  if (noModelAvailable()) return "No model available: add a local server or connect a provider.";
+  const on = ["adapt", ...(state.audiobook.interpret_figures ? ["figure"] : []),
+              ...(state.audiobook.verify ? ["verify"] : [])];
+  const missing = on.find((name) => !optionModel(name).model);
+  return missing ? `Choose a model for ${MODEL_OPTIONS[missing].title}.` : "";
+}
 function renderOptionPlaces() {
-  const place = (nameId, badgeId, model) => {
-    $(nameId).textContent = model ? (model.isDefault ? `Default: ${model.short}` : model.short) : "";
-    const badge = $(badgeId), text = model ? model.badge : "No model yet";
-    badge.textContent = text;
-    badge.classList.toggle("cloud", text.startsWith("Cloud"));
-  };
-  const text = textModel(state.audiobook.model);
-  place("adapt-model-name", "adapt-badge", text);
-  place("figure-model-name", "figure-badge", textModel(state.audiobook.figure_model || state.audiobook.model));
-  place("verify-model-name", "verify-badge", textModel(state.audiobook.verify_model || state.audiobook.model));
+  for (const [name, option] of Object.entries(MODEL_OPTIONS)) {
+    const { same, model } = optionModel(name);
+    const parts = [];
+    let why = "";
+    if (model) {
+      const short = document.createElement("span");
+      short.id = `${name}-model-name`; short.className = "model-name";
+      short.textContent = same ? `Same as the text model (${model.short}` : model.short;
+      const badge = badgeElement(model.badge, option.why);
+      badge.id = `${name}-badge`;
+      parts.push("Model: ", short, " · ", badge, ...(same ? [")"] : []));
+    } else if (noModelAvailable()) {
+      parts.push("No model available");
+      why = "Add a local server or connect a provider.";
+    } else {
+      parts.push(same ? "Model: Same as the text model (choose a model)" : "Model: choose a model");
+      why = paperCatalog.local_error ? "Your local server is not running." : "";
+    }
+    const caret = document.createElement("span");
+    caret.className = "model-caret"; caret.setAttribute("aria-hidden", "true"); caret.textContent = "▾";
+    $(`${name}-model-row`).replaceChildren(...parts, " ", caret);
+    $(`${name}-model-reason`).textContent = why;
+    $(`${name}-model-reason`).classList.toggle("hidden", !why);
+  }
+}
+// The model list of an option opens in place under its row (the others
+// close); choosing a model, Enter, or Escape closes it.
+function toggleModelList(name, open) {
+  const list = $(`${name}-model-list`), show = open ?? list.classList.contains("hidden");
+  if (show) for (const other of Object.keys(MODEL_OPTIONS)) if (other !== name) toggleModelList(other, false);
+  list.classList.toggle("hidden", !show);
+  $(`${name}-model-row`).setAttribute("aria-expanded", String(show));
+  if (!show) return;
+  const select = list.querySelector("select");
+  select.size = Math.max(2, Math.min(12, select.options.length + select.querySelectorAll("optgroup").length));
+  select.focus({ preventScroll:true });
 }
 // Above Create audiobook: the document, the voice, and each option with where it runs.
 function renderSummary(voiceOnly) {
@@ -20178,26 +20413,41 @@ async function sendAirdrop() {
 // A local server as the user typed it: host:port, no http://.
 function localServerLabel(server) { return server.replace(/^http:\/\//, ""); }
 // One model picker: its first choice, then the catalog's models by provider,
-// a local server's under its own group, and a saved choice the catalog no
-// longer lists, marked unavailable.
+// a local server's under its own group (named by the model alone there; a
+// server registered on this server says so), each with its Local or Cloud
+// badge; a local server that does not answer, disabled, "<server> — not
+// running", after the local servers' groups; and a saved choice the
+// catalog no longer lists, marked unavailable.
+const ON_SERVER = " · added on the server";
 function fillModelSelect(select, selected, first, catalog) {
   select.replaceChildren();
   const fallback = document.createElement("option");
   fallback.value = ""; fallback.textContent = first;
   select.append(fallback);
   const groups = new Map();
+  let firstCloud = null;
   for (const model of catalog.models || []) {
     const name = model.server
-      ? `${model.provider} · ${localServerLabel(model.server)}` : model.provider;
+      ? `${model.provider} · ${localServerLabel(model.server)}${model.on_server ? ON_SERVER : ""}` : model.provider;
     if (!groups.has(name)) {
       const group = document.createElement("optgroup");
       group.label = name;
       groups.set(name, group); select.append(group);
+      if (!model.server && !firstCloud) firstCloud = group;
     }
     const option = document.createElement("option");
     option.value = model.selector;
-    option.textContent = `${model.label || model.selector}${model.badge ? ` · ${model.badge}` : ""}`;
+    const label = model.server ? model.selector.slice(model.provider.length + 1) : model.label || model.selector;
+    option.textContent = `${label}${model.badge ? ` · ${model.badge}` : ""}`;
     groups.get(name).append(option);
+  }
+  for (const server of catalog.local_servers || []) {
+    if (server.running) continue;
+    const option = document.createElement("option");
+    option.value = `not-running:${server.server}`; option.disabled = true;
+    option.textContent = `${server.label} — not running${server.on_server ? ` (${ON_SERVER.slice(3)})` : ""}`;
+    option.title = server.error || "";
+    select.insertBefore(option, firstCloud);
   }
   if (selected && ![...select.options].some((option) => option.value === selected)) {
     const unavailable = document.createElement("option");
@@ -20206,15 +20456,17 @@ function fillModelSelect(select, selected, first, catalog) {
   }
   select.value = selected;
 }
+// A picker's first choice: the default model by its short name and badge.
+function defaultModelText(catalog) {
+  const fallback = textModel("", { ...catalog, loaded:true });
+  return fallback ? `Default: ${fallback.short} · ${fallback.badge}`
+    : catalog.local_error ? "Default: your local servers, once one answers"
+    : "No model yet: connect a provider or add a local server";
+}
 
 function applyPaperCatalog(catalog) {
   paperCatalog = { ...catalog, loaded:true };
-  const fallback = textModel("");
-  fillModelSelect($("paper-model"), state.audiobook.model,
-    fallback ? `Default: ${fallback.short} · ${fallback.badge}`
-      : catalog.local_error ? "Default: your local servers, once one answers"
-      : "No model yet: connect a provider or add a local server",
-    catalog);
+  fillModelSelect($("paper-model"), state.audiobook.model, defaultModelText(catalog), catalog);
   fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
     "Same as the text model", catalog);
   fillModelSelect($("paper-figure-model"), state.audiobook.figure_model,
@@ -20225,8 +20477,6 @@ function applyPaperCatalog(catalog) {
     renderPaperKey(name, catalog[`${provider.field}_error`]);
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
-  const added = state.audiobook.local_servers.length;
-  $("paper-local").textContent = added ? `Local (${added})` : "Add local";
   const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error
     || catalog.openai_api_error || catalog.gemini_error;
   $("paper-model-status").textContent = problem ||
@@ -20342,18 +20592,39 @@ async function cancelPaperOpenAI() {
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
 
-// Add local: the added servers, each with its type, whether its models see
-// images (saved at once), and Remove; below them the form that adds one.
+// Add local: the servers registered on this server (--local-server), each
+// with its type and "added on the server", none removable here; then this
+// browser's, each with its type, whether its models see images (saved at
+// once), and Remove; below them the form that adds one.
 function renderPaperLocal() {
-  const servers = state.audiobook.local_servers;
-  $("paper-local-list").replaceChildren(...servers.map((entry) => {
+  const shared = (paperCatalog.local_servers || []).filter((entry) => entry.on_server);
+  const servers = state.audiobook.local_servers
+    .filter((entry) => !shared.some((other) => other.server === entry.server));
+  const typeName = (entry) => entry.provider === "ollama" ? "Ollama" : "OpenAI-compatible";
+  const sharedRows = shared.map((entry) => {
+    const row = document.createElement("div");
+    row.className = "local-server";
+    const name = document.createElement("strong");
+    name.textContent = entry.label;
+    const type = document.createElement("span");
+    type.className = "note";
+    type.textContent = `${typeName(entry)}${entry.vision ? ", sees images" : ""}`;
+    const grow = document.createElement("span");
+    grow.className = "grow";
+    const where = document.createElement("span");
+    where.className = "note";
+    where.textContent = ON_SERVER.slice(3);
+    row.append(name, type, grow, where);
+    return row;
+  });
+  $("paper-local-list").replaceChildren(...sharedRows, ...servers.map((entry) => {
     const row = document.createElement("div");
     row.className = "local-server";
     const name = document.createElement("strong");
     name.textContent = localServerLabel(entry.server);
     const type = document.createElement("span");
     type.className = "note";
-    type.textContent = entry.provider === "ollama" ? "Ollama" : "OpenAI-compatible";
+    type.textContent = typeName(entry);
     const grow = document.createElement("span");
     grow.className = "grow";
     const vision = document.createElement("label");
@@ -20372,7 +20643,7 @@ function renderPaperLocal() {
     row.append(name, type, grow, vision, remove);
     return row;
   }));
-  if (!servers.length) {
+  if (!servers.length && !shared.length) {
     const empty = document.createElement("p");
     empty.className = "note"; empty.textContent = "No local server added yet.";
     $("paper-local-list").append(empty);
@@ -20724,6 +20995,19 @@ $("confirm-input").addEventListener("keydown", (event) => {
   $("confirm-dialog").close("ok");
 });
 
+// Step 3's model lists: a click on a model, Enter, or Escape closes the list.
+for (const name of Object.keys(MODEL_OPTIONS)) {
+  const select = $(`${name}-model-list`).querySelector("select");
+  select.addEventListener("click", (event) => {
+    if (event.target.tagName === "OPTION" && !event.target.disabled) toggleModelList(name, false);
+  });
+  select.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== "Escape") return;
+    event.preventDefault();
+    toggleModelList(name, false);
+    $(`${name}-model-row`).focus();
+  });
+}
 $("chat-model").addEventListener("change", (event) => {
   state.player.chat_model = event.target.value;
   queueSync();
@@ -20731,8 +21015,9 @@ $("chat-model").addEventListener("change", (event) => {
   // The same part again: whether the figure's picture goes depends on the model.
   if (chatAbout) attachAbout(chatAbout.about);
 });
-// Typing clears a hint, unless a question is waiting for its part.
-$("chat-input").addEventListener("input", () => { if (!chatQueued) chatHint(); });
+// Typing clears a hint, unless a question is waiting for its part, and
+// turns "Explain this part" back into Send.
+$("chat-input").addEventListener("input", () => { if (!chatQueued) chatHint(); renderSendButton(); });
 $("chat-input").addEventListener("keydown", (event) => {
   // Enter sends; Shift+Enter starts a new line.
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) sendChat(event);
@@ -20875,9 +21160,7 @@ $("selection-menu").addEventListener("click", (event) => {
   if (action === "listen") listenFromSelection(picked);
   else {
     pauseBookForQuestion();
-    attachAbout(selectionAbout(picked));
-    setPanel(true, "chat");
-    focusChatInput();
+    askAboutSelection(picked);
   }
 });
 for (const type of ["wheel", "touchmove"])
@@ -21199,6 +21482,19 @@ def main():
             "Chat with Hilde can then search the web and read public pages."
         ),
     )
+    parser.add_argument(
+        "--local-server",
+        metavar="PROVIDER=URL[,vision]",
+        type=local_server_option,
+        action="append",
+        default=[],
+        help=(
+            "A local model server every browser can use, before the ones it adds under Add local; "
+            "repeat for more. PROVIDER is ollama or lm-studio (any OpenAI-compatible server: "
+            "LM Studio, vLLM, SGLang); ,vision says its models see images. "
+            "For example lm-studio=http://127.0.0.1:8000,vision."
+        ),
+    )
     models = parser.add_argument_group("voice model configuration")
     models.add_argument(
         "--allow-model-downloads",
@@ -21322,6 +21618,10 @@ def main():
     server.openai_login = OpenAIOAuthLogin()
     server.chats = ChatRegistry()
     server.search_server = args.search_server
+    SERVER_LOCAL_SERVERS[:] = [
+        entry for index, entry in enumerate(args.local_server)
+        if all(entry["server"] != earlier["server"] for earlier in args.local_server[:index])
+    ]
     server.chat_speaker = (
         ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
     )
@@ -21346,6 +21646,9 @@ def main():
     print("State: per-browser cookies", flush=True)
     print(f"Shared storage: {storage.root}", flush=True)
     print(f"Web search for Chat: {args.search_server or 'off'}", flush=True)
+    print("Local model servers for every browser: "
+          + (", ".join(f"{local_server_label(entry['server'])} ({entry['provider']})"
+                       for entry in SERVER_LOCAL_SERVERS) or "none"), flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)
     print(model_summary(tts_models["clone"], "clone"), flush=True)
     print(

@@ -4236,6 +4236,43 @@ class LocalPaperProviderTests(unittest.TestCase):
             [f"http://127.0.0.1:{port}" for port in (8000, 8001, 8002, 8004, 8005, 8006, 8007)],
         )
 
+    def test_a_local_server_registered_on_the_server_is_parsed_and_checked(self):
+        option = web.local_server_option
+        self.assertEqual(option("lm-studio=http://127.0.0.1:8000,vision"),
+                         {"server": "http://127.0.0.1:8000", "provider": "lm-studio", "vision": True})
+        self.assertEqual(option("ollama=127.0.0.1:11434"),
+                         {"server": "http://127.0.0.1:11434", "provider": "ollama", "vision": False})
+        for wrong in ("vllm=127.0.0.1:8000", "127.0.0.1:8000", "lm-studio=", "lm-studio=127.0.0.1:8000,fast",
+                      "lm-studio=http://127.0.0.1:8000/v1", "lm-studio=ftp://127.0.0.1"):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=wrong):
+                option(wrong)
+
+    def test_registered_local_servers_come_before_the_browsers_own_and_the_catalog_says_which(self):
+        shared = [{"server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": True}]
+        gemma = fake_local_server(self, ["gemma"], [])
+        added = normalize({"audiobook": {"local_servers": [
+            {"server": "127.0.0.1:9", "provider": "lm-studio"}, {"server": gemma, "provider": "lm-studio"},
+        ]}})["audiobook"]["local_servers"]
+        merged = web.local_servers_of(added, shared)
+        # The registered one first, marked; the browser's copy of it dropped; its own after.
+        self.assertEqual([(entry["server"], entry.get("on_server", False), entry["vision"]) for entry in merged],
+                         [("http://127.0.0.1:9", True, True), (f"http://{gemma}", False, False)])
+        with mock.patch.object(web, "SERVER_LOCAL_SERVERS", shared):
+            self.assertEqual(web.local_servers_of([]), [{**shared[0], "on_server": True}])
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            catalog = web.paper_model_catalog(merged)
+        # A registered server that does not answer is listed as not running; the browser's models stay.
+        self.assertEqual(
+            [(entry["label"], entry["on_server"], entry["running"]) for entry in catalog["local_servers"]],
+            [("127.0.0.1:9", True, False), (gemma, False, True)],
+        )
+        self.assertEqual([model["selector"] for model in catalog["models"]], ["lm-studio/gemma"])
+        self.assertNotIn("on_server", catalog["models"][0])
+
     def test_models_of_several_local_servers_are_listed_together_and_each_asked_on_its_own(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
