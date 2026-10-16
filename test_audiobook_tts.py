@@ -4010,7 +4010,7 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         self.assertEqual(names, ("deepseek-v4-flash:latest", "qwen3.8:27b"))
 
-    def test_an_added_local_server_is_the_default_and_never_gives_way_to_the_cloud(self):
+    def test_a_local_server_without_gemma_gives_no_default_and_never_gives_way_to_the_cloud(self):
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
@@ -4020,15 +4020,18 @@ class LocalPaperProviderTests(unittest.TestCase):
             added = [{"server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
             with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
                 catalog = web.paper_model_catalog(added)
-            self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
+            # Only a running Gemma is chosen without the user.
+            self.assertEqual(catalog["default_model"], "")
             self.assertEqual(
                 [model["selector"] for model in catalog["models"]],
                 ["lm-studio/deepseek", "openai-codex/gpt-a"],
             )
             # Each model says where it runs, as Chat's picker shows it before sending.
             self.assertEqual(
-                [model["badge"] for model in catalog["models"]], ["Local", "Cloud: OpenAI"],
+                [model["badge"] for model in catalog["models"]], ["Local", "API: OpenAI"],
             )
+            with mock.patch.object(web, "local_model_names", return_value=["deepseek", "gemma-3-4b-it"]):
+                self.assertEqual(web.paper_model_catalog(added)["default_model"], "lm-studio/gemma-3-4b-it")
             # While it does not answer, a job gets no default rather than
             # sending the document to OpenAI.
             with mock.patch.object(
@@ -4037,8 +4040,113 @@ class LocalPaperProviderTests(unittest.TestCase):
                 catalog = web.paper_model_catalog(added)
             self.assertEqual(catalog["default_model"], "")
             self.assertEqual(catalog["local_error"], "127.0.0.1:8010: Cannot reach it")
-            # Without a local server, OpenAI is the default once signed in.
-            self.assertEqual(web.paper_model_catalog()["default_model"], "openai-codex/gpt-a")
+            # Without a local server, an API is never the default.
+            self.assertEqual(web.paper_model_catalog()["default_model"], "")
+
+    def catalog_with(self, local_servers, names_by_server, loaded_by_server=None):
+        """paper_model_catalog() with ChatGPT signed in (gpt-a, gpt-b), a
+        Gemini key (gemini-10-pro, gemma-4-27b-it), no other provider, and
+        each local server answering with its names, or not running, and
+        saying which it has loaded (loaded_by_server), or not."""
+        def local_names(server, provider):
+            if server not in names_by_server:
+                raise RuntimeError("Cannot reach it")
+            return names_by_server[server]
+        loaded = (loaded_by_server or {}).get
+        with mock.patch.object(web, "read_openai_credentials", return_value={}), \
+                mock.patch.object(web, "openai_model_names", return_value=["gpt-a", "gpt-b"]), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value="key"), \
+                mock.patch.object(web, "gemini_model_names", return_value=["gemini-10-pro", "gemma-4-27b-it"]), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "Claude Code is not installed.")), \
+                mock.patch.object(web, "local_model_names", side_effect=local_names), \
+                mock.patch.object(web, "local_loaded_names", side_effect=lambda server, provider: loaded(server)):
+            return web.paper_model_catalog(local_servers)
+
+    def test_the_catalog_gives_each_model_its_picker_entry_and_rows_for_what_is_not_connected(self):
+        qwen = "http://127.0.0.1:8010"
+        servers = [
+            {"server": qwen, "provider": "lm-studio", "vision": True, "on_server": True},
+            {"server": "http://127.0.0.1:9", "provider": "ollama", "vision": False},
+        ]
+        catalog = self.catalog_with(servers, {qwen: ["unsloth/Qwen3.6-35B-A3B-NVFP4"]})
+        self.assertEqual(
+            [(m["selector"], m["name"], m["kind"], m["badge"], m["images"], m["running"]) for m in catalog["models"]],
+            [
+                ("lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4", "Qwen 3.6 35B A3B NVFP4", "local", "Local", True, True),
+                ("openai-codex/gpt-a", "GPT A", "api", "API: OpenAI", True, True),
+                ("openai-codex/gpt-b", "GPT B", "api", "API: OpenAI", True, True),
+                ("gemini/gemini-10-pro", "Gemini 10 Pro", "api", "API: Google", True, True),
+                # An open model served by a cloud host is an API model.
+                ("gemini/gemma-4-27b-it", "Gemma 4 27B", "api", "API: Google", True, True),
+            ],
+        )
+        # The server that does not answer is a Local row, then each provider
+        # not connected, by name only: no model name is made up for it.
+        self.assertEqual(
+            [(row["row"], row["kind"], row["label"], row.get("action"), row.get("provider")) for row in catalog["rows"]],
+            [
+                ("not-running", "local", "127.0.0.1:9", None, "ollama"),
+                ("provider", "api", "Claude Code", "connect", "claude-code"),
+                ("provider", "api", "Anthropic API", "connect", "anthropic"),
+                ("provider", "api", "OpenAI API", "connect", "openai"),
+            ],
+        )
+        self.assertEqual(catalog["rows"][1]["note"], "Claude Code is not installed.")
+        # A local model without the server's vision mark reads no images.
+        plain = self.catalog_with([{"server": qwen, "provider": "lm-studio", "vision": False}], {qwen: ["llama-4"]})
+        self.assertFalse(plain["models"][0]["images"])
+
+    def test_the_default_is_the_largest_gemma_running_and_never_an_api_model(self):
+        one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
+        servers = [{"server": one, "provider": "lm-studio", "vision": True},
+                   {"server": two, "provider": "ollama", "vision": False}]
+        catalog = self.catalog_with(servers, {
+            one: ["google/gemma-3-12b-it", "qwen3-32b", "embeddinggemma-300m"],
+            two: ["gemma3:27b", "gemma3n:e4b"],
+        })
+        self.assertEqual(catalog["default_model"], "ollama/gemma3:27b")
+        # The larger Gemma's server does not answer: the one running wins.
+        self.assertEqual(self.catalog_with(servers, {one: ["google/gemma-3-12b-it"]})["default_model"],
+                         "lm-studio/google/gemma-3-12b-it")
+        # No Gemma running: no default, though other local and API models are there.
+        self.assertEqual(self.catalog_with(servers, {one: ["qwen3-32b"]})["default_model"], "")
+        # A Gemma served by an API is never the default.
+        self.assertEqual(self.catalog_with([], {})["default_model"], "")
+        # Installed is selectable; a Gemma loaded now comes before a larger
+        # one Ollama loads on first use.
+        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]},
+                                    {two: set()})
+        self.assertEqual([model["loaded"] for model in catalog["models"][:2]], [None, False])
+        self.assertEqual(catalog["default_model"], "lm-studio/google/gemma-3-12b-it")
+        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]},
+                                    {two: {"gemma3:27b"}})
+        self.assertEqual(catalog["default_model"], "ollama/gemma3:27b")
+
+    def test_ollama_and_lm_studio_say_what_is_loaded(self):
+        def answers(routes):
+            def fake(server, path, label):
+                if path not in routes:
+                    raise RuntimeError("404")
+                return routes[path]
+            return mock.patch.object(web, "local_server_json", side_effect=fake)
+        with answers({"/api/ps": {"models": [{"name": "gemma3:27b"}]}}):
+            self.assertEqual(web.local_loaded_names("http://h:1", "ollama"), {"gemma3:27b"})
+        with answers({"/api/v0/models": {"data": [{"id": "a", "state": "loaded"}, {"id": "b", "state": "not-loaded"}]}}):
+            self.assertEqual(web.local_loaded_names("http://h:1", "lm-studio"), {"a"})
+        # vLLM and SGLang say nothing: what they list is what they serve.
+        with answers({}):
+            self.assertIsNone(web.local_loaded_names("http://h:1", "lm-studio"))
+
+    def test_model_sizes_and_short_names_come_from_the_name(self):
+        for name, size in (("gemma-3-27b-it", 27), ("gemma3:27b", 27), ("gemma-3n-e4b-it", 4), ("gemma-3-270m", 0.27),
+                           ("Qwen3.6-35B-A3B-NVFP4", 35), ("gemma3:latest", 0)):
+            self.assertEqual(web.model_size(name), size, name)
+        for name, short in (("google/gemma-3-27b-it", "Gemma 3 27B"), ("gemma3:27b", "Gemma 3 27B"),
+                            ("gpt-5.6-sol", "GPT-5.6 Sol"), ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                            ("gpt-oss-120b", "GPT OSS 120B"), ("qwen3.6:27b", "Qwen 3.6 27B")):
+            self.assertEqual(web.short_model_name(name), short, name)
 
     def test_adaptation_accepts_only_models_this_server_can_reach(self):
         temporary = tempfile.TemporaryDirectory()
@@ -4579,7 +4687,8 @@ class OpenAISignInTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai-codex/gpt-a", "openai-codex/gpt-b"],
         )
-        self.assertEqual(catalog["default_model"], "openai-codex/gpt-a")
+        # Listed, but an API model is never chosen without the user.
+        self.assertEqual(catalog["default_model"], "")
 
         source = self.root / "paper.pdf"
         write_figure_pdf(source)
@@ -4860,7 +4969,8 @@ class AnthropicProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["anthropic/claude-new", "anthropic/claude-old"],
         )
-        self.assertEqual(catalog["default_model"], "anthropic/claude-new")
+        # Listed, but an API model is never chosen without the user.
+        self.assertEqual(catalog["default_model"], "")
         self.assertEqual(run.code, 0)
         self.assertIn(
             "Figure one is described.", (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5013,7 +5123,8 @@ class OpenAIAPIProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai/gpt-new", "openai/chatgpt-4o-latest", "openai/o4-mini", "openai/gpt-old"],
         )
-        self.assertEqual(catalog["default_model"], "openai/gpt-new")
+        # Listed, but an API model is never chosen without the user.
+        self.assertEqual(catalog["default_model"], "")
         self.assertEqual((catalog["openai_api_connected"], catalog["openai_connected"]), (True, False))
         self.assertEqual(run.code, 0)
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5137,7 +5248,8 @@ class GeminiProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["gemini/gemini-10-pro", "gemini/gemini-3.8-flash", "gemini/gemini-2.5-pro"],
         )
-        self.assertEqual(catalog["default_model"], "gemini/gemini-10-pro")
+        # Listed, but an API model is never chosen without the user.
+        self.assertEqual(catalog["default_model"], "")
         self.assertTrue(catalog["gemini_connected"])
         self.assertEqual(run.code, 0)
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5265,7 +5377,8 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             (state / "limit").touch()
             limited = run(root / "limited")
 
-        self.assertEqual(catalog["default_model"], "claude-code/sonnet")
+        # Listed, but an API model is never chosen without the user.
+        self.assertEqual(catalog["default_model"], "")
         self.assertEqual(
             [model["selector"] for model in catalog["models"]],
             ["claude-code/sonnet", "claude-code/opus", "claude-code/haiku"],
@@ -8325,7 +8438,7 @@ class FigureAndContextTests(unittest.TestCase):
         self.assertNotIn("appendix", sent)
         self.assertEqual(manifest["section"], "1 Model")
         self.assertEqual(manifest["preview"], "Figure 1: Encoder (left) and decoder (right).")
-        self.assertEqual(manifest["badge"], "Cloud: Anthropic")
+        self.assertEqual(manifest["badge"], "API: Anthropic")
         # The picture as printed goes to a cloud model, never into the manifest.
         self.assertEqual(manifest["image"], {"sent": True, "count": 1})
         self.assertEqual(images[0]["mime"], "image/png")

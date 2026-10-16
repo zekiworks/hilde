@@ -817,41 +817,58 @@ Each page:
   2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
      state Voices' **Select** sets) and a card previewing the chosen voice. A
      narration speech server takes a server voice ID instead.
-  3. **How Hilde prepares the text**: three `.option`s, **Adapt the text for
-     listening**, **Interpret and narrate figures/charts (Experimental)**, and
-     **Check and correct descriptions**. Each has a line on what it does, a
-     "Can change:" line, a closed **More** `<details>` with the longer text,
-     and under its title a model row (`MODEL_OPTIONS`,
-     `renderOptionPlaces()`): "Model: <short> · <Local|Cloud: provider> ▾",
-     for figures and checking by default "Model: Same as the text model
-     (<short> · <badge>) ▾"; a local model's short name is the model's own
-     name, without org or server. A press opens the model list in place
-     (`toggleModelList()`: the `fillModelSelect()` list as a listbox, with
-     **Add local** and **Connect a provider** links at its foot); clicking a
-     model chooses it and closes the list, and Enter or Escape closes it.
-     The model selects are no longer under More. When the browser has local
-     servers and none answers, the catalog has no default (nothing moves to
-     the cloud silently): the row reads "Model: choose a model ▾" with "Your
-     local server is not running."; with no model at all, "No model
-     available" with "Add a local server or connect a provider.". Until every
-     turned-on option has a model, **Create audiobook** is disabled with the
-     reason beside it (`#run-reason`, `modelProblem()`: "Choose a model for
-     <option>." or "No model available: …"). **Connect a provider** opens
-     **Providers** (the
+  3. **How Hilde prepares the text**: first `#book-model`, **Model for this
+     book** (the `book` picker, `state.audiobook.model`), which all three
+     options use; **Use different models per option** (`togglePerOption()`)
+     shows the `figure` and `verify` pickers in their cards, starting at
+     "Same as the text model (<short>)" (`""`); turning it off clears both.
+     Then three `.option` cards, **Adapt the text for listening**,
+     **Interpret and narrate figures/charts (Experimental)**, and **Check
+     and correct descriptions**: checkbox and bold title, a muted line on
+     what it does, a smaller "Can change:" line, a closed **More**
+     `<details>`; the step uses three text sizes (17, 15, 13 px). Every model
+     choice uses one component (`PICKERS`, `mountPicker()`,
+     `renderPicker()`, `renderPickerList()`): the book, figure, and checking
+     pickers, Ask Hilde's (`state.player.chat_model`), and Settings' text
+     model. It is two dropdown boxes with their labels outside, **Runs on**
+     (`#<name>-kind`: Local or API, `pickerKind()`) and **Model**
+     (`#<name>-picker`: short name and badge), and a small **Change**; one
+     list popover (`#<name>-picker-pop`, `position:fixed`, placed inside the
+     screen by `placePicker()`) shows either the two kinds or the models of
+     the current kind. Choosing a kind opens that kind's model list
+     (`pickerKinds`); closing it unchosen takes the switch back. A model list
+     has the default first (tag Default), this browser's recent models
+     (`localStorage` `hilde.recentModels`, `noteRecentModel()`), then the
+     rest, each with "reads images" and, for an Ollama model not loaded,
+     "loads on first use", the selector as its tooltip; Local adds disabled
+     "<host:port> — server unreachable" rows and **Add local**; API adds the
+     catalog's provider rows with **Connect** (`openPaperProviders(provider)`
+     focuses `#provider-<id>`); a search box above `PICKER_SEARCH_FROM` (10)
+     models. Arrow keys, Home, End, Enter, and Escape (focus back to the box)
+     work in the list; the player's shortcuts skip `[role=listbox]`. A
+     choice is stored in the option's cookie field, the browser's last used;
+     `""` means first use: the catalog's `default_model` (the largest Gemma
+     running), never an API model. `pickerChoice()` says why a choice can't
+     be used (not listed now; for figures, no image input), and with no
+     Gemma and nothing chosen the reason is "Gemma is not running. Choose a
+     model." and the book's list opens once (`pickerAutoOpened`). With one
+     model for all, `#figure-shared-reason` says on the figure option when
+     it can't read images. Until every turned-on option has a usable model,
+     **Create audiobook** is disabled with the reason beside it
+     (`#run-reason`, `modelProblem()`: "Choose a model for <option>.",
+     "Choose a model that reads images for …", or "No model available: …",
+     with **Add local** and **Connect a provider** under the picker);
+     `startAudiobook()` sends the shown model, so a book never resolves its
+     model later. **Providers** holds the
      OpenAI sign-in, Claude Code's status, and the Anthropic, OpenAI, and
      Google Gemini API keys, which share `renderPaperKey()`, `savePaperKey()`,
-     and `removePaperKey()`); **Add local** (`renderPaperLocal()`) lists the
+     and `removePaperKey()`; **Add local** (`renderPaperLocal()`) lists the
      servers registered on the server (`--local-server`, "added on the
      server", no **Remove**), then this browser's, each with its address,
      type, a **This model sees images** box saved at once, and **Remove**,
      then a form whose **Check and add** asks `/api/paper/local/check` and
-     appends the server. Every model picker (`fillModelSelect()`, shared by
-     step 3 and Ask Hilde) puts the default first ("Default: <short> ·
-     <badge>"), then groups per provider and per local server
-     ("<provider> · <host:port>", with " · added on the server" for a
-     registered one), local options "<model> · Local", cloud ones "<model> ·
-     Cloud: <provider>"; a local server that does not answer is a disabled
-     option "<host:port> — not running". Step 3's missing-model problem comes from the
+     appends the server. Badges (`badgeElement()`): **Local** green with a
+     chip icon, **API: <provider>** purple with a cloud icon, tinted. Step 3's missing-model problem comes from the
      server's check of the saved providers, so connecting or removing one (the
      OpenAI sign-in completing, an API key saved or removed, **Check again**
      for Claude Code) syncs again to replace it, as choosing another model
@@ -1409,10 +1426,10 @@ attached; else, with no card and no draft, the passage playing at the press
 is (a figure passage as a figure). `selectedPassages()` takes only passages
 the selection takes words from, so a triple-click ending at offset 0 of the
 next paragraph does not attach it. The chat's head shows the book, the
-section of the card (else of the passage playing), the model picker
-(`fillChatModels()` fills it with the same `fillModelSelect()` list as Create
-step 3; `chatModel()` is its value or the catalog default; kept as
-`player.chat_model`) with an **Add local** link beside it,
+section of the card (else of the passage playing), the shared model picker
+(the `chat` picker of Create step 3's component; `chatModel()` is its usable
+choice, kept as `player.chat_model` once used; first use is the default
+Gemma, never an API model),
 **Read answers aloud**, and **New conversation**; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
 **Providers** and **Add local**), the conversation, the hint line
@@ -1672,7 +1689,7 @@ last answer of a finished turn is read.
 | `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). |
-| `GET /api/paper/models` | Adaptation model catalog: the local servers' models (`local_servers_of()`: those registered with `--local-server` first, then the browser's added ones), server by server, each `{provider, selector, server, label: "<model> · <host:port>"}`, with `on_server` for a registered server's (a model two servers offer is listed once, on the first), then the signed-in ChatGPT account's, then Claude Code's aliases once it is signed in, then the Anthropic key's, the OpenAI API key's, and the Gemini key's, each with its `badge` (`model_badge()`: `Local`, or `Cloud: <provider>`, as Ask Hilde shows it before sending), with the default a job uses when none is chosen (the first answering local server's first model; none when local servers are set and none answers), `local_servers` (each `{label, server, provider, vision, on_server, running, error}`, so a picker shows one not running), Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
+| `GET /api/paper/models` | Adaptation model catalog (`paper_model_catalog()`): the local servers' models (`local_servers_of()`: those registered with `--local-server` first, then the browser's added ones), server by server, each `{provider, selector, server, label: "<model> · <host:port>", images (the server's vision mark), loaded}`, with `on_server` for a registered server's (a model two servers offer is listed once, on the first); `loaded` is `true`/`false` where the server says (`local_loaded_names()`: Ollama `/api/ps` against `/api/tags`, LM Studio `/api/v0/models` states) and `null` otherwise (vLLM and SGLang list only what they serve). Then the signed-in ChatGPT account's models, Claude Code's aliases once it is signed in, the Anthropic key's, the OpenAI API key's, and the Gemini key's (`images: true`, as `PaperRun.sees_images()` sends them figures). Every model has `name` (`model_name()`/`short_model_name()`: "Gemma 3 27B"), `kind` (`local` or `api`), `badge` (`model_badge()`: `Local`, or `API: <provider>`), and `running: true`. `rows` (`catalog_rows()`): each local server that does not answer (`{kind: "local", row: "not-running", label, server, provider, on_server, note}`) and each provider not connected or failing (`{kind: "api", row: "provider", label, provider, action: "connect", note}`), never a made-up model. `default_model` (`default_gemma()`): of the Gemma models listed (`GEMMA_NAME`), one loaded before one not, then the largest by the size in its name (`model_size()`), else `""`; never an API model. Also `local_servers` (each `{label, server, provider, vision, on_server, running, error}`), Claude Code's status line, `*_connected` flags, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove` | Save an Anthropic, OpenAI, or Google Gemini API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate one local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and answer its normalized `server` and `provider`; the page then appends it to `audiobook.local_servers` and asks for the catalog. HTTP 400 once the browser has `LOCAL_SERVERS_MAX` servers and this is not one of them, 502 when the server does not list models. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no added server of its type ("Add a local server of this model's type under Add local."). |

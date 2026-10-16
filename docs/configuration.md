@@ -31,6 +31,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
+| `--local-server PROVIDER=URL[,vision]` | None. A local model server every browser can use (repeatable): `ollama`, or `lm-studio` for any OpenAI-compatible server (LM Studio, vLLM, SGLang); `,vision` says its models read images. Its models come first in every model picker's Local list, marked "added on the server". With nothing chosen yet, a picker preselects the largest Gemma one of the local servers lists (one loaded now before one Ollama would load on first use); never an API model. |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |

@@ -5953,6 +5953,23 @@ def local_model_names(local_server, provider):
     raise RuntimeError("Choose the local server's type under Add local.")
 
 
+def local_loaded_names(local_server, provider):
+    """Which listed models a local server has loaded now, as a set; None
+    when it does not say. Ollama lists what is installed (/api/tags) and
+    what is loaded (/api/ps), and loads an installed model on its first
+    request. LM Studio says each model's state (/api/v0/models). vLLM and
+    SGLang list only what they serve, which is loaded."""
+    try:
+        if provider == "ollama":
+            rows = local_server_json(local_server, "/api/ps", "Ollama").get("models") or ()
+            return {str(row.get("name") or row.get("model")) for row in rows if isinstance(row, dict)}
+        rows = local_server_json(local_server, "/api/v0/models", "LM Studio").get("data") or ()
+    except (RuntimeError, AttributeError):
+        return None
+    states = {str(row.get("id")): row.get("state") for row in rows if isinstance(row, dict) and "state" in row}
+    return {name for name, state in states.items() if state == "loaded"} if states else None
+
+
 def normalize_local_servers(entries):
     """The local servers a browser added: at most LOCAL_SERVERS_MAX
     {"server", "provider", "vision"}, one per server, in the order added.
@@ -6034,9 +6051,13 @@ def local_route(selector, local_servers):
 
 def paper_model_catalog(local_servers=(), refresh=False):
     """List the local servers' models (local_servers_of()), server by
-    server, then those of this server's providers; and each local server's
-    status: whether it answered, so a picker can show one that is not
-    running, and whether it was registered on this server ("on_server"),
+    server, then those of this server's providers, each as the shared model
+    picker shows it: {selector, provider, name (short), kind ("local" or
+    "api"), badge, images, running}, a local one with its server; the
+    picker's other rows (catalog_rows()): a local server that does not
+    answer, and each provider not connected; the model a choice left open
+    uses (default_gemma()); and each local server's status: whether it
+    answered, and whether it was registered on this server ("on_server"),
     so the page offers no Remove for it."""
     local_models, cloud_models, local_errors, local_status = [], [], [], []
     for entry in local_servers:
@@ -6051,6 +6072,10 @@ def paper_model_catalog(local_servers=(), refresh=False):
             local_errors.append(f"{label}: {exc}")
             status.update(running=False, error=str(exc))
             continue
+        # Installed and listed is selectable: Ollama loads a model on its
+        # first request. "loaded" is True or False where the server says
+        # (local_loaded_names()), else None.
+        loaded = local_loaded_names(entry["server"], entry["provider"])
         # A model two servers offer runs on the first (local_route()).
         listed = {model["selector"] for model in local_models}
         local_models += [
@@ -6059,6 +6084,9 @@ def paper_model_catalog(local_servers=(), refresh=False):
                 "selector": f"{entry['provider']}/{name}",
                 "server": entry["server"],
                 "label": f"{name} · {label}",
+                # A local model sees images when its server is marked so.
+                "images": entry.get("vision") is True,
+                "loaded": None if loaded is None else name in loaded,
                 **({"on_server": True} if on_server else {}),
             }
             for name in names
@@ -6115,18 +6143,26 @@ def paper_model_catalog(local_servers=(), refresh=False):
             ]
         except RuntimeError as exc:
             gemini_error = str(exc)
-    # Without a chosen model a job uses the first model of the first added
-    # local server that answers, and nothing while none does: a document
-    # goes to a cloud provider only when chosen, or when no local server was
-    # added. Then OpenAI's first model once signed in comes first, then
-    # Claude Code's, then those of the API keys, billed per request:
-    # Anthropic's, OpenAI's, then Gemini's.
-    defaults = local_models if local_servers else cloud_models
     for model in local_models + cloud_models:
-        model["badge"] = model_badge(model["selector"])
+        model.update(
+            name=model_name(model), badge=model_badge(model["selector"]), running=True,
+            kind="local" if model["provider"] in LOCAL_MODEL_PROVIDERS else "api",
+        )
+        # A cloud model gets figures as images (PaperRun.sees_images()).
+        model.setdefault("images", True)
+    connections = {
+        OPENAI_MODEL_PROVIDER: (openai_connected, openai_error, "Not signed in"),
+        CLAUDE_CODE_MODEL_PROVIDER: (claude_code_connected, "", claude_code_message),
+        ANTHROPIC_MODEL_PROVIDER: (anthropic_connected, anthropic_error, "No API key"),
+        OPENAI_API_MODEL_PROVIDER: (openai_api_connected, openai_api_error, "No API key"),
+        GEMINI_MODEL_PROVIDER: (gemini_connected, gemini_error, "No API key"),
+    }
     return {
         "models": local_models + cloud_models,
-        "default_model": defaults[0]["selector"] if defaults else "",
+        "rows": catalog_rows(local_status, connections),
+        # Without a chosen model: the largest Gemma running on a local
+        # server, else none. A document never goes to an API on its own.
+        "default_model": default_gemma(local_models),
         "local_error": local_error,
         "local_servers": local_status,
         "openai_error": openai_error,
@@ -6140,6 +6176,106 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "claude_code_connected": claude_code_connected,
         "claude_code_status": claude_code_message,
     }
+
+
+# A Gemma by its model name: "gemma" at its start or after a separator
+# ("google/gemma-3-27b-it", "gemma3:27b"), not inside another word
+# ("embeddinggemma", "paligemma").
+GEMMA_NAME = re.compile(r"(?:^|[/:_-])gemma", re.IGNORECASE)
+# A model's size in parameters from its name: "27b", "e4b" (Gemma 3n's
+# effective size), "270m"; not an active-parameter count such as "a3b".
+MODEL_SIZE = re.compile(r"(?:^|[^a-z0-9.])e?(\d+(?:\.\d+)?)([bm])(?![a-z0-9])", re.IGNORECASE)
+
+
+def model_size(name):
+    """Billions of parameters a model's name gives (the largest it states),
+    0 when it states none."""
+    return max((float(number) / (1000 if unit.lower() == "m" else 1)
+                for number, unit in MODEL_SIZE.findall(name)), default=0)
+
+
+def default_gemma(local_models):
+    """The model a choice left open uses: of the Gemma models the local
+    servers list (only answering servers list any), one loaded now before
+    one that loads on first use, then the largest by the size in its name,
+    the first listed among equals; "" when no server lists a Gemma."""
+    gemmas = [model for model in local_models if GEMMA_NAME.search(model["selector"].partition("/")[2])]
+    best = max(gemmas, default=None, key=lambda model: (
+        model.get("loaded") is not False, model_size(model["selector"].partition("/")[2])))
+    return best["selector"] if best else ""
+
+
+# The providers a picker offers to connect, by their name under Providers.
+CONNECT_PROVIDER_LABELS = {
+    OPENAI_MODEL_PROVIDER: "OpenAI (ChatGPT sign-in)",
+    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
+    ANTHROPIC_MODEL_PROVIDER: "Anthropic API",
+    OPENAI_API_MODEL_PROVIDER: "OpenAI API",
+    GEMINI_MODEL_PROVIDER: "Google Gemini API",
+}
+
+
+def catalog_rows(local_status, connections):
+    """The model picker's rows that are not models, none with an invented
+    model name: each local server that does not answer, "not running"
+    (Local), and each provider not connected, or connected but unable to
+    list its models, with Connect (API). `connections` maps a provider to
+    (connected, error, what it lacks)."""
+    rows = [
+        {"kind": "local", "row": "not-running", "label": status["label"], "server": status["server"],
+         "provider": status["provider"], "on_server": status["on_server"], "note": status["error"]}
+        for status in local_status if not status["running"]
+    ]
+    for provider, (connected, error, missing) in connections.items():
+        if connected and not error:
+            continue
+        rows.append({"kind": "api", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
+                     "provider": provider, "action": "connect", "note": error or missing})
+    return rows
+
+
+# How a model name's words read in a picker: "gemma-3-27b-it" is "Gemma 3 27B".
+MODEL_NAME_WORDS = {
+    "gemma": "Gemma", "qwen": "Qwen", "llama": "Llama", "gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek",
+    "mistral": "Mistral", "phi": "Phi", "oss": "OSS", "claude": "Claude", "gemini": "Gemini", "olmo": "OLMo",
+    "smollm": "SmolLM", "qwq": "QwQ",
+}
+# Words that say nothing in a picker: instruction tuning, Ollama's default tag.
+MODEL_NAME_DROPPED = frozenset({"it", "instruct", "chat", "latest", "hf"})
+
+
+def short_model_name(name):
+    """A model name as a person reads it: without organization, instruction
+    suffix, or "latest"; sizes in capitals; known families spelled as their
+    makers do; a version split by dashes joined by a dot ("4-5" is 4.5)."""
+    words = []
+    for token in re.split(r"[-_:\s]+", name.rsplit("/", 1)[-1]):
+        low = token.lower()
+        family = re.fullmatch(r"([a-z]+)(\d[\d.]*)", low)
+        if not token or low in MODEL_NAME_DROPPED:
+            continue
+        if re.fullmatch(r"[ae]?\d+(\.\d+)?[bmk]", low):
+            words.append(token.upper())
+        elif low in MODEL_NAME_WORDS:
+            words.append(MODEL_NAME_WORDS[low])
+        elif family and family.group(1) in MODEL_NAME_WORDS:
+            words += [MODEL_NAME_WORDS[family.group(1)], family.group(2)]
+        elif re.fullmatch(r"\d{1,2}", token) and words and re.fullmatch(r"\d{1,2}", words[-1]):
+            words[-1] += f".{token}"
+        elif token.isalpha() and token.islower():
+            words.append(token.capitalize())
+        else:
+            words.append(token)
+    return re.sub(r"\bGPT (\d)", r"GPT-\1", " ".join(words)) or name
+
+
+def model_name(model):
+    """A catalog model's short name (short_model_name()); Claude Code's by
+    the model its nickname runs ("Claude Sonnet 5.5"). The full selector is
+    the picker's detail."""
+    if model["provider"] == CLAUDE_CODE_MODEL_PROVIDER and model.get("label"):
+        return re.sub(r" \([^)]*\)$", "", model["label"])
+    return short_model_name(model["selector"].partition("/")[2])
 
 
 def split_paper_paragraphs(text):
@@ -9418,11 +9554,11 @@ def chat_sees_images(selector, local_servers):
 
 def model_badge(selector):
     """Where a model runs, as the page labels it before anything is sent:
-    "Local", or "Cloud: <provider>"."""
+    "Local", or "API: <provider>"."""
     provider = selector.partition("/")[0]
     if provider in LOCAL_MODEL_PROVIDERS:
         return "Local"
-    return f"Cloud: {CHAT_PROVIDER_NAMES.get(provider, provider)}"
+    return f"API: {CHAT_PROVIDER_NAMES.get(provider, provider)}"
 
 
 def chat_attachment(storage, book, passages, selector, about, local_servers):
@@ -13061,17 +13197,15 @@ class AudiobookRun(Run):
             self.set_phase("extraction", "Extraction")
             model = self.values["model"]
             if self.values["adapt"] and not model:
-                # No model chosen: the default this browser's settings give.
+                # No model chosen: the largest Gemma running on a local server.
                 catalog = paper_model_catalog(self.values["local_servers"])
                 model = catalog["default_model"]
                 if not model:
                     raise RuntimeError(
-                        "None of your local model servers answered, and a document "
-                        "goes to a cloud provider only when you choose one as its "
-                        f"model: {catalog['local_error']}"
-                        if catalog["local_error"] else
-                        "No text-adaptation model is available: connect a provider "
-                        "or add a local model server under Adapt the text for listening."
+                        "No model was chosen and Gemma is not running on your local "
+                        "servers; a document goes to an API only when you choose one. "
+                        "Choose a model under Model for this book."
+                        + (f" ({catalog['local_error']})" if catalog["local_error"] else "")
                     )
             self.paper_run = PaperRun(
                 input_path,
@@ -14708,17 +14842,24 @@ PAGE = r"""<!doctype html>
 <link rel="apple-touch-icon" href="/hilde-dark.png">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, and one color, a
-           vivid cobalt blue, used only through these tokens: --accent, the
-           fill of buttons and chosen things, white ink on it (5.5:1);
-           --accent-light, the thin light of a pressed or selected state,
-           links, indicators, and the reading highlight (6.6:1 on the
-           ground). No glow stays lit. */
+        /* One charcoal ground, one neutral gray family, and five colours,
+           each in one role only, used through these tokens:
+           blue: --accent, the fill of buttons and chosen things, white ink
+           on it (5.5:1); --accent-light, selected items, links, the LED dot
+           of a selected tab or a switch that is on, and the reading
+           highlight (6.6:1 on the ground);
+           green --local: the Local badge (with a chip) and Runs on Local;
+           purple --api: the API badge (with a cloud) and Runs on API;
+           gray --off: disabled and "not running" items (the selection
+           fill is a neutral gray too);
+           red --bad: errors and destructive actions, always with an icon
+           and text. No orange anywhere; no glow stays lit. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
-        --bad:#ff8a80; --radius:12px; }
+        --local:#3fb950; --api:#c678dd; --off:#8b8f98;
+        --bad:#e5534b; --radius:12px; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
        font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; }
@@ -14727,6 +14868,8 @@ h1, h2, h3 { margin:0; font-weight:650; line-height:1.25; }
 p { margin:0; }
 a { color:var(--accent-light); }
 :focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
+/* Selected text: a neutral gray fill, never the accent (the word being read owns the blue). */
+::selection { background:#5c5c5c; color:var(--text); }
 .hidden { display:none !important; }
 .visually-hidden { position:absolute !important; width:1px; height:1px; margin:-1px;
                    padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap;
@@ -14766,20 +14909,36 @@ input[type=text], input[type=search], input[type=number], select, textarea {
 input::placeholder, textarea::placeholder { color:#8a857e; }
 textarea { width:100%; min-height:96px; resize:vertical; }
 input:disabled, select:disabled, textarea:disabled { opacity:.5; }
+/* Raised buttons: a 1 px top highlight and a 2 px shadow below; pressed, the
+   button moves down 1 px onto a 1 px shadow and lights briefly (100 ms). Rules
+   that set their own box-shadow, and flat buttons (box-shadow:none), opt out. */
 button { background:var(--raised); color:var(--text); border:1px solid var(--line);
          border-radius:8px; padding:9px 16px; min-height:40px; font:inherit;
-         cursor:pointer; }
+         cursor:pointer; --lift:2px;
+         box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
+         transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:disabled { opacity:.45; cursor:default; }
+button:active:not(:disabled):not(.link, [role=tab]) { --lift:1px; transform:translateY(1px);
+                                                      filter:brightness(1.18); transition:none; }
+button:disabled { opacity:.45; cursor:default; box-shadow:none; }
+@media (prefers-reduced-motion: reduce) {
+  button { transition:none; }
+  button:active:not(:disabled):not(.link, [role=tab]) { filter:none; }
+}
 button.primary { background:var(--accent); border-color:var(--accent);
                  color:var(--accent-ink); font-weight:650; }
 button.primary:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
-button.link { background:none; border-color:transparent; color:var(--text);
+button.link { background:none; border-color:transparent; color:var(--text); box-shadow:none;
               padding:6px 8px; min-height:0; text-decoration:underline;
               text-decoration-color:var(--dim); text-underline-offset:3px; }
 button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--text); }
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
 label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
+/* A small steady LED (no glow) on what is on: a checked switch, the selected tab. */
+label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before {
+  content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
+.tab-list [role=tab][aria-selected=true]::before { display:inline-block; margin-right:8px;
+                                                   vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
@@ -14841,34 +15000,87 @@ details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:
 .source-title { margin:0; font-size:14px; font-weight:650; }
 .source-card .line > select { flex:1 1 100%; }
 .chosen { overflow-wrap:anywhere; }
-/* Step 3: each option says what it does, what it can change, and, in its
-   model row, which model it uses and where that runs; the row opens the
-   model list in place. */
-.options { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
-.option { display:grid; grid-template-columns:minmax(0,1fr); gap:0; min-width:0;
-          padding:8px 14px; border:1px solid var(--line); border-radius:10px; }
+/* Step 3: the book's model in its own box, then each option in its own card:
+   checkbox and bold title, one muted line, the smaller "Can change" line, a
+   quiet More. Three text sizes in the whole step: 17 px (the step title),
+   15 px, 13 px. */
+.model-box { display:grid; gap:8px; min-width:0; padding:14px 16px; border:1px solid var(--line);
+             border-radius:10px; background:var(--raised); }
+.model-box-title { margin:0; font-size:15px; font-weight:650; }
+button.link.per-option { justify-self:start; font-size:13px; }
+.options { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+.option { display:grid; grid-template-columns:minmax(0,1fr); gap:4px; min-width:0;
+          padding:14px 16px; border:1px solid var(--line); border-radius:10px; }
 .option-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
                gap:4px 12px; min-width:0; }
-.model-pick { display:grid; justify-items:start; gap:4px; padding-left:28px; min-width:0; }
-button.model-row { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px; min-height:0;
-                   padding:2px 0; border:0; background:none; color:var(--text); font-size:13px; text-align:left; }
-button.model-row:hover:not(:disabled) { background:none; text-decoration:underline; text-underline-offset:3px; }
-.model-caret { color:var(--accent-light); }
+.option-head .check { font-weight:650; }
+/* The shared model picker (renderPicker()): two dropdown boxes, "Runs on"
+   (Local green with a chip, API purple with a cloud) and "Model", each with
+   its label outside, a chevron, a hover state and a pointer; a small Change
+   beside them. A list opens as a layer inside the screen (placePicker()). */
+.model-pick { display:grid; justify-items:start; gap:6px; min-width:0; max-width:100%; }
+.option .model-pick { padding:6px 0 2px 28px; }
+.picker-boxes { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px 10px; min-width:0; max-width:100%; }
+.picker-field { display:grid; gap:2px; min-width:0; max-width:100%; }
+.picker-field-model { flex:0 1 auto; }
+.picker-label { color:var(--dim); font-size:13px; }
+.picker-box { display:inline-flex; align-items:center; gap:8px; min-width:0; max-width:100%; min-height:38px;
+              padding:6px 10px 6px 12px; background:var(--field); border:1px solid #5a5a5a; border-radius:8px;
+              box-shadow:none; color:var(--text); font-size:15px; text-align:left; cursor:pointer; }
+button.picker-box:hover:not(:disabled) { background:var(--hover); border-color:var(--accent-light); }
+button.picker-box:active:not(:disabled) { transform:none; filter:none; }
+button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
+.picker-box .chevron { flex:0 0 auto; color:var(--dim); }
+.picker-box.static { cursor:default; border-style:dashed; }
+.picker-kind.kind-local .kind-value { color:var(--local); }
+.picker-kind.kind-api .kind-value { color:var(--api); }
+.kind-value, .kind-icon { display:inline-flex; align-items:center; gap:6px; }
+/* A long name wraps, then is cut short after two lines; the badge stays. */
+.picker-name { display:-webkit-box; min-width:0; overflow:hidden; overflow-wrap:anywhere;
+               -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.picker-box .badge { flex:0 0 auto; }
+button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
+.picker-none { display:flex; flex-wrap:wrap; gap:4px 16px; }
+.picker-none button.link { font-size:13px; }
 .model-name { color:var(--dim); overflow-wrap:anywhere; }
 .model-reason { font-size:13px; }
-.model-list { display:grid; gap:6px; width:100%; max-width:560px; margin-bottom:4px; }
-.model-list select { width:100%; }
-.model-list .line { flex-wrap:wrap; gap:4px 12px; }
-.option-line { padding-left:28px; overflow-wrap:anywhere; }
-.option-line.note { font-size:13px; }
+.picker-pop { position:fixed; z-index:40; display:flex; flex-direction:column; gap:6px; padding:8px;
+              background:var(--surface); border:1px solid var(--line); border-radius:10px;
+              box-shadow:0 12px 32px rgba(0,0,0,.55); }
+.picker-search { width:100%; }
+.picker-list { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; outline:none; }
+.picker-list:focus-visible { outline:2px solid var(--accent-light); outline-offset:-2px; border-radius:6px; }
+.picker-group-title { padding:8px 8px 4px; color:var(--dim); font-size:13px; font-weight:600; }
+.picker-option { display:flex; align-items:center; gap:8px; min-width:0; padding:6px 8px; border-radius:6px;
+                 cursor:pointer; }
+.picker-option:hover, .picker-option.active { background:var(--hover); }
+.picker-option[aria-selected=true] { box-shadow:inset 3px 0 0 var(--accent-light); }
+.picker-option[aria-disabled=true] { cursor:default; background:none; }
+.picker-option[aria-disabled=true] .picker-option-name,
+.picker-option[aria-disabled=true] .picker-sub, .picker-option.offer .picker-option-name { color:var(--off); }
+.picker-option.link-row .picker-option-name { color:var(--accent-light); text-decoration:underline;
+                                               text-underline-offset:3px; }
+.picker-option .kind-icon { margin-right:6px; }
+.picker-option[data-kind=local] .picker-option-name { color:var(--local); }
+.picker-option[data-kind=api] .picker-option-name { color:var(--api); }
+.picker-main { display:grid; flex:1 1 auto; min-width:0; }
+.picker-option-name { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; font-size:15px;
+                      overflow-wrap:anywhere; }
+.picker-sub { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.picker-marks { display:flex; flex:0 0 auto; align-items:center; gap:6px; }
+.tag { padding:0 6px; border:1px solid var(--line); border-radius:4px; color:var(--dim); font-size:13px;
+       line-height:1.4; white-space:nowrap; }
+.picker-action { padding:1px 10px; border:1px solid var(--accent-light); border-radius:999px;
+                 color:var(--accent-light); font-size:13px; white-space:nowrap; }
+.option-line { padding-left:28px; color:var(--dim); overflow-wrap:anywhere; }
+.option-line.small { font-size:13px; }
 .more-details { padding-left:28px; }
 .more-details > summary { font-size:13px; }
 .more-body { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; margin-top:6px;
-             color:var(--dim); font-size:14px; }
+             color:var(--dim); font-size:13px; }
 .create-summary { display:grid; gap:4px; padding:10px 14px; background:var(--raised);
                   border-radius:10px; }
-.summary-title { margin:0; font-size:12px; color:var(--dim); font-weight:600; letter-spacing:.04em;
-                 text-transform:uppercase; }
+.summary-title { margin:0; font-size:13px; color:var(--dim); font-weight:600; }
 .summary { display:flex; flex-wrap:wrap; gap:2px 24px; margin:0; }
 .summary-item { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0;
                 overflow-wrap:anywhere; }
@@ -15015,6 +15227,7 @@ button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1;
 .confirm-dialog .field { margin-top:12px; }
 /* The confirming button of a risky action: plain words, a warning color. */
 button.danger { background:var(--bad); border-color:var(--bad); color:var(--bg); font-weight:650; }
+button.danger::before { content:"⚠\FE0E  "; }
 button.danger:hover:not(:disabled) { background:var(--bad); filter:brightness(1.08); }
 #confirm-where, #change-voice-where { margin-top:10px; gap:6px 8px; }
 /* Where a job's text goes: a label, the model's short name, its badge. */
@@ -15124,11 +15337,14 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .chat-where { display:grid; min-width:0; }
 .chat-book { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-options { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; font-size:13px; }
-.chat-options select { max-width:220px; padding:3px 8px; font-size:13px; }
 .chat-options button.link { padding:4px 0; font-size:13px; }
-.badge { padding:1px 8px; border:1px solid var(--line); border-radius:999px; color:var(--dim);
-         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; }
-.badge.cloud { border-color:var(--accent-light); color:var(--accent-light); }
+/* A badge: tinted (15%) with its colour's text, an icon with Local and API. */
+.badge { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:999px;
+         color:var(--dim); background:color-mix(in srgb, var(--dim) 15%, transparent);
+         font-size:13px; font-weight:600; line-height:1.4; white-space:nowrap; }
+/* Badge text is its colour lightened by 30% white, so it keeps 4.5:1 on every ground it sits on. */
+.badge.local { color:color-mix(in srgb, var(--local) 70%, #fff); background:color-mix(in srgb, var(--local) 15%, transparent); }
+.badge.api { color:color-mix(in srgb, var(--api) 70%, #fff); background:color-mix(in srgb, var(--api) 15%, transparent); }
 .badge:empty { display:none; }
 .chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
@@ -15219,8 +15435,12 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
-.reader-word.active { background:color-mix(in srgb, var(--accent-light) 25%, transparent);
-                      box-shadow:inset 0 -2px 0 var(--accent-light); }
+/* Highlight style A (default): a 2 px underline and slightly brighter text;
+   B (Settings, temporary) adds a faint fill behind the word. */
+.reader-word.active { color:#ffffff; text-decoration:underline solid var(--accent-light) 2px;
+                      text-underline-offset:4px; text-decoration-skip-ink:none; }
+:root[data-highlight=B] .reader-word.active {
+  background:color-mix(in srgb, var(--accent-light) 12%, transparent); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
 .reader-block img { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:5px; }
@@ -15315,6 +15535,8 @@ dialog::backdrop { background:rgba(0,0,0,.6); }
 dialog h2 { margin:0 0 12px; font-size:16px; }
 dialog h3 { margin:0 0 6px; font-size:15px; }
 .provider + .provider { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+/* Connect in a model picker lands on its provider. */
+.provider:focus { outline:2px solid var(--accent-light); outline-offset:6px; border-radius:4px; }
 #paper-providers-dialog { width:min(620px,92vw); }
 /* Add local: one line per added server. */
 .local-server { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 0;
@@ -15331,8 +15553,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .page { padding-top:18px; }
   .card, .step, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
   .step-body { padding-left:0; }
-  .option-line, .more-details, .model-pick { padding-left:0; }
-  button.model-row { min-height:44px; }
+  .option-line, .more-details, .option .model-pick { padding-left:0; }
+  .picker-box, .picker-none button.link, .picker-option, button.picker-change { min-height:44px; }
   .row { grid-template-columns:minmax(0,1fr); }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .job-row { grid-template-columns:minmax(0,1fr); }
@@ -15383,10 +15605,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .menu button, .selection-menu button, .chat-options button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-mute, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
-  .player-seek, .chat-options select, .book-meta select { min-height:44px; }
+  .player-seek, .book-meta select { min-height:44px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
-  .keyboard-open .chat-where { display:none; }
+  /* Typing on a phone: the book line and the model picker step aside, so the box and Send stay in view. */
+  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
@@ -15507,10 +15730,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="settings-models">
       <legend>Models and connection</legend>
-      <p class="note">Set when the server starts; shown here, not changed.</p>
-      <div class="row"><span class="row-label">Narration</span><span id="model-narration"></span></div>
-      <div class="row"><span class="row-label">Voice design</span><span id="model-design"></span></div>
-      <div class="row"><span class="row-label">Text model</span><span id="model-text"></span></div>
+      <p class="note">Narration and voice design are set when the server starts: shown here, not changed.</p>
+      <div class="row"><span class="row-label">Narration</span><span id="model-narration" class="model-pick"></span></div>
+      <div class="row"><span class="row-label">Voice design</span><span id="model-design" class="model-pick"></span></div>
+      <div class="row"><span class="row-label">Text model</span><div class="setting">
+        <div class="model-pick" data-picker="settings"></div>
+        <span class="applies">Applies to the next audiobook: the text model Create preselects</span></div></div>
       <div class="row"><span class="row-label">Connection</span>
         <div class="setting"><span id="connection-note" class="note"></span>
           <a id="certificate-download" class="hidden" href="/api/certificate"
@@ -15626,29 +15851,19 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <span class="visually-hidden step-state"></span>
         </div>
         <div class="step-body">
+          <section id="book-model" class="model-box" aria-labelledby="book-model-title">
+            <h4 id="book-model-title" class="model-box-title">Model for this book</h4>
+            <div class="model-pick" data-picker="book"></div>
+            <button id="per-option-toggle" class="link per-option" type="button"
+              onclick="togglePerOption()">Use different models per option</button>
+          </section>
           <div id="prepare-options" class="options">
             <div id="option-adapt" class="option">
               <div class="option-head">
                 <label class="check"><input id="adapt" type="checkbox"> Adapt the text for listening</label>
               </div>
-              <div class="model-pick" data-option="adapt">
-                <button id="adapt-model-row" class="model-row" type="button" aria-expanded="false"
-                  aria-controls="adapt-model-list" title="Where the document's text goes"
-                  onclick="toggleModelList('adapt')"></button>
-                <p id="adapt-model-reason" class="model-reason note hidden"></p>
-                <div id="adapt-model-list" class="model-list hidden">
-                  <label for="paper-model" class="visually-hidden">Text model</label>
-                  <select id="paper-model"><option value="">Loading models…</option></select>
-                  <div class="line">
-                    <button id="paper-local" class="link" type="button" onclick="openPaperLocal()">Add local</button>
-                    <button id="paper-providers" class="link" type="button"
-                      onclick="openPaperProviders()">Connect a provider</button>
-                    <span id="paper-model-status" class="note"></span>
-                  </div>
-                </div>
-              </div>
               <p class="option-line">Rewrites the text so it reads naturally aloud. It takes longer.</p>
-              <p class="option-line note">Can change: drops citation marks, page numbers, and reference
+              <p class="option-line small">Can change: drops citation marks, page numbers, and reference
                 lists; tunes tables, formulas, and lists down to their point.</p>
               <details id="adapt-more" class="more-details">
                 <summary>More</summary>
@@ -15667,22 +15882,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <label class="check"><input id="paper-interpret" type="checkbox"> Interpret and narrate
                   figures/charts (Experimental)</label>
               </div>
-              <div class="model-pick" data-option="figure">
-                <button id="figure-model-row" class="model-row" type="button" aria-expanded="false"
-                  aria-controls="figure-model-list" title="Where the figure pictures go"
-                  onclick="toggleModelList('figure')"></button>
-                <p id="figure-model-reason" class="model-reason note hidden"></p>
-                <div id="figure-model-list" class="model-list hidden">
-                  <label for="paper-figure-model" class="visually-hidden">Figure model</label>
-                  <select id="paper-figure-model"><option value="">Same as the text model</option></select>
-                  <div class="line">
-                    <button class="link" type="button" onclick="openPaperLocal()">Add local</button>
-                    <button class="link" type="button" onclick="openPaperProviders()">Connect a provider</button>
-                  </div>
-                </div>
-              </div>
               <p class="option-line">The figure model reads every figure, chart, and table from its picture.</p>
-              <p class="option-line note">Can change: more detail, and wrong values when a plot is misread.</p>
+              <p class="option-line small">Can change: more detail, and wrong values when a plot is misread.</p>
+              <p id="figure-shared-reason" class="model-reason option-line hidden" role="status"></p>
+              <div id="figure-model-pick" class="model-pick option-pick" data-picker="figure"></div>
               <details class="more-details">
                 <summary>More</summary>
                 <div class="more-body">
@@ -15696,23 +15899,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <div class="option-head">
                 <label class="check"><input id="paper-verify" type="checkbox"> Check and correct descriptions</label>
               </div>
-              <div class="model-pick" data-option="verify">
-                <button id="verify-model-row" class="model-row" type="button" aria-expanded="false"
-                  aria-controls="verify-model-list" title="Where the descriptions go to be checked"
-                  onclick="toggleModelList('verify')"></button>
-                <p id="verify-model-reason" class="model-reason note hidden"></p>
-                <div id="verify-model-list" class="model-list hidden">
-                  <label for="paper-verify-model" class="visually-hidden">Checking model</label>
-                  <select id="paper-verify-model"><option value="">Same as the text model</option></select>
-                  <div class="line">
-                    <button class="link" type="button" onclick="openPaperLocal()">Add local</button>
-                    <button class="link" type="button" onclick="openPaperProviders()">Connect a provider</button>
-                  </div>
-                </div>
-              </div>
               <p class="option-line">Checks each description of a figure, table, or equation against the paper.</p>
-              <p class="option-line note">Can change: a description with a problem is rewritten, kept only if a
+              <p class="option-line small">Can change: a description with a problem is rewritten, kept only if a
                 second check finds it fixed.</p>
+              <div id="verify-model-pick" class="model-pick option-pick" data-picker="verify"></div>
               <details class="more-details">
                 <summary>More</summary>
                 <div class="more-body">
@@ -15982,11 +16172,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="chat-section" class="note"></span>
             </div>
             <div class="chat-options">
-              <label for="chat-model" class="note">Model</label>
-              <select id="chat-model"></select>
-              <span id="chat-badge" class="badge" title="Where your question and its context go"></span>
-              <button id="chat-add-local" class="link" type="button" onclick="openPaperLocal()">Add local</button>
-              <span id="chat-web" class="badge cloud hidden"
+              <div class="model-pick" data-picker="chat"></div>
+              <span id="chat-web" class="badge hidden"
                 title="Hilde may search the web and read public pages for an answer">Web search on</span>
               <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak"
                 type="checkbox"> Read answers aloud</label>
@@ -16119,7 +16306,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
 <dialog id="paper-providers-dialog">
   <h2>Providers</h2>
-  <section class="provider">
+  <section class="provider" id="provider-openai-codex" tabindex="-1">
     <h3>OpenAI</h3>
     <p class="note">Sign in with ChatGPT. This server keeps the sign-in in
       ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
@@ -16137,7 +16324,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="paper-openai-start" onclick="startPaperOpenAI()">Connect</button>
     </div>
   </section>
-  <section class="provider">
+  <section class="provider" id="provider-claude-code" tabindex="-1">
     <h3>Claude Code</h3>
     <p class="note">Uses your Claude subscription through your own Claude Code: this
       server runs the claude command for each passage, with its tools off, and
@@ -16152,7 +16339,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button onclick="refreshPaperModels(true).then(sync)">Check again</button>
     </div>
   </section>
-  <section class="provider">
+  <section class="provider" id="provider-anthropic" tabindex="-1">
     <h3>Anthropic API</h3>
     <p class="note">An API key from the Claude Console, billed per use. This server
       keeps it in ~/.hilde/anthropic.json, readable only by its user. A Claude
@@ -16169,7 +16356,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="paper-anthropic-save" onclick="savePaperKey('anthropic')">Save key</button>
     </div>
   </section>
-  <section class="provider">
+  <section class="provider" id="provider-openai" tabindex="-1">
     <h3>OpenAI API</h3>
     <p class="note">An API key from platform.openai.com, billed per use. This server
       keeps it in ~/.hilde/openai-api.json, readable only by its user.</p>
@@ -16185,7 +16372,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="paper-openai-api-save" onclick="savePaperKey('openai-api')">Save key</button>
     </div>
   </section>
-  <section class="provider">
+  <section class="provider" id="provider-gemini" tabindex="-1">
     <h3>Google Gemini API</h3>
     <p class="note">An API key from Google AI Studio, billed per use. This server
       keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
@@ -16351,8 +16538,6 @@ const FIELDS = [
   ["wav-subtype", "voice.wav_subtype"], ["clone-voice", "audiobook.server_voice"],
   ["shared-voice", "audiobook.voice"], ["document", "audiobook.document"],
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
-  ["paper-model", "audiobook.model"], ["paper-verify-model", "audiobook.verify_model"],
-  ["paper-figure-model", "audiobook.figure_model"],
   ["paper-in-flight", "audiobook.in_flight"],
   ["paper-paragraphs-per-worker", "audiobook.paragraphs_per_worker"],
   ["chunk-max-chars", "audiobook.chunk_max_chars"], ["batch-size", "audiobook.batch_size"],
@@ -16403,17 +16588,6 @@ function load(data) {
   caps = data.capabilities || caps; jobs = data.queue || [];
   configuration = data.configuration || configuration;
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
-  // A saved model stays chosen until the catalog says whether it is still there.
-  for (const [id, key] of [
-    ["paper-model", "model"], ["paper-verify-model", "verify_model"], ["paper-figure-model", "figure_model"],
-  ]) {
-    const select = $(id), saved = state.audiobook[key];
-    if (saved && ![...select.options].some((option) => option.value === saved)) {
-      const option = document.createElement("option");
-      option.value = saved; option.textContent = `${saved} (saved)`;
-      select.append(option);
-    }
-  }
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
   populateAssets();
@@ -17815,7 +17989,6 @@ function openSourcePage(page) {
 // Ask Hilde: the open book's conversation, in the panel. One conversation
 // per book, shared by every browser; Hilde's answer streams in.
 let chatData = null, chatStream = null, chatLive = null;
-let chatHasModels = false, chatModelsError = "", chatModels = [];
 
 // Opening another book closes the panel and shows that book's files.
 function resetChatFor(book) {
@@ -17967,7 +18140,7 @@ async function copyNote(url, name) {
 function renderChatControls() {
   const running = !!(chatData && chatData.running);
   const problem = chatData && chatData.problem ? chatData.problem
-    : !chatHasModels ? (chatModelsError || "Add a model first: connect a provider, or add your local server.")
+    : noModelAvailable() ? (paperCatalog.error || "No model available: connect a provider, or add your local server.")
     : "";
   $("chat-problem").classList.toggle("hidden", !problem);
   $("chat-problem-text").textContent = problem;
@@ -18147,29 +18320,11 @@ function speakLatestAnswer() {
   if (button) speakAnswer(button);
 }
 
-// The chat's model picker is Create's (fillModelSelect()): the default
-// first ("" is the catalog's default model), then the models by provider
-// and by local server, each with its badge, and a local server that does
-// not answer as "not running". Add local sits beside it.
-let chatDefaultModel = "";
-function fillChatModels(catalog) {
-  chatModels = catalog.models || [];
-  chatDefaultModel = catalog.default_model || "";
-  const listed = (selector) => selector && chatModels.some((model) => model.selector === selector);
-  const chosen = [state.player.chat_model, state.audiobook.model].find(listed) || "";
-  fillModelSelect($("chat-model"), chosen, defaultModelText(catalog), catalog);
-  chatHasModels = chatModels.length > 0;
-  chatModelsError = catalog.local_error || "";
-  renderChatControls();
-  renderChatHeader();
-}
-function chatModel() { return $("chat-model").value || chatDefaultModel; }
-let chatModelsLoading = false;
-async function refreshChatModels() {
-  chatModelsLoading = true;
-  try { fillChatModels(await jsonRequest("/api/paper/models")); }
-  catch (error) { chatHasModels = false; chatModelsError = error.message; }
-  finally { chatModelsLoading = false; renderChatControls(); }
+// Ask Hilde's model: the shared picker's choice (pickerChoice()), "" while
+// none can be used.
+function chatModel() {
+  const { model, problem } = pickerChoice("chat");
+  return model && !problem ? model.selector : "";
 }
 // The panel's head: the book, the section the question is about (else the
 // one playing), and where the chosen model runs, before anything is sent.
@@ -18180,10 +18335,7 @@ function renderChatHeader() {
   const detail = readerPayload && passage ? readerPayload.passages[passage] : null;
   $("chat-section").textContent = (chatAbout && chatAbout.manifest ? chatAbout.manifest.section
     : detail ? detail.section : "") || "";
-  const model = chatModels.find((item) => item.selector === chatModel());
-  const badge = $("chat-badge");
-  badge.textContent = model ? model.badge || "" : "";
-  badge.classList.toggle("cloud", badge.textContent.startsWith("Cloud"));
+  renderPicker("chat");
 }
 
 // One way to send, for Enter and the Send button alike. Nothing is ever
@@ -18230,14 +18382,20 @@ async function sendChat(event) {
   }
   const model = chatModel();
   if (!model) {
-    if (chatModelsLoading) chatHint("The models are still loading. Your question stays here; send it again in a moment.");
+    if (!paperCatalog.loaded || paperCatalogLoading)
+      chatHint("The models are still loading. Your question stays here; send it again in a moment.");
     else {
-      chatHint(`No model is available${chatModelsError ? `: ${chatModelsError}` : ": connect a provider, or add your local server."}`, true);
-      refreshChatModels();
+      const { problem } = pickerChoice("chat");
+      chatHint(problem || `No model is available${paperCatalog.error ? `: ${paperCatalog.error}`
+        : ": connect a provider, or add your local server."}`, true);
+      refreshPaperModels();
     }
     renderChatControls();
     return;
   }
+  // What was used is this browser's last used model for Ask Hilde.
+  if (state.player.chat_model !== model) { state.player.chat_model = model; queueSync(); }
+  noteRecentModel(model);
   const sent = chatAbout && chatAbout.manifest ? chatAbout : null;
   if (state.player.chat_speak) unlockChatVoice();
   chatSending = true;
@@ -18358,7 +18516,7 @@ async function attachAbout(about) {
     () => reject(new Error("It took longer than 10 seconds.")), { once:true }));
   stopped.catch(() => {});
   try {
-    if (!chatModel()) await Promise.race([refreshChatModels(), stopped]);
+    if (!chatModel()) await Promise.race([refreshPaperModels(), stopped]);
     const manifest = await Promise.race([jsonRequest("/api/chat/context", {
       method:"POST", headers:{ "Content-Type":"application/json" }, signal:controller.signal,
       body:JSON.stringify({ book:state.player.book, model:chatModel(), about }),
@@ -18618,7 +18776,7 @@ async function askHilde() {
     if (!chatAbout && !$("chat-input").value.trim()) attachAbout(playingAbout());
     focusChatInput();
   }
-  refreshChatModels();
+  refreshPaperModels();
 }
 
 // The menu on a finished selection in the text: a click seeks, a drag or a
@@ -19272,34 +19430,40 @@ function jobTitle(job) {
   return book ? book.title : job.document;
 }
 
-// --- Where the work goes: Local, Cloud: <provider>, or a speech server -------
-const PROVIDER_SHORT = {
-  "openai-codex":"ChatGPT", "claude-code":"Claude Code", "anthropic":"Anthropic",
-  "openai":"OpenAI API", "gemini":"Gemini",
-};
-const PROVIDER_CLOUD = {
+// --- Where the work goes: Local, API: <provider>, or a speech server --------
+const PROVIDER_API = {
   "openai-codex":"OpenAI", "openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google",
   "claude-code":"Claude Code",
 };
-// A model choice ("" is the default) as its short name and the catalog's badge.
+// A model choice ("" is the default) as its short name, its badge, and
+// whether the catalog lists it and it reads images. A choice the catalog
+// does not list (yet) is named by its model code.
 function textModel(selector, catalog = paperCatalog) {
   const chosen = selector || catalog.default_model || "";
   if (!chosen) return catalog.loaded ? null
-    : { selector:"", short:"Checking the models…", badge:"Checking…", isDefault:false };
+    : { selector:"", short:"Checking the models…", badge:"Checking…", isDefault:false, listed:false, images:true };
   const model = (catalog.models || []).find((item) => item.selector === chosen);
+  if (model) return { selector:chosen, short:model.name, badge:model.badge, isDefault:!selector, listed:true,
+                      images:model.images };
   const [provider, ...rest] = chosen.split("/");
-  // A local model by its own name (its server and organization are in the list).
-  const short = model && model.server ? rest.join("/").split("/").pop()
-    : model && model.label ? model.label
-    : `${PROVIDER_SHORT[provider] || provider} ${rest.join("/")}`.trim();
-  const badge = model && model.badge ? model.badge
-    : ["ollama", "lm-studio"].includes(provider) ? "Local" : `Cloud: ${PROVIDER_CLOUD[provider] || provider}`;
-  return { selector:chosen, short, badge, isDefault:!selector };
+  const local = ["ollama", "lm-studio"].includes(provider);
+  const badge = local ? "Local" : `API: ${PROVIDER_API[provider] || provider}`;
+  return { selector:chosen, short:rest.join("/").split("/").pop(), badge, isDefault:!selector, listed:false,
+           images:!local };
 }
+// Local (green, a chip) and API (purple, a cloud): never colour alone.
+const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" '
+  + 'height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 1.5v2M10 1.5v2M6 '
+  + '12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" stroke-width="1.3"/></svg>';
+const CLOUD_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 12.5h7.2a2.8 '
+  + '2.8 0 0 0 .3-5.6 4 4 0 0 0-7.7-.6A3.1 3.1 0 0 0 4.5 12.5z" fill="none" stroke="currentColor" '
+  + 'stroke-width="1.5" stroke-linejoin="round"/></svg>';
 function badgeElement(text, title = "") {
   const badge = document.createElement("span");
-  badge.className = `badge${text.startsWith("Cloud") ? " cloud" : ""}`;
-  badge.textContent = text;
+  const kind = text === "Local" ? "local" : text.startsWith("API") ? "api" : "";
+  badge.className = `badge${kind ? ` ${kind}` : ""}`;
+  if (kind) badge.insertAdjacentHTML("afterbegin", kind === "local" ? CHIP_ICON : CLOUD_ICON);
+  badge.append(text);
   if (title) badge.title = title;
   return badge;
 }
@@ -19400,7 +19564,17 @@ function renderCreate() {
   // Figures and checking are part of adapting; they show while it is on.
   $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
-  renderOptionPlaces();
+  // One model for the book; per-option pickers only on request.
+  $("book-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
+  if (perOptionModels === null) perOptionModels = !!(state.audiobook.figure_model || state.audiobook.verify_model);
+  $("per-option-toggle").textContent = perOptionModels ? "Use one model for all options" : "Use different models per option";
+  $("figure-model-pick").classList.toggle("hidden", !perOptionModels);
+  $("verify-model-pick").classList.toggle("hidden", !perOptionModels);
+  // One model for all: whether it reads the figures is said on the figure option.
+  const figureWhy = !perOptionModels && state.audiobook.interpret_figures ? pickerChoice("figure").problem : "";
+  $("figure-shared-reason").textContent = figureWhy;
+  $("figure-shared-reason").classList.toggle("hidden", !figureWhy);
+  renderPickers();
   $("run").textContent = voiceOnly ? "Add this voice" : overwrite ? "Overwrite audiobook" : "Create audiobook";
   $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
@@ -19427,68 +19601,432 @@ function renderCreate() {
   if (step === "create") renderSummary(voiceOnly);
   renderSelectedVoice();
 }
-// Each step 3 option's model row: "Model: <short name> · <badge> ▾", the
-// figure and checking options "Same as the text model (…)" by default.
-// A browser with local servers that do not answer is never moved to the
-// cloud without a word (paper_model_catalog() gives no default then): the
-// row asks for a choice, with why. A press opens the model list in place.
-const MODEL_OPTIONS = {
-  adapt:{ key:"model", title:"Adapt the text for listening", why:"Where the document's text goes" },
-  figure:{ key:"figure_model", title:"Interpret and narrate figures/charts", why:"Where the figure pictures go" },
-  verify:{ key:"verify_model", title:"Check and correct descriptions", why:"Where the descriptions go to be checked" },
+// The shared model picker, one per model choice: the book's model at the top
+// of Create step 3, the figure and checking models (per option, on request),
+// Ask Hilde, and Settings' text model. Two boxes, each a dropdown with its
+// label outside: "Runs on", Local or API, and "Model", only models of that
+// kind; a small Change opens the model list. Switching Runs on sends
+// nothing: it opens the list of that kind, and closing it unchosen goes back.
+// Each list: the default (the largest Gemma running, marked Default), then
+// this browser's recently used models, then the rest; short names, a "reads
+// images" tag, the full model code on hover; a search box above more than
+// PICKER_SEARCH_FROM models. Local adds each local server that does not
+// answer, disabled "not running", and Add local; API adds each provider not
+// connected, greyed, with Connect. Arrow keys, Home and End move, Enter
+// chooses, Escape closes it and returns to its box. A choice is this
+// browser's last used model for that option (its cookie field); "" is first
+// use: the largest Gemma running, never an API model, or "Same as the text
+// model" for figures and checking.
+const PICKER_SEARCH_FROM = 10;
+const PICKERS = {
+  book:{ field:["audiobook", "model"], label:"Model for this book", title:"Adapt the text for listening",
+         why:"Where the document's text goes" },
+  figure:{ field:["audiobook", "figure_model"], label:"Figure model", title:"Interpret and narrate figures/charts",
+           why:"Where the figure pictures go", same:true, images:true },
+  verify:{ field:["audiobook", "verify_model"], label:"Checking model", title:"Check and correct descriptions",
+           why:"Where the descriptions go to be checked", same:true },
+  chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go" },
+  settings:{ field:["audiobook", "model"], label:"Text model", why:"Where the document's text goes" },
 };
-function optionModel(name) {
-  const own = state.audiobook[MODEL_OPTIONS[name].key];
-  const same = name !== "adapt" && !own;
-  return { same, model:textModel(same ? state.audiobook.model : own) };
+const MODEL_KINDS = {
+  local:{ label:"Local", detail:"Open models on your own machines", all:"All local models" },
+  api:{ label:"API", detail:"Cloud providers, and open models a cloud host serves", all:"All API models" },
+};
+const MODEL_SOURCES = {
+  "openai-codex":"ChatGPT sign-in", "claude-code":"Claude Code subscription", "anthropic":"Anthropic API",
+  "openai":"OpenAI API", "gemini":"Gemini API",
+};
+const CHEVRON = '<svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">'
+  + '<path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+const RECENT_MODELS_KEY = "hilde.recentModels";
+let openPicker = null;          // { name, mode: "kind" or "model" }
+const pickerKinds = {};         // a Runs on switch not yet followed by a model
+let perOptionModels = null;     // per-option pickers shown; from the saved choices at first
+let pickerAutoOpened = false;   // "Gemma is not running" opens the book's list once
+function recentModels() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_MODELS_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((item) => typeof item === "string") : [];
+  } catch (_) { return []; }
+}
+// This browser's recently used models, newest first.
+function noteRecentModel(selector) {
+  if (!selector) return;
+  try {
+    localStorage.setItem(RECENT_MODELS_KEY,
+      JSON.stringify([selector, ...recentModels().filter((item) => item !== selector)].slice(0, 6)));
+  } catch (_) { /* private mode: no recent list */ }
+}
+function modelKind(selector) { return ["ollama", "lm-studio"].includes(selector.split("/")[0]) ? "local" : "api"; }
+function pickerValue(name) {
+  const [group, key] = PICKERS[name].field;
+  return state[group][key] || "";
+}
+// What a picker has chosen: { same, model } (textModel(); null while there
+// is no model to choose), and why it can't be used, or "".
+function pickerChoice(name) {
+  const picker = PICKERS[name], value = pickerValue(name);
+  const same = !!picker.same && !value;
+  const model = textModel(same ? pickerValue("book") : value);
+  let problem = "";
+  if (paperCatalog.loaded && model && model.selector && !model.listed)
+    problem = `${model.short} is not in the model list now: its server is not running or its provider is `
+      + "not connected. Choose another model.";
+  else if (picker.images && paperCatalog.loaded && model && !model.images)
+    problem = `${same ? "The text model" : "This model"} can't read images: choose one tagged "reads images".`;
+  return { same, model, problem };
+}
+// Local or API: a Runs on switch not yet followed by a choice, else the
+// chosen model's; Local before any choice.
+function pickerKind(name) {
+  if (pickerKinds[name]) return pickerKinds[name];
+  const { model } = pickerChoice(name);
+  return model && model.selector ? modelKind(model.selector) : "local";
 }
 function noModelAvailable() { return paperCatalog.loaded && !(paperCatalog.models || []).length; }
 // Why Create can't start for want of a model, or "".
 function modelProblem() {
   if (!state.audiobook.adapt || !paperCatalog.loaded) return "";
   if (noModelAvailable()) return "No model available: add a local server or connect a provider.";
-  const on = ["adapt", ...(state.audiobook.interpret_figures ? ["figure"] : []),
+  const on = ["book", ...(state.audiobook.interpret_figures ? ["figure"] : []),
               ...(state.audiobook.verify ? ["verify"] : [])];
-  const missing = on.find((name) => !optionModel(name).model);
-  return missing ? `Choose a model for ${MODEL_OPTIONS[missing].title}.` : "";
+  const missing = on.find((name) => { const choice = pickerChoice(name); return !choice.model || choice.problem; });
+  if (!missing) return "";
+  const { model } = pickerChoice(missing);
+  return PICKERS[missing].images && model && model.listed && !model.images
+    ? `Choose a model that reads images for ${PICKERS[missing].title}.`
+    : `Choose a model for ${PICKERS[missing].title}.`;
 }
-function renderOptionPlaces() {
-  for (const [name, option] of Object.entries(MODEL_OPTIONS)) {
-    const { same, model } = optionModel(name);
-    const parts = [];
-    let why = "";
-    if (model) {
-      const short = document.createElement("span");
-      short.id = `${name}-model-name`; short.className = "model-name";
-      short.textContent = same ? `Same as the text model (${model.short}` : model.short;
-      const badge = badgeElement(model.badge, option.why);
-      badge.id = `${name}-badge`;
-      parts.push("Model: ", short, " · ", badge, ...(same ? [")"] : []));
-    } else if (noModelAvailable()) {
-      parts.push("No model available");
-      why = "Add a local server or connect a provider.";
-    } else {
-      parts.push(same ? "Model: Same as the text model (choose a model)" : "Model: choose a model");
-      why = paperCatalog.local_error ? "Your local server is not running." : "";
-    }
-    const caret = document.createElement("span");
-    caret.className = "model-caret"; caret.setAttribute("aria-hidden", "true"); caret.textContent = "▾";
-    $(`${name}-model-row`).replaceChildren(...parts, " ", caret);
-    $(`${name}-model-reason`).textContent = why;
-    $(`${name}-model-reason`).classList.toggle("hidden", !why);
+function mountPicker(host) {
+  const name = host.dataset.picker, picker = PICKERS[name];
+  host.innerHTML = `<div class="picker-boxes">
+      <div class="picker-field">
+        <span id="${name}-kind-label" class="picker-label">Runs on</span>
+        <button id="${name}-kind" class="picker-box picker-kind" type="button" aria-haspopup="listbox"
+          aria-expanded="false" aria-controls="${name}-picker-pop"
+          aria-labelledby="${name}-kind-label ${name}-kind-value"><span id="${name}-kind-value"
+          class="kind-value"></span>${CHEVRON}</button>
+      </div>
+      <div class="picker-field picker-field-model">
+        <span id="${name}-model-label" class="picker-label">Model</span>
+        <button id="${name}-picker" class="picker-box" type="button" aria-haspopup="listbox" aria-expanded="false"
+          aria-controls="${name}-picker-pop" aria-labelledby="${name}-model-label ${name}-model-name ${name}-badge"
+          title="${picker.why}"><span id="${name}-model-name" class="picker-name"></span><span id="${name}-badge"
+          class="badge"></span>${CHEVRON}</button>
+      </div>
+      <button id="${name}-change" class="picker-change" type="button"
+        aria-label="Change the ${picker.label.toLowerCase()}">Change</button>
+    </div>
+    <p id="${name}-model-reason" class="model-reason note hidden" role="status"></p>
+    <p id="${name}-picker-none" class="picker-none hidden"><button class="link" type="button" data-act="local">Add
+      local</button><button class="link" type="button" data-act="providers">Connect a provider</button></p>
+    <div id="${name}-picker-pop" class="picker-pop hidden">
+      <input id="${name}-picker-search" class="picker-search hidden" type="search" placeholder="Search models"
+        aria-label="Search models" role="combobox" aria-expanded="true" aria-autocomplete="list"
+        aria-controls="${name}-picker-list" autocomplete="off">
+      <div id="${name}-picker-list" class="picker-list" role="listbox" tabindex="-1"></div>
+      <p id="${name}-picker-empty" class="note hidden">No model matches.</p>
+    </div>`;
+  const pop = $(`${name}-picker-pop`), list = $(`${name}-picker-list`);
+  for (const [id, mode] of [[`${name}-kind`, "kind"], [`${name}-picker`, "model"]]) {
+    $(id).addEventListener("click", () => togglePicker(name, mode));
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      togglePicker(name, mode, true);
+    });
+  }
+  $(`${name}-change`).addEventListener("click", () => togglePicker(name, "model", true));
+  $(`${name}-picker-none`).addEventListener("click", (event) => {
+    const act = event.target.closest("[data-act]")?.dataset.act;
+    if (act === "local") openPaperLocal(); else if (act === "providers") openPaperProviders();
+  });
+  $(`${name}-picker-search`).addEventListener("input", () => renderPickerList(name, true));
+  // A press in the list keeps the focus where it is (the search box).
+  list.addEventListener("mousedown", (event) => event.preventDefault());
+  list.addEventListener("click", (event) => {
+    const option = event.target.closest("[role=option]");
+    if (option && option.getAttribute("aria-disabled") !== "true") choosePickerOption(name, option);
+  });
+  pop.addEventListener("keydown", (event) => {
+    const options = pickerOptions(name), at = options.indexOf(list.querySelector(".picker-option.active"));
+    const next = {
+      ArrowDown:options[Math.min(options.length - 1, at + 1)], ArrowUp:options[Math.max(0, at - 1)],
+      ...(event.target === list ? { Home:options[0], End:options[options.length - 1] } : {}),
+    };
+    if (event.key in next) setPickerActive(name, next[event.key] || null);
+    else if (event.key === "Enter") { if (at >= 0) choosePickerOption(name, options[at]); }
+    else if (event.key === "Escape") closePicker(true);
+    else { if (event.key === "Tab") closePicker(false); return; }
+    event.preventDefault();
+    event.stopPropagation();
+  });
+}
+function renderPicker(name) {
+  if (!state) return;
+  const { same, model, problem } = pickerChoice(name);
+  const none = noModelAvailable(), kind = pickerKind(name);
+  // Runs on switched, no model of that kind chosen yet.
+  const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
+  const shown = switched ? null : model;
+  const text = shown ? (same ? `Same as the text model (${shown.short})` : shown.short)
+    : none ? "No model available" : "Choose a model";
+  const kindBox = $(`${name}-kind`);
+  kindBox.classList.toggle("kind-local", kind === "local");
+  kindBox.classList.toggle("kind-api", kind === "api");
+  $(`${name}-kind-value`).replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
+  const label = $(`${name}-model-name`);
+  label.textContent = text;
+  $(`${name}-picker`).title = shown && shown.selector ? `${shown.selector} · ${PICKERS[name].why}` : PICKERS[name].why;
+  const badge = badgeElement(shown ? shown.badge : "");
+  badge.id = `${name}-badge`;
+  $(`${name}-badge`).replaceWith(badge);
+  const why = problem || (model || none ? "" : paperCatalog.error || "Gemma is not running. Choose a model.");
+  $(`${name}-model-reason`).textContent = why;
+  $(`${name}-model-reason`).classList.toggle("hidden", !why);
+  $(`${name}-picker-none`).classList.toggle("hidden", !none);
+  if (openPicker && openPicker.name === name) renderPickerList(name);
+}
+function renderPickers() {
+  for (const name of Object.keys(PICKERS)) renderPicker(name);
+  // A list whose box left the screen (another tab, an option turned off) closes.
+  if (openPicker && !pickerBox(openPicker).getClientRects().length) closePicker(false);
+  // No Gemma running and nothing chosen: the book's list opens, once.
+  if (!pickerAutoOpened && paperCatalog.loaded && state.tab === "audiobook" && !settingsOpen
+      && currentStep() === "create" && state.audiobook.adapt && !pickerChoice("book").model
+      && !noModelAvailable() && $("book-picker").getClientRects().length) {
+    pickerAutoOpened = true;
+    setTimeout(() => { if (!openPicker) togglePicker("book", "model", true); }, 0);
   }
 }
-// The model list of an option opens in place under its row (the others
-// close); choosing a model, Enter, or Escape closes it.
-function toggleModelList(name, open) {
-  const list = $(`${name}-model-list`), show = open ?? list.classList.contains("hidden");
-  if (show) for (const other of Object.keys(MODEL_OPTIONS)) if (other !== name) toggleModelList(other, false);
-  list.classList.toggle("hidden", !show);
-  $(`${name}-model-row`).setAttribute("aria-expanded", String(show));
-  if (!show) return;
-  const select = list.querySelector("select");
-  select.size = Math.max(2, Math.min(12, select.options.length + select.querySelectorAll("optgroup").length));
-  select.focus({ preventScroll:true });
+function togglePerOption() {
+  perOptionModels = !perOptionModels;
+  // One model again: figures and checking follow the text model.
+  if (!perOptionModels) { state.audiobook.figure_model = ""; state.audiobook.verify_model = ""; queueSync(); }
+  render();
+}
+function kindIcon(kind) {
+  const icon = document.createElement("span");
+  icon.className = "kind-icon";
+  icon.innerHTML = kind === "local" ? CHIP_ICON : CLOUD_ICON;
+  return icon;
+}
+function modelSource(model) {
+  return model.server ? `${localServerLabel(model.server)}${model.on_server ? " · added on the server" : ""}`
+    : MODEL_SOURCES[model.provider] || model.provider;
+}
+function pickerOption(name, index, item) {
+  const option = document.createElement("div");
+  option.id = `${name}-option-${index}`;
+  option.className = `picker-option${item.offer ? " offer" : ""}${item.link ? " link-row" : ""}`;
+  option.setAttribute("role", "option");
+  option.setAttribute("aria-selected", String(!!item.selected));
+  if (item.disabled) option.setAttribute("aria-disabled", "true");
+  option.dataset.key = item.key;
+  for (const field of ["value", "action", "provider", "kind"])
+    if (item[field] !== undefined) option.dataset[field] = item[field];
+  if (item.title) option.title = item.title;
+  const main = document.createElement("span");
+  main.className = "picker-main";
+  const text = document.createElement("span");
+  text.className = "picker-option-name";
+  if (item.icon) text.append(kindIcon(item.icon));
+  text.append(item.text);
+  for (const tag of item.tags || []) {
+    const node = document.createElement("span");
+    node.className = "tag"; node.textContent = tag;
+    text.append(node);
+  }
+  main.append(text);
+  if (item.sub) {
+    const sub = document.createElement("span");
+    sub.className = "picker-sub"; sub.textContent = item.sub;
+    main.append(sub);
+  }
+  const marks = document.createElement("span");
+  marks.className = "picker-marks";
+  if (item.badge) marks.append(badgeElement(item.badge));
+  if (item.actionText) {
+    const action = document.createElement("span");
+    action.className = "picker-action"; action.textContent = item.actionText;
+    marks.append(action);
+  }
+  option.append(main, marks);
+  return option;
+}
+function pickerHeading(name, id, text) {
+  const head = document.createElement("div");
+  head.id = `${name}-${id}`; head.className = "picker-group-title"; head.textContent = text;
+  head.setAttribute("role", "presentation");
+  return head;
+}
+// The open list, drawn again only when what it shows changed, so the
+// two-second repaint keeps the highlighted entry.
+function renderPickerList(name, typed = false) {
+  const picker = PICKERS[name], mode = openPicker.mode, kind = pickerKind(name);
+  const list = $(`${name}-picker-list`), search = $(`${name}-picker-search`);
+  const models = (paperCatalog.models || []).filter((model) => model.kind === kind);
+  const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind);
+  const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
+  search.classList.toggle("hidden", !searching);
+  if (!searching) search.value = "";
+  const query = search.value.trim().toLowerCase();
+  const signature = JSON.stringify([mode, kind, models, rows, pickerValue(name), pickerValue("book"),
+    paperCatalog.default_model, query]);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature;
+  list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${MODEL_KINDS[kind].label} models`);
+  const activeKey = list.querySelector(".picker-option.active")?.dataset.key;
+  const nodes = [];
+  let index = 0;
+  if (mode === "kind") {
+    for (const [value, { label, detail }] of Object.entries(MODEL_KINDS))
+      nodes.push(pickerOption(name, index++, { key:`kind:${value}`, kind:value, icon:value, text:label, sub:detail,
+                                               selected:value === kind }));
+  } else {
+    const matches = (...texts) => !query || texts.some((text) => String(text || "").toLowerCase().includes(query));
+    const { same, model:chosen } = pickerChoice(name);
+    const option = (model, tags = []) => {
+      const cannot = !!picker.images && !model.images;
+      return pickerOption(name, index++, { key:model.selector, value:model.selector, text:model.name,
+        tags:[...tags, ...(model.images ? ["reads images"] : []),
+              ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
+        sub:`${modelSource(model)}${cannot ? " · can't read images" : ""}`, badge:kind === "api" ? model.badge : "",
+        selected:!same && !!chosen && chosen.selector === model.selector, disabled:cannot });
+    };
+    const text = picker.same ? textModel(pickerValue("book")) : null;
+    if (text && text.selector && modelKind(text.selector) === kind && matches("Same as the text model", text.short)) {
+      const cannot = !!(picker.images && !text.images);
+      nodes.push(pickerOption(name, index++, { key:"same", value:"", text:"Same as the text model",
+        tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
+        title:text.selector, selected:same, disabled:cannot }));
+    }
+    const shown = models.filter((model) => matches(model.name, model.selector, modelSource(model)));
+    const fallback = shown.find((model) => model.selector === paperCatalog.default_model);
+    const recent = recentModels().map((selector) => shown.find((model) => model.selector === selector))
+      .filter((model) => model && model !== fallback);
+    if (fallback) nodes.push(option(fallback, ["Default"]));
+    if (recent.length) nodes.push(pickerHeading(name, "recent", "Recently used"), ...recent.map((model) => option(model)));
+    const rest = shown.filter((model) => model !== fallback && !recent.includes(model));
+    if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all", MODEL_KINDS[kind].all));
+    nodes.push(...rest.map((model) => option(model)));
+    for (const row of rows) {
+      if (!matches(row.label, row.note)) continue;
+      nodes.push(row.row === "not-running"
+        ? pickerOption(name, index++, { key:`down:${row.server}`, text:`${row.label} — server unreachable`,
+            sub:`${row.provider === "ollama" ? "Ollama" : "OpenAI-compatible"} server`
+              + `${row.on_server ? " · added on the server" : ""}`, title:row.note, disabled:true })
+        : pickerOption(name, index++, { key:`connect:${row.provider}`, action:"connect", provider:row.provider,
+            text:row.label, sub:row.note, offer:true, actionText:"Connect" }));
+    }
+    if (kind === "local")
+      nodes.push(pickerOption(name, index++, { key:"add-local", action:"add-local", text:"Add local",
+                                               sub:"A model server on your own machines", link:true }));
+  }
+  list.replaceChildren(...nodes);
+  $(`${name}-picker-empty`).classList.toggle("hidden", !!nodes.length);
+  const options = pickerOptions(name);
+  setPickerActive(name, typed ? options[0] || null : options.find((option) => option.dataset.key === activeKey)
+    || options.find((option) => option.getAttribute("aria-selected") === "true") || options[0] || null);
+}
+function pickerOptions(name) {
+  return [...$(`${name}-picker-list`).querySelectorAll("[role=option]:not([aria-disabled=true])")];
+}
+function setPickerActive(name, option) {
+  const list = $(`${name}-picker-list`);
+  for (const other of list.querySelectorAll(".picker-option.active")) other.classList.remove("active");
+  for (const node of [list, $(`${name}-picker-search`)]) {
+    if (option) node.setAttribute("aria-activedescendant", option.id);
+    else node.removeAttribute("aria-activedescendant");
+  }
+  if (!option) return;
+  option.classList.add("active");
+  // Scrolled within the list only: the page stays where it is.
+  const top = option.offsetTop - list.offsetTop, bottom = top + option.offsetHeight;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+}
+function pickerBox({ name, mode }) { return $(mode === "kind" ? `${name}-kind` : `${name}-picker`); }
+function togglePicker(name, mode, open = !(openPicker && openPicker.name === name && openPicker.mode === mode)) {
+  if (openPicker) closePicker(false);
+  if (!open) return;
+  openPicker = { name, mode };
+  pickerBox(openPicker).setAttribute("aria-expanded", "true");
+  $(`${name}-picker-pop`).classList.remove("hidden");
+  const search = $(`${name}-picker-search`), list = $(`${name}-picker-list`);
+  search.value = "";
+  list.dataset.signature = "";
+  renderPickerList(name);
+  placePicker();
+  setPickerActive(name, list.querySelector(".picker-option.active"));
+  (search.classList.contains("hidden") ? list : search).focus({ preventScroll:true });
+}
+// Closing the model list unchosen takes back a Runs on switch.
+function closePicker(focus, keepKind = false) {
+  if (!openPicker) return;
+  const { name, mode } = openPicker, box = pickerBox(openPicker);
+  openPicker = null;
+  box.setAttribute("aria-expanded", "false");
+  $(`${name}-picker-pop`).classList.add("hidden");
+  if (mode === "model" && !keepKind) delete pickerKinds[name];
+  renderPicker(name);
+  if (focus) box.focus();
+}
+// The list sits under its box (above it when there is more room there),
+// inside the screen: at most 440 px wide, 8 px from either edge.
+function placePicker() {
+  if (!openPicker) return;
+  const box = pickerBox(openPicker).getBoundingClientRect(), pop = $(`${openPicker.name}-picker-pop`);
+  const wide = document.documentElement.clientWidth, high = window.innerHeight;
+  const width = Math.min(440, wide - 16);
+  const below = high - box.bottom - 12, above = box.top - 12;
+  const up = below < 240 && above > below;
+  pop.style.width = `${width}px`;
+  pop.style.left = `${Math.max(8, Math.min(box.left, wide - 8 - width))}px`;
+  pop.style.maxHeight = `${Math.max(160, Math.min(480, up ? above : below))}px`;
+  pop.style.top = up ? "" : `${box.bottom + 4}px`;
+  pop.style.bottom = up ? `${high - box.top + 4}px` : "";
+}
+function choosePickerOption(name, option) {
+  if (openPicker.mode === "kind") {
+    // Runs on: the model list of that kind opens; nothing is chosen yet.
+    const { model } = pickerChoice(name);
+    if (model && model.selector && modelKind(model.selector) === option.dataset.kind) delete pickerKinds[name];
+    else pickerKinds[name] = option.dataset.kind;
+    closePicker(false, true);
+    togglePicker(name, "model", true);
+    return;
+  }
+  if (option.dataset.action === "add-local") { closePicker(true); openPaperLocal(); return; }
+  if (option.dataset.action === "connect") { closePicker(true); openPaperProviders(option.dataset.provider); return; }
+  const [group, key] = PICKERS[name].field;
+  state[group][key] = option.dataset.value;
+  noteRecentModel(option.dataset.value);
+  delete pickerKinds[name];
+  closePicker(true, true);
+  queueSync();
+  render();
+  if (name !== "chat") return;
+  renderChatHeader();
+  renderChatControls();
+  // The same part again: whether the figure's picture goes depends on the model.
+  if (chatAbout) attachAbout(chatAbout.about);
+}
+// Narration and voice design in Settings: the picker's look, read-only
+// (server startup configuration): the model's name and where it runs.
+function staticPicker(node, role) {
+  const model = configuration[role];
+  const known = !!(model && model.model && model.source !== "missing");
+  const name = !known ? "Not configured"
+    : model.source === "server" ? model.model : `${model.model}${model.device ? ` on ${model.device}` : ""}`;
+  const box = document.createElement("span");
+  box.className = "picker-box static";
+  const label = document.createElement("span");
+  label.className = "picker-name"; label.textContent = name; label.title = name;
+  box.append(label);
+  if (known) box.append(badgeElement(model.source === "server" ? "Speech server" : "Local",
+    model.source === "server" ? "Where the text is sent to be spoken" : "On this server's own workers"));
+  node.replaceChildren(box);
 }
 // Above Create audiobook: the document, the voice, and each option with where it runs.
 function renderSummary(voiceOnly) {
@@ -19807,14 +20345,6 @@ function runKey(info) {
   return info ? (info.job_id || `kind:${info.kind}`) : "";
 }
 
-// A speech model as the server's configuration names it, without host or path.
-function describeModel(role) {
-  const model = configuration[role];
-  if (!model || !model.model) return "Not configured";
-  if (model.source === "server") return `Speech server: ${model.model}`;
-  return `${model.model}${model.device ? ` on ${model.device}` : ""}`;
-}
-
 // The stage a running job is in, by name; the followed one from its events.
 function jobStage(job) {
   if (job.status === "preparing") return "Getting ready";
@@ -19895,7 +20425,7 @@ function renderQueue() {
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
   const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab,
-    runHistory && runHistory.current, books.length, paperCatalog.default_model]);
+    runHistory && runHistory.current, books.length]);
   if (signature === queueSignature) return;
   queueSignature = signature;
   // Settings: this machine's workers and other machines' in separate groups.
@@ -19907,11 +20437,8 @@ function renderQueue() {
     $(detail).textContent = own.length
       ? [...new Set(own.map((consumer) => consumer.detail).filter(Boolean))].join("; ") : "None.";
   }
-  $("model-narration").textContent = describeModel("clone");
-  $("model-design").textContent = describeModel("design");
-  const text = textModel("");
-  $("model-text").replaceChildren(...(text
-    ? [`Default: ${text.short} `, badgeElement(text.badge)] : ["No text model yet"]));
+  staticPicker($("model-narration"), "clone");
+  staticPicker($("model-design"), "design");
   // Create lists every job by document, voice, and stage; the progress view
   // lists running and queued jobs apart.
   $("queue-panel").classList.toggle("hidden", !jobs.length);
@@ -20136,6 +20663,11 @@ async function startAudiobook() {
         + "and its other voices will need to be made again. Notes stay; the conversation is cleared.",
       confirm:"Overwrite", danger:true, where:sendOutBadges("recreate"),
     }))) return;
+    // What Create uses is this browser's last used text model.
+    if (!(existing && existing.has_text && !overwrite) && state.audiobook.adapt) {
+      if (!state.audiobook.model) state.audiobook.model = paperCatalog.default_model || "";
+      noteRecentModel(state.audiobook.model);
+    }
     const voice = facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice;
     const answer = await requestRun(false, overwrite ? { book: existing.id, mode: "recreate", voice } : undefined);
     if (!answer) return;
@@ -20409,89 +20941,28 @@ async function sendAirdrop() {
 
 // A local server as the user typed it: host:port, no http://.
 function localServerLabel(server) { return server.replace(/^http:\/\//, ""); }
-// One model picker: its first choice, then the catalog's models by provider,
-// a local server's under its own group (named by the model alone there; a
-// server registered on this server says so), each with its Local or Cloud
-// badge; a local server that does not answer, disabled, "<server> — not
-// running", after the local servers' groups; and a saved choice the
-// catalog no longer lists, marked unavailable.
 const ON_SERVER = " · added on the server";
-function fillModelSelect(select, selected, first, catalog) {
-  select.replaceChildren();
-  const fallback = document.createElement("option");
-  fallback.value = ""; fallback.textContent = first;
-  select.append(fallback);
-  const groups = new Map();
-  let firstCloud = null;
-  for (const model of catalog.models || []) {
-    const name = model.server
-      ? `${model.provider} · ${localServerLabel(model.server)}${model.on_server ? ON_SERVER : ""}` : model.provider;
-    if (!groups.has(name)) {
-      const group = document.createElement("optgroup");
-      group.label = name;
-      groups.set(name, group); select.append(group);
-      if (!model.server && !firstCloud) firstCloud = group;
-    }
-    const option = document.createElement("option");
-    option.value = model.selector;
-    const label = model.server ? model.selector.slice(model.provider.length + 1) : model.label || model.selector;
-    option.textContent = `${label}${model.badge ? ` · ${model.badge}` : ""}`;
-    groups.get(name).append(option);
-  }
-  for (const server of catalog.local_servers || []) {
-    if (server.running) continue;
-    const option = document.createElement("option");
-    option.value = `not-running:${server.server}`; option.disabled = true;
-    option.textContent = `${server.label} — not running${server.on_server ? ` (${ON_SERVER.slice(3)})` : ""}`;
-    option.title = server.error || "";
-    select.insertBefore(option, firstCloud);
-  }
-  if (selected && ![...select.options].some((option) => option.value === selected)) {
-    const unavailable = document.createElement("option");
-    unavailable.value = selected; unavailable.textContent = `${selected} (unavailable)`;
-    select.append(unavailable);
-  }
-  select.value = selected;
-}
-// A picker's first choice: the default model by its short name and badge.
-function defaultModelText(catalog) {
-  const fallback = textModel("", { ...catalog, loaded:true });
-  return fallback ? `Default: ${fallback.short} · ${fallback.badge}`
-    : catalog.local_error ? "Default: your local servers, once one answers"
-    : "No model yet: connect a provider or add a local server";
-}
-
 function applyPaperCatalog(catalog) {
-  paperCatalog = { ...catalog, loaded:true };
-  fillModelSelect($("paper-model"), state.audiobook.model, defaultModelText(catalog), catalog);
-  fillModelSelect($("paper-verify-model"), state.audiobook.verify_model,
-    "Same as the text model", catalog);
-  fillModelSelect($("paper-figure-model"), state.audiobook.figure_model,
-    "Same as the text model", catalog);
+  paperCatalog = { ...catalog, loaded:true, error:"" };
   paperOpenAIConnected = !!catalog.openai_connected;
   for (const [name, provider] of Object.entries(paperKeyProviders)) {
     provider.connected = !!catalog[`${provider.field}_connected`];
     renderPaperKey(name, catalog[`${provider.field}_error`]);
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
-  const problem = catalog.local_error || catalog.openai_error || catalog.anthropic_error
-    || catalog.openai_api_error || catalog.gemini_error;
-  $("paper-model-status").textContent = problem ||
-    `${(catalog.models || []).length} models`;
-  $("paper-model-status").classList.toggle("bad", !!problem);
-  fillChatModels(catalog);
-  // Each option's short name and badge come from the catalog.
+  // Every picker's model names, badges, and list come from the catalog.
   render();
+  renderChatControls();
 }
+let paperCatalogLoading = false;
 async function refreshPaperModels(refresh) {
-  $("paper-model-status").textContent = "Loading models…";
+  paperCatalogLoading = true;
   try { applyPaperCatalog(await jsonRequest("/api/paper/models" + (refresh ? "?refresh=1" : ""))); }
   catch (error) {
-    $("paper-model-status").textContent = error.message;
-    $("paper-model-status").classList.add("bad");
-    // Without a catalog the page knows no default model; it says so.
-    if (!paperCatalog.loaded) { paperCatalog = { ...paperCatalog, loaded:true }; render(); }
-  }
+    // Without a catalog the page knows no default model; the pickers say why.
+    paperCatalog = { ...paperCatalog, loaded:true, error:`The model list couldn't be loaded: ${error.message}` };
+    render();
+  } finally { paperCatalogLoading = false; renderChatControls(); }
 }
 
 // The sign-in status is polled every second; rewriting unchanged text would
@@ -20534,12 +21005,16 @@ async function pollPaperOpenAI() {
     else if (info.status === "connected") { await refreshPaperModels(); await sync(); }
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
-async function openPaperProviders() {
+// Connect in a model picker opens the provider's own section.
+async function openPaperProviders(provider) {
   for (const name of Object.keys(paperKeyProviders)) {
     $(`paper-${name}-key`).value = "";
     renderPaperKey(name);
   }
-  $("paper-providers-dialog").showModal(); await pollPaperOpenAI();
+  $("paper-providers-dialog").showModal();
+  const section = provider ? $(`provider-${provider}`) : null;
+  if (section) { section.scrollIntoView({ block:"start" }); section.focus({ preventScroll:true }); }
+  await pollPaperOpenAI();
 }
 function closePaperProviders() {
   clearTimeout(paperOAuthTimer); $("paper-providers-dialog").close();
@@ -20992,26 +21467,18 @@ $("confirm-input").addEventListener("keydown", (event) => {
   $("confirm-dialog").close("ok");
 });
 
-// Step 3's model lists: a click on a model, Enter, or Escape closes the list.
-for (const name of Object.keys(MODEL_OPTIONS)) {
-  const select = $(`${name}-model-list`).querySelector("select");
-  select.addEventListener("click", (event) => {
-    if (event.target.tagName === "OPTION" && !event.target.disabled) toggleModelList(name, false);
-  });
-  select.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" && event.key !== "Escape") return;
-    event.preventDefault();
-    toggleModelList(name, false);
-    $(`${name}-model-row`).focus();
-  });
-}
-$("chat-model").addEventListener("change", (event) => {
-  state.player.chat_model = event.target.value;
-  queueSync();
-  renderChatHeader();
-  // The same part again: whether the figure's picture goes depends on the model.
-  if (chatAbout) attachAbout(chatAbout.about);
-});
+// The model pickers (mountPicker()); a press outside the open list closes
+// it, and it follows its button when the page scrolls or resizes.
+for (const host of document.querySelectorAll("[data-picker]")) mountPicker(host);
+document.addEventListener("pointerdown", (event) => {
+  if (!openPicker || $(`${openPicker.name}-picker-pop`).contains(event.target)
+      || pickerBox(openPicker).contains(event.target)) return;
+  closePicker(false);
+}, true);
+document.addEventListener("scroll", (event) => {
+  if (openPicker && !$(`${openPicker.name}-picker-pop`).contains(event.target)) placePicker();
+}, true);
+window.addEventListener("resize", placePicker);
 // Typing clears a hint, unless a question is waiting for its part, and
 // turns "Explain this part" back into Send.
 $("chat-input").addEventListener("input", () => { if (!chatQueued) chatHint(); renderSendButton(); });
@@ -21028,9 +21495,10 @@ function playerKey(event) {
   const audio = readerAudio, target = event.target;
   if (!audio || state.tab !== "player" || !state.player.book) return;
   if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
-  // The seek bar takes the player's keys; the volume slider keeps its own.
+  // The seek bar takes the player's keys; the volume slider and a model
+  // picker's list keep their own.
   if (target.closest?.(
-    "textarea, select, [contenteditable], [role=tab], [role=tablist], "
+    "textarea, select, [contenteditable], [role=tab], [role=tablist], [role=listbox], "
     + "input:not([type=checkbox]):not([type=radio]):not(#player-seek)"
   )) return;
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;

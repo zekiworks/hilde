@@ -48,26 +48,50 @@ the file it would replace.
 The voice step is a dropdown of your saved voices (the same choice as
 **Select** on **Voices**), with a card that previews the one you choose.
 
-The third step, **How Hilde prepares the text**, lists three options. Each
-says in one line what it does and in another what it can change; **More**
-under an option holds the longer explanation. Under each option's title a
-model row names the model it uses with a badge saying where the text goes:
-**Local** (your own machine or a model server you added) or **Cloud:
-<provider>**, for example `Model: gpt-5 · Cloud: OpenAI ▾`. A local model is
-shown by its own name. The figure and checking options start at `Model: Same
-as the text model (<model> · <badge>) ▾`.
+The third step, **How Hilde prepares the text**, starts with **Model for this
+book**: the model all three options use. **Use different models per option**
+shows a picker in the figure and checking options too; they start at **Same
+as the text model (<model>)**, and each has its own Local or API choice. Then
+each option has its own card: a checkbox with its title, one line on what it
+does, a smaller line on what it can change, and **More** with the longer
+explanation.
 
-Press the row to open the model list in place: models grouped by provider and
-by local server, with **Add local** and **Connect a provider** at the bottom.
-Click a model to choose it and close the list; Enter or Escape closes it too.
+A model picker is two dropdown boxes, each with its label above it: **Runs
+on**, **Local** (open models on your own machines, a green badge with a chip)
+or **API** (cloud providers, and open models a cloud host serves, a purple
+**API: <provider>** badge with a cloud), and **Model**, which lists only
+models of that kind; **Change** beside them opens the model list. Switching
+Runs on sends nothing: it opens the list of that kind, and closing it
+without a choice keeps the model you had. Any connected API model takes three
+clicks: Runs on, API, the model. Each list, from the live model lists only:
 
-When you added local servers and none of them answers, Hilde does not move
-your text to the cloud on its own: the row reads `Model: choose a model ▾`
-with "Your local server is not running." With no model at all it reads **No
-model available** with "Add a local server or connect a provider."
-**Create audiobook** stays disabled until every option you turned on has a
-model, and says why beside it, for example "Choose a model for Check and
-correct descriptions."
+- The default first (marked **Default**), then the models this browser used
+  recently, then the rest, each by a short name such as "Gemma 3 27B" with a
+  **reads images** tag where it applies (a local model when its server is
+  marked "This model sees images", every API model); the full model code
+  shows on hover. The figure option disables models that can't read images.
+- Local: the models each local server lists. An Ollama model that is
+  installed but not loaded is tagged **loads on first use** and can be
+  chosen; a server that does not answer is disabled, "<host:port> — server
+  unreachable"; **Add local** is at the bottom.
+- API: the connected providers' models; a provider not connected is a greyed
+  row with **Connect**, which opens its section under **Providers**.
+- With more than ten models a search box at the top filters the list. Arrow
+  keys, Home, and End move through it, Enter chooses, and Escape closes it and
+  returns to its box.
+
+Each picker preselects the model this browser used last for that option. On
+first use it is the largest Gemma your local servers list (one loaded now
+before one that loads on first use); an API model is never preselected unless
+you chose it last time. With no Gemma and nothing chosen yet, the picker says
+"Gemma is not running", its list opens, and **Create audiobook** waits for
+your choice. A model chosen earlier that is no longer listed is shown with why
+it can't be used. When one model serves all options and it can't read images,
+the figure option says so, and blocks Create only while it is ticked. With no
+model at all the picker reads **No model available**, with **Add local** and
+**Connect a provider**. **Create audiobook** stays disabled only while an
+option you turned on has no usable model, and says why beside it; with
+"Adapt the text for listening" off no text model is needed.
 
 A **Summary** above **Create audiobook** lists the document, the voice, and
 what each option will do, with the same badges, so you see where the text goes
@@ -299,12 +323,11 @@ search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's header shows **Web
 search on**. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it at the top of the chat
-from the same list as on **Create**, grouped by provider and by local server;
-a local server that does not answer is listed as "<host:port> — not running"
-and cannot be chosen. **Add local** beside the picker adds a server; a local
-model answers from the server that offers it. Each model shows **Local** or
-**Cloud: <provider>**, so you see where your question goes before you send
-it. With none, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
+with the same model picker as on **Create** (see above); a local model
+answers from the server that offers it. The picker shows **Local** or **API:
+<provider>**, so you see where your question goes before you send it, and
+remembers the model you used last; it never starts on an API model by itself.
+With no model at all, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
 keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
@@ -529,11 +552,14 @@ groups:
   model, untick any GPU to leave alone, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a
   running audiobook keeps its workers.
-- **Models and connection**, shown but not changed here: the narration,
-  voice-design, and text models, and **Connection**, which says whether this
-  browser will warn about downloads (plain HTTP from another device does) and,
-  when the server runs with `--https`, offers **Download Hilde's certificate**
-  to install once on this device; see [HTTPS](../README.md#https).
+- **Models and connection**: the narration and voice-design models, shown in
+  the model picker's look but not changed here (the server's startup
+  configuration), with **Local** or **Speech server**; the **Text model**, the
+  same picker and choice as Create's text model; and **Connection**, which
+  says whether this browser will warn about downloads (plain HTTP from another
+  device does) and, when the server runs with `--https`, offers **Download
+  Hilde's certificate** to install once on this device; see
+  [HTTPS](../README.md#https).
 
 Only a browser on the server's own machine sees the nodes' hosts and may change
 the GPUs and machines; elsewhere those groups say "Only a browser on the
