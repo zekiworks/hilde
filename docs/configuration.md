@@ -184,6 +184,25 @@ Every copy of Hilde started without `--storage-root` uses the same library. Give
 an older copy you keep for testing its own `--storage-root`: it may rewrite
 books made by newer versions into the layout it knows.
 
+### Provider sign-ins and keys
+
+Cloud providers for text adaptation and Ask Hilde are connected once for the
+whole server, under **Providers** (see [Text adaptation](text-adaptation.md)),
+and kept next to the library, readable only by the user running Hilde:
+
+```text
+~/.hilde/
+├── openai.json       # the ChatGPT sign-in (its account's e-mail is shown as "Signed in as …")
+├── openai-api.json   # OpenAI API key
+├── anthropic.json    # Anthropic API key
+├── gemini.json       # Google Gemini API key
+└── deepseek.json     # DeepSeek API key
+```
+
+Delete a file to sign out or forget a key (**Remove** does the same for a key).
+The page never receives a key or a sign-in token; a saved key shows only as
+"Key saved". These files follow the server user's home, not `--storage-root`.
+
 ## Speech models
 
 A configured model must be an existing directory unless

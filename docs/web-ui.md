@@ -62,20 +62,24 @@ or **API** (cloud providers, and open models a cloud host serves, a purple
 **API: <provider>** badge with a cloud), and **Model**, which lists only
 models of that kind; **Change** beside them opens the model list. Switching
 Runs on sends nothing: it opens the list of that kind, and closing it
-without a choice keeps the model you had. Any connected API model takes three
+without a choice keeps the model you had. Choosing API while no provider is
+connected opens no empty list: the Model box reads **Connect a provider** and
+opens **Providers**. Any connected API model takes three
 clicks: Runs on, API, the model. Each list, from the live model lists only:
 
 - The default first (marked **Default**), then the models this browser used
   recently, then the rest, each by a short name such as "Gemma 3 27B" with a
   **reads images** tag where it applies (a local model when its server is
-  marked "This model sees images", every API model); the full model code
+  marked "This model sees images", a DeepSeek model when DeepSeek's model
+  list says it takes images, every other API model); the full model code
   shows on hover. The figure option disables models that can't read images.
 - Local: the models each local server lists. An Ollama model that is
   installed but not loaded is tagged **loads on first use** and can be
   chosen; a server that does not answer is disabled, "<host:port> — server
   unreachable"; **Add local** is at the bottom.
 - API: the connected providers' models; a provider not connected is a greyed
-  row with **Connect**, which opens its section under **Providers**.
+  row with **Connect**, which opens that provider's Connect dialog (Claude
+  Code: its section under **Providers**).
 - With more than ten models a search box at the top filters the list. Arrow
   keys, Home, and End move through it, Enter chooses, and Escape closes it and
   returns to its box.
@@ -95,8 +99,33 @@ it can't be used. When one model serves all options and it can't read images,
 the figure option says so, and blocks Create only while it is ticked. With no
 model at all the picker reads **No model available**, with **Add local** and
 **Connect a provider**. **Create audiobook** stays disabled only while an
-option you turned on has no usable model, and says why beside it; with
-"Adapt the text for listening" off no text model is needed.
+option you turned on has no usable model; with "Adapt the text for
+listening" off no text model is needed. Beside the button it names the option
+and why, such as "Figures: no API connected" or "Figures: the text model
+can't read images", with one-click fixes: **Use the text model (Local)** (or
+API, where the text model runs; offered only when the text model can do
+that option's work, for figures read images), **Use the default model**
+for the text option itself, and **Turn off this option**. The summary says
+"Not ready: …" for that option until then.
+
+**Providers** (from **Connect a provider**, or Ask Hilde's **Providers**)
+lists OpenAI, Google (Gemini), Anthropic (Claude), and DeepSeek, each with how
+it is connected and **Connect** (**Change** once connected), then Claude
+Code. Each provider's Connect dialog offers only the ways in it allows:
+
+- OpenAI: **Sign in with ChatGPT (your membership)**, which uses your ChatGPT
+  plan without an API key (OpenAI's device sign-in: open the sign-in page and
+  enter the code shown), and **API key**. Once signed in, the OpenAI row and
+  the dialog say "Signed in as <e-mail>", the ChatGPT account in use.
+- Google (Gemini): **API key**, with a link to a free key at Google AI Studio.
+- Anthropic (Claude): **API key**.
+- DeepSeek: **API key**. Its models come from DeepSeek's own model list.
+
+Google and Anthropic do not allow their membership plans in other apps, so
+their dialogs say so and take an API key. A key is typed into a password
+field and never shown again: afterwards the dialog says only "Key saved".
+Keys and the ChatGPT sign-in are kept on the server, for every browser; the
+page never receives a key.
 
 A **Summary** above **Create audiobook** lists the document, the voice, and
 what each option will do, with the same badges, so you see where the text goes
@@ -334,8 +363,8 @@ with the same model picker as on **Create** (see above); a local model
 answers from the server that offers it. The picker shows **Local** or **API:
 <provider>**, so you see where your question goes before you send it, and
 remembers the model you used last; it never starts on an API model by itself.
-With no model at all, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, and Google Gemini API
-keys, and local models can chat; Claude Code models cannot:
+With no model at all, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, Google Gemini, and
+DeepSeek API keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
 conversation** starts over. Your unsent question, what is attached to it, and
@@ -357,8 +386,8 @@ paragraphs it takes words from, never their neighbours. A question about a figur
 paragraph of the paper that names it by number ("Figure 2", "Fig. 2",
 "Figures 1 and 2"; never one only printed near it), and "Hilde's description".
 Its picture, laid out as in the PDF, goes too when the chosen model takes
-pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys do, a local model
-only when its server is marked as seeing images; otherwise the details say the
+pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys do, a DeepSeek model when DeepSeek's model list says
+it takes images, a local model only when its server is marked as seeing images; otherwise the details say the
 picture is not sent. The picture goes with that question only. Past questions
 show the same card, collapsed and without its buttons.
 

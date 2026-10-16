@@ -210,6 +210,12 @@ OPENAI_API_URL = "https://api.openai.com/v1"
 GEMINI_MODEL_PROVIDER = "gemini"
 # An API key from Google AI Studio, billed per use.
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEEPSEEK_MODEL_PROVIDER = "deepseek"
+# An API key from the DeepSeek platform, billed per use: OpenAI-compatible
+# chat completions, and a model list that says which models read images.
+DEEPSEEK_API_URL = "https://api.deepseek.com"
+# A DeepSeek model the list gives no context window for gets this many tokens.
+DEEPSEEK_DEFAULT_CONTEXT = 128_000
 # The OpenAI API lists every model it serves; these are the ones that write
 # text through the Responses API.
 OPENAI_API_MODEL_PATTERN = re.compile(r"^(gpt-|o\d|chatgpt-)")
@@ -263,6 +269,19 @@ LOCAL_MODEL_TEMPERATURE = 0.2
 # stream timeout never fires while tokens keep coming. Reasoning counts toward
 # the limit, and a batch's narration needs far fewer.
 LOCAL_MAX_TOKENS = 16_000
+
+
+def local_request_options(provider):
+    """Extra request fields for a local server of this type.
+
+    Ollama runs thinking models (Gemma 4, Qwen 3) in thinking mode unless told
+    otherwise, and Gemma 4 12B reasoned past 16,000 tokens on one paragraph of
+    adaptation without starting its answer; with thinking off it answered the
+    same request in seconds. Other servers get nothing extra: not every
+    OpenAI-compatible server accepts the field."""
+    return {"reasoning_effort": "none"} if provider == "ollama" else {}
+
+
 PAPER_RESPONSE_ATTEMPTS = 3
 PAPER_DEFAULT_IN_FLIGHT = 4
 PAPER_MAX_IN_FLIGHT = 32
@@ -4870,24 +4889,39 @@ def read_openai_credentials():
     return credentials
 
 
+def _token_claims(token):
+    """The claims of a sign-in token (a JWT), unverified: the issuer is
+    trusted; {} for anything else."""
+    try:
+        payload = str(token or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
 def _openai_account_id(tokens):
     """Read the ChatGPT account from the token claims; the issuer is trusted."""
     for name in ("id_token", "access_token"):
-        try:
-            payload = str(tokens.get(name) or "").split(".")[1]
-            claims = json.loads(
-                base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-            )
-        except (IndexError, ValueError):
-            continue
-        if not isinstance(claims, dict):
-            continue
+        claims = _token_claims(tokens.get(name))
         auth = claims.get("https://api.openai.com/auth")
         account = claims.get("chatgpt_account_id") or (
             auth.get("chatgpt_account_id") if isinstance(auth, dict) else None
         )
         if isinstance(account, str) and account:
             return account
+    return ""
+
+
+def openai_account_email(credentials):
+    """The e-mail address of the ChatGPT account a stored sign-in uses, from
+    its id token's claims; "" when it has none. Nothing else of the sign-in
+    leaves this server."""
+    claims = _token_claims((credentials or {}).get("id_token"))
+    profile = claims.get("https://api.openai.com/profile")
+    for email in (claims.get("email"), profile.get("email") if isinstance(profile, dict) else None):
+        if isinstance(email, str) and "@" in email and len(email) <= 320:
+            return email
     return ""
 
 
@@ -4911,6 +4945,10 @@ def save_openai_credentials(tokens, previous=None):
         "account_id": account_id,
         "expires_at": time.time() + expires_in,
     }
+    # The id token names the account (openai_account_email()).
+    id_token = tokens.get("id_token") or previous.get("id_token")
+    if isinstance(id_token, str) and id_token:
+        credentials["id_token"] = id_token
     _write_private_json(openai_credentials_path(), credentials)
     return credentials
 
@@ -5185,25 +5223,78 @@ def openai_request(payload, open_stream, pause, read):
         attempt += 1
 
 
-def local_model_response(server, model, system_prompt, text, images, open_stream):
+def _chat_completion_content(text, images):
+    """A user message's content for a chat completion: the plain text, or the
+    text and each image as OpenAI-style image_url parts."""
+    if not images:
+        return text
+    return [{"type": "text", "text": text}] + [
+        {"type": "image_url", "image_url": {"url": _image_data_url(path)}}
+        for path in images
+    ]
+
+
+def _chat_completion_stream(response, label, on_text=None):
+    """Read one streamed chat completion, as local servers and DeepSeek send
+    it: (text, reasoning, tool calls, finish reason). Text goes to `on_text`
+    as it arrives; reasoning arrives in its own field and is never part of
+    the answer. A stream that ends without finishing raises, naming `label`."""
+    parts, thoughts, slots, finished, reason = [], [], {}, False, None
+    for data in sse_events(response):
+        if data.strip() == "[DONE]":
+            finished = True
+            break
+        try:
+            event = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("error") or event.get("object") == "error":
+            raise RuntimeError(f"{label} stopped the response: {_model_error(event, 'no details')}")
+        for choice in event.get("choices") or ():
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            if isinstance(delta.get("content"), str) and delta["content"]:
+                parts.append(delta["content"])
+                if on_text:
+                    on_text(delta["content"])
+            if isinstance(delta.get("reasoning_content"), str):
+                thoughts.append(delta["reasoning_content"])
+            for piece in delta.get("tool_calls") or ():
+                if not isinstance(piece, dict):
+                    continue
+                slot = slots.setdefault(piece.get("index", len(slots)), {"id": "", "name": "", "json": ""})
+                function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
+                slot["id"] = piece.get("id") or slot["id"]
+                slot["name"] += function.get("name") or ""
+                slot["json"] += function.get("arguments") or ""
+            if choice.get("finish_reason"):
+                finished, reason = True, choice["finish_reason"]
+    if not finished:
+        raise RuntimeError(f"{label} ended the response early.")
+    calls = [
+        {"id": slot["id"] or f"call-{index}", "name": slot["name"], "arguments": _chat_arguments(slot["json"] or "{}")}
+        for index, slot in sorted(slots.items())
+    ]
+    return "".join(parts), "".join(thoughts), calls, reason
+
+
+def local_model_response(server, provider, model, system_prompt, text, images, open_stream):
     """Adapt one batch with a model on an Ollama or OpenAI-compatible server."""
     # Plain text suits every server; figures go along only when the user says
     # the model sees images, as OpenAI-style image_url parts.
-    content = text
-    if images:
-        content = [{"type": "text", "text": text}] + [
-            {"type": "image_url", "image_url": {"url": _image_data_url(path)}}
-            for path in images
-        ]
     body = json.dumps({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content},
+            {"role": "user", "content": _chat_completion_content(text, images)},
         ],
         "stream": True,
         "temperature": LOCAL_MODEL_TEMPERATURE,
         "max_tokens": LOCAL_MAX_TOKENS,
+        **local_request_options(provider),
     }).encode("utf-8")
     url = f"{normalize_local_server(server)}/v1/chat/completions"
     headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
@@ -5216,40 +5307,13 @@ def local_model_response(server, model, system_prompt, text, images, open_stream
                     "sees images\" under Add local."
                 )
             raise failure
-        parts, finished, cut_off = [], False, False
-        for data in sse_events(response):
-            if data.strip() == "[DONE]":
-                finished = True
-                break
-            try:
-                event = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("error") or event.get("object") == "error":
-                raise RuntimeError(
-                    "The local model server stopped the response: "
-                    f"{_model_error(event, 'no details')}"
-                )
-            for choice in event.get("choices") or ():
-                if not isinstance(choice, dict):
-                    continue
-                # Reasoning arrives in its own field and is not part of the answer.
-                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-                if isinstance(delta.get("content"), str):
-                    parts.append(delta["content"])
-                if choice.get("finish_reason"):
-                    finished = True
-                    cut_off = choice["finish_reason"] == "length"
-        if not finished:
-            raise RuntimeError("The local model server ended the response early.")
-        if cut_off:
+        answer, _, _, reason = _chat_completion_stream(response, "The local model server")
+        if reason == "length":
             raise ModelRanOn(
                 f"the model was still writing at {LOCAL_MAX_TOKENS:,} tokens, "
                 "most likely repeating itself"
             )
-        return "".join(parts)
+        return answer
 
 
 def openai_model_names():
@@ -5565,6 +5629,102 @@ def openai_api_request(payload, open_stream, pause, read):
     return _keyed_request(
         f"{OPENAI_API_URL}/responses", _openai_api_headers(key, "text/event-stream"),
         payload, "OpenAI", open_stream, pause, read,
+    )
+
+
+def deepseek_key_path():
+    return HILDE_HOME / "deepseek.json"
+
+
+def read_deepseek_key():
+    """Return this server's DeepSeek API key, or None when it has none."""
+    return _read_api_key(deepseek_key_path())
+
+
+# What DeepSeek's live model list said of each model at its last listing:
+# {model: {"images": reads images, "context": context window}}.
+_DEEPSEEK_MODELS = {}
+
+
+def deepseek_models(key=None):
+    """List the text models a DeepSeek API key may use, in DeepSeek's order,
+    as {model: {"images", "context"}}: whether its input_modalities hold
+    "image", and its context_window."""
+    global _DEEPSEEK_MODELS
+    key = key or read_deepseek_key()
+    if not key:
+        raise RuntimeError(
+            "Add a DeepSeek API key in Providers, under Adapt the text for listening, first."
+        )
+    payload = _provider_models_json(f"{DEEPSEEK_API_URL}/models", _openai_api_headers(key), "DeepSeek")
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    models = {}
+    for row in rows if isinstance(rows, list) else ():
+        name = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        inputs, outputs = row.get("input_modalities"), row.get("output_modalities")
+        if isinstance(outputs, list) and "text" not in outputs:
+            continue
+        context = row.get("context_window")
+        models[name] = {
+            "images": isinstance(inputs, list) and "image" in inputs,
+            "context": context if isinstance(context, int) and context > 0 else DEEPSEEK_DEFAULT_CONTEXT,
+        }
+    if not models:
+        raise RuntimeError("DeepSeek listed no text models for this API key.")
+    _DEEPSEEK_MODELS = models
+    return models
+
+
+def deepseek_model_info(model):
+    """What DeepSeek's list says of one model ({"images", "context"}), listing
+    them first when this server has not yet; None when DeepSeek does not
+    list it or cannot be asked."""
+    if model not in _DEEPSEEK_MODELS:
+        try:
+            deepseek_models()
+        except RuntimeError:
+            return None
+    return _DEEPSEEK_MODELS.get(model)
+
+
+def connect_deepseek(key):
+    """Keep a DeepSeek API key, once DeepSeek accepts it."""
+    key = _pasted_api_key(key, "Paste an API key from the DeepSeek platform.")
+    deepseek_models(key)
+    _write_private_json(deepseek_key_path(), {"api_key": key})
+
+
+def deepseek_response(model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with a DeepSeek model through its chat completions."""
+    def read(response):
+        answer, _, _, reason = _chat_completion_stream(response, "DeepSeek")
+        if reason == "length":
+            raise RuntimeError("DeepSeek stopped at its output limit; lower Paragraphs per worker.")
+        return answer
+    return deepseek_request({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _chat_completion_content(text, images)},
+        ],
+        "stream": True,
+    }, open_stream, pause, read)
+
+
+def deepseek_request(payload, open_stream, pause, read):
+    """Send one streamed chat completion with this server's DeepSeek API key,
+    asking again while DeepSeek is busy; `read` takes the stream and returns
+    the answer."""
+    key = read_deepseek_key()
+    if key is None:
+        raise RuntimeError(
+            "Add a DeepSeek API key in Providers, under Adapt the text for listening, first."
+        )
+    return _keyed_request(
+        f"{DEEPSEEK_API_URL}/chat/completions", _openai_api_headers(key, "text/event-stream"),
+        payload, "DeepSeek", open_stream, pause, read,
     )
 
 
@@ -6115,7 +6275,7 @@ def paper_model_catalog(local_servers=(), refresh=False):
             if f"{entry['provider']}/{name}" not in listed
         ]
     local_error = "; ".join(local_errors)
-    openai_error = anthropic_error = openai_api_error = gemini_error = ""
+    openai_error = anthropic_error = openai_api_error = gemini_error = deepseek_error = ""
     openai_connected = read_openai_credentials() is not None
     if openai_connected:
         try:
@@ -6165,6 +6325,17 @@ def paper_model_catalog(local_servers=(), refresh=False):
             ]
         except RuntimeError as exc:
             gemini_error = str(exc)
+    deepseek_connected = read_deepseek_key() is not None
+    if deepseek_connected:
+        try:
+            # Whether a DeepSeek model reads images is what its list says.
+            cloud_models += [
+                {"provider": DEEPSEEK_MODEL_PROVIDER, "selector": f"{DEEPSEEK_MODEL_PROVIDER}/{name}",
+                 "images": info["images"]}
+                for name, info in deepseek_models().items()
+            ]
+        except RuntimeError as exc:
+            deepseek_error = str(exc)
     for model in local_models + cloud_models:
         model.update(
             name=model_name(model), badge=model_badge(model["selector"]), running=True,
@@ -6172,12 +6343,21 @@ def paper_model_catalog(local_servers=(), refresh=False):
         )
         # A cloud model gets figures as images (PaperRun.sees_images()).
         model.setdefault("images", True)
+
+    def reach(*ways):
+        """Whether one way in to a provider is connected and lists its
+        models, and the first error of any."""
+        return (any(connected and not error for connected, error in ways),
+                next((error for _, error in ways if error), ""))
+
     connections = {
-        OPENAI_MODEL_PROVIDER: (openai_connected, openai_error, "Not signed in"),
+        # OpenAI: the ChatGPT sign-in or an API key.
+        "openai": (*reach((openai_connected, openai_error), (openai_api_connected, openai_api_error)),
+                   "Not connected"),
+        GEMINI_MODEL_PROVIDER: (*reach((gemini_connected, gemini_error)), "No API key"),
+        ANTHROPIC_MODEL_PROVIDER: (*reach((anthropic_connected, anthropic_error)), "No API key"),
+        DEEPSEEK_MODEL_PROVIDER: (*reach((deepseek_connected, deepseek_error)), "No API key"),
         CLAUDE_CODE_MODEL_PROVIDER: (claude_code_connected, "", claude_code_message),
-        ANTHROPIC_MODEL_PROVIDER: (anthropic_connected, anthropic_error, "No API key"),
-        OPENAI_API_MODEL_PROVIDER: (openai_api_connected, openai_api_error, "No API key"),
-        GEMINI_MODEL_PROVIDER: (gemini_connected, gemini_error, "No API key"),
     }
     default_model, default_status = default_local_model(local_models, local_status)
     return {
@@ -6192,12 +6372,16 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "local_servers": local_status,
         "openai_error": openai_error,
         "openai_connected": openai_connected,
+        # The ChatGPT account in use, by its e-mail address only.
+        "openai_account": openai_account_email(read_openai_credentials()) if openai_connected else "",
         "anthropic_error": anthropic_error,
         "anthropic_connected": anthropic_connected,
         "openai_api_error": openai_api_error,
         "openai_api_connected": openai_api_connected,
         "gemini_error": gemini_error,
         "gemini_connected": gemini_connected,
+        "deepseek_error": deepseek_error,
+        "deepseek_connected": deepseek_connected,
         "claude_code_connected": claude_code_connected,
         "claude_code_status": claude_code_message,
     }
@@ -6239,29 +6423,30 @@ def default_local_model(local_models, local_status):
     return fallback, "gemma-not-running" if any(not status["running"] for status in local_status) else "no-gemma"
 
 
-# The providers a picker offers to connect, by their name under Providers.
+# The providers a picker offers to connect, by their name under Providers;
+# "openai" stands for both ways in to OpenAI (ChatGPT sign-in, API key).
 CONNECT_PROVIDER_LABELS = {
-    OPENAI_MODEL_PROVIDER: "OpenAI (ChatGPT sign-in)",
-    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
-    ANTHROPIC_MODEL_PROVIDER: "Anthropic (Claude)",
-    OPENAI_API_MODEL_PROVIDER: "OpenAI API",
+    "openai": "OpenAI",
     GEMINI_MODEL_PROVIDER: "Google (Gemini)",
+    ANTHROPIC_MODEL_PROVIDER: "Anthropic (Claude)",
+    DEEPSEEK_MODEL_PROVIDER: "DeepSeek",
+    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
 }
 
 
 def catalog_rows(local_status, connections):
     """The model picker's rows that are not models, none with an invented
     model name: each local server that does not answer, "not running"
-    (Local), and each provider not connected, or connected but unable to
-    list its models, with Connect (API). `connections` maps a provider to
-    (connected, error, what it lacks)."""
+    (Local), and each provider with no way in that is connected and lists
+    its models, with Connect (API). `connections` maps a provider to
+    (usable, error, what it lacks)."""
     rows = [
         {"kind": "local", "row": "not-running", "label": status["label"], "server": status["server"],
          "provider": status["provider"], "on_server": status["on_server"], "note": status["error"]}
         for status in local_status if not status["running"]
     ]
-    for provider, (connected, error, missing) in connections.items():
-        if connected and not error:
+    for provider, (usable, error, missing) in connections.items():
+        if usable:
             continue
         rows.append({"kind": "api", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
                      "provider": provider, "action": "connect", "note": error or missing})
@@ -6288,7 +6473,8 @@ def short_model_name(name):
         family = re.fullmatch(r"([a-z]+)(\d[\d.]*)", low)
         if not token or low in MODEL_NAME_DROPPED:
             continue
-        if re.fullmatch(r"[ae]?\d+(\.\d+)?[bmk]", low):
+        # Sizes ("27b") and versions ("v4", as in deepseek-v4-pro) in capitals.
+        if re.fullmatch(r"[ae]?\d+(\.\d+)?[bmk]|v\d+(\.\d+)?", low):
             words.append(token.upper())
         elif low in MODEL_NAME_WORDS:
             words.append(MODEL_NAME_WORDS[low])
@@ -8729,6 +8915,7 @@ def _adaptation_problem(values):
             and read_anthropic_key() is None
             and read_openai_api_key() is None
             and read_gemini_key() is None
+            and read_deepseek_key() is None
             and not claude_code_status()[0]
             and not values["local_servers"]
         ):
@@ -8751,6 +8938,10 @@ def _adaptation_problem(values):
     elif provider == GEMINI_MODEL_PROVIDER:
         if read_gemini_key() is None:
             return ("Add a Google Gemini API key in Providers, under Adapt the text for "
+                    "listening, to use this model.")
+    elif provider == DEEPSEEK_MODEL_PROVIDER:
+        if read_deepseek_key() is None:
+            return ("Add a DeepSeek API key in Providers, under Adapt the text for "
                     "listening, to use this model.")
     elif provider == CLAUDE_CODE_MODEL_PROVIDER:
         signed_in, status = claude_code_status()
@@ -9145,14 +9336,15 @@ CHAT_CONTEXT_MAX_PASSAGES = 6
 # A picture sent with a message, as counted toward the model's window.
 CHAT_IMAGE_TOKENS = 1_600
 # Cloud providers whose chat requests carry pictures; a local model's do when
-# its server is marked as seeing images. Claude Code cannot chat.
+# its server is marked as seeing images, a DeepSeek model's when its list
+# says so. Claude Code cannot chat.
 CHAT_IMAGE_PROVIDERS = frozenset({
     OPENAI_MODEL_PROVIDER, OPENAI_API_MODEL_PROVIDER, ANTHROPIC_MODEL_PROVIDER, GEMINI_MODEL_PROVIDER,
 })
 CHAT_PROVIDER_NAMES = {
     OPENAI_MODEL_PROVIDER: "OpenAI", OPENAI_API_MODEL_PROVIDER: "OpenAI",
     ANTHROPIC_MODEL_PROVIDER: "Anthropic", GEMINI_MODEL_PROVIDER: "Google",
-    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
+    DEEPSEEK_MODEL_PROVIDER: "DeepSeek", CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
 }
 CHAT_PREVIEW_CHARS = 80
 # Tool results and messages leave the model's context, oldest first, once it
@@ -9581,6 +9773,9 @@ def chat_sees_images(selector, local_servers):
         return (True, "") if sees else (False, "This local model's server is not marked as seeing images.")
     if provider in CHAT_IMAGE_PROVIDERS:
         return True, ""
+    if provider == DEEPSEEK_MODEL_PROVIDER:
+        info = deepseek_model_info(selector.partition("/")[2])
+        return (True, "") if info and info["images"] else (False, "This DeepSeek model reads text only.")
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
         return False, "Claude Code can't chat; choose another model."
     return False, "This model can't take pictures in Chat."
@@ -9966,8 +10161,12 @@ def chat_context(entries, fixed_chars, window):
 
 def chat_context_window(selector, local_server):
     """How many tokens the chosen model takes: what an OpenAI-compatible
-    server reports, else a known provider's, else CHAT_LOCAL_CONTEXT."""
+    server or DeepSeek's model list reports, else a known provider's, else
+    CHAT_LOCAL_CONTEXT."""
     provider, _, name = selector.partition("/")
+    if provider == DEEPSEEK_MODEL_PROVIDER:
+        info = deepseek_model_info(name)
+        return info["context"] if info else DEEPSEEK_DEFAULT_CONTEXT
     if provider not in LOCAL_MODEL_PROVIDERS:
         return CHAT_PROVIDER_CONTEXT.get(provider, CHAT_LOCAL_CONTEXT)
     try:
@@ -10018,8 +10217,11 @@ def chat_input_tokens(selector, local_server, system, entries, tools):
     return characters // CHAT_CHARS_PER_TOKEN + 4 * (len(entries) + 1)
 
 
-def _chat_openai_messages(system, entries):
-    """The conversation as OpenAI-style chat messages, for a local server."""
+def _chat_openai_messages(system, entries, reasoning=False):
+    """The conversation as OpenAI-style chat messages, for a local server or
+    DeepSeek; with `reasoning`, each answer carries its reasoning_content
+    ("" for one written by another model), which DeepSeek's thinking mode
+    needs back while tools are on."""
     messages = [{"role": "system", "content": system}]
     for entry in entries:
         role = entry.get("role")
@@ -10037,6 +10239,8 @@ def _chat_openai_messages(system, entries):
             messages.append({"role": "user", "content": content})
         elif role == "assistant":
             message = {"role": "assistant", "content": entry.get("text") or ""}
+            if reasoning:
+                message["reasoning_content"] = str(entry.get("reasoning_content") or "")
             if entry.get("calls"):
                 message["tool_calls"] = [
                     {"id": call["id"], "type": "function",
@@ -10049,13 +10253,14 @@ def _chat_openai_messages(system, entries):
     return messages
 
 
-def _chat_local(server, model, system, entries, tools, on_text, open_stream, max_tokens):
+def _chat_local(server, provider, model, system, entries, tools, on_text, open_stream, max_tokens):
     body = {
         "model": model,
         "messages": _chat_openai_messages(system, entries),
         "stream": True,
         "temperature": LOCAL_MODEL_TEMPERATURE,
         "max_tokens": max_tokens,
+        **local_request_options(provider),
     }
     if tools:
         body["tools"] = [{"type": "function", "function": tool} for tool in tools]
@@ -10065,47 +10270,12 @@ def _chat_local(server, model, system, entries, tools, on_text, open_stream, max
     with open_stream(url, headers, json.dumps(body).encode("utf-8")) as response:
         if response.status != 200:
             raise _stream_failure(response, "The local model server")
-        parts, slots, finished, reason = [], {}, False, None
-        for data in sse_events(response):
-            if data.strip() == "[DONE]":
-                finished = True
-                break
-            try:
-                event = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("error") or event.get("object") == "error":
-                raise RuntimeError(f"The local model server stopped the response: {_model_error(event, 'no details')}")
-            for choice in event.get("choices") or ():
-                if not isinstance(choice, dict):
-                    continue
-                delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
-                if isinstance(delta.get("content"), str) and delta["content"]:
-                    parts.append(delta["content"])
-                    on_text(delta["content"])
-                for piece in delta.get("tool_calls") or ():
-                    if not isinstance(piece, dict):
-                        continue
-                    slot = slots.setdefault(piece.get("index", len(slots)), {"id": "", "name": "", "json": ""})
-                    function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
-                    slot["id"] = piece.get("id") or slot["id"]
-                    slot["name"] += function.get("name") or ""
-                    slot["json"] += function.get("arguments") or ""
-                if choice.get("finish_reason"):
-                    finished, reason = True, choice["finish_reason"]
-        if not finished:
-            raise RuntimeError("The local model server ended the response early.")
+        text, _, calls, reason = _chat_completion_stream(response, "The local model server", on_text)
         if reason == "length":
             raise RuntimeError(
                 f"The model was still writing at {max_tokens:,} tokens, most likely repeating itself."
             )
-    calls = [
-        {"id": slot["id"] or f"call-{index}", "name": slot["name"], "arguments": _chat_arguments(slot["json"] or "{}")}
-        for index, slot in sorted(slots.items())
-    ]
-    return "".join(parts), calls
+    return text, calls
 
 
 def _chat_anthropic_messages(entries):
@@ -10221,7 +10391,7 @@ def chat_model_reply(selector, local_servers, system, entries, tools, on_text, o
         raise RuntimeError("Choose a model for Chat.")
     if provider in LOCAL_MODEL_PROVIDERS:
         server = local_route(selector, local_servers)["server"]
-        return (*_chat_local(server, model, system, entries, tools, on_text, open_stream, max_tokens), {})
+        return (*_chat_local(server, provider, model, system, entries, tools, on_text, open_stream, max_tokens), {})
     calls, parts = [], []
 
     def read(stream_reader):
@@ -10280,6 +10450,28 @@ def chat_model_reply(selector, local_servers, system, entries, tools, on_text, o
         ))
         # Gemini needs its answer back as it came, thought signatures in place.
         return text, list(calls), {"gemini_parts": list(parts)}
+    if provider == DEEPSEEK_MODEL_PROVIDER:
+        # No max_tokens: in thinking mode the reasoning counts toward it, and
+        # DeepSeek's own default leaves room for both.
+        payload = {
+            "model": model, "messages": _chat_openai_messages(system, entries, reasoning=True), "stream": True,
+        }
+        if tools:
+            payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+            payload["tool_choice"] = "auto"
+        thought = []
+
+        def answer(response):
+            text, reasoning, found, reason = _chat_completion_stream(response, "DeepSeek", on_text)
+            if reason == "length":
+                raise RuntimeError("DeepSeek stopped at its output limit.")
+            calls.extend(found)
+            thought[:] = [reasoning]
+            return text
+
+        text = deepseek_request(payload, open_stream, pause, read(answer))
+        # DeepSeek needs the reasoning back with the answer while tools are on.
+        return text, list(calls), {"reasoning_content": thought[0]} if thought and thought[0] else {}
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
         raise RuntimeError(
             "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
@@ -12029,11 +12221,16 @@ class PaperRun(Run):
                 name, system_prompt, text, attachments, self.model_stream,
                 self.stop_requested.wait,
             )
+        if provider == DEEPSEEK_MODEL_PROVIDER:
+            return deepseek_response(
+                name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
+            )
         if provider == CLAUDE_CODE_MODEL_PROVIDER:
             return self.claude_code_response(name, system_prompt, text, attachments)
         if provider in LOCAL_MODEL_PROVIDERS:
             return local_model_response(
-                self.route_of(model)["server"], name, system_prompt, text, attachments,
+                self.route_of(model)["server"], provider, name, system_prompt, text, attachments,
                 self.model_stream,
             )
         raise RuntimeError(
@@ -12310,9 +12507,14 @@ class PaperRun(Run):
         return {model: self.route_of(model)["vision"] for model in self.local_models()} or None
 
     def sees_images(self, model):
-        """Whether a model gets figures as images: a cloud model always, a
-        local one when the user says its server's models see them."""
-        return model.partition("/")[0] not in LOCAL_MODEL_PROVIDERS or self.route_of(model)["vision"]
+        """Whether a model gets figures as images: a DeepSeek model when its
+        list says it reads them, another cloud model always, a local one when
+        the user says its server's models see them."""
+        provider, _, name = model.partition("/")
+        if provider == DEEPSEEK_MODEL_PROVIDER:
+            info = deepseek_model_info(name)
+            return bool(info and info["images"])
+        return provider not in LOCAL_MODEL_PROVIDERS or self.route_of(model)["vision"]
 
     def check_description(self, scratch, stem, request, images, narration, ask, label):
         """Check a description against its source with the checking model and,
@@ -13831,6 +14033,7 @@ class Handler(BaseHTTPRequestHandler):
         key_provider = {
             "/api/paper/anthropic": (connect_anthropic, anthropic_key_path),
             "/api/paper/openai-api": (connect_openai_api, openai_api_key_path),
+            "/api/paper/deepseek": (connect_deepseek, deepseek_key_path),
             "/api/paper/gemini": (connect_gemini, gemini_key_path),
         }.get(route.rpartition("/")[0])
         if key_provider and route.endswith("/key"):
@@ -15004,6 +15207,9 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .card { padding:20px 22px; background:var(--surface); border-radius:var(--radius); }
 .stack { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; }
 .actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+/* Create blocked: the option and why, then its one-click fixes. */
+.run-blocked { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px 12px; min-width:0; }
+.run-blocked button.link { padding:6px 0; font-size:13px; }
 .field { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; min-width:0; }
 .field > label { color:var(--dim); font-size:13px; }
 .line { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
@@ -15570,10 +15776,18 @@ dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
 dialog::backdrop { background:rgba(0,0,0,.6); }
 dialog h2 { margin:0 0 12px; font-size:16px; }
 dialog h3 { margin:0 0 6px; font-size:15px; }
-.provider + .provider { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
-/* Connect in a model picker lands on its provider. */
+/* Providers: one row each, its status and Connect; the Connect dialog shows
+   one provider's ways in. */
+.provider-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:10px 0;
+                border-bottom:1px solid var(--line); }
+.provider-row-text { display:grid; gap:2px; flex:1; min-width:0; overflow-wrap:anywhere; }
+.provider + .provider, .provider-list + .provider { margin-top:18px; padding-top:18px; }
+.provider + .provider { border-top:1px solid var(--line); }
+.connect-method + .connect-method { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+.connect-method p { margin:6px 0; }
+/* Connect in a model picker lands on Claude Code's section; other providers open their Connect dialog. */
 .provider:focus { outline:2px solid var(--accent-light); outline-offset:6px; border-radius:4px; }
-#paper-providers-dialog { width:min(620px,92vw); }
+#paper-providers-dialog, #provider-connect-dialog { width:min(620px,92vw); }
 /* Add local: one line per added server. */
 .local-server { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 0;
                 border-bottom:1px solid var(--line); }
@@ -15969,7 +16183,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div class="actions">
             <button id="run" class="primary" type="button"
               onclick="startAudiobook()">Create audiobook</button>
-            <span id="run-reason" class="note hidden"></span>
+            <span id="run-blocked" class="run-blocked hidden" role="status">
+              <span id="run-reason" class="note"></span>
+              <button id="run-fix-text" class="link hidden" type="button" onclick="fixCreateBlock('text')"></button>
+              <button id="run-fix-off" class="link" type="button"
+                onclick="fixCreateBlock('off')">Turn off this option</button>
+            </span>
           </div>
         </div>
       </li>
@@ -16352,26 +16571,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   </div>
 </dialog>
 
-<dialog id="paper-providers-dialog">
-  <h2>Providers</h2>
-  <section class="provider" id="provider-openai-codex" tabindex="-1">
-    <h3>OpenAI</h3>
-    <p class="note">Sign in with ChatGPT. This server keeps the sign-in in
-      ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
-    <div class="row"><label>Status:</label><div>
-      <strong id="paper-openai-status"></strong>
-      <div id="paper-openai-device" class="hidden">
-        <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
-        <p>Enter code: <code id="paper-openai-code"></code>
-          <button id="paper-openai-copy" type="button" class="link" onclick="copyPaperOpenAICode()">Copy</button></p>
-      </div>
-    </div></div>
-    <div class="footer">
-      <button id="paper-openai-cancel" class="hidden" onclick="cancelPaperOpenAI()">Cancel login</button>
-      <span class="grow"></span>
-      <button id="paper-openai-start" onclick="startPaperOpenAI()">Connect</button>
-    </div>
-  </section>
+<dialog id="paper-providers-dialog" aria-labelledby="providers-title">
+  <h2 id="providers-title">Providers</h2>
+  <p class="note">Cloud models this server may use. Sign-ins and API keys are kept on this server, for
+    every browser.</p>
+  <div id="provider-list" class="provider-list"></div>
   <section class="provider" id="provider-claude-code" tabindex="-1">
     <h3>Claude Code</h3>
     <p class="note">Uses your Claude subscription through your own Claude Code: this
@@ -16387,58 +16591,103 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button onclick="refreshPaperModels(true).then(sync)">Check again</button>
     </div>
   </section>
-  <section class="provider" id="provider-anthropic" tabindex="-1">
-    <h3>Anthropic API</h3>
-    <p class="note">An API key from the Claude Console, billed per use. This server
-      keeps it in ~/.hilde/anthropic.json, readable only by its user. A Claude
-      subscription works only through Claude Code, above.</p>
-    <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
-      <input id="paper-anthropic-key" type="password" autocomplete="off" placeholder="sk-ant-…">
-    </div></div>
-    <div class="row"><label>Status:</label><div>
-      <strong id="paper-anthropic-status"></strong>
-    </div></div>
-    <div class="footer">
-      <button id="paper-anthropic-remove" onclick="removePaperKey('anthropic')">Remove</button>
-      <span class="grow"></span>
-      <button id="paper-anthropic-save" onclick="savePaperKey('anthropic')">Save key</button>
-    </div>
-  </section>
-  <section class="provider" id="provider-openai" tabindex="-1">
-    <h3>OpenAI API</h3>
-    <p class="note">An API key from platform.openai.com, billed per use. This server
-      keeps it in ~/.hilde/openai-api.json, readable only by its user.</p>
-    <div class="row"><label for="paper-openai-api-key">API key:</label><div class="line">
-      <input id="paper-openai-api-key" type="password" autocomplete="off" placeholder="sk-…">
-    </div></div>
-    <div class="row"><label>Status:</label><div>
-      <strong id="paper-openai-api-status"></strong>
-    </div></div>
-    <div class="footer">
-      <button id="paper-openai-api-remove" onclick="removePaperKey('openai-api')">Remove</button>
-      <span class="grow"></span>
-      <button id="paper-openai-api-save" onclick="savePaperKey('openai-api')">Save key</button>
-    </div>
-  </section>
-  <section class="provider" id="provider-gemini" tabindex="-1">
-    <h3>Google Gemini API</h3>
-    <p class="note">An API key from Google AI Studio, billed per use. This server
-      keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
-    <div class="row"><label for="paper-gemini-key">API key:</label><div class="line">
-      <input id="paper-gemini-key" type="password" autocomplete="off" placeholder="AIza…">
-    </div></div>
-    <div class="row"><label>Status:</label><div>
-      <strong id="paper-gemini-status"></strong>
-    </div></div>
-    <div class="footer">
-      <button id="paper-gemini-remove" onclick="removePaperKey('gemini')">Remove</button>
-      <span class="grow"></span>
-      <button id="paper-gemini-save" onclick="savePaperKey('gemini')">Save key</button>
-    </div>
-  </section>
   <div class="footer">
     <span class="grow"></span>
     <button onclick="closePaperProviders()">Close</button>
+  </div>
+</dialog>
+
+<dialog id="provider-connect-dialog" aria-labelledby="connect-title">
+  <h2 id="connect-title">Connect</h2>
+  <section class="connect-provider" data-provider="openai">
+    <div class="connect-method" data-method="chatgpt">
+      <h3>Sign in with ChatGPT (your membership)</h3>
+      <p class="note">Uses your ChatGPT plan, with no API key. This server keeps the sign-in in
+        ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
+      <p><strong id="paper-openai-status"></strong></p>
+      <div id="paper-openai-device" class="hidden">
+        <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
+        <p>Enter code: <code id="paper-openai-code"></code>
+          <button id="paper-openai-copy" type="button" class="link" onclick="copyPaperOpenAICode()">Copy</button></p>
+      </div>
+      <div class="footer">
+        <button id="paper-openai-cancel" class="hidden" onclick="cancelPaperOpenAI()">Cancel login</button>
+        <span class="grow"></span>
+        <button id="paper-openai-start" onclick="startPaperOpenAI()">Sign in with ChatGPT</button>
+      </div>
+    </div>
+    <div class="connect-method" data-method="api-key">
+      <h3>API key</h3>
+      <p class="note">From platform.openai.com, billed per use. This server keeps it in
+        ~/.hilde/openai-api.json, readable only by its user.</p>
+      <div class="row"><label for="paper-openai-api-key">API key:</label><div class="line">
+        <input id="paper-openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+      </div></div>
+      <div class="row"><label>Status:</label><div><strong id="paper-openai-api-status"></strong></div></div>
+      <div class="footer">
+        <button id="paper-openai-api-remove" onclick="removePaperKey('openai-api')">Remove</button>
+        <span class="grow"></span>
+        <button id="paper-openai-api-save" onclick="savePaperKey('openai-api')">Save key</button>
+      </div>
+    </div>
+  </section>
+  <section class="connect-provider" data-provider="gemini">
+    <div class="connect-method" data-method="api-key">
+      <h3>API key</h3>
+      <p class="note no-membership">This provider does not allow its membership plans in other apps. Use an API
+        key.</p>
+      <p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Free API key at Google AI
+        Studio</a></p>
+      <p class="note">This server keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
+      <div class="row"><label for="paper-gemini-key">API key:</label><div class="line">
+        <input id="paper-gemini-key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+      </div></div>
+      <div class="row"><label>Status:</label><div><strong id="paper-gemini-status"></strong></div></div>
+      <div class="footer">
+        <button id="paper-gemini-remove" onclick="removePaperKey('gemini')">Remove</button>
+        <span class="grow"></span>
+        <button id="paper-gemini-save" onclick="savePaperKey('gemini')">Save key</button>
+      </div>
+    </div>
+  </section>
+  <section class="connect-provider" data-provider="anthropic">
+    <div class="connect-method" data-method="api-key">
+      <h3>API key</h3>
+      <p class="note no-membership">This provider does not allow its membership plans in other apps. Use an API
+        key.</p>
+      <p class="note">From the Claude Console, billed per use. This server keeps it in
+        ~/.hilde/anthropic.json, readable only by its user.</p>
+      <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
+        <input id="paper-anthropic-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+      </div></div>
+      <div class="row"><label>Status:</label><div><strong id="paper-anthropic-status"></strong></div></div>
+      <div class="footer">
+        <button id="paper-anthropic-remove" onclick="removePaperKey('anthropic')">Remove</button>
+        <span class="grow"></span>
+        <button id="paper-anthropic-save" onclick="savePaperKey('anthropic')">Save key</button>
+      </div>
+    </div>
+  </section>
+  <section class="connect-provider" data-provider="deepseek">
+    <div class="connect-method" data-method="api-key">
+      <h3>API key</h3>
+      <p class="note">From platform.deepseek.com, billed per use. This server keeps it in
+        ~/.hilde/deepseek.json, readable only by its user.</p>
+      <div class="row"><label for="paper-deepseek-key">API key:</label><div class="line">
+        <input id="paper-deepseek-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+      </div></div>
+      <div class="row"><label>Status:</label><div><strong id="paper-deepseek-status"></strong></div></div>
+      <div class="footer">
+        <button id="paper-deepseek-remove" onclick="removePaperKey('deepseek')">Remove</button>
+        <span class="grow"></span>
+        <button id="paper-deepseek-save" onclick="savePaperKey('deepseek')">Save key</button>
+      </div>
+    </div>
+  </section>
+  <div class="footer">
+    <button type="button" class="link" onclick="openPaperProviders()">All providers</button>
+    <span class="grow"></span>
+    <button onclick="closeProviderConnect()">Close</button>
   </div>
 </dialog>
 
@@ -16541,7 +16790,7 @@ let paperCatalog = { models:[], default_model:"", loaded:false };
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
-let paperOpenAIConnected = false;
+let paperOpenAIConnected = false, paperOpenAIInfo = { status:"idle" };
 // Providers an API key reaches, by the name in their element ids and routes:
 // who checks the key, their catalog fields' prefix, and whether this server
 // keeps a key.
@@ -16549,6 +16798,16 @@ const paperKeyProviders = {
   "anthropic": { label:"Anthropic", field:"anthropic", connected:false },
   "openai-api": { label:"OpenAI", field:"openai_api", connected:false },
   "gemini": { label:"Google", field:"gemini", connected:false },
+  "deepseek": { label:"DeepSeek", field:"deepseek", connected:false },
+};
+// Providers under Providers, each with its own Connect dialog showing only
+// the ways in it allows: OpenAI the ChatGPT sign-in and an API key; the
+// others an API key (keys: its paperKeyProviders name).
+const CONNECT_PROVIDERS = {
+  "openai":{ name:"OpenAI", key:"openai-api", signIn:true },
+  "gemini":{ name:"Google (Gemini)", key:"gemini" },
+  "anthropic":{ name:"Anthropic (Claude)", key:"anthropic" },
+  "deepseek":{ name:"DeepSeek", key:"deepseek" },
 };
 let settingsOpen = false, voiceFormOpen = false;
 // Create shows a finished run's outcome above its steps while resultShown.
@@ -19490,7 +19749,7 @@ function jobTitle(job) {
 // --- Where the work goes: Local, API: <provider>, or a speech server --------
 const PROVIDER_API = {
   "openai-codex":"OpenAI", "openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google",
-  "claude-code":"Claude Code",
+  "deepseek":"DeepSeek", "claude-code":"Claude Code",
 };
 // A model choice ("" is the default) as its short name, its badge, and
 // whether the catalog lists it and it reads images. A choice the catalog
@@ -19643,12 +19902,15 @@ function renderCreate() {
   $("create-problem").textContent = createProblem || "";
   $("create-problem").classList.toggle("hidden", !createProblem);
   // Adapting with the default model waits for the catalog, which says where it runs;
-  // every option turned on needs a model, its reason beside the button.
+  // every option turned on needs a model: beside the button, the option and
+  // why, with one-click fixes (createBlock()).
   const placeUnknown = !voiceOnly && state.audiobook.adapt && !paperCatalog.loaded;
-  const needsModel = voiceOnly ? "" : modelProblem();
-  $("run-reason").textContent = needsModel;
-  $("run-reason").classList.toggle("hidden", !needsModel);
-  $("run").disabled = submitting || !current || !!facts.problem || placeUnknown || !!needsModel;
+  const block = voiceOnly ? null : createBlock();
+  $("run-reason").textContent = block ? block.text : "";
+  $("run-blocked").classList.toggle("hidden", !block);
+  $("run-fix-text").textContent = block ? block.useText : "";
+  $("run-fix-text").classList.toggle("hidden", !(block && block.useText));
+  $("run").disabled = submitting || !current || !!facts.problem || placeUnknown || !!block;
   $("create-note").textContent = voiceOnly
     ? `Reads ${existing.title} in this voice, from the book's own text; no text model is used.`
     : overwrite
@@ -19677,11 +19939,11 @@ function renderCreate() {
 const PICKER_SEARCH_FROM = 10;
 const PICKERS = {
   book:{ field:["audiobook", "model"], label:"Model for this book", title:"Adapt the text for listening",
-         why:"Where the document's text goes" },
+         why:"Where the document's text goes", short:"Text", flag:"adapt" },
   figure:{ field:["audiobook", "figure_model"], label:"Figure model", title:"Interpret and narrate figures/charts",
-           why:"Where the figure pictures go", same:true, images:true },
+           why:"Where the figure pictures go", same:true, images:true, short:"Figures", flag:"paper-interpret" },
   verify:{ field:["audiobook", "verify_model"], label:"Checking model", title:"Check and correct descriptions",
-           why:"Where the descriptions go to be checked", same:true },
+           why:"Where the descriptions go to be checked", same:true, short:"Checking", flag:"paper-verify" },
   chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go" },
   settings:{ field:["audiobook", "model"], label:"Text model", why:"Where the document's text goes" },
 };
@@ -19691,7 +19953,7 @@ const MODEL_KINDS = {
 };
 const MODEL_SOURCES = {
   "openai-codex":"ChatGPT sign-in", "claude-code":"Claude Code subscription", "anthropic":"Anthropic API",
-  "openai":"OpenAI API", "gemini":"Gemini API",
+  "openai":"OpenAI API", "gemini":"Gemini API", "deepseek":"DeepSeek API",
 };
 const CHEVRON = '<svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">'
   + '<path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
@@ -19741,18 +20003,59 @@ function pickerKind(name) {
   return model && model.selector ? modelKind(model.selector) : "local";
 }
 function noModelAvailable() { return paperCatalog.loaded && !(paperCatalog.models || []).length; }
-// Why Create can't start for want of a model, or "".
-function modelProblem() {
-  if (!state.audiobook.adapt || !paperCatalog.loaded) return "";
-  if (noModelAvailable()) return "No model available: add a local server or connect a provider.";
+// Runs on is API and no provider is connected: box 2 offers Connect a provider.
+function noApiModel() {
+  return paperCatalog.loaded && !(paperCatalog.models || []).some((model) => model.kind === "api");
+}
+// Why an option's own model can't be used, as Create says it after the
+// option's short name, or "".
+function pickerBlock(name) {
+  const { same, model, problem } = pickerChoice(name);
+  if (pickerKind(name) === "api" && noApiModel()) return "no API connected";
+  if (!model) return "no model chosen";
+  if (!problem) return "";
+  if (!model.listed) return `${model.short} is not available now`;
+  return `${same ? "the text model" : model.short} can't read images`;
+}
+// Why Create can't start for want of a model, and its one-click fixes, or
+// null: { name, text, useText } — useText names the model "Use the text
+// model" (the default model, for the text option itself) switches to, when
+// that model is usable for the option.
+function createBlock() {
+  if (!state.audiobook.adapt || !paperCatalog.loaded) return null;
+  if (noModelAvailable())
+    return { name:"book", text:"No model available: add a local server or connect a provider.", useText:"" };
   const on = ["book", ...(state.audiobook.interpret_figures ? ["figure"] : []),
               ...(state.audiobook.verify ? ["verify"] : [])];
-  const missing = on.find((name) => { const choice = pickerChoice(name); return !choice.model || choice.problem; });
-  if (!missing) return "";
-  const { model } = pickerChoice(missing);
-  return PICKERS[missing].images && model && model.listed && !model.images
-    ? `Choose a model that reads images for ${PICKERS[missing].title}.`
-    : `Choose a model for ${PICKERS[missing].title}.`;
+  const name = on.find((option) => pickerBlock(option));
+  if (!name) return null;
+  let useText = "";
+  if (name === "book") {
+    const fallback = textModel("");
+    if (fallback && fallback.listed) useText = `Use the default model (${MODEL_KINDS[modelKind(fallback.selector)].label})`;
+  } else if (!pickerBlock("book")) {
+    const text = textModel(pickerValue("book"));
+    if (text && text.listed && (!PICKERS[name].images || text.images))
+      useText = `Use the text model (${MODEL_KINDS[modelKind(text.selector)].label})`;
+  }
+  return { name, text:`${PICKERS[name].short}: ${pickerBlock(name)}`, useText };
+}
+// The blocked option's fixes: its model goes back to the text model's (the
+// default, for the text option), or the option is turned off.
+function fixCreateBlock(fix) {
+  const block = createBlock();
+  if (!block) return;
+  delete pickerKinds[block.name];
+  if (fix === "text") {
+    const [group, key] = PICKERS[block.name].field;
+    state[group][key] = "";
+    queueSync();
+    render();
+  } else {
+    $(PICKERS[block.name].flag).checked = false;
+    collect(); render(); sync();
+  }
+  $("run").focus();
 }
 function mountPicker(host) {
   const name = host.dataset.picker, picker = PICKERS[name];
@@ -19786,14 +20089,16 @@ function mountPicker(host) {
     </div>`;
   const pop = $(`${name}-picker-pop`), list = $(`${name}-picker-list`);
   for (const [id, mode] of [[`${name}-kind`, "kind"], [`${name}-picker`, "model"]]) {
-    $(id).addEventListener("click", () => togglePicker(name, mode));
+    $(id).addEventListener("click", () => mode === "model" && needsProvider(name)
+      ? openPaperProviders() : togglePicker(name, mode));
     $(id).addEventListener("keydown", (event) => {
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
       event.preventDefault();
       togglePicker(name, mode, true);
     });
   }
-  $(`${name}-change`).addEventListener("click", () => togglePicker(name, "model", true));
+  $(`${name}-change`).addEventListener("click", () => needsProvider(name)
+    ? openPaperProviders() : togglePicker(name, "model", true));
   $(`${name}-picker-none`).addEventListener("click", (event) => {
     const act = event.target.closest("[data-act]")?.dataset.act;
     if (act === "local") openPaperLocal(); else if (act === "providers") openPaperProviders();
@@ -19819,15 +20124,18 @@ function mountPicker(host) {
     event.stopPropagation();
   });
 }
+// Runs on is API with no provider connected: box 2 is "Connect a provider",
+// which opens Providers, in place of an empty list.
+function needsProvider(name) { return pickerKind(name) === "api" && noApiModel(); }
 function renderPicker(name) {
   if (!state) return;
   const { same, model, problem } = pickerChoice(name);
-  const none = noModelAvailable(), kind = pickerKind(name);
+  const none = noModelAvailable(), kind = pickerKind(name), connect = !none && needsProvider(name);
   // Runs on switched, no model of that kind chosen yet.
   const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
-  const shown = switched ? null : model;
+  const shown = switched || connect ? null : model;
   const text = shown ? (same ? `Same as the text model (${shown.short})` : shown.short)
-    : none ? "No model available" : "Choose a model";
+    : none ? "No model available" : connect ? "Connect a provider" : "Choose a model";
   const kindBox = $(`${name}-kind`);
   kindBox.classList.toggle("kind-local", kind === "local");
   kindBox.classList.toggle("kind-api", kind === "api");
@@ -19835,11 +20143,14 @@ function renderPicker(name) {
   const label = $(`${name}-model-name`);
   label.textContent = text;
   $(`${name}-picker`).title = shown && shown.selector ? `${shown.selector} · ${PICKERS[name].why}` : PICKERS[name].why;
+  $(`${name}-picker`).setAttribute("aria-haspopup", connect ? "dialog" : "listbox");
+  $(`${name}-picker`).classList.toggle("connect", connect);
   const badge = badgeElement(shown ? shown.badge : "");
   badge.id = `${name}-badge`;
   $(`${name}-badge`).replaceWith(badge);
-  const why = problem || (model ? defaultStatus(name, shown)
-    : none ? "" : paperCatalog.error || "No local model is reachable. Choose a model.");
+  const why = connect ? "No API provider is connected yet."
+    : problem || (model ? defaultStatus(name, shown)
+      : none ? "" : paperCatalog.error || "No local model is reachable. Choose a model.");
   $(`${name}-model-reason`).textContent = why;
   $(`${name}-model-reason`).classList.toggle("hidden", !why);
   $(`${name}-picker-none`).classList.toggle("hidden", !none);
@@ -20056,10 +20367,12 @@ function placePicker() {
 function choosePickerOption(name, option) {
   if (openPicker.mode === "kind") {
     // Runs on: the model list of that kind opens; nothing is chosen yet.
+    // API with no provider connected: box 2 says Connect a provider instead.
     const { model } = pickerChoice(name);
     if (model && model.selector && modelKind(model.selector) === option.dataset.kind) delete pickerKinds[name];
     else pickerKinds[name] = option.dataset.kind;
     closePicker(false, true);
+    if (needsProvider(name)) { render(); $(`${name}-picker`).focus(); return; }
     togglePicker(name, "model", true);
     return;
   }
@@ -20110,15 +20423,19 @@ function renderSummary(voiceOnly) {
   if (voiceOnly) add("Text", "The book's own text; no text model", " ", badgeElement("Local"));
   else if (!state.audiobook.adapt) add("Text", "Read as written; no text model", " ", badgeElement("Local"));
   else {
-    const text = textModel(state.audiobook.model);
-    add("Text", "Adapted for listening by ", ...(text ? [text.short, " ", badgeElement(text.badge)]
-      : ["no model yet"]));
+    // An option whose model can't be used says so (pickerBlock()), as beside Create.
+    const blocked = (name, on = true) => on && paperCatalog.loaded ? pickerBlock(name) : "";
+    const text = textModel(state.audiobook.model), textBlock = blocked("book");
+    add("Text", ...(textBlock ? [`Not ready: ${textBlock}`] : ["Adapted for listening by ",
+      ...(text ? [text.short, " ", badgeElement(text.badge)] : ["no model yet"])]));
     const figure = textModel(state.audiobook.figure_model || state.audiobook.model);
-    add("Figures", ...(state.audiobook.interpret_figures && figure
+    const figureBlock = blocked("figure", state.audiobook.interpret_figures);
+    add("Figures", ...(figureBlock ? [`Not ready: ${figureBlock}`] : state.audiobook.interpret_figures && figure
       ? ["Read from their pictures by ", figure.short, " ", badgeElement(figure.badge)]
       : ["Described from their captions and the text"]));
     const check = textModel(state.audiobook.verify_model || state.audiobook.model);
-    add("Checking", ...(state.audiobook.verify && check
+    const checkBlock = blocked("verify", state.audiobook.verify);
+    add("Checking", ...(checkBlock ? [`Not ready: ${checkBlock}`] : state.audiobook.verify && check
       ? ["On, by ", check.short, " ", badgeElement(check.badge)] : ["Off"]));
   }
   const narration = configuration.clone;
@@ -21016,6 +21333,8 @@ function applyPaperCatalog(catalog) {
     renderPaperKey(name, catalog[`${provider.field}_error`]);
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
+  renderPaperOpenAI(paperOpenAIInfo);
+  renderProviderList();
   // Every picker's model names, badges, and list come from the catalog.
   render();
   renderChatControls();
@@ -21036,16 +21355,21 @@ async function refreshPaperModels(refresh) {
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
+// The ChatGPT sign-in: "Signed in as <e-mail>" (the account the server's
+// stored sign-in names), or where a sign-in under way stands.
 function renderPaperOpenAI(info) {
+  paperOpenAIInfo = info;
   const connected = paperOpenAIConnected || info.status === "connected";
-  setText($("paper-openai-status"), info.status === "idle"
-    ? connected ? "OpenAI OAuth is connected." : "OpenAI OAuth is not connected."
+  const account = paperCatalog.openai_account || "";
+  setText($("paper-openai-status"), info.status === "idle" || (info.status === "connected" && paperOpenAIConnected)
+    ? connected ? (account ? `Signed in as ${account}` : "Signed in with ChatGPT.") : "Not signed in."
     : (info.message || info.status));
   const hasDevice = !!(info.url || info.code);
   $("paper-openai-device").classList.toggle("hidden", !hasDevice);
   $("paper-openai-link").href = info.url || "#";
   setText($("paper-openai-code"), info.code || "waiting…");
   $("paper-openai-copy").classList.toggle("hidden", !info.code);
+  setText($("paper-openai-start"), connected ? "Sign in again" : "Sign in with ChatGPT");
   $("paper-openai-start").disabled = !!info.active;
   $("paper-openai-cancel").classList.toggle("hidden", !info.active);
 }
@@ -21071,24 +21395,72 @@ async function pollPaperOpenAI() {
     else if (info.status === "connected") { await refreshPaperModels(); await sync(); }
   } catch (error) { $("paper-openai-status").textContent = error.message; }
 }
-// Connect in a model picker opens the provider's own section.
+// What each provider's row under Providers says: how it is connected (the
+// ChatGPT account by its e-mail address; a key only as "Key saved"), or why not.
+function providerStatus(id) {
+  const key = paperKeyProviders[CONNECT_PROVIDERS[id].key];
+  const parts = [];
+  if (CONNECT_PROVIDERS[id].signIn && paperOpenAIConnected)
+    parts.push(paperCatalog.openai_account ? `Signed in as ${paperCatalog.openai_account}` : "Signed in with ChatGPT");
+  if (key.connected) parts.push(CONNECT_PROVIDERS[id].signIn ? "API key saved" : "Key saved");
+  const errors = [...(CONNECT_PROVIDERS[id].signIn ? [paperCatalog.openai_error] : []), paperCatalog[`${key.field}_error`]]
+    .filter(Boolean);
+  return [...(parts.length ? parts : ["Not connected"]), ...errors].join(" · ");
+}
+function renderProviderList() {
+  const rows = Object.entries(CONNECT_PROVIDERS).map(([id, provider]) => {
+    const row = document.createElement("div");
+    row.className = "provider-row"; row.id = `provider-${id}`;
+    const text = document.createElement("div");
+    text.className = "provider-row-text";
+    const name = document.createElement("strong");
+    name.textContent = provider.name;
+    const status = document.createElement("span");
+    status.className = "note provider-status"; status.textContent = providerStatus(id);
+    text.append(name, status);
+    const connected = (provider.signIn && paperOpenAIConnected) || paperKeyProviders[provider.key].connected;
+    const button = document.createElement("button");
+    button.type = "button"; button.textContent = connected ? "Change" : "Connect";
+    button.setAttribute("aria-label", `${button.textContent} ${provider.name}`);
+    button.addEventListener("click", () => openProviderConnect(id));
+    row.append(text, button);
+    return row;
+  });
+  $("provider-list").replaceChildren(...rows);
+}
+// Providers lists every provider; Connect in a model picker opens that
+// provider's own Connect dialog, Claude Code's section under Providers.
 async function openPaperProviders(provider) {
-  for (const name of Object.keys(paperKeyProviders)) {
-    $(`paper-${name}-key`).value = "";
-    renderPaperKey(name);
-  }
-  $("paper-providers-dialog").showModal();
+  if (CONNECT_PROVIDERS[provider]) return openProviderConnect(provider);
+  closeProviderConnect();
+  renderProviderList();
+  if (!$("paper-providers-dialog").open) $("paper-providers-dialog").showModal();
   const section = provider ? $(`provider-${provider}`) : null;
   if (section) { section.scrollIntoView({ block:"start" }); section.focus({ preventScroll:true }); }
-  await pollPaperOpenAI();
 }
-function closePaperProviders() {
-  clearTimeout(paperOAuthTimer); $("paper-providers-dialog").close();
+function closePaperProviders() { $("paper-providers-dialog").close(); }
+// One provider's Connect dialog: only the ways in it allows; a key field is
+// a password field, emptied when the dialog opens and once the key is saved.
+async function openProviderConnect(id) {
+  const provider = CONNECT_PROVIDERS[id];
+  if ($("paper-providers-dialog").open) closePaperProviders();
+  $("connect-title").textContent = `Connect ${provider.name}`;
+  for (const section of document.querySelectorAll(".connect-provider"))
+    section.classList.toggle("hidden", section.dataset.provider !== id);
+  $(`paper-${provider.key}-key`).value = "";
+  renderPaperKey(provider.key, paperCatalog[`${paperKeyProviders[provider.key].field}_error`]);
+  if (!$("provider-connect-dialog").open) $("provider-connect-dialog").showModal();
+  [...document.querySelectorAll(`.connect-provider[data-provider="${id}"] :is(input, button)`)]
+    .find((node) => node.getClientRects().length)?.focus();
+  if (provider.signIn) await pollPaperOpenAI();
+}
+function closeProviderConnect() {
+  clearTimeout(paperOAuthTimer);
+  if ($("provider-connect-dialog").open) $("provider-connect-dialog").close();
 }
 function renderPaperKey(name, message) {
   const connected = paperKeyProviders[name].connected;
-  $(`paper-${name}-status`).textContent = message || (connected
-    ? "An API key is saved on this server." : "No API key yet.");
+  $(`paper-${name}-status`).textContent = message || (connected ? "Key saved" : "No key yet");
   $(`paper-${name}-remove`).disabled = !connected;
 }
 async function savePaperKey(name) {

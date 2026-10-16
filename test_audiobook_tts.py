@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from unittest import mock
 import urllib.request
 import urllib.error
@@ -3986,6 +3986,30 @@ class LocalPaperProviderTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
 
+    def test_ollama_answers_without_thinking_and_other_servers_get_no_extra_field(self):
+        # Gemma 4 on Ollama thinks unless told not to, and reasoned past the
+        # 16,000-token limit on one paragraph without starting its answer.
+        sent = []
+
+        class Response:
+            status = 200
+
+            def __iter__(self):
+                yield b'data: {"choices": [{"delta": {"content": "<NARRATION>A.</NARRATION>"}, "finish_reason": "stop"}]}\n'
+                yield b"\n"
+                yield b"data: [DONE]\n"
+                yield b"\n"
+
+        @contextmanager
+        def open_stream(url, headers, body):
+            sent.append(json.loads(body))
+            yield Response()
+
+        for provider in ("ollama", "lm-studio"):
+            web.local_model_response("http://127.0.0.1:9", provider, "m", "system", "text", [], open_stream)
+            web._chat_local("http://127.0.0.1:9", provider, "m", "system", [], [], lambda delta: None, open_stream, 100)
+        self.assertEqual([body.get("reasoning_effort") for body in sent], ["none", "none", None, None])
+
     def test_openai_compatible_server_is_listed(self):
         _, names = self.list_models({"/v1/models": {"object": "list", "data": [
             {"id": "vision-model", "owned_by": "vllm"},
@@ -4058,6 +4082,7 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
                 mock.patch.object(web, "read_gemini_key", return_value="key"), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None), \
                 mock.patch.object(web, "gemini_model_names", return_value=["gemini-10-pro", "gemma-4-27b-it"]), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "Claude Code is not installed.")), \
                 mock.patch.object(web, "local_model_names", side_effect=local_names), \
@@ -4083,27 +4108,33 @@ class LocalPaperProviderTests(unittest.TestCase):
             ],
         )
         # The server that does not answer is a Local row, then each provider
-        # not connected, by name only: no model name is made up for it.
+        # with no way in connected, by name only: no model name is made up for
+        # it. OpenAI is connected by its ChatGPT sign-in alone.
         self.assertEqual(
             [(row["row"], row["kind"], row["label"], row.get("action"), row.get("provider")) for row in catalog["rows"]],
             [
                 ("not-running", "local", "127.0.0.1:9", None, "ollama"),
-                ("provider", "api", "Claude Code", "connect", "claude-code"),
                 ("provider", "api", "Anthropic (Claude)", "connect", "anthropic"),
-                ("provider", "api", "OpenAI API", "connect", "openai"),
+                ("provider", "api", "DeepSeek", "connect", "deepseek"),
+                ("provider", "api", "Claude Code", "connect", "claude-code"),
             ],
         )
-        self.assertEqual(catalog["rows"][1]["note"], "Claude Code is not installed.")
+        self.assertEqual(catalog["rows"][3]["note"], "Claude Code is not installed.")
         # Without a Gemini key, Google is a row to connect, with no model named.
         with mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "read_openai_credentials", return_value=None), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
             bare = web.paper_model_catalog()
         self.assertIn({"kind": "api", "row": "provider", "label": "Google (Gemini)", "provider": "gemini",
                        "action": "connect", "note": "No API key"}, bare["rows"])
         self.assertFalse(any(model["provider"] == "gemini" for model in bare["models"]))
+        # OpenAI is one row for both ways in (ChatGPT sign-in, API key).
+        self.assertEqual([row["label"] for row in bare["rows"]],
+                         ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "Claude Code"])
+        self.assertEqual(bare["rows"][0]["note"], "Not connected")
         # A local model without the server's vision mark reads no images.
         plain = self.catalog_with([{"server": qwen, "provider": "lm-studio", "vision": False}], {qwen: ["llama-4"]})
         self.assertFalse(plain["models"][0]["images"])
@@ -4170,7 +4201,8 @@ class LocalPaperProviderTests(unittest.TestCase):
             self.assertEqual(web.model_size(name), size, name)
         for name, short in (("google/gemma-3-27b-it", "Gemma 3 27B"), ("gemma3:27b", "Gemma 3 27B"),
                             ("gpt-5.6-sol", "GPT-5.6 Sol"), ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
-                            ("gpt-oss-120b", "GPT OSS 120B"), ("qwen3.6:27b", "Qwen 3.6 27B")):
+                            ("gpt-oss-120b", "GPT OSS 120B"), ("qwen3.6:27b", "Qwen 3.6 27B"),
+                            ("deepseek-v4-pro", "DeepSeek V4 Pro"), ("deepseek-flash", "DeepSeek Flash")):
             self.assertEqual(web.short_model_name(name), short, name)
 
     def test_adaptation_accepts_only_models_this_server_can_reach(self):
@@ -5345,6 +5377,151 @@ answer = ("<NARRATION>Figure one is described.</NARRATION><SUMMARY>Figure.</SUMM
 print(json.dumps({{"type": "assistant", "message": {{"content": [{{"type": "text", "text": answer}}]}}}}))
 print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": answer}}))
 """
+
+
+class DeepSeekProviderTests(unittest.TestCase):
+    def test_api_key_is_checked_kept_owner_only_and_its_list_says_which_models_read_images(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        requests = []
+
+        class DeepSeekHandler(FakeProviderHandler):
+            def authorized(self):
+                if self.headers.get("Authorization") == "Bearer sk-ds-good":
+                    return True
+                self.reply(401, {"error": {
+                    "message": "Authentication Fails, Your api key is invalid", "type": "authentication_error",
+                }})
+                return False
+
+            def do_GET(self):
+                if self.path != "/models":
+                    return self.reply(404, {})
+                if self.authorized():
+                    # Only input_modalities says which read images, not the names.
+                    self.reply(200, {"object": "list", "data": [
+                        {"id": "deepseek-flash", "object": "model", "input_modalities": ["text", "image"],
+                         "output_modalities": ["text"], "context_window": 1048576},
+                        {"id": "deepseek-v4-pro", "object": "model", "input_modalities": ["text"],
+                         "output_modalities": ["text"]},
+                        {"id": "deepseek-vision-check", "object": "model", "input_modalities": ["text"]},
+                    ]})
+                return None
+
+            def do_POST(self):
+                body = self.body()
+                if self.path != "/chat/completions" or not self.authorized():
+                    return None if self.path == "/chat/completions" else self.reply(404, {})
+                requests.append(body)
+                if len(requests) == 1:
+                    return self.reply(429, {"error": {"message": "Rate limit reached."}}, (("retry-after", "0"),))
+                return self.stream((
+                    {"choices": [{"index": 0, "delta": {"reasoning_content": "<NARRATION>Wrong.</NARRATION>"}}]},
+                    {"choices": [{"index": 0, "delta": {"content": "<NARRATION>Figure one is "}}]},
+                    {"choices": [{"index": 0, "delta": {"content": "described.</NARRATION><SUMMARY>Figure.</SUMMARY>"}}]},
+                    {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                ))
+
+        origin = serve_fake_provider(self, DeepSeekHandler)
+        source = root / "paper.pdf"
+        write_figure_pdf(source)
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        home = root / ".hilde"
+        runs = {}
+        with mock.patch.object(web, "DEEPSEEK_API_URL", origin), \
+                mock.patch.object(web, "HILDE_HOME", home), \
+                mock.patch.object(web, "_DEEPSEEK_MODELS", {}), \
+                mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            with self.assertRaisesRegex(RuntimeError, "DeepSeek rejected the API key"):
+                web.connect_deepseek("sk-ds-wrong")
+            self.assertFalse(web.deepseek_key_path().exists())
+            with self.assertRaises(ValueError):
+                web.connect_deepseek("sk ds")
+            web.connect_deepseek(" sk-ds-good\n")
+            catalog = web.paper_model_catalog()
+            for model in ("deepseek-flash", "deepseek-v4-pro"):
+                stage = root / model
+                runs[model] = (len(requests), PaperRun(
+                    source, stage / "prepared.txt", "utf-8", model=f"deepseek/{model}",
+                    in_flight=1, prompt_path=prompt, scratch_path=stage,
+                ))
+                runs[model][1].pump()
+
+        self.assertEqual(stat.S_IMODE((home / "deepseek.json").stat().st_mode), 0o600)
+        self.assertEqual(
+            [(model["selector"], model["name"], model["badge"], model["images"]) for model in catalog["models"]],
+            [("deepseek/deepseek-flash", "DeepSeek Flash", "API: DeepSeek", True),
+             ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", "API: DeepSeek", False),
+             ("deepseek/deepseek-vision-check", "DeepSeek Vision Check", "API: DeepSeek", False)],
+        )
+        self.assertEqual(catalog["default_model"], "")
+        self.assertTrue(catalog["deepseek_connected"])
+        self.assertNotIn("DeepSeek", [row["label"] for row in catalog["rows"]])
+        # The key goes nowhere but DeepSeek: not into the catalog the page gets.
+        self.assertNotIn("sk-ds-good", json.dumps(catalog))
+        for model, (_, run) in runs.items():
+            self.assertEqual(run.code, 0, model)
+            prepared = (root / model / "prepared.txt").read_text(encoding="utf-8")
+            self.assertIn("Figure one is described.", prepared)
+            self.assertNotIn("Wrong.", prepared)
+        # The rate-limited request was sent again unchanged.
+        self.assertEqual(requests[0], requests[1])
+        request = requests[1]
+        self.assertEqual((request["model"], request["stream"]), ("deepseek-flash", True))
+        self.assertEqual(request["messages"][0]["role"], "system")
+        # Figures go as images only to the model whose list entry reads them.
+        def images(bodies):
+            return [part for body in bodies for message in body["messages"] if isinstance(message["content"], list)
+                    for part in message["content"] if part.get("type") == "image_url"]
+        flash = images(requests[:runs["deepseek-v4-pro"][0]])
+        self.assertTrue(flash)
+        self.assertTrue(flash[0]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(images(requests[runs["deepseek-v4-pro"][0]:]), [])
+        self.assertTrue(all(body["model"] == "deepseek-v4-pro" for body in requests[runs["deepseek-v4-pro"][0]:]))
+
+
+class ChatGPTAccountTests(unittest.TestCase):
+    def test_the_page_gets_the_signed_in_accounts_email_and_nothing_else_of_the_sign_in(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / ".hilde"
+
+        def token(claims):
+            part = lambda data: base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+            return f"{part({'alg': 'none'})}.{part(claims)}.signature"
+
+        auth = {"https://api.openai.com/auth": {"chatgpt_account_id": "account-1"}}
+        id_token = token({**auth, "email": "reader@example.test"})
+        with mock.patch.object(web, "HILDE_HOME", home), \
+                mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            web.save_openai_credentials({"access_token": token(auth), "refresh_token": "refresh-1",
+                                         "id_token": id_token, "expires_in": 3600})
+            catalog = web.paper_model_catalog()
+            # A renewal without an id token keeps the account's.
+            renewed = web.save_openai_credentials({"access_token": token(auth)}, web.read_openai_credentials())
+            # The profile claim also names it.
+            profile = web.openai_account_email({"id_token": token({"https://api.openai.com/profile": {
+                "email": "other@example.test"}})})
+        self.assertEqual(catalog["openai_account"], "reader@example.test")
+        self.assertEqual((catalog["openai_connected"], catalog["openai_api_connected"]), (True, False))
+        self.assertEqual([model["selector"] for model in catalog["models"]], ["openai-codex/gpt-a"])
+        self.assertNotIn("refresh-1", json.dumps(catalog))
+        self.assertNotIn(id_token, json.dumps(catalog))
+        self.assertEqual(web.openai_account_email(renewed), "reader@example.test")
+        self.assertEqual(profile, "other@example.test")
+        self.assertEqual(web.openai_account_email({}), "")
+        self.assertEqual(web.openai_account_email({"id_token": "not-a-token"}), "")
 
 
 class ClaudeCodeProviderTests(unittest.TestCase):
@@ -8083,6 +8260,69 @@ class ChatTests(unittest.TestCase):
             {"type": "function_call_output", "call_id": "call_1", "output": "¶2\nParagraph 2 text."},
         ])
         self.assertEqual(web.read_chat(path)[-1]["text"], "Dams are in ¶2.")
+
+    def test_deepseek_chats_through_chat_completions_and_gets_its_reasoning_back(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        requests = []
+
+        class DeepSeekHandler(FakeProviderHandler):
+            def do_GET(self):
+                if self.path != "/models" or self.headers.get("Authorization") != "Bearer sk-ds":
+                    return self.reply(404, {})
+                return self.reply(200, {"object": "list", "data": [
+                    {"id": "deepseek-flash", "input_modalities": ["text", "image"], "context_window": 1048576},
+                ]})
+
+            def do_POST(self):
+                if self.path != "/chat/completions" or self.headers.get("Authorization") != "Bearer sk-ds":
+                    return self.reply(404, {})
+                requests.append(self.body())
+                if len(requests) == 1:
+                    return self.stream((
+                        {"choices": [{"index": 0, "delta": {"reasoning_content": "Look it up."}}]},
+                        {"choices": [{"index": 0, "delta": {"tool_calls": [{
+                            "index": 0, "id": "call_1", "type": "function",
+                            "function": {"name": "read_paragraphs", "arguments": '{"start": 2}'},
+                        }]}}]},
+                        {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+                    ))
+                return self.stream((
+                    {"choices": [{"index": 0, "delta": {"reasoning_content": "Found it."}}]},
+                    {"choices": [{"index": 0, "delta": {"content": "Dams are in ¶2."}}]},
+                    {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                ))
+
+        origin = serve_fake_provider(self, DeepSeekHandler)
+        home = Path(self.storage.root) / ".hilde"
+        patch_for_test(
+            self, mock.patch.object(web, "DEEPSEEK_API_URL", origin),
+            mock.patch.object(web, "HILDE_HOME", home),
+            mock.patch.object(web, "_DEEPSEEK_MODELS", {}),
+        )
+        web._write_private_json(web.deepseek_key_path(), {"api_key": "sk-ds"})
+        self.assertEqual(web.chat_sees_images("deepseek/deepseek-flash", []), (True, ""))
+        self.assertEqual(web.chat_context_window("deepseek/deepseek-flash", ""), 1048576)
+        self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "deepseek/deepseek-flash", []))
+
+        first, second = requests
+        self.assertEqual((first["model"], first["stream"], first["tool_choice"]), ("deepseek-flash", True, "auto"))
+        # DeepSeek's thinking takes its default output room.
+        self.assertNotIn("max_tokens", first)
+        self.assertTrue(all(tool["type"] == "function" and "name" in tool["function"] for tool in first["tools"]))
+        self.assertEqual(first["messages"][1], {"role": "user", "content": "Where are dams?"})
+        # The answer that called the tool goes back with its reasoning, then the tool's result.
+        self.assertEqual(second["messages"][2:], [
+            {"role": "assistant", "content": "", "reasoning_content": "Look it up.", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "read_paragraphs", "arguments": json.dumps({"start": 2})}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "¶2\nParagraph 2 text."},
+        ])
+        entries = web.read_chat(path)
+        self.assertEqual(entries[1]["reasoning_content"], "Look it up.")
+        self.assertEqual(entries[-1]["text"], "Dams are in ¶2.")
+        # Reasoning is never part of an answer the page shows.
+        self.assertNotIn("Found it", json.dumps([web.chat_display_entry(entry) for entry in entries]))
 
     def test_a_question_about_paragraphs_comes_with_their_narration_in_the_message(self):
         book, _ = self.book(chat_narration("Storms.", "Dams.", "Silt."))

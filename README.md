@@ -39,9 +39,9 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   SSH, other machines. A busy local GPU joins once it has room, and one that
   runs out of memory hands its chunks to the others.
 - **Local first.** Speech is generated on your own hardware by default. Text
-  adaptation runs on a local model server, or on OpenAI, Claude, or Gemini,
-  through your ChatGPT subscription, your Claude subscription in your own
-  Claude Code, or an Anthropic, OpenAI, or Google Gemini API key.
+  adaptation runs on a local model server, or on OpenAI, Claude, Gemini, or
+  DeepSeek, through your ChatGPT subscription, your Claude subscription in your
+  own Claude Code, or an Anthropic, OpenAI, Google Gemini, or DeepSeek API key.
 - **Resumable.** Press **Stop** or restart the server: finished chunks are kept,
   and creating the same audiobook again picks up where it left off.
 
@@ -102,7 +102,7 @@ The page opens at `http://127.0.0.1:8800/`, reachable only from this computer,
 with eight stock voices. Each speech model, about 4.3 GB, downloads the first
 time it is used. Text adaptation needs a language model: under **Adapt the text
 for listening** on **Create**, connect a provider (ChatGPT, your own Claude
-Code, or an Anthropic, OpenAI, or Google Gemini API key) or add a local model server, or clear that box
+Code, or an Anthropic, OpenAI, Google Gemini, or DeepSeek API key) or add a local model server, or clear that box
 before you create an audiobook; see [Text adaptation](docs/text-adaptation.md).
 [Installation](docs/installation.md) covers the installer's settings, installing
 by hand, Windows, local model folders, and FlashAttention.
@@ -200,7 +200,7 @@ each browser changes only its own settings, under **Settings**.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a
 document for listening: a local model server, ChatGPT, Claude Code, or an
-Anthropic, OpenAI, or Google Gemini API key.
+Anthropic, OpenAI, Google Gemini, or DeepSeek API key.
 
 ## Access and security
 

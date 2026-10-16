@@ -22,11 +22,15 @@ saying where the document's text goes:
   signed in, then Claude Code's, then the Anthropic API's, the OpenAI API's,
   and the Google Gemini API's. A cloud provider that is busy or has a passing
   error is asked again, up to four times.
-- **Providers** connects cloud models.
-  - **OpenAI** signs this server in with a ChatGPT account: open the sign-in
-    page it shows and enter the code, which **Copy** puts on the clipboard (or
-    one click selects); the sign-in renews itself. Delete
-    `~/.hilde/openai.json` to sign out.
+- **Providers** connects cloud models: one row each for OpenAI, Google
+  (Gemini), Anthropic (Claude), and DeepSeek, whose **Connect** opens a dialog
+  with only the ways in that provider allows, then Claude Code.
+  - **OpenAI** offers two: **Sign in with ChatGPT (your membership)**, which
+    signs this server in with a ChatGPT account and needs no API key (open the
+    sign-in page it shows and enter the code, which **Copy** puts on the
+    clipboard, or one click selects; the sign-in renews itself, and the row
+    then says "Signed in as <e-mail>"; delete `~/.hilde/openai.json` to sign
+    out), and an **API key**, below.
   - **Claude Code** uses a Claude Pro or Max subscription through your own
     [Claude Code](https://code.claude.com/): install it on the machine running
     Hilde and sign in by running `claude` once in a terminal. Hilde then runs
@@ -42,23 +46,36 @@ saying where the document's text goes:
     each nickname runs. Connecting any
     provider updates **Create** at once: a "needs a model" message goes away
     without choosing another model.
-  - **Anthropic API** takes an API key from the
+  - **Anthropic (Claude)** takes an API key from the
     [Claude Console](https://platform.claude.com/), billed per use. A Claude
     subscription works only through Claude Code, above, as Anthropic's terms
     require.
-  - **OpenAI API** takes an API key from the
+  - **OpenAI API key**, from the
     [OpenAI platform](https://platform.openai.com/api-keys), billed per use,
-    and lists the key's text models, newest first. It is separate from the
+    lists the key's text models, newest first. It is separate from the
     ChatGPT sign-in: its models appear as `openai/…`, the sign-in's as
     `openai-codex/…`.
-  - **Google Gemini API** takes an API key from
-    [Google AI Studio](https://aistudio.google.com/apikey), billed per use,
-    and lists the key's Gemini text models, newest first.
+  - **Google (Gemini)** takes an API key from
+    [Google AI Studio](https://aistudio.google.com/apikey), which has a free
+    tier, and lists the key's Gemini text models, newest first.
+  - **DeepSeek** takes an API key from the
+    [DeepSeek platform](https://platform.deepseek.com/), billed per use, and
+    lists the models DeepSeek's own model list names, each tagged **reads
+    images** when that list says it takes images. Requests go to DeepSeek's
+    OpenAI-compatible chat completions with the key; Ask Hilde sends DeepSeek
+    its own reasoning back with each answer that used a tool, as its thinking
+    mode requires.
+
+  Google and Anthropic do not allow their membership plans in other apps, so
+  their dialogs ask for an API key only.
 
   Each API key is checked with its provider before it is kept; **Remove**
-  deletes it. The server keeps the ChatGPT sign-in in `~/.hilde/openai.json`
-  and the keys in `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`, and
-  `~/.hilde/gemini.json`, readable only by the user running it.
+  deletes it. A key is typed into a password field and the page never gets it
+  back: afterwards it says only "Key saved". The server keeps the ChatGPT
+  sign-in in `~/.hilde/openai.json` and the keys in `~/.hilde/anthropic.json`,
+  `~/.hilde/openai-api.json`, `~/.hilde/gemini.json`, and
+  `~/.hilde/deepseek.json`, readable only by the user running it, for every
+  browser.
 - **Add local** connects model servers on your network, up to eight. It lists
   the servers you added, each with its type, a **This model sees images** box
   that is saved as soon as you change it, and **Remove**. To add one, choose its
@@ -122,7 +139,8 @@ model, the figures, tables, and equations go to that provider, with their
 captions, the text read from them, and the author's text about each; the rest
 of the paper stays on your network. The book records the figure model.
 
-Figures reach OpenAI, Claude, and Gemini models as images, and a local model too once
+Figures reach OpenAI, Claude, and Gemini models as images, a DeepSeek model when DeepSeek's model list says it
+takes images, and a local model too once
 **This model sees images** is ticked for its server. Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows
