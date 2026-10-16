@@ -15088,9 +15088,19 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .chat-notice { font-style:italic; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
+.chat-hint { margin:0; padding:8px 14px 0; border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
 .chat-about { padding:8px 14px 0; border-top:1px solid var(--line); }
-.chat-about + .chat-compose { border-top:0; }
-.chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; }
+.chat-hint:not(.hidden) + .chat-about, .chat-about + .chat-compose { border-top:0; }
+/* A part just attached: a short glow (none with reduced motion) and an outline. */
+@keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
+.chat-about.attached { animation:chip-pulse 1.6s ease-out; }
+.chat-about.attached .chip { outline:2px solid var(--accent); outline-offset:0; }
+@media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
+.chip-failed-title { font-weight:600; }
+.chip-failed .chip-head { flex-wrap:wrap; }
+/* The box grows with its text (or a long hint) where the browser can size a field to its content. */
+.chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; field-sizing:content; }
+.chat-compose button { flex:0 0 auto; max-width:8.5em; white-space:normal; line-height:1.2; }
 /* A context chip: the part of the book a question is about, and exactly
    what goes with it. A long one scrolls within a share of the visible
    viewport, so an on-screen keyboard leaves the message box and Send in sight. */
@@ -15101,6 +15111,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
                 white-space:nowrap; }
 .chip-head button { min-height:28px; padding:0 8px; font-size:13px; }
+.chip-failed .chip-head button.link { padding:0 4px; }
 .chip-preview { color:var(--dim); overflow-wrap:anywhere; }
 .chip-items { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
 .chip-items li { color:var(--dim); }
@@ -15899,6 +15910,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             </div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <p id="chat-hint" class="chat-hint hidden" role="status" aria-live="polite"></p>
           <div id="chat-about" class="chat-about hidden" aria-live="polite"></div>
           <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
             <label for="chat-input" class="visually-hidden">Message</label>
@@ -17721,6 +17733,8 @@ function resetChatFor(book) {
   stopSpeaking();
   chatData = null; chatLive = null; chatScroll = null;
   panelOpen = false; panelView = "chat"; figureShown = 0; pageShown = 0;
+  chatQueued = false;
+  chatHint();
   clearAbout();
   $("chat-input").value = "";
   $("chat-log").replaceChildren();
@@ -17869,8 +17883,15 @@ function renderChatControls() {
   $("chat-add-model").classList.toggle("hidden", !problem || !!(chatData && chatData.problem));
   $("chat-send").classList.toggle("hidden", running);
   $("chat-stop").classList.toggle("hidden", !running);
-  // A chip still being made, or one that failed, goes with no question.
-  $("chat-send").disabled = !!problem || !!(chatAbout && !chatAbout.manifest);
+  const preparing = !!(chatAbout && !chatAbout.manifest && !chatAbout.error);
+  const send = $("chat-send");
+  // Pressed while the part is still being attached, Send waits for it.
+  send.textContent = chatSending ? "Sending…" : preparing ? "Preparing context…" : "Send";
+  send.disabled = chatSending || !!(chatData && chatData.problem);
+  $("chat-input").placeholder = !chatAbout || chatAbout.error ? CHAT_PLACEHOLDER
+    : chatAbout.about.kind === "selection" ? "Ask about the selection, or press Enter to have it explained"
+    : chatAbout.about.kind === "figure" ? "Ask about the figure, or press Enter to have it explained"
+    : "Ask about this part, or press Enter to have it explained";
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
   $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
@@ -18040,9 +18061,12 @@ function fillChatModels(catalog) {
   renderChatControls();
   renderChatHeader();
 }
+let chatModelsLoading = false;
 async function refreshChatModels() {
+  chatModelsLoading = true;
   try { fillChatModels(await jsonRequest("/api/paper/models")); }
-  catch (error) { chatHasModels = false; chatModelsError = error.message; renderChatControls(); }
+  catch (error) { chatHasModels = false; chatModelsError = error.message; }
+  finally { chatModelsLoading = false; renderChatControls(); }
 }
 // The panel's head: the book, the section the question is about (else the
 // one playing), and where the chosen model runs, before anything is sent.
@@ -18059,25 +18083,79 @@ function renderChatHeader() {
   badge.classList.toggle("cloud", badge.textContent.startsWith("Cloud"));
 }
 
+// One way to send, for Enter and the Send button alike. Nothing is ever
+// dropped without a word: each reason a question can't go yet shows in the
+// panel, and the box keeps the question until the server has it. With a
+// part still being attached, the press waits for it (at most the chip's
+// 10 seconds); a part that couldn't be attached stays behind, and the
+// question goes without it, saying so. An empty box with a part attached
+// asks Hilde to explain that part.
+const DEFAULT_QUESTION = "Explain this part.";
+const CHAT_PLACEHOLDER = "Ask about this book, or ask Hilde to write a summary file";
+let chatQueued = false, chatSending = false;
+function chatHint(message = "", problem = false) {
+  const hint = $("chat-hint");
+  hint.textContent = message;
+  hint.classList.toggle("problem", problem);
+  hint.classList.toggle("hidden", !message);
+}
+function aboutName(about) {
+  return about.kind === "selection" ? "the selected text"
+    : about.kind === "figure" ? "the figure" : "the attached part";
+}
 async function sendChat(event) {
   if (event) event.preventDefault();
-  const text = $("chat-input").value.trim();
+  if (chatSending) { chatHint("Sending your question…"); return; }
+  if (chatData && chatData.running) {
+    chatHint("Hilde is still answering. Wait for the answer, or press Stop.");
+    return;
+  }
+  const typed = $("chat-input").value.trim();
+  if (!typed && !chatAbout) { chatHint("Type a question first."); focusChatInput(); return; }
+  if (chatAbout && !chatAbout.manifest && !chatAbout.error) {
+    chatQueued = true;
+    chatHint(`Your question goes as soon as ${aboutName(chatAbout.about)} is attached.`);
+    renderChatControls();
+    return;
+  }
+  chatQueued = false;
+  const failed = chatAbout && chatAbout.error ? chatAbout : null;
+  if (failed && !typed) {
+    chatHint(`Couldn't attach ${aboutName(failed.about)}. Press Retry, or type a question.`, true);
+    renderChatControls();
+    return;
+  }
   const model = $("chat-model").value;
-  if (!text || !model || (chatData && chatData.running)) return;
-  if (chatAbout && !chatAbout.manifest) return;
+  if (!model) {
+    if (chatModelsLoading) chatHint("The models are still loading. Your question stays here; send it again in a moment.");
+    else {
+      chatHint(`No model is available${chatModelsError ? `: ${chatModelsError}` : ": connect a provider, or add your local server."}`, true);
+      refreshChatModels();
+    }
+    renderChatControls();
+    return;
+  }
+  const sent = chatAbout && chatAbout.manifest ? chatAbout : null;
   if (state.player.chat_speak) unlockChatVoice();
-  $("chat-send").disabled = true;
+  chatSending = true;
+  chatHint();
+  renderChatControls();
   try {
     const data = await jsonRequest("/api/chat/send", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book, text, model, ...(chatAbout ? { about:chatAbout.about } : {}) }),
+      body:JSON.stringify({ book:state.player.book, text:typed || DEFAULT_QUESTION, model,
+        ...(sent ? { about:sent.about } : {}) }),
     });
-    $("chat-input").value = "";
-    clearAbout();
+    // What was typed meanwhile stays.
+    if ($("chat-input").value.trim() === typed) $("chat-input").value = "";
+    if (sent && chatAbout === sent) clearAbout();
+    if (failed) chatHint(`Sent without ${aboutName(failed.about)}.`);
     applyChat(data);
     connectChat(data.event_index);
   } catch (error) {
-    setStatus(error.message, true);
+    chatHint(`Not sent: ${error.message}`, true);
+  } finally {
+    chatSending = false;
     renderChatControls();
   }
 }
@@ -18158,49 +18236,96 @@ function jumpToPassage(number) {
 // there (playback moving on never changes it) until it is sent, removed, or
 // replaced. The chip shows the server's manifest: exactly what goes with
 // the question, and whether the figure's picture does.
-let chatAbout = null, chatAboutSeq = 0, askSelection = null, replaceSelection = null;
+// A chip is Preparing… until the server's manifest arrives, and counts as
+// failed after 10 seconds (the wait for the model list included); a failed
+// one offers Retry (the same part again) and Remove.
+const CHAT_CONTEXT_TIMEOUT = 10000;
+let chatAbout = null, askSelection = null, replaceSelection = null, chipPulseTimer = 0;
 async function attachAbout(about) {
   if (!about) return;
-  const seq = ++chatAboutSeq;
-  chatAbout = { about, manifest:null, error:"" };
+  const fresh = !chatAbout || JSON.stringify(chatAbout.about) !== JSON.stringify(about);
+  if (chatAbout && chatAbout.controller) chatAbout.controller.abort();
+  const controller = new AbortController();
+  const current = chatAbout = { about, manifest:null, error:"", controller };
   renderChatAbout();
-  if (!$("chat-model").value) await refreshChatModels();
+  if (fresh) pulseChip();
+  const timer = setTimeout(() => controller.abort(), CHAT_CONTEXT_TIMEOUT);
+  const stopped = new Promise((_, reject) => controller.signal.addEventListener("abort",
+    () => reject(new Error("It took longer than 10 seconds.")), { once:true }));
+  stopped.catch(() => {});
   try {
-    const manifest = await jsonRequest("/api/chat/context", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
+    if (!$("chat-model").value) await Promise.race([refreshChatModels(), stopped]);
+    const manifest = await Promise.race([jsonRequest("/api/chat/context", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, signal:controller.signal,
       body:JSON.stringify({ book:state.player.book, model:$("chat-model").value, about }),
-    });
-    if (seq === chatAboutSeq) chatAbout.manifest = manifest;
+    }), stopped]);
+    current.manifest = manifest;
   } catch (error) {
-    if (seq === chatAboutSeq) chatAbout.error = error.message;
+    current.error = controller.signal.aborted ? "It took longer than 10 seconds." : error.message;
+  } finally {
+    clearTimeout(timer);
   }
-  if (seq === chatAboutSeq) renderChatAbout();
+  if (chatAbout !== current) return;
+  current.controller = null;
+  renderChatAbout();
+  if (chatQueued) sendChat();
 }
 function clearAbout() {
-  chatAboutSeq++;
+  if (chatAbout && chatAbout.controller) chatAbout.controller.abort();
   chatAbout = null;
   renderChatAbout();
+  // A question waiting for the part goes without it.
+  if (chatQueued) sendChat();
+}
+// A newly attached part lights up briefly, so it's clear it went with the box.
+function pulseChip() {
+  const box = $("chat-about");
+  box.classList.remove("attached");
+  void box.offsetWidth;
+  box.classList.add("attached");
+  clearTimeout(chipPulseTimer);
+  chipPulseTimer = setTimeout(() => box.classList.remove("attached"), 1600);
 }
 function renderChatAbout() {
   const box = $("chat-about");
   box.replaceChildren();
   if (chatAbout && chatAbout.manifest) box.append(chipElement(chatAbout.manifest, true));
+  else if (chatAbout && chatAbout.error) box.append(failedChip(chatAbout.error));
   else if (chatAbout) {
     const chip = document.createElement("div");
-    chip.className = "chip";
-    const head = chipHead(chatAbout.error ? "Couldn't attach this part" : "Attaching…", true);
-    chip.append(head);
-    if (chatAbout.error) {
-      const problem = document.createElement("p");
-      problem.className = "problem";
-      problem.textContent = chatAbout.error;
-      chip.append(problem);
-    }
+    chip.className = "chip chip-preparing";
+    chip.append(chipHead("Preparing…", true));
     box.append(chip);
   }
   box.classList.toggle("hidden", !chatAbout);
   renderChatControls();
   renderChatHeader();
+}
+function failedChip(message) {
+  const chip = document.createElement("div");
+  chip.className = "chip chip-failed";
+  const head = document.createElement("div");
+  head.className = "chip-head";
+  const title = document.createElement("span");
+  title.className = "chip-failed-title";
+  title.textContent = "Couldn't attach:";
+  const retry = document.createElement("button");
+  retry.type = "button"; retry.className = "link";
+  retry.textContent = "Retry";
+  retry.addEventListener("click", () => { if (chatAbout) attachAbout(chatAbout.about); });
+  const dot = document.createElement("span");
+  dot.textContent = "·"; dot.setAttribute("aria-hidden", "true");
+  const remove = document.createElement("button");
+  remove.type = "button"; remove.className = "link";
+  remove.textContent = "Remove";
+  remove.setAttribute("aria-label", "Remove the part that couldn't be attached");
+  remove.addEventListener("click", () => { clearAbout(); focusChatInput(); });
+  head.append(title, retry, dot, remove);
+  const problem = document.createElement("p");
+  problem.className = "problem";
+  problem.textContent = message;
+  chip.append(head, problem);
+  return chip;
 }
 function chipHead(title, editable) {
   const head = document.createElement("div");
@@ -20606,6 +20731,8 @@ $("chat-model").addEventListener("change", (event) => {
   // The same part again: whether the figure's picture goes depends on the model.
   if (chatAbout) attachAbout(chatAbout.about);
 });
+// Typing clears a hint, unless a question is waiting for its part.
+$("chat-input").addEventListener("input", () => { if (!chatQueued) chatHint(); });
 $("chat-input").addEventListener("keydown", (event) => {
   // Enter sends; Shift+Enter starts a new line.
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) sendChat(event);

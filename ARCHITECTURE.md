@@ -1385,9 +1385,10 @@ adaptation catalog, `fillChatModels()`, kept as `player.chat_model`) with its
 **Local** / **Cloud: <provider>** badge (the catalog's `badge`,
 `model_badge()`), **Read answers aloud**, and **New conversation**; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
-**Providers** and **Add local**), the conversation, the chip, and the
-compose box: Enter sends, Shift+Enter breaks the line, **Stop** replaces
-**Send** while Hilde answers.
+**Providers** and **Add local**), the conversation, the hint line
+(`#chat-hint`, `chatHint()`), the chip, and directly under it the compose
+box: Enter sends, Shift+Enter breaks the line, **Stop** replaces **Send**
+while Hilde answers.
 
 A chip (`attachAbout()`) is the `about` of the question, frozen when
 attached: playback moving on never changes it. The page asks
@@ -1397,9 +1398,28 @@ each item's label and passage, opening to its text, plus whether the
 figure's picture goes ("Not sent: the figure's picture." and why, when it
 does not). **×** removes it; **Replace** attaches the text selected in the
 book instead, or else the part playing. Choosing another model asks for the
-manifest again, since the picture depends on the model. **Send** waits for
-the manifest and sends `about`; the stored question keeps the manifest, so
-past questions show the same chip. Sending clears the draft and the chip.
+manifest again, since the picture depends on the model. A newly attached
+chip pulses (`pulseChip()`: the `.attached` class for 1.6 s, a background
+animation plus an outline; the outline alone under `prefers-reduced-motion`).
+Until the manifest arrives the chip reads **Preparing…**; the wait for it,
+including fetching the model list when none is loaded, is cut at
+`CHAT_CONTEXT_TIMEOUT` (10 s) by an `AbortController`, and a timed-out or
+failed request leaves a **Couldn't attach: Retry · Remove** chip (Retry asks
+for the same `about` again).
+
+Enter and **Send** both call `sendChat()`, which never returns without a
+word in the hint line: an empty box with no chip ("Type a question first."),
+a request still in flight, Hilde still answering, no model (loading, or none
+available). While the chip prepares, **Send** reads **Preparing context…**
+and a press sets `chatQueued`; `attachAbout()` (or **×**) sends it when the
+chip settles. A failed chip stays and the question goes without it ("Sent
+without the selected text."); with an empty box and a failed chip, the hint
+asks for Retry or a question. An empty box with a ready chip sends
+`DEFAULT_QUESTION` ("Explain this part."), which the placeholder offers.
+The sent `about` is the manifest's; the stored question keeps the manifest,
+so past questions show the same chip. The box is cleared (and a sent chip
+removed) only once `POST /api/chat/send` succeeds; an error shows in the
+hint line and the text stays.
 
 One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
 time, on its own thread). `begin()` loads the book through `chat_book()` and

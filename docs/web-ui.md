@@ -320,6 +320,20 @@ only when its server is marked as seeing images; otherwise the list says the
 picture is not sent. The picture goes with that question only. Past questions
 keep their lists.
 
+The attached part sits directly above the message box and lights up briefly
+when attached (a steady outline instead when your system asks for reduced
+motion). It reads **Preparing…** while Hilde gathers it; **Send** then reads
+**Preparing context…**, and pressing it (or Enter) sends your question as soon
+as the part is ready. If gathering takes longer than 10 seconds or fails, the
+part reads **Couldn't attach: Retry · Remove**: **Retry** asks for the same
+part again, **Remove** drops it. A question sent then goes without it, and the
+chat says **Sent without the selected text**. With a part attached and nothing
+typed, Enter or **Send** asks Hilde to explain that part ("Explain this part."),
+as the box's hint says. Your question stays in the box until Hilde has it: if
+sending fails, the chat says why above the box and the text is still there.
+The chat also says why when nothing can go yet: an empty box, models still
+loading or none added, or Hilde still answering.
+
 **🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
 own voice (or, when the Hilde voice is gone from **Voices**, the first voice
 there by name), marking the paragraph or list item being read. **❚❚ Pause
