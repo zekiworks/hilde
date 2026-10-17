@@ -1441,6 +1441,8 @@ WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
 # This machine's devices as local_off names them: a GPU by its UUID, which
 # survives a GPU failing and the others being renumbered.
 LOCAL_DEVICE_PATTERN = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mps|cpu")
+# A GPU as files written before UUIDs named it; read only to migrate it.
+LEGACY_GPU_PATTERN = re.compile(r"cuda:\d+")
 WORKER_NODE_KEYS = ("host", "python", "model", "devices")
 
 
@@ -1497,8 +1499,11 @@ def read_workers(path):
     if len(set(hosts)) != len(hosts):
         raise ValueError("each host may appear once; list all its devices under it")
     local_off = data.get("local_off") or []
+    # cuda:N is how files written before GPUs were named by UUID list them;
+    # migrate_local_off() turns them into UUIDs at startup.
     if not isinstance(local_off, list) or not all(
-        isinstance(device, str) and LOCAL_DEVICE_PATTERN.fullmatch(device)
+        isinstance(device, str)
+        and (LOCAL_DEVICE_PATTERN.fullmatch(device) or LEGACY_GPU_PATTERN.fullmatch(device))
         for device in local_off
     ):
         raise ValueError(
@@ -1507,6 +1512,31 @@ def read_workers(path):
     if len(set(local_off)) != len(local_off):
         raise ValueError("local_off: each device may appear once")
     return nodes, local_off
+
+
+def migrate_local_off(local_off, devices=None):
+    """Return local_off with each cuda:N replaced by that GPU's UUID name, and
+    whether anything changed.
+
+    An index means the GPU the probe numbers N now, so this runs once, at the
+    first start after the upgrade, and the file is rewritten with UUIDs."""
+    if not any(LEGACY_GPU_PATTERN.fullmatch(device) for device in local_off):
+        return list(local_off), False
+    choices = devices if devices is not None else available_devices()
+    names = {choice["value"]: local_device_id(choice) for choice in choices}
+    migrated = []
+    for device in local_off:
+        if LEGACY_GPU_PATTERN.fullmatch(device):
+            name = names.get(device, "")
+            if not LOCAL_DEVICE_PATTERN.fullmatch(name):
+                raise ValueError(
+                    f"{device} is turned off, but this machine has no such GPU with a UUID now; "
+                    "replace it with the GPU's UUID as nvidia-smi -L shows it, or remove it"
+                )
+            device = name
+        if device not in migrated:
+            migrated.append(device)
+    return migrated, True
 
 
 def write_workers(path, nodes, local_off):
@@ -18288,6 +18318,10 @@ def main():
     workers_path = storage.root / WORKERS_FILE
     try:
         nodes, local_off = read_workers(workers_path)
+        local_off, migrated = migrate_local_off(local_off)
+        if migrated:
+            write_workers(workers_path, nodes, local_off)
+            print(f"{workers_path}: GPUs turned off are now named by UUID: {', '.join(local_off)}")
     except (OSError, ValueError) as exc:
         parser.error(f"{workers_path}: {exc}")
 

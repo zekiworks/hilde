@@ -79,7 +79,9 @@ nodes:
 `devices` take `cuda:N`, `mps`, or `cpu`. `local_off` names this machine's GPUs
 by UUID, as `nvidia-smi -L` shows them, because a GPU that fails renumbers the
 ones after it; it also takes `mps` or `cpu`. A GPU listed there stays off even
-while it is missing. To edit the file by hand, stop the server first; it reads
+while it is missing. A file from an earlier Hilde that lists `cuda:N` is
+rewritten once, at the next start, with the UUID of the GPU numbered N then.
+To edit the file by hand, stop the server first; it reads
 the file when it starts and refuses to start if a node is invalid or no worker
 would be left.
 

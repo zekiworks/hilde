@@ -722,7 +722,10 @@ it, NVML also counts a GPU the runtime cannot open, and indexing that GPU would
 drop the whole pool to one CPU worker. A skipped GPU shifts the later runtime
 indexes, so a local GPU's worker ID, and its name in `local_off`, is its UUID
 (`local_device_id()`); `cuda:N` is only the server's current index. Entries for
-a GPU not present stay in `local_off`, so a GPU that comes back stays off. The
+a GPU not present stay in `local_off`, so a GPU that comes back stays off. A
+`cuda:N` entry from before (`LEGACY_GPU_PATTERN`) is replaced at startup by the
+UUID of the GPU the probe numbers N (`migrate_local_off()`), and the file is
+rewritten; a number with no such GPU stops the server. The
 server sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and `pin_cuda()` starts every model
 child (narration, voice runs, previews, answer speech) with
 `CUDA_VISIBLE_DEVICES` set to the UUIDs of just the GPUs its `--device` and

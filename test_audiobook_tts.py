@@ -8049,8 +8049,6 @@ class WorkerNodeTests(unittest.TestCase):
                     web.read_workers(path)
         for reason, local_off in {
             "not a device": ["gpu0"], "a device twice": [self.GPU, self.GPU], "not a list": self.GPU,
-            # CUDA renumbers the GPUs after one that fails, so a number is unclear.
-            "a GPU by number": ["cuda:0"],
         }.items():
             with self.subTest(reason):
                 path.write_text(yaml.safe_dump({"local_off": local_off, "nodes": []}))
@@ -8059,6 +8057,27 @@ class WorkerNodeTests(unittest.TestCase):
         path.write_text("nodes: [unclosed")
         with self.assertRaises(ValueError):
             web.read_workers(path)
+
+    def test_a_file_from_before_uuids_turns_off_the_same_gpu_by_its_uuid(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "workers.yaml"
+        path.write_text(yaml.safe_dump({"local_off": ["cuda:1", "cpu"], "nodes": []}))
+        devices = [
+            {"value": "cuda:0", "label": "CUDA 0", "uuid": "0a0a0a0a-1111-2222-3333-444444444444"},
+            {"value": "cuda:1", "label": "CUDA 1", "uuid": "1b1b1b1b-1111-2222-3333-444444444444"},
+        ]
+        _, local_off = web.read_workers(path)
+
+        self.assertEqual(
+            web.migrate_local_off(local_off, devices),
+            (["GPU-1b1b1b1b-1111-2222-3333-444444444444", "cpu"], True),
+        )
+        self.assertEqual(web.migrate_local_off(["cpu"], devices), (["cpu"], False))
+        # A number this machine does not have now cannot be named, so the
+        # server stops rather than guess.
+        with self.assertRaises(ValueError):
+            web.migrate_local_off(["cuda:2"], devices)
 
     def test_each_node_device_narrates_with_that_nodes_python_model_and_device(self):
         workers = [
