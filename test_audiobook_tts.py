@@ -9623,6 +9623,27 @@ class WorkerNodeTests(unittest.TestCase):
         for private in ("10.0.0.5", "narrator", "/opt/qwen", "/models/Base"):
             self.assertNotIn(private, serialized)
 
+    def test_manage_from_network_lets_another_device_change_providers_and_machines(self):
+        server, origin = self.serve([self.NODE])
+        with mock.patch.object(web, "is_loopback_address", return_value=False), \
+                mock.patch.object(web, "LOCAL_ENDPOINTS", []):
+            # Off (the default): another device reads only.
+            self.assertEqual(self.request(origin, "/api/providers/local/remove", {"name": "nope"}),
+                             (403, {"error": web.PROVIDERS_LOCAL_ONLY}))
+            self.assertEqual(self.request(origin, "/api/workers")[0], 403)
+            server.manage_from_network = True
+            capabilities = self.request(origin, "/api/state")[1]["capabilities"]
+            self.assertTrue(capabilities["manage_workers"])
+            self.assertTrue(capabilities["manage_providers"])
+            # The route itself answers now: no such server, not "forbidden".
+            self.assertEqual(self.request(origin, "/api/providers/local/remove", {"name": "nope"}),
+                             (400, {"error": "No local server is named 'nope'."}))
+            status, workers = self.request(origin, "/api/workers")
+            self.assertEqual((status, [node["host"] for node in workers["nodes"]]), (200, [self.NODE["host"]]))
+            status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(server.worker_nodes, [])
+
     @staticmethod
     def probed(python="", model="", problem=""):
         return {

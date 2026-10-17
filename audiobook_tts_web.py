@@ -1665,15 +1665,16 @@ exec "$found" - "$MODEL" <<'HILDE_PROBE'
 
 WORKERS_LOCAL_ONLY = (
     "Narration workers on other machines are added and removed in a browser on the "
-    "server's own machine."
+    "server's own machine, or from any device when Hilde starts with --manage-from-network."
 )
 
 
 def is_loopback_address(host):
     """Whether a client address is this machine, including IPv4 mapped into IPv6.
 
-    The server has no sign-in, so only such a browser may choose the machines
-    it reaches over SSH and the programs it runs there.
+    The server has no sign-in, so by default only such a browser may choose the
+    machines it reaches over SSH and the programs it runs there
+    (Handler.may_manage(); --manage-from-network lifts it).
     """
     try:
         address = ipaddress.ip_address(str(host).split("%", 1)[0])
@@ -6656,7 +6657,8 @@ PROVIDERS_HEADER = """\
 LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
 LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "images")
 PROVIDERS_LOCAL_ONLY = (
-    "Providers are added, changed, and removed in a browser on the server's own machine."
+    "Providers are added, changed, and removed in a browser on the server's own machine, "
+    "or from any device when Hilde starts with --manage-from-network."
 )
 
 
@@ -14821,6 +14823,12 @@ class Handler(BaseHTTPRequestHandler):
         """Whether this request comes from a browser on the server's machine."""
         return is_loopback_address(self.client_address[0])
 
+    def may_manage(self):
+        """Whether this request may add, change, or remove providers and
+        machines: a browser on the server's machine, or any browser when
+        Hilde started with --manage-from-network (HildeServer.manage_from_network)."""
+        return self.local_client() or getattr(self.server, "manage_from_network", False)
+
     def secure(self):
         """Whether this request came over HTTPS."""
         return isinstance(self.connection, ssl.SSLSocket)
@@ -14917,9 +14925,9 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "capabilities": {
                         "airdrop": airdrop_available(),
-                        "manage_workers": self.local_client(),
+                        "manage_workers": self.may_manage(),
                         # Settings › Providers: the same rule as machines.
-                        "manage_providers": self.local_client(),
+                        "manage_providers": self.may_manage(),
                         # Hilde's own certificate authority, to install on a device.
                         "certificate": self.authority() is not None,
                     },
@@ -14927,7 +14935,7 @@ class Handler(BaseHTTPRequestHandler):
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/workers":
-            if not self.local_client():
+            if not self.may_manage():
                 return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
             return self.reply(
                 HTTPStatus.OK,
@@ -15112,11 +15120,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.save_draft(
                 str(body.get("draft", "")), str(body.get("name", "")).strip()
             )
-        # Settings › Providers: only a browser on the server's machine adds,
-        # changes, signs in to, or removes a provider; others read.
+        # Settings › Providers: only a browser that may manage (may_manage())
+        # adds, changes, signs in to, or removes a provider; others read.
         if (route.startswith("/api/providers/") or re.fullmatch(
             r"/api/paper/[a-z-]+/(login|cancel|remove|key|use)", route
-        )) and not self.local_client():
+        )) and not self.may_manage():
             return self.fail(HTTPStatus.FORBIDDEN, PROVIDERS_LOCAL_ONLY)
         if route == "/api/providers/local/save":
             try:
@@ -15284,8 +15292,8 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def change_workers(self, action, body):
-        """Change workers for a local browser: this machine's devices, or a node."""
-        if not self.local_client():
+        """Change workers for a browser that may manage: this machine's devices, or a node."""
+        if not self.may_manage():
             return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
         clone = self.server.tts_models["clone"]
         if clone["source"] != "local":
@@ -16551,6 +16559,8 @@ legend ~ * { clear:both; }
 .applies { color:var(--dim); font-size:12px; }
 .applies::before { content:"↻ "; color:var(--accent-light); }
 .server-only { margin-top:4px; }
+/* A startup flag named in a note stays on one line. */
+.server-only code { font:inherit; white-space:nowrap; }
 #advanced-voice > .row { margin-top:10px; }
 /* Machines and devices: this server, then the others, each with its devices and jobs. */
 .machines-part { display:grid; gap:10px; margin-top:6px; padding:12px 0 6px; border-top:1px solid var(--line); }
@@ -17143,7 +17153,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <fieldset id="settings-machines">
       <legend>Machines and devices</legend>
       <p id="machines-read-only" class="note server-only hidden">Read-only from this device. Manage
-        machines from a browser on the Hilde server.</p>
+        machines from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
       <p class="note">Text models are chosen in the model picker. This section shows the machines that do the
         work.</p>
       <section class="machines-part" aria-labelledby="machine-here-title">
@@ -17167,7 +17177,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <fieldset id="settings-providers" tabindex="-1">
       <legend>Providers</legend>
       <p id="providers-read-only" class="note server-only hidden">Read-only from this device. Manage
-        providers from a browser on the Hilde server.</p>
+        providers from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
       <p class="note">The model servers and cloud accounts every browser's model picker offers. This
         server keeps them.</p>
       <div id="provider-rows" class="provider-rows"></div>
@@ -21495,7 +21505,9 @@ const PICKERS = {
   verify:{ field:["audiobook", "verify_model"], label:"Checking model", title:"Check and correct descriptions",
            why:"Where the descriptions go to be checked", same:true, short:"Checking", flag:"paper-verify" },
   chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go" },
-  settings:{ field:["audiobook", "model"], label:"Text model", why:"Where the document's text goes" },
+  // Settings assigns only (assign): no Add local / Connect a provider beside
+  // it, and box 2 always opens the list; adding lives in Settings › Providers.
+  settings:{ field:["audiobook", "model"], label:"Text model", why:"Where the document's text goes", assign:true },
 };
 const MODEL_KINDS = {
   local:{ label:"Local", detail:"Open models on your own machines", all:"All local models" },
@@ -21672,8 +21684,9 @@ function mountPicker(host) {
     <p id="${name}-model-reason" class="model-reason note hidden" role="status"></p>
     <div id="${name}-alternatives" class="alternatives hidden" role="group"
       aria-label="${picker.label}: other models"></div>
-    <p id="${name}-picker-none" class="picker-none hidden"><button class="link" type="button" data-act="local">Add
-      local</button><button class="link" type="button" data-act="providers">Connect a provider</button></p>
+    ${picker.assign ? "" : `<p id="${name}-picker-none" class="picker-none hidden"><button class="link" type="button"
+      data-act="local">Add local</button><button class="link" type="button" data-act="providers">Connect a
+      provider</button></p>`}
     <div id="${name}-picker-pop" class="picker-pop hidden">
       <input id="${name}-picker-search" class="picker-search hidden" type="search" placeholder="Search models"
         aria-label="Search models" role="combobox" aria-expanded="true" aria-autocomplete="list"
@@ -21694,7 +21707,7 @@ function mountPicker(host) {
   // "-picker-change": "book-change" is Create step 1's own Change, which took this listener.
   $(`${name}-picker-change`).addEventListener("click", () => needsProvider(name)
     ? openProviderDialog({ kind:"cloud" }) : togglePicker(name, "model", true));
-  $(`${name}-picker-none`).addEventListener("click", (event) => {
+  if (!picker.assign) $(`${name}-picker-none`).addEventListener("click", (event) => {
     const act = event.target.closest("[data-act]")?.dataset.act;
     if (act) openProviderDialog({ kind:act === "local" ? "local" : "cloud" });
   });
@@ -21726,8 +21739,9 @@ function mountPicker(host) {
   });
 }
 // Runs on is Cloud with no provider connected: box 2 is "Connect a provider",
-// which opens the provider dialog on Cloud, in place of an empty list.
-function needsProvider(name) { return pickerKind(name) === "cloud" && noCloudModel(); }
+// which opens the provider dialog on Cloud, in place of an empty list (not in
+// Settings, which only assigns: its list offers Connect).
+function needsProvider(name) { return !PICKERS[name].assign && pickerKind(name) === "cloud" && noCloudModel(); }
 function renderPicker(name) {
   if (!state) return;
   const { same, model, problem, unreachable, how } = pickerChoice(name);
@@ -21757,7 +21771,7 @@ function renderPicker(name) {
   $(`${name}-model-reason`).classList.toggle("hidden", !why);
   $(`${name}-model-reason`).classList.toggle("unreachable", !!unreachable && !connect);
   renderAlternatives(name, unreachable && !connect ? pickerAlternatives(name, unreachable.selector) : []);
-  $(`${name}-picker-none`).classList.toggle("hidden", !none);
+  $(`${name}-picker-none`)?.classList.toggle("hidden", !none);
   if (openPicker && openPicker.name === name) renderPickerList(name);
 }
 // Why a first-use choice is what it is: the owner's preferred model, or the
@@ -23168,7 +23182,7 @@ async function pollSignIn(name) {
 }
 // Settings › Providers: one row per local server (the catalog's endpoints)
 // and per cloud connection this server has, each with Edit and Delete in a
-// browser on the server's machine; read-only elsewhere (caps.manage_providers).
+// browser that may manage (caps.manage_providers); read-only elsewhere.
 let providersSignature = "";
 // The cloud connections this server has, each as its row says it: provider,
 // way in (Subscription or API key), what it says of the connection, what
@@ -23514,7 +23528,7 @@ function deviceText(device) {
   return `${device.name || DEVICE_KINDS[device.kind] || device.device}${id ? ` (${id})` : ""}`;
 }
 // One device: its name and identifier, what it is, and whether it narrates;
-// `own` (this server's device, for a browser on the server's machine) adds
+// `own` (this server's device, for a browser that may manage machines) adds
 // the box that takes it out of narration.
 function deviceItem(device, worker, own, reported) {
   const item = document.createElement("li");
@@ -23605,7 +23619,7 @@ function renderMachines(force = false) {
     paperCatalog.loaded, paperCatalog.error, models]);
   if (!force && signature === machinesSignature) return;
   machinesSignature = signature;
-  // Only a browser on the server's machine manages machines; others read.
+  // Only a browser that may manage (caps.manage_workers) changes machines; others read.
   $("machines-read-only").classList.toggle("hidden", manage);
   const clone = configuration.clone || {}, design = configuration.design || {};
   const own = manage && workerNodes ? workerNodes.local || [] : [];
@@ -23630,7 +23644,7 @@ function renderMachines(force = false) {
       workers.find((worker) => worker.device === device.device),
       own.find((entry) => entry.device === device.device), true)),
     [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]));
-  // Other machines: by host for a browser on the server's machine, else by number.
+  // Other machines: by host for a browser that may manage them, else by number.
   const nodes = manage && workerNodes
     ? workerNodes.nodes.map((node, index) => ({ ...node, number:index + 1 }))
     : [];
@@ -24399,6 +24413,14 @@ def main():
     parser.add_argument("--port", type=int, default=8800, help="Port to bind (default: 8800).")
     parser.add_argument("--open", action="store_true", help="Open the page in a browser.")
     parser.add_argument("--verbose", action="store_true", help="Log every request to stderr.")
+    parser.add_argument(
+        "--manage-from-network", action="store_true",
+        help=(
+            "Let browsers on other devices add, change, and remove providers and machines too "
+            "(default: only a browser on this machine). Hilde has no sign-in: anyone who reaches "
+            "the server can then add keys, sign it out, or add SSH machines that run as this user."
+        ),
+    )
     secure = parser.add_argument_group("HTTPS")
     secure.add_argument(
         "--https", action="store_true",
@@ -24609,6 +24631,7 @@ def main():
     server.tts_models = tts_models
     server.storage = storage
     server.verbose = args.verbose
+    server.manage_from_network = args.manage_from_network
     if nodes and tts_models["clone"]["source"] != "local":
         print(
             f"{workers_path} is not used: its nodes narrate with --voice-clone-model.",
@@ -24647,6 +24670,8 @@ def main():
         print("Remote access enabled: paths and runs act as this user.", flush=True)
         if not tls:
             print("Plain HTTP: browsers on other devices flag downloads; --https serves HTTPS.", flush=True)
+    if args.manage_from_network:
+        print("Providers and machines can be changed from any device that reaches this server.", flush=True)
     if args.open:
         webbrowser.open(url)
     # The xAI sign-in is renewed in the background while this server runs.

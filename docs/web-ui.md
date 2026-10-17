@@ -75,7 +75,8 @@ cloud), and **Model**, which lists only models of that kind; **Change** beside
 them opens the model list. Switching Runs on sends nothing: it opens the list
 of that kind, and closing it without a choice keeps the model you had.
 Choosing Cloud while no provider is connected opens no empty list: the Model
-box reads **Connect a provider**. Any connected cloud model takes three
+box reads **Connect a provider** (in Settings, which only assigns models, it
+opens the list with its **Connect** rows instead). Any connected cloud model takes three
 clicks: Runs on, Cloud, the model. Each list, from the live model lists only:
 
 - The default first (marked **Default**), then the models this browser used
@@ -250,7 +251,8 @@ batches from that audiobook. A second job waits when the first has claimed the
 whole pool. The progress view and **Settings** show each worker's device and
 live state. GPUs of other machines appear as `Machine 1 · GPU 2` and so on.
 Speech-server URLs and filesystem paths are not published; the nodes' hosts
-and paths are shown only to a browser on the server's own machine. The
+and paths are shown only to a browser on the server's own machine (to any
+browser with `--manage-from-network`). The
 server's own short host name is shown to every browser.
 
 A job ID is derived only from the selected document's content version and the
@@ -657,18 +659,26 @@ takes effect: "Applies to the next audiobook" or "Applies now". The groups:
   for OpenAI (ChatGPT sign-in), Anthropic (Claude Code on the server: turns it
   on and shows its status), and xAI (SuperGrok or X Premium+ sign-in); see
   [Text adaptation](text-adaptation.md) for each. Applies now. On other
-  devices the rows are read-only, without Add, Edit, or Delete, under the note
-  "Read-only from this device. Manage providers from a browser on the Hilde
-  server."
-- **Models and connection**: the narration and voice-design models by
-  readable name (such as `Qwen3-TTS 1.7B (Base)`; the model ID is in the
+  devices, unless Hilde started with `--manage-from-network`, the rows are
+  read-only, without Add, Edit, or Delete, under the note "Read-only from this
+  device. Manage providers from a browser on the Hilde server, or start Hilde
+  with --manage-from-network."
+- **Models and connection** only assigns models to their jobs; adding servers
+  and connecting providers is under **Providers**, so this section has no
+  **Add local**, **Connect a provider**, or **Providers…** link. It shows the
+  narration and voice-design models by readable name (such as
+  `Qwen3-TTS 1.7B (Base)`; the model ID is in the
   tooltip), with **Local** or **Speech server**. Voice design adds the device
   its last design ran on, by name and ID, or "Device chosen on first use"
   before the first; with several GPUs, each design takes the one with the
   most free memory. Hilde sets these when it starts; to change them, restart
   Hilde with different settings. **Default text model** is this browser's own
   choice, the same picker and choice as Create's text model, which a book can
-  change; it works from any device. Under it, "Preferred on this server:
+  change; it works from any device. Its lists still end with **Add local** and
+  **Connect**, which open the provider dialog; with Cloud chosen and no
+  provider connected, its Model box opens that list instead of reading
+  **Connect a provider**. Settings has no separate default figure model: a
+  book's figure model is chosen in Create. Under it, "Preferred on this server:
   <name> · Local, on <host:port>" names the owner's first preferred text model
   and where it runs. **Connection**
   says "local (this computer)" on this computer, "HTTPS" over HTTPS, or, over
@@ -678,9 +688,11 @@ takes effect: "Applies to the next audiobook" or "Applies now". The groups:
   **Download Hilde's certificate** to install once on this device.
 
 Only a browser on the server's own machine sees the nodes' hosts and may change
-the devices and machines; elsewhere one note at the top of **Machines and
-devices** says "Read-only from this device. Manage machines from a browser on
-the Hilde server.", and other machines appear as `Machine 1` and so on.
+the devices and machines, unless Hilde started with `--manage-from-network`
+(see [Configuration](configuration.md#manage-from-other-devices)); elsewhere
+one note at the top of **Machines and devices** says "Read-only from this
+device. Manage machines from a browser on the Hilde server, or start Hilde with
+--manage-from-network.", and other machines appear as `Machine 1` and so on.
 Browsers cannot select, pin, or name devices.
 
 ## Asking before risky actions
@@ -700,11 +712,12 @@ browser alone also remembers, in its local storage,
 each book's place and speed, the side panel's width, the highlight style, and which stopped or
 failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
 worker devices/hosts, credentials, storage paths, and output paths remain
-server-owned; only a browser on the server's machine may add or remove the
-nodes in `workers.yaml`. Public API responses name local devices and models but omit
-hostnames, SSH targets, speech-server URLs, and paths; only `/api/workers`,
-which answers a browser on the server's own machine alone, names the nodes'
-hosts and paths. **AirDrop…** appears
+server-owned; only a browser on the server's machine (any browser with
+`--manage-from-network`) may add or remove the nodes in `workers.yaml`.
+Public API responses name local devices and models but omit hostnames, SSH
+targets, speech-server URLs, and paths; only `/api/workers`, which answers a
+browser that may manage machines alone, names the nodes' hosts and paths.
+**AirDrop…** appears
 only when the server runs on macOS with `pyobjc-framework-Cocoa`; other
 clients use **Download MP3**.
 

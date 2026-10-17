@@ -211,7 +211,11 @@ or cancel jobs, and stop running work. `--host 0.0.0.0` lets in every device
 that can reach the port, so use it only on a trusted network. A public
 deployment needs an authenticated TLS reverse proxy plus request/rate limits;
 with the proxy on the same machine, keep the default host. Cross-origin POST
-rejection is CSRF hardening, not access control.
+rejection is CSRF hardening, not access control. Providers and SSH machines
+change only from a browser on the server's own machine unless you start Hilde
+with `--manage-from-network`; then anyone who reaches it can add keys, sign it
+out, or add SSH machines that run as you (see
+[Configuration](docs/configuration.md#manage-from-other-devices)).
 
 ### HTTPS
 

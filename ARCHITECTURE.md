@@ -872,7 +872,9 @@ Each page:
      (`pickerKinds`); closing it unchosen takes the switch back. Cloud with no
      cloud model in the catalog (`needsProvider()`, `noCloudModel()`) opens no
      list: the switch stays and the Model box reads **Connect a provider**
-     and opens the provider dialog on Cloud (`aria-haspopup="dialog"`). A model list
+     and opens the provider dialog on Cloud (`aria-haspopup="dialog"`);
+     Settings' picker (`PICKERS.settings.assign`) only assigns, so it opens
+     the list there and has no `#settings-picker-none`. A model list
      has the default first (tag Default), this browser's recent models
      (`localStorage` `hilde.recentModels`, `noteRecentModel()`), then the
      rest, each with "reads images" and, for an Ollama model not loaded,
@@ -922,7 +924,8 @@ Each page:
      errors in red with ⚠). With `caps.manage_providers` each row has
      **Edit** and **Delete** (none for a set-at-startup server) and **Add**
      ends the list; elsewhere `#providers-read-only` says "Read-only from
-     this device. Manage providers from a browser on the Hilde server."
+     this device. Manage providers from a browser on the Hilde server, or
+     start Hilde with --manage-from-network."
      `deleteLocalProvider()` asks "Remove '<name>'?" and posts
      `/api/providers/local/remove`; `deleteCloudProvider()` asks "Sign out of
      <Provider> (Subscription)?" or "Remove the <Provider> API key?" and posts
@@ -1251,17 +1254,20 @@ available` with the reason, or `not tested`: text preparation is available on
 this server when the model catalog lists a model (`not tested` until it
 loads), never on a node; narration when the machine has a narration worker
 that is not off; voice design on this server with a local voice-design model,
-never on a node. A browser not on the server's machine sees one note at the
-top, "Read-only from this device. Manage machines from a browser on the Hilde
-server.", and no controls.
+never on a node. A browser that may not manage (`caps.manage_workers` false)
+sees one note at the top, "Read-only from this device. Manage machines from a
+browser on the Hilde server, or start Hilde with --manage-from-network.", and
+no controls.
 
-**Models and connection** shows, read-only, the narration and voice-design
+**Models and connection** only assigns models to their jobs (adding is under
+**Providers**: no Add local, Connect, or Providers… link here). It shows, read-only, the narration and voice-design
 models by readable name (`speechModelName()`, the ID in the tooltip) and, for
 voice design, the device its last run took: `run()` records it in
 `JobQueue.design_device` when a local design starts, and
 `public_configuration()` describes it with `machine_device()`; `/api/jobs`
 carries `configuration` too, so the page shows it without a reload ("Device
-chosen on first use" before). Then **Default text model** and the connection
+chosen on first use" before). Then **Default text model** (the text model
+only; Settings has no default figure model) and the connection
 (`renderConnection()`): "local (this computer)" on localhost, "HTTPS", or,
 when `window.isSecureContext` is false, the plain-HTTP warning linking to the
 README's HTTPS section, plus **Download Hilde's certificate** when the server
@@ -1298,10 +1304,11 @@ setup runs and disables Connect and Add node. **Stop setup** terminates the
 `ssh` process. SSH access itself (a key, an accepted host key, an SSH server
 on the node) and `git` and `curl` there remain the user's to provide.
 
-Only a browser whose address is loopback
-(`is_loopback_address()`, IPv4-mapped included) sees the hosts and paths
-(`capabilities.manage_workers`, `GET /api/workers`) or may probe, set up, add,
-or remove; others get HTTP 403 and see only the chips.
+Only a browser that may manage (`Handler.may_manage()`: a loopback address,
+`is_loopback_address()`, IPv4-mapped included, or any address when the server
+started with `--manage-from-network`, `HildeServer.manage_from_network`) sees
+the hosts and paths (`capabilities.manage_workers`, `GET /api/workers`) or may
+probe, set up, add, or remove; others get HTTP 403 and see only the chips.
 
 Browser state contains no device
 choice. Local audiobook jobs claim all currently idle local CUDA and
@@ -1872,7 +1879,7 @@ last answer of a finished turn is read.
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
-Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine." (`PROVIDERS_LOCAL_ONLY`) unless the request comes from loopback, the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers`.
+Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine, or from any device when Hilde starts with --manage-from-network." (`PROVIDERS_LOCAL_ONLY`) unless `Handler.may_manage()` (loopback, or `--manage-from-network`), the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers` and `manage_workers`. `may_manage()` is the only use of `local_client()`; nothing else depends on where a browser is. With `--manage-from-network` the server prints "Providers and machines can be changed from any device that reaches this server." at startup.
 
 POST requests with a cross-origin `Origin` host are refused. This is CSRF hardening, not authentication. The default bind is `127.0.0.1`, this machine only; `--host 0.0.0.0` serves every interface.
 
@@ -1886,7 +1893,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 
 ## Core invariants
 
-- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`, whose nodes and local devices turned off only a browser on the server's own machine (a loopback address) may change, because the server has no sign-in.
+- The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`, whose nodes and local devices turned off only a browser on the server's own machine (a loopback address) may change, because the server has no sign-in; `--manage-from-network` extends that, and Settings › Providers, to every browser that reaches the server.
 - Chat's web tools exist only when the operator passes `--search-server`; the page a model asks to read is fetched only from a public address, checked on the connection itself at every redirect.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.

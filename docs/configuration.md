@@ -29,6 +29,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--tls-cert`, `--tls-key` | Serve over HTTPS with your own certificate and key (PEM, chain included), such as one for your domain or from Tailscale, instead of Hilde's. |
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
+| `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
 | `--local-server PROVIDER=URL[,vision]` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
@@ -39,6 +40,17 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--voice-clone-server`, `--voice-clone-server-model` | A speech server for narration instead of the model; the server model defaults to `tts-1`. |
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](web-ui.md#voices). |
+
+### Manage from other devices
+
+By default only a browser on the server's own machine may add, change, or
+remove providers (**Settings › Providers**) and narration machines
+(**Settings › Machines and devices**); other devices see them read-only.
+`--manage-from-network` lets every browser do so, and the server says at
+startup "Providers and machines can be changed from any device that reaches
+this server." Hilde has no sign-in: with the flag, anyone who reaches the
+server can add API keys, sign it out of a provider, or add SSH machines that
+then run programs as this user, so use it only on a network you trust.
 
 ### Start at boot
 
@@ -242,7 +254,8 @@ Delete a file to sign out or forget a key (**Delete** under **Settings ›
 Providers** does the same). The page never receives a key or a sign-in
 token; a saved key shows only as "Key saved". These files follow the server
 user's home, not `--storage-root`. Providers are added, changed, and removed
-only from a browser on the server's own machine; other devices see them
+only from a browser on the server's own machine, unless Hilde starts with
+[`--manage-from-network`](#manage-from-other-devices); other devices see them
 read-only.
 
 **Add** under **Settings › Providers** offers the ways in Hilde supports for
