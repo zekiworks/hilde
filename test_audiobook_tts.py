@@ -4613,6 +4613,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         # Such an entry is in older conversations; every later turn sends it again.
         entry = {"role": "user", "text": "A question.", "context": {"section": "3.2.1 Attention"}}
         self.assertEqual(web._chat_user_parts(entry), [("text", "A question.")])
+        # A card made before any model is chosen (the preferred one unreachable) is text only, no badge.
+        self.assertEqual(web.chat_sees_images("", []), (False, "No model is chosen yet."))
 
     def test_a_local_model_no_added_server_offers_stops_the_job(self):
         temporary = tempfile.TemporaryDirectory()

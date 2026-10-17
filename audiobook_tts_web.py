@@ -10381,6 +10381,8 @@ def _passage_source(passage):
 def chat_sees_images(selector, local_servers):
     """Whether a chat request to this model can carry pictures, and why not."""
     provider = selector.partition("/")[0]
+    if not selector:
+        return False, "No model is chosen yet."
     if provider in LOCAL_MODEL_PROVIDERS:
         try:
             sees = local_route(selector, local_servers)["vision"]
@@ -10481,7 +10483,8 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
         "image": {"sent": True, "count": len(images)} if images else {
             "sent": False, "count": len(pictures), "why": why,
         },
-        "badge": model_badge(selector),
+        # No model chosen yet (the preferred one unreachable): no badge.
+        "badge": model_badge(selector) if selector else "",
     }
     return manifest, images
 
@@ -15426,10 +15429,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def chat_context_manifest(self, body):
         """The manifest of what a message about part of a book would bring,
-        for the page's context chip, made as Send makes it."""
+        for the page's context chip, made as Send makes it. Without a model
+        (none chosen, or the chosen one unreachable) the chip still shows its
+        part, as text; the page builds it again once a model is chosen."""
         model = str(body.get("model") or "").strip()
-        if not model:
-            return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
         attachment, failure = self.chat_attach(str(body.get("book") or ""), model, body.get("about"))
         if failure:
             return self.fail(*failure)
@@ -17933,9 +17936,15 @@ async function jsonRequest(path, options) {
   return answer;
 }
 
+// Local changes the server has not stored yet: a queued sync, or one on its
+// way. Until they are stored, the server's copy of this browser's state is
+// older than the page's, so nothing may replace the page's with it.
+let syncsPending = 0;
 async function sync() {
   collect();
+  clearTimeout(syncTimer); syncTimer = null;
   const sent = ++syncSeq;
+  syncsPending++;
   try {
     const answer = await jsonRequest("/api/sync", {
       method:"POST", headers:{ "Content-Type":"application/json" },
@@ -17947,9 +17956,13 @@ async function sync() {
     populateAssets(); render();
   } catch (error) {
     setStatus(error.message, true);
+  } finally {
+    syncsPending--;
   }
 }
 function queueSync() { syncSeq++; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 250); }
+// Whether the server holds everything this page changed.
+function stateStored() { return !syncTimer && !syncsPending; }
 
 // A document's type, by its name as the server checks it.
 const DOCUMENT_TYPES = { ".pdf":"PDF", ".md":"Markdown", ".markdown":"Markdown", ".txt":"Text", ".text":"Text" };
@@ -20088,7 +20101,9 @@ async function attachAbout(about, focus) {
     () => reject(new Error("It took longer than 10 seconds.")), { once:true }));
   stopped.catch(() => {});
   try {
-    if (!chatModel()) await Promise.race([refreshPaperModels(), stopped]);
+    // Only while the model list has not loaded: an unreachable or unchosen
+    // model still gets the card (as text), and choosing one builds it again.
+    if (!paperCatalog.loaded) await Promise.race([refreshPaperModels(), stopped]);
     const manifest = await Promise.race([jsonRequest("/api/chat/context", {
       method:"POST", headers:{ "Content-Type":"application/json" }, signal:controller.signal,
       body:JSON.stringify({ book:state.player.book, model:chatModel(), about }),
@@ -22743,11 +22758,13 @@ function watch(jobId="") {
       if (state.tab === "voice") focus = "voice-result";
     }
     let nextRun = null;
-    const synced = syncSeq;
+    const synced = syncSeq, stored = stateStored();
     try {
       const current = await jsonRequest("/api/state");
-      // Local changes made meanwhile win over the stored copy.
-      if (synced === syncSeq) { state = current.state; facts = current.derived; }
+      // Local changes made meanwhile, or not yet stored when this asked,
+      // win over the stored copy: a job another browser started can end
+      // while this page's choices are still on their way to the server.
+      if (synced === syncSeq && stored && stateStored()) { state = current.state; facts = current.derived; }
       assets = current.assets || assets;
       jobs = current.queue || []; runs = current.runs || [];
       consumers = current.consumers || []; recent = current.recent || recent;
