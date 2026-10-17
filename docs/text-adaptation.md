@@ -23,8 +23,9 @@ saying where the document's text goes:
   and the Google Gemini API's. A cloud provider that is busy or has a passing
   error is asked again, up to four times.
 - **Providers** connects cloud models: one row each for OpenAI, Google
-  (Gemini), Anthropic (Claude), and DeepSeek, whose **Connect** opens a dialog
-  with only the ways in that provider allows, then Claude Code.
+  (Gemini), Anthropic (Claude), DeepSeek, and xAI (Grok), whose **Connect**
+  opens a dialog with the ways in Hilde supports for that provider, then
+  Claude Code.
   - **OpenAI** offers two: **Sign in with ChatGPT (your membership)**, which
     signs this server in with a ChatGPT account and needs no API key (open the
     sign-in page it shows and enter the code, which **Copy** puts on the
@@ -65,16 +66,27 @@ saying where the document's text goes:
     OpenAI-compatible chat completions with the key; Ask Hilde sends DeepSeek
     its own reasoning back with each answer that used a tool, as its thinking
     mode requires.
-
-  Google and Anthropic do not allow their membership plans in other apps, so
-  their dialogs ask for an API key only.
+  - **xAI (Grok)** offers two. **Sign in with xAI** uses a SuperGrok or X
+    Premium+ plan with no API key: Hilde shows xAI's sign-in page and a code
+    to compare, you approve there, and this server keeps the sign-in
+    encrypted and renews it in the background. Its models appear as `xai/…`
+    ("xAI sign-in"). An **API key** from the [xAI console](https://console.x.ai/),
+    billed per use, lists the key's models as `xai-api/…` ("xAI API"). Both
+    list Grok's text models from xAI's live list, tagged **reads images** when
+    xAI's model list says they take images, and send requests to xAI's
+    OpenAI-compatible chat completions. If xAI answers 403 to the account,
+    Hilde says **xAI refused this account (403)** and offers **Use an API key
+    instead**; it never moves a book or a question to the key by itself. If
+    xAI stops renewing the sign-in, it says **Sign in to xAI again**.
 
   Each API key is checked with its provider before it is kept; **Remove**
   deletes it. A key is typed into a password field and the page never gets it
   back: afterwards it says only "Key saved". The server keeps the ChatGPT
-  sign-in in `~/.hilde/openai.json` and the keys in `~/.hilde/anthropic.json`,
-  `~/.hilde/openai-api.json`, `~/.hilde/gemini.json`, and
-  `~/.hilde/deepseek.json`, readable only by the user running it, for every
+  sign-in in `~/.hilde/openai.json`, the xAI sign-in encrypted in
+  `~/.hilde/xai.json` (its key in `~/.hilde/credentials.key`), and the keys in
+  `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`,
+  `~/.hilde/gemini.json`, `~/.hilde/deepseek.json`, and
+  `~/.hilde/xai-api.json`, readable only by the user running it, for every
   browser.
 - **Add local** connects model servers on your network, up to eight. It lists
   the servers you added, each with its type, a **This model sees images** box

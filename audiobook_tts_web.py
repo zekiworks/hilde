@@ -216,6 +216,27 @@ DEEPSEEK_MODEL_PROVIDER = "deepseek"
 DEEPSEEK_API_URL = "https://api.deepseek.com"
 # A DeepSeek model the list gives no context window for gets this many tokens.
 DEEPSEEK_DEFAULT_CONTEXT = 128_000
+XAI_MODEL_PROVIDER = "xai"
+# xAI (Grok) with the user's own xAI account (SuperGrok, X Premium+): the
+# public OAuth client of xAI's Grok CLI, signed in by device code (RFC 8628)
+# with PKCE. That client takes only loopback redirects, and this server is
+# often not the browser's machine, so the browser opens xAI's own page and
+# this server asks xAI when the sign-in is approved. Its token reaches the
+# same OpenAI-compatible API an xAI API key does.
+XAI_API_MODEL_PROVIDER = "xai-api"
+# An API key from the xAI console, billed per use.
+XAI_AUTH_URL = "https://auth.x.ai"
+XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+XAI_SCOPES = "openid profile email offline_access grok-cli:access api:access"
+XAI_API_URL = "https://api.x.ai/v1"
+# A sign-in code xAI gives no lifetime for lasts this long.
+XAI_DEVICE_LOGIN_SECONDS = 30 * 60
+# This server renews the xAI sign-in in the background, checking this often,
+# once it is this close to expiry.
+XAI_RENEW_CHECK_SECONDS = 300
+XAI_RENEW_MARGIN = 900
+# An xAI model whose list gives no context length gets this many tokens.
+XAI_DEFAULT_CONTEXT = 128_000
 # The OpenAI API lists every model it serves; these are the ones that write
 # text through the Responses API.
 OPENAI_API_MODEL_PATTERN = re.compile(r"^(gpt-|o\d|chatgpt-)")
@@ -256,9 +277,12 @@ LOCAL_SERVERS_MAX = 8
 # Local model servers registered for every browser with --local-server, as
 # {"server", "provider", "vision"}; set once at startup.
 SERVER_LOCAL_SERVERS = []
-# The server's own local default text model (--default-model), used when no
-# Gemma is installed; "" for none. Set once at startup.
-SERVER_DEFAULT_MODEL = ""
+# The owner's preferred models, by field ("text", "figure"), in order of
+# preference (--preferred-text-model, --preferred-figure-model): the first is
+# a browser's first-use model when it is reachable, and the others come first
+# among the alternatives offered when it is not. Never a fallback chain. Set
+# once at startup.
+SERVER_PREFERRED_MODELS = {"text": (), "figure": ()}
 # Local servers otherwise sample at the model's default, often 1.0, and the
 # same paper then reads differently on every run. Adapting the Attention paper
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
@@ -274,11 +298,12 @@ LOCAL_MAX_TOKENS = 16_000
 def local_request_options(provider):
     """Extra request fields for a local server of this type.
 
-    Ollama runs thinking models (Gemma 4, Qwen 3) in thinking mode unless told
-    otherwise, and Gemma 4 12B reasoned past 16,000 tokens on one paragraph of
-    adaptation without starting its answer; with thinking off it answered the
-    same request in seconds. Other servers get nothing extra: not every
-    OpenAI-compatible server accepts the field."""
+    Ollama runs a thinking model in thinking mode unless told otherwise, and
+    one such model reasoned past 16,000 tokens on one paragraph of adaptation
+    without starting its answer; with thinking off it answered the same
+    request in seconds. Other servers get nothing extra: not every
+    OpenAI-compatible server accepts the field, so it goes only to a server
+    added as Ollama, which ollama_model_names() checks is one."""
     return {"reasoning_effort": "none"} if provider == "ollama" else {}
 
 
@@ -3953,6 +3978,14 @@ def audiobook_reader_payload(storage, book, voice=None):
             for entry in record.get("voices") or ()
         ],
         "has_text": has_text,
+        # Which model wrote which parts, for the book's details on Listen.
+        "part_models": [
+            {"first": item["first"], "last": item["last"], "model": item["model"],
+             "name": selector_name(item["model"]), "badge": model_badge(item["model"])}
+            for item in record.get("part_models") or ()
+            if isinstance(item, dict) and isinstance(item.get("model"), str)
+            and isinstance(item.get("first"), int) and isinstance(item.get("last"), int)
+        ],
         "sample_rate": sample_rate,
         "timing_precision": timing_precision,
         "word_timing": word_timing,
@@ -5130,6 +5163,21 @@ class ModelConnectionError(RuntimeError):
     """A model request whose connection dropped or was refused; asking again may work."""
 
 
+class ModelUnreachable(RuntimeError):
+    """A model that stopped answering during a job, after the retries, or
+    whose server does not offer it when the job starts. The job pauses with
+    what it finished; it never goes on with another model by itself. `part`
+    is the paragraph number its first unfinished part starts at, or None."""
+
+    def __init__(self, model, part=None):
+        self.model, self.part = model, part
+        super().__init__(self.describe())
+
+    def describe(self):
+        name = model_name({"provider": self.model.partition("/")[0], "selector": self.model})
+        return f"{name} became unreachable at part {self.part}" if self.part else f"{name} is unreachable"
+
+
 class ModelRanOn(RuntimeError):
     """A model response cut off at its output limit, usually a model
     repeating itself; asking again may get a whole answer."""
@@ -5751,6 +5799,417 @@ def deepseek_request(payload, open_stream, pause, read):
     )
 
 
+# --- xAI (Grok): the user's own xAI account, or an API key ---------------------
+
+
+class XaiRefused(RuntimeError):
+    """xAI answered 403 to this server's xAI sign-in: the account is signed
+    in, but xAI does not serve it through its API. Asking again does not help;
+    an xAI API key may. Hilde never switches to one by itself."""
+
+
+XAI_REFUSED = "xAI refused this account (403)"
+XAI_SIGN_IN_AGAIN = "Sign in to xAI again"
+XAI_USE_KEY = (f"{XAI_REFUSED}. Use an API key instead: add one under Connect xAI (Grok), then "
+               "choose the xAI model listed under its API key.")
+# What the sign-in's encryption binds it to: this file and nothing else.
+XAI_SEALED_AS = b"hilde xai sign-in v1"
+
+
+def xai_credentials_path():
+    return HILDE_HOME / "xai.json"
+
+
+def credentials_key_path():
+    return HILDE_HOME / "credentials.key"
+
+
+def _credentials_key(create=False):
+    """This server's key for the credentials it keeps encrypted: 32 random
+    bytes, owner-only, in ~/.hilde beside them, made on first use with
+    `create`; None while there is none (or it is damaged)."""
+    path = credentials_key_path()
+    try:
+        key = path.read_bytes()
+    except FileNotFoundError:
+        if not create:
+            return None
+        HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(os.urandom(32))
+            # Whole or not at all, and never over a key another thread made.
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
+        finally:
+            temporary.unlink(missing_ok=True)
+        return _credentials_key()
+    except OSError:
+        return None
+    return key if len(key) == 32 else None
+
+
+def _seal(payload, purpose):
+    """`payload` as JSON encrypted with AES-256-GCM under this server's
+    credentials key, bound to `purpose`."""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError as exc:
+        raise RuntimeError("Keeping a sign-in needs the cryptography package: pip install -r requirements.txt") from exc
+    key = _credentials_key(create=True)
+    if key is None:
+        raise RuntimeError(f"Cannot make this server's credentials key in {credentials_key_path()}.")
+    nonce = os.urandom(12)
+    sealed = AESGCM(key).encrypt(nonce, json.dumps(payload).encode("utf-8"), purpose)
+    return {"sealed": "AES-256-GCM", "nonce": base64.b64encode(nonce).decode("ascii"),
+            "data": base64.b64encode(sealed).decode("ascii")}
+
+
+def _unseal(stored, purpose):
+    """What _seal() kept, or None when it cannot be opened: no key, another
+    key, a damaged or altered file."""
+    try:
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        return None
+    key = _credentials_key()
+    if key is None or not isinstance(stored, dict) or stored.get("sealed") != "AES-256-GCM":
+        return None
+    try:
+        plain = AESGCM(key).decrypt(
+            base64.b64decode(stored["nonce"], validate=True), base64.b64decode(stored["data"], validate=True),
+            purpose,
+        )
+        return json.loads(plain)
+    except (InvalidTag, KeyError, TypeError, ValueError):
+        return None
+
+
+def read_xai_credentials():
+    """This server's xAI sign-in, decrypted: {"access_token", "refresh_token"
+    ("" when xAI gave none), "expires_at", "email", "failed" (why it can no
+    longer be renewed, "" while it can)}; None when there is none or it
+    cannot be opened."""
+    try:
+        stored = json.loads(xai_credentials_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    credentials = _unseal(stored, XAI_SEALED_AS)
+    if (
+        not isinstance(credentials, dict)
+        or not isinstance(credentials.get("access_token"), str) or not credentials["access_token"]
+        or not isinstance(credentials.get("expires_at"), (int, float))
+        or not all(isinstance(credentials.get(name), str) for name in ("refresh_token", "email", "failed"))
+    ):
+        return None
+    return credentials
+
+
+def _write_xai_credentials(credentials):
+    _write_private_json(xai_credentials_path(), _seal(credentials, XAI_SEALED_AS))
+    return credentials
+
+
+def save_xai_credentials(tokens, previous=None):
+    """Keep an xAI token response encrypted and owner-only; a renewal may
+    omit the refresh token and the id token."""
+    previous = previous or {}
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise RuntimeError("xAI returned an incomplete sign-in.")
+    refresh_token = tokens.get("refresh_token") or previous.get("refresh_token") or ""
+    expires_in = tokens.get("expires_in")
+    if not isinstance(expires_in, (int, float)) or isinstance(expires_in, bool) or expires_in <= 0:
+        expires_in = 3600
+    # The account by its e-mail address only, from the id token's claims.
+    email = _token_claims(tokens.get("id_token")).get("email")
+    if not (isinstance(email, str) and "@" in email and len(email) <= 320):
+        email = previous.get("email") or ""
+    return _write_xai_credentials({
+        "access_token": access_token,
+        "refresh_token": refresh_token if isinstance(refresh_token, str) else "",
+        "expires_at": time.time() + expires_in,
+        "email": email,
+        "failed": "",
+    })
+
+
+def remove_xai_sign_in():
+    """Forget this server's xAI sign-in (Sign out)."""
+    with _XAI_SIGN_IN_LOCK:
+        xai_credentials_path().unlink(missing_ok=True)
+
+
+def _xai_auth_post(path, payload):
+    """POST a form to xAI's sign-in service; return the status and decoded body."""
+    request = urllib.request.Request(
+        f"{XAI_AUTH_URL}{path}", data=urllib.parse.urlencode(payload).encode("ascii"), method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
+            "User-Agent": HILDE_USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
+            status, raw = response.status, response.read(1024 * 1024)
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read(1024 * 1024)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot reach xAI sign-in: {exc}") from exc
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        data = {}
+    return status, data if isinstance(data, dict) else {}
+
+
+_XAI_SIGN_IN_LOCK = threading.Lock()
+
+
+def xai_access(refused_token=None):
+    """Return a usable xAI sign-in, renewing it near expiry or once a request
+    refused its token. xAI refusing the renewal (400, 401) marks the sign-in
+    failed: every use then says "Sign in to xAI again"; 403 raises
+    XaiRefused; a renewal xAI could not answer leaves a still valid token in
+    use and is tried again later."""
+    # One renewal at a time: a refresh token may be good for one renewal only.
+    with _XAI_SIGN_IN_LOCK:
+        credentials = read_xai_credentials()
+        if credentials is None:
+            raise RuntimeError("Sign in to xAI in Providers, under Adapt the text for listening, first.")
+        if credentials["failed"]:
+            raise RuntimeError(f"{XAI_SIGN_IN_AGAIN}: {credentials['failed']}")
+        now = time.time()
+        if credentials["expires_at"] - XAI_RENEW_MARGIN > now and credentials["access_token"] != refused_token:
+            return credentials
+        usable = credentials["expires_at"] - 60 > now and credentials["access_token"] != refused_token
+        if not credentials["refresh_token"]:
+            if usable:
+                return credentials
+            return _xai_sign_in_failed(credentials, "the sign-in expired and xAI gave no way to renew it")
+        try:
+            status, tokens = _xai_auth_post("/oauth2/token", {
+                "grant_type": "refresh_token", "client_id": XAI_CLIENT_ID,
+                "refresh_token": credentials["refresh_token"],
+            })
+        except RuntimeError:
+            if usable:
+                return credentials
+            raise
+        if status == 200:
+            return save_xai_credentials(tokens, credentials)
+        if status == 403:
+            raise XaiRefused(XAI_USE_KEY)
+        if status in (400, 401):
+            return _xai_sign_in_failed(credentials, _model_error(tokens, f"HTTP {status}"))
+        if usable:
+            return credentials
+        raise RuntimeError(f"xAI sign-in could not be renewed ({_model_error(tokens, f'HTTP {status}')}); "
+                           "Hilde tries again later.")
+
+
+def _xai_sign_in_failed(credentials, reason):
+    """Keep a sign-in xAI no longer renews, marked failed until the next
+    sign-in, and raise "Sign in to xAI again"."""
+    _write_xai_credentials({**credentials, "failed": str(reason)[:300] or "renewal refused"})
+    raise RuntimeError(f"{XAI_SIGN_IN_AGAIN}: {reason}")
+
+
+def renew_xai_sign_in():
+    """Renew this server's xAI sign-in when it is near expiry; what fails is
+    kept for the page to say (xai_access())."""
+    credentials = read_xai_credentials()
+    if credentials is None or credentials["failed"] or credentials["expires_at"] - XAI_RENEW_MARGIN > time.time():
+        return
+    try:
+        xai_access()
+    except RuntimeError:
+        pass
+
+
+def keep_xai_sign_in_fresh(stop):
+    """Renew the xAI sign-in in the background until `stop` is set, so a long
+    book never waits on it and a failed renewal shows before it is needed."""
+    while True:
+        renew_xai_sign_in()
+        if stop.wait(XAI_RENEW_CHECK_SECONDS):
+            return
+
+
+def xai_api_key_path():
+    return HILDE_HOME / "xai-api.json"
+
+
+def read_xai_api_key():
+    """Return this server's xAI API key, or None when it has none."""
+    return _read_api_key(xai_api_key_path())
+
+
+def _xai_get(path, token, signed_in):
+    """GET from xAI's API with the sign-in's token or an API key. For the
+    sign-in, 401 returns None (renew and ask again) and 403 raises
+    XaiRefused."""
+    request = urllib.request.Request(f"{XAI_API_URL}{path}", headers=_openai_api_headers(token))
+    try:
+        with urllib.request.urlopen(request, timeout=PROVIDER_REQUEST_TIMEOUT) as response:
+            return json.loads(response.read(8 * 1024 * 1024))
+    except urllib.error.HTTPError as error:
+        if signed_in and error.code == 401:
+            return None
+        if signed_in and error.code == 403:
+            raise XaiRefused(XAI_USE_KEY) from error
+        try:
+            detail = _model_error(json.loads(error.read(64 * 1024)), f"HTTP {error.code}")
+        except (AttributeError, OSError, ValueError):
+            detail = f"HTTP {error.code}"
+        verdict = "rejected the API key" if error.code in (401, 403) else "did not list its models"
+        raise RuntimeError(f"xAI {verdict}: {detail}") from error
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot list xAI models: {exc}") from exc
+
+
+def _xai_signed_in_get(path):
+    refused = None
+    for _ in range(2):
+        credentials = xai_access(refused)
+        payload = _xai_get(path, credentials["access_token"], signed_in=True)
+        if payload is not None:
+            return payload
+        refused = credentials["access_token"]
+    raise RuntimeError(f"xAI refused the renewed sign-in. {XAI_SIGN_IN_AGAIN}.")
+
+
+# What xAI's live lists said of each model at their last listing, per way
+# in: {provider: {model: {"images": reads images, "context": context window}}}.
+_XAI_MODELS = {}
+
+
+def xai_models(provider, key=None):
+    """List the text models the xAI sign-in (XAI_MODEL_PROVIDER) or an API
+    key (XAI_API_MODEL_PROVIDER) may use, in xAI's order, as {model:
+    {"images", "context"}}. Whether a model reads images comes from
+    input_modalities: in the /models list when it has them, else from
+    /language-models, xAI's list of chat and image-understanding models,
+    which also leaves out the image and video generators /models lists."""
+    if provider == XAI_MODEL_PROVIDER:
+        fetch = _xai_signed_in_get
+    else:
+        key = key or read_xai_api_key()
+        if not key:
+            raise RuntimeError("Add an xAI API key in Providers, under Adapt the text for listening, first.")
+        fetch = lambda path: _xai_get(path, key, signed_in=False)  # noqa: E731
+    rows = (fetch("/models") or {}).get("data")
+    rows = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]] \
+        if isinstance(rows, list) else []
+    if any(isinstance(row.get("input_modalities"), list) for row in rows):
+        described = {row["id"]: row for row in rows}
+    else:
+        described = {}
+        listed = (fetch("/language-models") or {}).get("models")
+        for row in listed if isinstance(listed, list) else ():
+            if isinstance(row, dict):
+                for name in [row.get("id"), *(row.get("aliases") or ())]:
+                    if isinstance(name, str) and name:
+                        described.setdefault(name, row)
+    models = {}
+    for row in rows:
+        info = described.get(row["id"])
+        outputs = info.get("output_modalities") if info else None
+        if info is None or (isinstance(outputs, list) and "text" not in outputs):
+            continue
+        inputs, context = info.get("input_modalities"), row.get("context_length")
+        models[row["id"]] = {
+            "images": isinstance(inputs, list) and "image" in inputs,
+            "context": context if isinstance(context, int) and context > 0 else XAI_DEFAULT_CONTEXT,
+        }
+    if not models:
+        way = "sign-in" if provider == XAI_MODEL_PROVIDER else "API key"
+        raise RuntimeError(f"xAI listed no text models for this {way}.")
+    _XAI_MODELS[provider] = models
+    return models
+
+
+def xai_model_info(provider, model):
+    """What xAI's list says of one model ({"images", "context"}), listing them
+    first when this server has not yet; None when xAI does not list it or
+    cannot be asked."""
+    if model not in _XAI_MODELS.get(provider, {}):
+        try:
+            xai_models(provider)
+        except RuntimeError:
+            return None
+    return _XAI_MODELS.get(provider, {}).get(model)
+
+
+def connect_xai_api(key):
+    """Keep an xAI API key, once xAI accepts it."""
+    key = _pasted_api_key(key, "Paste an API key from the xAI console.")
+    xai_models(XAI_API_MODEL_PROVIDER, key)
+    _write_private_json(xai_api_key_path(), {"api_key": key})
+
+
+def xai_response(provider, model, system_prompt, text, images, open_stream, pause):
+    """Adapt one batch with an xAI model through its chat completions."""
+    def read(response):
+        answer, _, _, reason = _chat_completion_stream(response, "xAI")
+        if reason == "length":
+            raise RuntimeError("xAI stopped at its output limit; lower Paragraphs per request.")
+        return answer
+    return xai_request(provider, {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _chat_completion_content(text, images)},
+        ],
+        "stream": True,
+    }, open_stream, pause, read)
+
+
+def xai_request(provider, payload, open_stream, pause, read):
+    """Send one streamed chat completion to xAI with the way in `provider`
+    names, asking again while xAI is busy: an API key as any keyed provider;
+    the sign-in renewed once when xAI refuses its token, and XaiRefused when
+    xAI answers 403. `read` takes the stream and returns the answer."""
+    url = f"{XAI_API_URL}/chat/completions"
+    if provider == XAI_API_MODEL_PROVIDER:
+        key = read_xai_api_key()
+        if key is None:
+            raise RuntimeError("Add an xAI API key in Providers, under Adapt the text for listening, first.")
+        return _keyed_request(url, _openai_api_headers(key, "text/event-stream"), payload, "xAI",
+                              open_stream, pause, read)
+    body = json.dumps(payload).encode("utf-8")
+    refused = None
+    attempt = 0
+    while True:
+        credentials = xai_access(refused)
+        with open_stream(url, _openai_api_headers(credentials["access_token"], "text/event-stream"), body) as response:
+            if response.status == 401:
+                if refused is not None:
+                    raise RuntimeError(f"xAI refused the renewed sign-in. {XAI_SIGN_IN_AGAIN}.")
+                refused = credentials["access_token"]
+                continue
+            if response.status == 403:
+                raise XaiRefused(XAI_USE_KEY)
+            if response.status in RETRYABLE_STATUSES and attempt < MODEL_RETRIES:
+                delay = _retry_delay(response, attempt)
+            elif response.status != 200:
+                raise _stream_failure(response, "xAI")
+            else:
+                try:
+                    return read(response)
+                except ModelBusy:
+                    if attempt == MODEL_RETRIES:
+                        raise
+                    delay = _retry_delay(None, attempt)
+        if pause(delay):
+            raise InterruptedError("document processing stopped")
+        attempt += 1
+
+
 def gemini_key_path():
     return HILDE_HOME / "gemini.json"
 
@@ -6143,8 +6602,10 @@ def local_loaded_names(local_server, provider):
     """Which listed models a local server has loaded now, as a set; None
     when it does not say. Ollama lists what is installed (/api/tags) and
     what is loaded (/api/ps), and loads an installed model on its first
-    request. LM Studio says each model's state (/api/v0/models). vLLM and
-    SGLang list only what they serve, which is loaded."""
+    request. Some OpenAI-compatible servers say each model's state
+    (/api/v0/models); one that does not lists only what it serves, which is
+    loaded. Optional extras: a server without them is "available" when it
+    answers /v1/models."""
     try:
         if provider == "ollama":
             rows = local_server_json(local_server, "/api/ps", "Ollama").get("models") or ()
@@ -6180,8 +6641,9 @@ def normalize_local_servers(entries):
 
 def local_server_option(value):
     """--local-server PROVIDER=URL[,vision]: one local model server for
-    every browser, as {"server", "provider", "vision"}. PROVIDER is ollama or
-    lm-studio (any OpenAI-compatible server: LM Studio, vLLM, SGLang);
+    every browser, as {"server", "provider", "vision"}. PROVIDER is lm-studio
+    for any OpenAI-compatible server, or ollama for an Ollama server, whose
+    extras (installed and loaded models, thinking off) Hilde then uses;
     ",vision" says its models see images."""
     provider, equals, rest = str(value).partition("=")
     address, comma, flag = rest.partition(",")
@@ -6202,21 +6664,19 @@ def local_server_option(value):
     return {"server": server, "provider": provider, "vision": bool(comma)}
 
 
-def default_model_option(value):
-    """--default-model SELECTOR: a LOCAL model, PROVIDER/MODEL with PROVIDER
-    ollama or lm-studio, as its server lists it; an API model is refused,
-    since a document goes to an API only when the user chooses one."""
+def preferred_model_option(value):
+    """--preferred-text-model / --preferred-figure-model SELECTOR: one of the
+    owner's preferred models, PROVIDER/MODEL as the model picker names it: a
+    local model (ollama/… or lm-studio/…, as its server lists it) or an API
+    model (such as openai/<model>). Hilde checks only the form here; whether
+    the model is reachable is said on the page."""
     selector = str(value).strip()
     provider, slash, name = selector.partition("/")
-    if slash and name.strip() and provider not in LOCAL_MODEL_PROVIDERS and "/" not in provider:
+    known = (*LOCAL_MODEL_PROVIDERS, *CHAT_PROVIDER_NAMES)
+    if not slash or not name.strip() or provider not in known:
         raise argparse.ArgumentTypeError(
-            f"{selector} is not a local model: the default text model must run on a local server "
-            f"({' or '.join(LOCAL_MODEL_PROVIDERS)}), such as lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4"
-        )
-    if not slash or not name.strip() or provider not in LOCAL_MODEL_PROVIDERS:
-        raise argparse.ArgumentTypeError(
-            f"use PROVIDER/MODEL with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
-            "such as lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4"
+            f"use PROVIDER/MODEL with PROVIDER one of {', '.join(known)}, as the model picker "
+            "shows it in a model's details, such as lm-studio/my-model"
         )
     return selector
 
@@ -6260,8 +6720,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
     picker shows it: {selector, provider, name (short), kind ("local" or
     "api"), badge, images, running}, a local one with its server; the
     picker's other rows (catalog_rows()): a local server that does not
-    answer, and each provider not connected; the model a choice left open
-    uses (default_gemma()); and each local server's status: whether it
+    answer, and each provider not connected; the owner's preferred models and
+    what a choice left open starts with (first_use_models()); and each local server's status: whether it
     answered, and whether it was registered on this server ("on_server"),
     so the page offers no Remove for it."""
     local_models, cloud_models, local_errors, local_status = [], [], [], []
@@ -6359,10 +6819,35 @@ def paper_model_catalog(local_servers=(), refresh=False):
             ]
         except RuntimeError as exc:
             deepseek_error = str(exc)
+    # xAI: the user's xAI account or an API key, each listing its own models;
+    # whether one reads images is what xAI's lists say.
+    xai_credentials = read_xai_credentials()
+    xai_connected = xai_credentials is not None and not xai_credentials["failed"]
+    xai_error = XAI_SIGN_IN_AGAIN if xai_credentials is not None and not xai_connected else ""
+    xai_refused = False
+    xai_api_connected, xai_api_error = read_xai_api_key() is not None, ""
+    for provider, connected in ((XAI_MODEL_PROVIDER, xai_connected), (XAI_API_MODEL_PROVIDER, xai_api_connected)):
+        if not connected:
+            continue
+        try:
+            cloud_models += [
+                {"provider": provider, "selector": f"{provider}/{name}", "images": info["images"]}
+                for name, info in xai_models(provider).items()
+            ]
+        except XaiRefused:
+            xai_error, xai_refused = XAI_REFUSED, True
+        except RuntimeError as exc:
+            if provider == XAI_API_MODEL_PROVIDER:
+                xai_api_error = str(exc)
+            elif str(exc).startswith(XAI_SIGN_IN_AGAIN):
+                xai_connected, xai_error = False, XAI_SIGN_IN_AGAIN
+            else:
+                xai_error = str(exc)
     for model in local_models + cloud_models:
         model.update(
             name=model_name(model), badge=model_badge(model["selector"]), running=True,
             kind="local" if model["provider"] in LOCAL_MODEL_PROVIDERS else "api",
+            size=model_size_text(model["selector"].partition("/")[2]),
         )
         # A cloud model gets figures as images (PaperRun.sees_images()).
         model.setdefault("images", True)
@@ -6380,17 +6865,23 @@ def paper_model_catalog(local_servers=(), refresh=False):
         GEMINI_MODEL_PROVIDER: (*reach((gemini_connected, gemini_error)), "No API key"),
         ANTHROPIC_MODEL_PROVIDER: (*reach((anthropic_connected, anthropic_error)), "No API key"),
         DEEPSEEK_MODEL_PROVIDER: (*reach((deepseek_connected, deepseek_error)), "No API key"),
+        # xAI: the xAI sign-in or an API key.
+        "xai": (*reach((xai_connected, xai_error), (xai_api_connected, xai_api_error)), "Not connected"),
         CLAUDE_CODE_MODEL_PROVIDER: (claude_code_connected, "", claude_code_message),
     }
-    default_model, default_status = default_local_model(local_models, local_status)
+    models = local_models + cloud_models
+    preferred = preferred_models(models)
     return {
-        "models": local_models + cloud_models,
-        "rows": catalog_rows(local_status, connections),
-        # Without a chosen model: a local Gemma, else the server's local
-        # default (default_local_model()). A document never goes to an API
-        # on its own.
-        "default_model": default_model,
-        "default_status": default_status,
+        "models": models,
+        # The xAI row says in red why the sign-in can't be used; a refused
+        # one offers an API key instead.
+        "rows": [{**row, **({"problem": True, "refused": True} if xai_refused else {"problem": True})}
+                 if row.get("provider") == "xai" and (xai_refused or xai_error == XAI_SIGN_IN_AGAIN) else row
+                 for row in catalog_rows(local_status, connections)],
+        # The owner's preferred models by field, reachable or not, and what a
+        # browser that has chosen nothing yet starts with (first_use_models()).
+        "preferred": preferred,
+        "first_use": first_use_models(models, preferred),
         "local_error": local_error,
         "local_servers": local_status,
         "openai_error": openai_error,
@@ -6405,17 +6896,21 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "gemini_connected": gemini_connected,
         "deepseek_error": deepseek_error,
         "deepseek_connected": deepseek_connected,
+        # xAI: whether the sign-in works (refused: xAI answered 403), the
+        # account by its e-mail address only, and the API key.
+        "xai_error": xai_error,
+        "xai_connected": xai_connected,
+        "xai_refused": xai_refused,
+        "xai_account": xai_credentials["email"] if xai_credentials is not None else "",
+        "xai_api_error": xai_api_error,
+        "xai_api_connected": xai_api_connected,
         "claude_code_connected": claude_code_connected,
         "claude_code_status": claude_code_message,
     }
 
 
-# A Gemma by its model name: "gemma" at its start or after a separator
-# ("google/gemma-3-27b-it", "gemma3:27b"), not inside another word
-# ("embeddinggemma", "paligemma").
-GEMMA_NAME = re.compile(r"(?:^|[/:_-])gemma", re.IGNORECASE)
-# A model's size in parameters from its name: "27b", "e4b" (Gemma 3n's
-# effective size), "270m"; not an active-parameter count such as "a3b".
+# A model's size in parameters from its name: "27b", "e4b" (an effective
+# size), "270m"; not an active-parameter count such as "a3b".
 MODEL_SIZE = re.compile(r"(?:^|[^a-z0-9.])e?(\d+(?:\.\d+)?)([bm])(?![a-z0-9])", re.IGNORECASE)
 
 
@@ -6426,33 +6921,70 @@ def model_size(name):
                 for number, unit in MODEL_SIZE.findall(name)), default=0)
 
 
-def default_local_model(local_models, local_status):
-    """The model a choice left open uses, and why, as (selector, status):
-    the largest Gemma a local server lists (installed counts: Ollama loads
-    it on first use; a loaded one first among equals) with "gemma"; else the
-    server's --default-model while a local server lists it, else the first
-    local model listed, with "gemma-not-running" when a local server does
-    not answer (it may hold the Gemma) or "no-gemma"; else ("", "none").
-    Never an API model."""
-    gemmas = [model for model in local_models if GEMMA_NAME.search(model["selector"].partition("/")[2])]
-    best = max(gemmas, default=None, key=lambda model: (
-        model_size(model["selector"].partition("/")[2]), model.get("loaded") is not False))
-    if best:
-        return best["selector"], "gemma"
-    if not local_models:
-        return "", "none"
-    listed = [model["selector"] for model in local_models]
-    fallback = SERVER_DEFAULT_MODEL if SERVER_DEFAULT_MODEL in listed else listed[0]
-    return fallback, "gemma-not-running" if any(not status["running"] for status in local_status) else "no-gemma"
+def model_size_text(name):
+    """A model's size as the picker shows it ("35B", "270M"), "" when its
+    name states none."""
+    size = model_size(name)
+    if not size:
+        return ""
+    return f"{size:g}B" if size >= 1 else f"{size * 1000:g}M"
+
+
+def preferred_models(models):
+    """The owner's preferred models (SERVER_PREFERRED_MODELS) by field, in
+    the owner's order, each as {selector, name, badge, kind, size, images,
+    reachable}: reachable while the catalog lists it (its server answers and
+    lists it, or its provider is connected and lists it)."""
+    listed = {model["selector"]: model for model in models}
+    preferred = {}
+    for field, selectors in SERVER_PREFERRED_MODELS.items():
+        entries = []
+        for selector in selectors:
+            model = listed.get(selector)
+            provider = selector.partition("/")[0]
+            entries.append({
+                "selector": selector,
+                "name": model["name"] if model else model_name({"provider": provider, "selector": selector}),
+                "badge": model_badge(selector),
+                "kind": "local" if provider in LOCAL_MODEL_PROVIDERS else "api",
+                "size": model["size"] if model else model_size_text(selector.partition("/")[2]),
+                "images": model["images"] if model else None,
+                "reachable": model is not None,
+            })
+        preferred[field] = entries
+    return preferred
+
+
+def first_use_models(models, preferred):
+    """What a browser that has chosen nothing for a field starts with, as
+    {selector, how} per field. Text: the owner's first preferred text model
+    ("preferred", with "unreachable" True while the catalog does not list
+    it: then nothing is used until someone chooses); with none configured,
+    the only model there is ("only"); else nothing ("none"). Figures: the
+    owner's first preferred figure model the same way, else the text model
+    ("same"). Never a fallback to another model."""
+    def first(field):
+        if preferred[field]:
+            entry = preferred[field][0]
+            return {"selector": entry["selector"], "how": "preferred", "unreachable": not entry["reachable"]}
+        return None
+    text = first("text") or (
+        {"selector": models[0]["selector"], "how": "only", "unreachable": False} if len(models) == 1
+        else {"selector": "", "how": "none", "unreachable": False}
+    )
+    figure = first("figure") or {"selector": "", "how": "same", "unreachable": False}
+    return {"text": text, "figure": figure}
 
 
 # The providers a picker offers to connect, by their name under Providers;
-# "openai" stands for both ways in to OpenAI (ChatGPT sign-in, API key).
+# "openai" stands for both ways in to OpenAI (ChatGPT sign-in, API key), "xai"
+# for both ways in to xAI (xAI sign-in, API key).
 CONNECT_PROVIDER_LABELS = {
     "openai": "OpenAI",
     GEMINI_MODEL_PROVIDER: "Google (Gemini)",
     ANTHROPIC_MODEL_PROVIDER: "Anthropic (Claude)",
     DEEPSEEK_MODEL_PROVIDER: "DeepSeek",
+    XAI_MODEL_PROVIDER: "xAI (Grok)",
     CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
 }
 
@@ -6476,7 +7008,9 @@ def catalog_rows(local_status, connections):
     return rows
 
 
-# How a model name's words read in a picker: "gemma-3-27b-it" is "Gemma 3 27B".
+# How a model name's words read in a picker, spelled as their makers spell
+# them ("glm-4-9b-chat" is "GLM 4 9B"): a spelling table for any server's
+# names, not a preference.
 MODEL_NAME_WORDS = {
     "gemma": "Gemma", "qwen": "Qwen", "llama": "Llama", "gpt": "GPT", "glm": "GLM", "deepseek": "DeepSeek",
     "mistral": "Mistral", "phi": "Phi", "oss": "OSS", "claude": "Claude", "gemini": "Gemini", "olmo": "OLMo",
@@ -8942,6 +9476,8 @@ def _adaptation_problem(values):
             and read_openai_api_key() is None
             and read_gemini_key() is None
             and read_deepseek_key() is None
+            and read_xai_credentials() is None
+            and read_xai_api_key() is None
             and not claude_code_status()[0]
             and not values["local_servers"]
         ):
@@ -8968,6 +9504,17 @@ def _adaptation_problem(values):
     elif provider == DEEPSEEK_MODEL_PROVIDER:
         if read_deepseek_key() is None:
             return ("Add a DeepSeek API key in Providers, under Adapt the text for "
+                    "listening, to use this model.")
+    elif provider == XAI_MODEL_PROVIDER:
+        credentials = read_xai_credentials()
+        if credentials is None:
+            return ("Sign in to xAI in Providers, under Adapt the text for listening, "
+                    "to use this model.")
+        if credentials["failed"]:
+            return f"{XAI_SIGN_IN_AGAIN} in Providers, under Adapt the text for listening, to use this model."
+    elif provider == XAI_API_MODEL_PROVIDER:
+        if read_xai_api_key() is None:
+            return ("Add an xAI API key in Providers, under Adapt the text for "
                     "listening, to use this model.")
     elif provider == CLAUDE_CODE_MODEL_PROVIDER:
         signed_in, status = claude_code_status()
@@ -9141,6 +9688,11 @@ def normalize(state):
     step = audiobook.get("step")
     if step not in ("book", "voice", "create"):
         step = "book"
+    # Step 1's chosen source card; a browser from before the cards used its
+    # typed link when it had one.
+    source = audiobook.get("source")
+    if source not in DOCUMENT_SOURCES:
+        source = "url" if stored_text(audiobook, "source_url").strip() else "saved"
     local_servers = audiobook.get("local_servers")
     if not isinstance(local_servers, list):
         # A browser from before the list kept one server; it becomes the first.
@@ -9169,9 +9721,16 @@ def normalize(state):
             "step": step,
             "server_voice": stored_text(audiobook, "server_voice"),
             "voice": stored_text(audiobook, "voice"),
+            # Each source card keeps its own value; only `source`'s is used
+            # (chosen_document()): the Saved document dropdown, the file
+            # uploaded under Upload, and the link with its Save as name and
+            # the Documents name Continue downloaded it to (`url_document`).
+            "source": source,
             "document": stored_text(audiobook, "document"),
+            "upload": stored_text(audiobook, "upload"),
             "source_url": stored_text(audiobook, "source_url"),
             "download_name": stored_text(audiobook, "download_name"),
+            "url_document": stored_text(audiobook, "url_document"),
             "adapt": audiobook.get("adapt") is not False,
             "model": stored_text(audiobook, "model"),
             # Added in Add local: each server's address, type, and whether
@@ -9225,13 +9784,33 @@ def _optional_asset(directory, name):
         return ""
 
 
+# Create step 1's source cards, in the page's order.
+DOCUMENT_SOURCES = ("saved", "url", "upload")
+
+
+def chosen_document(audiobook):
+    """The Documents name of the chosen source card only; a link counts once
+    Continue downloaded it."""
+    field = {"saved": "document", "url": "url_document", "upload": "upload"}
+    return audiobook[field[audiobook["source"]]].strip()
+
+
+def pending_url(audiobook):
+    """The link to download first: the URL card's, while it is the chosen
+    card and not yet downloaded; else empty, whatever the card keeps."""
+    if audiobook["source"] != "url" or chosen_document(audiobook):
+        return ""
+    return audiobook["source_url"].strip()
+
+
 def values_of(state, tts_models, storage):
     """Flatten canonical state and inject server-owned models and storage paths."""
     voice = state["voice"]
     audiobook = state["audiobook"]
     runtime = state["runtime"]
     voice_name = voice["name"].strip()
-    document_name = audiobook["document"].strip()
+    document_name = chosen_document(audiobook)
+    source_url = pending_url(audiobook)
     clone_voice = audiobook["server_voice"].strip()
     narrator_name = (
         clone_voice
@@ -9258,8 +9837,8 @@ def values_of(state, tts_models, storage):
         "voice_dir": _optional_asset(storage.voices, audiobook["voice"].strip()),
         "document_name": document_name,
         "input": _optional_asset(storage.documents, document_name),
-        "source_url": audiobook["source_url"].strip(),
-        "download_name": audiobook["download_name"].strip(),
+        "source_url": source_url,
+        "download_name": audiobook["download_name"].strip() if source_url else "",
         "adapt": audiobook["adapt"],
         "model": audiobook["model"].strip(),
         # The server's registered local servers, then the browser's own.
@@ -9362,8 +9941,8 @@ CHAT_CONTEXT_MAX_PASSAGES = 6
 # A picture sent with a message, as counted toward the model's window.
 CHAT_IMAGE_TOKENS = 1_600
 # Cloud providers whose chat requests carry pictures; a local model's do when
-# its server is marked as seeing images, a DeepSeek model's when its list
-# says so. Claude Code cannot chat.
+# its server is marked as seeing images, a DeepSeek or xAI model's when its
+# list says so. Claude Code cannot chat.
 CHAT_IMAGE_PROVIDERS = frozenset({
     OPENAI_MODEL_PROVIDER, OPENAI_API_MODEL_PROVIDER, ANTHROPIC_MODEL_PROVIDER, GEMINI_MODEL_PROVIDER,
 })
@@ -9371,6 +9950,7 @@ CHAT_PROVIDER_NAMES = {
     OPENAI_MODEL_PROVIDER: "OpenAI", OPENAI_API_MODEL_PROVIDER: "OpenAI",
     ANTHROPIC_MODEL_PROVIDER: "Anthropic", GEMINI_MODEL_PROVIDER: "Google",
     DEEPSEEK_MODEL_PROVIDER: "DeepSeek", CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
+    XAI_MODEL_PROVIDER: "xAI", XAI_API_MODEL_PROVIDER: "xAI",
 }
 CHAT_PREVIEW_CHARS = 80
 # Tool results and messages leave the model's context, oldest first, once it
@@ -9606,7 +10186,9 @@ come with what they attached from the book: the part they were listening to,
 words they selected, or a figure or table. Each part is labelled: "From the
 paper" is the source document's own text, "Hilde's narration" and "Hilde's
 description" are what the listener hears, "Your selection" is the words the
-listener selected. "This" and quoted words refer to what they attached.
+listener selected or clicked, and "The sentence around it" is only context
+for them: answer about the selection, using the sentence to read it right.
+"This" and quoted words refer to what they attached.
 
 You can write Markdown files the listener downloads, such as a summary or the
 conversation, with write_file, see them with list_files, and delete one with
@@ -9748,7 +10330,9 @@ def chat_about(about, passages):
     """The part of the book a message is about, checked against its
     passages: a run of paragraphs {"kind": "passages", "start", "end"}, words
     selected in them {"kind": "selection", "start", "end", "quote"}, or a
-    figure or table {"kind": "figure", "passage"}. ValueError says what is wrong."""
+    figure or table {"kind": "figure", "passage"}. A selection narrower than
+    its sentence (a clicked word) may bring that sentence as "sentence", its
+    context. ValueError says what is wrong."""
     kind = about.get("kind") if isinstance(about, dict) else None
     if kind == "figure":
         number = about.get("passage")
@@ -9772,7 +10356,13 @@ def chat_about(about, passages):
         quote = " ".join(str(about.get("quote") or "").split())
         if not quote or len(quote) > CHAT_MESSAGE_MAX_CHARS:
             raise ValueError(f"about.quote is the selected text, at most {CHAT_MESSAGE_MAX_CHARS:,} characters.")
-        return {"kind": kind, "start": start, "end": end, "quote": quote}
+        selection = {"kind": kind, "start": start, "end": end, "quote": quote}
+        sentence = " ".join(str(about.get("sentence") or "").split())
+        if len(sentence) > CHAT_MESSAGE_MAX_CHARS:
+            raise ValueError(f"about.sentence is the selection's sentence, at most {CHAT_MESSAGE_MAX_CHARS:,} characters.")
+        if sentence and sentence != quote:
+            selection["sentence"] = sentence
+        return selection
     raise ValueError('about.kind is "passages", "selection", or "figure".')
 
 
@@ -9802,6 +10392,9 @@ def chat_sees_images(selector, local_servers):
     if provider == DEEPSEEK_MODEL_PROVIDER:
         info = deepseek_model_info(selector.partition("/")[2])
         return (True, "") if info and info["images"] else (False, "This DeepSeek model reads text only.")
+    if provider in (XAI_MODEL_PROVIDER, XAI_API_MODEL_PROVIDER):
+        info = xai_model_info(provider, selector.partition("/")[2])
+        return (True, "") if info and info["images"] else (False, "This xAI model reads text only.")
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
         return False, "Claude Code can't chat; choose another model."
     return False, "This model can't take pictures in Chat."
@@ -9827,7 +10420,7 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
     laid out in the PDF, else its crops, when the model takes pictures.
     Paragraphs bring Hilde's narration and, where the adaptation changed
     them, the paper's text, and nothing near them; a selection brings its
-    words first."""
+    words first, then the sentence around them when it came along."""
     details = passage_details(passages)
     images, pictures = [], []
     if about["kind"] == "figure":
@@ -9871,6 +10464,9 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
                 items.append({"kind": "source", "label": _paper_label(details[number]), "passage": number,
                               "text": _passage_source(passage)})
         if about["kind"] == "selection":
+            if about.get("sentence"):
+                items.insert(0, {"kind": "sentence", "label": "The sentence around it", "passage": first,
+                                 "text": about["sentence"]})
             items.insert(0, {"kind": "selection", "label": "Your selection", "text": about["quote"]})
         preview = items[0]["text"] if items else ""
         why = "Only text is attached."
@@ -9891,13 +10487,19 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
 
 
 def chat_attachment_text(manifest):
-    """What a listener attached, as the model reads it: each part under its label."""
+    """What a listener attached, as the model reads it: each part under its
+    label; "" for a context that names no part (an entry that kept only its
+    section)."""
+    items = manifest.get("items") or ()
+    image = manifest.get("image") or {}
+    if not items and not image.get("sent"):
+        return ""
     parts = ["The listener attached this from the book:"]
-    for item in manifest["items"]:
+    for item in items:
         where = f" (¶{item['passage']})" if item.get("passage") else ""
         parts.append(f"[{item['label']}{where}]\n{item['text']}")
-    count = manifest["image"]["count"]
-    if manifest["image"]["sent"]:
+    count = image.get("count", 0)
+    if image.get("sent"):
         parts.append(f"[The figure as printed in the paper: {count} picture{'' if count == 1 else 's'}, attached.]")
     return "\n\n".join(parts)
 
@@ -9906,7 +10508,8 @@ def _chat_user_parts(entry):
     """A listener's message as ("text" | "image", value) parts: what they
     attached as labelled text, its pictures (present only on the turn that
     attached them), then what they wrote."""
-    parts = [("text", chat_attachment_text(entry["context"]))] if entry.get("context") else []
+    attached = chat_attachment_text(entry["context"]) if entry.get("context") else ""
+    parts = [("text", attached)] if attached else []
     parts += [("image", image) for image in entry.get("images") or ()]
     parts.append(("text", entry["text"]))
     return parts
@@ -10187,12 +10790,15 @@ def chat_context(entries, fixed_chars, window):
 
 def chat_context_window(selector, local_server):
     """How many tokens the chosen model takes: what an OpenAI-compatible
-    server or DeepSeek's model list reports, else a known provider's, else
+    server or DeepSeek's or xAI's model list reports, else a known provider's, else
     CHAT_LOCAL_CONTEXT."""
     provider, _, name = selector.partition("/")
     if provider == DEEPSEEK_MODEL_PROVIDER:
         info = deepseek_model_info(name)
         return info["context"] if info else DEEPSEEK_DEFAULT_CONTEXT
+    if provider in (XAI_MODEL_PROVIDER, XAI_API_MODEL_PROVIDER):
+        info = xai_model_info(provider, name)
+        return info["context"] if info else XAI_DEFAULT_CONTEXT
     if provider not in LOCAL_MODEL_PROVIDERS:
         return CHAT_PROVIDER_CONTEXT.get(provider, CHAT_LOCAL_CONTEXT)
     try:
@@ -10498,6 +11104,24 @@ def chat_model_reply(selector, local_servers, system, entries, tools, on_text, o
         text = deepseek_request(payload, open_stream, pause, read(answer))
         # DeepSeek needs the reasoning back with the answer while tools are on.
         return text, list(calls), {"reasoning_content": thought[0]} if thought and thought[0] else {}
+    if provider in (XAI_MODEL_PROVIDER, XAI_API_MODEL_PROVIDER):
+        # xAI's max_completion_tokens counts the visible answer only.
+        payload = {
+            "model": model, "messages": _chat_openai_messages(system, entries), "stream": True,
+            "max_completion_tokens": max_tokens,
+        }
+        if tools:
+            payload["tools"] = [{"type": "function", "function": tool} for tool in tools]
+            payload["tool_choice"] = "auto"
+
+        def answer(response):
+            text, _, found, reason = _chat_completion_stream(response, "xAI", on_text)
+            if reason == "length":
+                raise RuntimeError("xAI stopped at its output limit.")
+            calls.extend(found)
+            return text
+
+        return xai_request(provider, payload, open_stream, pause, read(answer)), list(calls), {}
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
         raise RuntimeError(
             "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
@@ -11825,6 +12449,10 @@ class JobQueue:
                     "status": record["status"],
                     "stage": record["run"].current_phase,
                     "progress": record["run"].last_count,
+                    # A job a model stopped answering in (AudiobookRun.paused).
+                    "paused": getattr(record["run"], "paused", None),
+                    # Which model wrote which parts of a finished book.
+                    "part_models": (record["run"].result or {}).get("part_models") or [],
                     "finished_at": record["finished_at"],
                 }
                 for record in finished
@@ -11878,6 +12506,60 @@ class JobQueue:
             for record in pending:
                 record["status"] = "canceled"
         self.stop_all()
+
+
+def same_but_models(manifest, identity):
+    """Whether an extraction manifest matches this run's identity but for the
+    models that write and check the batches: then the batches written so far
+    stay, each recording its model, and only the rest go to the model chosen
+    now. A local model both runs use must run where it ran and see images as
+    it did; any other difference redoes the adaptation."""
+    def without_models(entry):
+        kept = {key: value for key, value in entry.items() if key not in ("model", "local", "complete")}
+        for key in ("verification", "interpret_figures"):
+            if isinstance(kept.get(key), dict):
+                kept[key] = {name: value for name, value in kept[key].items() if name != "model"}
+        return kept
+    if not isinstance(manifest, dict) or without_models(manifest) != without_models(identity):
+        return False
+    before, now = manifest.get("local") or {}, identity.get("local") or {}
+    return all(before[model] == now[model] for model in before.keys() & now.keys())
+
+
+def batch_models(checkpoint_dir):
+    """Which model wrote which paragraphs, from a run's batch checkpoints, as
+    [{"first", "last", "model"}] in book order: neighbouring batches by one
+    model joined, a batch no model wrote (a numbered heading) joined to the
+    one before it, a batch not written yet left out."""
+    ranges = []
+    for path in sorted(Path(checkpoint_dir).glob("*.json")):
+        match = re.fullmatch(r"(\d{6})-(\d{6})", path.stem)
+        checkpoint = read_json_file(path)
+        if not match or not isinstance(checkpoint, dict) or "model" not in checkpoint:
+            continue
+        first, last, model = int(match[1]), int(match[2]), checkpoint["model"]
+        follows = bool(ranges) and ranges[-1]["last"] == first - 1
+        if follows and model in (None, ranges[-1]["model"]):
+            ranges[-1]["last"] = last
+        elif isinstance(model, str) and model:
+            ranges.append({"first": first, "last": last, "model": model})
+    return ranges
+
+
+def selector_name(selector):
+    """A model selector's short name, as the picker shows it."""
+    return model_name({"provider": selector.partition("/")[0], "selector": selector})
+
+
+def part_models_text(ranges):
+    """Which parts which model wrote, as a report line says it:
+    "parts 1–12: Model A (lm-studio/a); parts 13–40: Model B (…)"."""
+    lines = []
+    for item in ranges:
+        first, last = item["first"], item["last"]
+        parts = f"parts {first}–{last}" if last > first else f"part {first}"
+        lines.append(f"{parts}: {selector_name(item['model'])} ({item['model']})")
+    return "; ".join(lines)
 
 
 class PaperRun(Run):
@@ -11957,6 +12639,13 @@ class PaperRun(Run):
         self.fidelity = None
         self.seconds = {}
         self.prompt_version = None
+        # Which models wrote the batches a resumed run keeps when their
+        # checkpoints do not say (text, figure): this run's unless the
+        # manifest kept names others (prepare_document()).
+        self.earlier_models = (self.model, self.figure_model or self.model)
+        # Which model wrote which parts (batch_models()), for book.json and
+        # the job's report.
+        self.part_models = []
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -12210,13 +12899,16 @@ class PaperRun(Run):
 
     def model_response(self, request_path, system_prompt, attachments=(), model=None):
         """Ask the model, again after a dropped connection, up to MODEL_RETRIES
-        times; `model` (the checking model) instead of the text model if given."""
+        times; `model` (the checking model) instead of the text model if given.
+        A model still unreachable after that raises ModelUnreachable: the job
+        pauses, and no other model takes over."""
         for retry in range(MODEL_RETRIES + 1):
             try:
                 return self.request_model(request_path, system_prompt, attachments, model)
             except ModelConnectionError as exc:
                 if retry == MODEL_RETRIES:
-                    raise
+                    self.publish("log", f"{exc}; {MODEL_RETRIES} retries failed.\n")
+                    raise ModelUnreachable(model or self.model) from exc
                 delay = 2 ** retry
                 self.publish(
                     "log",
@@ -12254,6 +12946,11 @@ class PaperRun(Run):
         if provider == DEEPSEEK_MODEL_PROVIDER:
             return deepseek_response(
                 name, system_prompt, text, attachments, self.model_stream,
+                self.stop_requested.wait,
+            )
+        if provider in (XAI_MODEL_PROVIDER, XAI_API_MODEL_PROVIDER):
+            return xai_response(
+                provider, name, system_prompt, text, attachments, self.model_stream,
                 self.stop_requested.wait,
             )
         if provider == CLAUDE_CODE_MODEL_PROVIDER:
@@ -12537,12 +13234,15 @@ class PaperRun(Run):
         return {model: self.route_of(model)["vision"] for model in self.local_models()} or None
 
     def sees_images(self, model):
-        """Whether a model gets figures as images: a DeepSeek model when its
-        list says it reads them, another cloud model always, a local one when
+        """Whether a model gets figures as images: a DeepSeek or xAI model when
+        its list says it reads them, another cloud model always, a local one when
         the user says its server's models see them."""
         provider, _, name = model.partition("/")
         if provider == DEEPSEEK_MODEL_PROVIDER:
             info = deepseek_model_info(name)
+            return bool(info and info["images"])
+        if provider in (XAI_MODEL_PROVIDER, XAI_API_MODEL_PROVIDER):
+            info = xai_model_info(provider, name)
             return bool(info and info["images"])
         return provider not in LOCAL_MODEL_PROVIDERS or self.route_of(model)["vision"]
 
@@ -12701,6 +13401,13 @@ class PaperRun(Run):
             lines += [f"{named}: {problem}." for problem in problems]
             return narration, lines, hard_flags(problems, changed)
 
+        def writer(start, end, models=(self.model, self.figure_model or self.model)):
+            """The model that writes a batch: the figure model for a figure,
+            table, or equation while figures are interpreted, else the text
+            model."""
+            visual = self.interpret_figures and _describes_visual(set(kinds[start - 1:end]))
+            return models[1] if visual else models[0]
+
         summaries = []
         results = {}
         completed_count = 0
@@ -12717,10 +13424,14 @@ class PaperRun(Run):
             if not isinstance(summary, str) or not summary.strip():
                 continue
             narration, lines, flags = finish(start, end, narration.strip(), saved=True, chart=checkpoint.get("chart") is True)
-            if narration != checkpoint["narration"].strip() or (checkpoint.get("flags") or []) != flags:
+            # A batch saved before batches named their model was written by
+            # the model of the run that saved it (earlier_models).
+            model = checkpoint["model"] if "model" in checkpoint else writer(start, end, self.earlier_models)
+            if (narration != checkpoint["narration"].strip() or (checkpoint.get("flags") or []) != flags
+                    or "model" not in checkpoint):
                 write_json_atomic(
                     checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                    {**checkpoint, "narration": narration, "flags": flags},
+                    {**checkpoint, "narration": narration, "flags": flags, "model": model},
                 )
             for line in lines:
                 self.publish("log", line + "\n")
@@ -12734,7 +13445,7 @@ class PaperRun(Run):
                 continue
             write_json_atomic(
                 checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                {"end": end, "narration": text, "summary": text, "tags": []},
+                {"end": end, "narration": text, "summary": text, "tags": [], "model": None},
             )
             results[start] = (end, text, text)
             completed_count += 1
@@ -12747,7 +13458,7 @@ class PaperRun(Run):
                 text = "\n\n".join(paragraph.strip() for paragraph in requested[start - 1:end] if paragraph.strip())
                 write_json_atomic(
                     checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                    {"end": end, "narration": text, "summary": text, "tags": []},
+                    {"end": end, "narration": text, "summary": text, "tags": [], "model": None},
                 )
                 results[start] = (end, text, text)
                 completed_count += end - start + 1
@@ -12862,11 +13573,19 @@ class PaperRun(Run):
                         tuple(futures),
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
+                    # A model that stopped answering pauses the job at its
+                    # earliest unfinished batch; the batches that came back
+                    # with it are kept first.
+                    unreachable = None
                     for future in sorted(
                         completed, key=lambda item: futures[item][0]
                     ):
                         start, end = futures.pop(future)
-                        narration, summary, tags, chart = future.result()
+                        try:
+                            narration, summary, tags, chart = future.result()
+                        except ModelUnreachable as exc:
+                            unreachable = unreachable or ModelUnreachable(exc.model, start)
+                            continue
                         narration, lines, flags = finish(start, end, narration, chart=chart)
                         write_json_atomic(
                             checkpoint_dir / f"{start:06d}-{end:06d}.json",
@@ -12879,6 +13598,8 @@ class PaperRun(Run):
                                 "flags": flags,
                                 # Described as a chart: its checks on resume hold it to that.
                                 "chart": chart,
+                                # Which model wrote it, for the book's record.
+                                "model": writer(start, end),
                             },
                         )
                         results[start] = (end, narration, summary)
@@ -12893,6 +13614,8 @@ class PaperRun(Run):
                             )
                         completed_count += end - start + 1
                     commit_ready()
+                    if unreachable is not None:
+                        raise unreachable
                     committed = next_commit - 1
                     self.publish("activity", {
                         "completed": completed_count,
@@ -12939,10 +13662,14 @@ class PaperRun(Run):
     def prepare_document(self, scratch):
         scratch.mkdir(mode=0o750, parents=True, exist_ok=True)
         # Each local model goes to its server for the whole run, found now:
-        # a model no added server offers stops the job before any work.
+        # a model no added server offers pauses the job before any work.
         local = {}
         for model in self.local_models():
-            route = self.route_of(model)
+            try:
+                route = self.route_of(model)
+            except RuntimeError as exc:
+                self.publish("log", f"{exc}\n")
+                raise ModelUnreachable(model) from exc
             local[model] = {"server": route["server"], "vision": route["vision"]}
         started = time.monotonic()
         input_path = (
@@ -13041,10 +13768,19 @@ class PaperRun(Run):
                     paragraphs, scratch / "paragraph-checkpoints"
                 )
                 self.publish_fidelity()
+            self.part_models = batch_models(scratch / "paragraph-checkpoints")
             return self.output_path
-        if manifest is None or any(
-            manifest.get(key) != value for key, value in identity.items()
-        ):
+        if manifest is not None and same_but_models(manifest, identity):
+            # Another model for the rest: the batches written so far stay,
+            # each by the model that wrote it.
+            self.earlier_models = (
+                manifest["model"], (manifest.get("interpret_figures") or {}).get("model") or manifest["model"],
+            )
+            if manifest.get("model") != identity["model"] or manifest.get("interpret_figures") != identity[
+                    "interpret_figures"] or manifest.get("verification") != identity["verification"]:
+                self.publish("log", "The model changed: the parts already written stay as their model wrote "
+                                    "them; the remaining parts go to the model chosen now.\n")
+        else:
             for directory_name in (
                 "images",
                 "pdf-pages",
@@ -13094,6 +13830,10 @@ class PaperRun(Run):
                 reference_entries(split_paper_paragraphs(source)),
             )
             self.seconds["adapting"] = round(time.monotonic() - adapting_started, 1)
+            # The report: which parts which model wrote.
+            self.part_models = batch_models(scratch / "paragraph-checkpoints")
+            if self.part_models:
+                self.publish("log", f"Written by: {part_models_text(self.part_models)}.\n")
         else:
             temporary = self.output_path.with_name(
                 f".{self.output_path.name}.tmp"
@@ -13174,6 +13914,9 @@ class AudiobookRun(Run):
         self.prepared_input = None
         self.stop_requested = threading.Event()
         self.paper_run = None
+        # Set when a model stopped answering: what the paused job's card says
+        # ({model, name, part, message, picker, part_models}).
+        self.paused = None
         # How long this run took per stage, for the book's record.
         self.seconds = {}
 
@@ -13463,16 +14206,16 @@ class AudiobookRun(Run):
             self.set_phase("extraction", "Extraction")
             model = self.values["model"]
             if self.values["adapt"] and not model:
-                # No model chosen: the largest Gemma running on a local server.
+                # No model chosen: what a browser that chose nothing starts
+                # with (first_use_models()), or nothing; never another model.
                 catalog = paper_model_catalog(self.values["local_servers"])
-                model = catalog["default_model"]
+                first = catalog["first_use"]["text"]
+                if first["unreachable"]:
+                    name = catalog["preferred"]["text"][0]["name"]
+                    raise RuntimeError(f"No model was chosen, and {name} is unreachable. Choose a model.")
+                model = first["selector"]
                 if not model:
-                    raise RuntimeError(
-                        "No model was chosen and no local model is reachable; a document "
-                        "goes to an API only when you choose one. Choose a model under "
-                        "Model for this book."
-                        + (f" ({catalog['local_error']})" if catalog["local_error"] else "")
-                    )
+                    raise RuntimeError("No model was chosen. Choose a model under Model for this book.")
             self.paper_run = PaperRun(
                 input_path,
                 extraction_dir / "prepared.txt",
@@ -13544,6 +14287,10 @@ class AudiobookRun(Run):
                 else None
             ),
             "adapted": adapted,
+            # Which model wrote which parts ([{first, last, model}],
+            # batch_models()): more than one when a paused book went on with
+            # another model.
+            "part_models": self.paper_run.part_models if adapted else None,
             "chunk_max_chars": int(self.values["chunk_max_chars"]),
             "prose": self.paper_run.fidelity if adapted else None,
             "seconds": {
@@ -13572,7 +14319,7 @@ class AudiobookRun(Run):
             total_time = total_time_summary(seconds)
             self.result = {
                 "book": book, "voice": self.values["narrator"], "title": record.get("title"),
-                "total_time": total_time,
+                "total_time": total_time, "part_models": record.get("part_models") or [],
             }
             shutil.rmtree(self.stage, ignore_errors=True)
             self.publish("log", f"Completed audiobook: {record.get('title')} read by {self.values['narrator']}\n")
@@ -13584,6 +14331,25 @@ class AudiobookRun(Run):
                 f"Stopped. Resume data remains in {self.stage}.\n",
             )
             self.close(130)
+        except ModelUnreachable as exc:
+            # Paused: the parts written so far stay; Retry asks the same
+            # model again, or another model writes only the rest.
+            done = [{**item, "name": selector_name(item["model"])}
+                    for item in batch_models(self.stage / "extraction" / "paragraph-checkpoints")]
+            run = self.paper_run
+            picker = ("book" if run is None or exc.model == run.model
+                      else "figure" if run.interpret_figures and exc.model == (run.figure_model or run.model)
+                      else "verify")
+            self.paused = {
+                "model": exc.model, "name": selector_name(exc.model), "part": exc.part,
+                "message": str(exc), "picker": picker, "part_models": done,
+            }
+            self.publish(
+                "log",
+                f"Paused: {exc}." + (f" Kept: {part_models_text(done)}." if done else "")
+                + f"\nResume data remains in {self.stage}.\n",
+            )
+            self.close(1)
         except (
             LookupError,
             OSError,
@@ -13608,6 +14374,8 @@ class AudiobookRun(Run):
 
 class OpenAIOAuthLogin:
     """One ChatGPT device sign-in for this server, kept in ~/.hilde."""
+
+    LABEL = "OpenAI"
 
     def __init__(self):
         self.lock = threading.RLock()
@@ -13636,7 +14404,7 @@ class OpenAIOAuthLogin:
             self.status = "starting"
             self.url = ""
             self.code = ""
-            self.message = "Starting OpenAI sign-in…"
+            self.message = f"Starting {self.LABEL} sign-in…"
         threading.Thread(target=self._pump, args=(cancel,), daemon=True).start()
         return self.snapshot()
 
@@ -13711,11 +14479,80 @@ class OpenAIOAuthLogin:
         with self.lock:
             if self.status in ("starting", "waiting"):
                 self.status = "canceled"
-                self.message = "OpenAI sign-in canceled."
+                self.message = f"{self.LABEL} sign-in canceled."
             self.cancel.set()
         return self.snapshot()
 
 
+class XaiOAuthLogin(OpenAIOAuthLogin):
+    """One xAI device sign-in for this server (RFC 8628, with PKCE): the page
+    shows xAI's sign-in page and the code it should show; once the user
+    approves it there, the sign-in is kept encrypted in ~/.hilde."""
+
+    LABEL = "xAI"
+
+    def _pump(self, cancel):
+        try:
+            verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+            challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(verifier.encode("ascii")).digest()
+            ).rstrip(b"=").decode("ascii")
+            status, device = _xai_auth_post("/oauth2/device/code", {
+                "client_id": XAI_CLIENT_ID, "scope": XAI_SCOPES,
+                "code_challenge": challenge, "code_challenge_method": "S256",
+            })
+            device_code, code = device.get("device_code"), device.get("user_code")
+            url = device.get("verification_uri_complete") or device.get("verification_uri")
+            if (
+                status != 200
+                or not all(isinstance(value, str) and value for value in (device_code, code, url))
+                or urllib.parse.urlsplit(url).scheme != "https"
+            ):
+                raise RuntimeError(f"xAI did not start a sign-in: {_model_error(device, f'HTTP {status}')}")
+            try:
+                interval = float(device.get("interval") or 5)
+                lifetime = float(device.get("expires_in") or XAI_DEVICE_LOGIN_SECONDS)
+            except (TypeError, ValueError):
+                interval, lifetime = 5.0, float(XAI_DEVICE_LOGIN_SECONDS)
+            with self.lock:
+                if cancel is not self.cancel or cancel.is_set():
+                    return
+                self.status = "waiting"
+                self.url = url
+                self.code = code
+                self.message = "Open xAI's sign-in page, check that it shows this code, and approve."
+            deadline = time.monotonic() + lifetime
+            while not cancel.wait(max(OPENAI_DEVICE_POLL_FLOOR, interval)):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("The sign-in code expired. Connect again.")
+                status, tokens = _xai_auth_post("/oauth2/token", {
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": XAI_CLIENT_ID, "device_code": device_code, "code_verifier": verifier,
+                })
+                error = tokens.get("error")
+                if status == 200:
+                    with _XAI_SIGN_IN_LOCK:
+                        save_xai_credentials(tokens)
+                    self._settle(cancel, "connected",
+                                 "Signed in. This server keeps the sign-in in ~/.hilde, encrypted.")
+                    return
+                if error == "authorization_pending":
+                    continue
+                if error == "slow_down":
+                    interval += 5
+                    continue
+                if status == 403:
+                    raise XaiRefused(XAI_REFUSED)
+                if error == "access_denied":
+                    raise RuntimeError("The sign-in was declined at xAI.")
+                if error == "expired_token":
+                    raise RuntimeError("The sign-in code expired. Connect again.")
+                raise RuntimeError(f"xAI sign-in failed: {_model_error(tokens, f'HTTP {status}')}")
+        except XaiRefused:
+            # The page says it in red, with "Use an API key instead".
+            self._settle(cancel, "refused", "xAI did not complete the sign-in.")
+        except (OSError, RuntimeError) as exc:
+            self._settle(cancel, "failed", str(exc))
 
 
 # --- HTTP ---------------------------------------------------------------------
@@ -13930,6 +14767,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 HTTPStatus.OK, self.server.openai_login.snapshot()
             )
+        if route == "/api/paper/xai/status":
+            return self.reply(HTTPStatus.OK, self.server.xai_login.snapshot())
         if route == "/api/events":
             return self.events(query.get("job", [""])[0])
         if route == "/api/reader":
@@ -14064,11 +14903,20 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.openai_login.stop(),
             )
+        if route == "/api/paper/xai/login":
+            return self.reply(HTTPStatus.ACCEPTED, self.server.xai_login.start())
+        if route == "/api/paper/xai/cancel":
+            return self.reply(HTTPStatus.OK, self.server.xai_login.stop())
+        if route == "/api/paper/xai/remove":
+            self.server.xai_login.stop()
+            remove_xai_sign_in()
+            return self.reply_paper_catalog()
         # Providers an API key reaches: check and keep a key, or remove it.
         key_provider = {
             "/api/paper/anthropic": (connect_anthropic, anthropic_key_path),
             "/api/paper/openai-api": (connect_openai_api, openai_api_key_path),
             "/api/paper/deepseek": (connect_deepseek, deepseek_key_path),
+            "/api/paper/xai-api": (connect_xai_api, xai_api_key_path),
             "/api/paper/gemini": (connect_gemini, gemini_key_path),
         }.get(route.rpartition("/")[0])
         if key_provider and route.endswith("/key"):
@@ -15149,6 +15997,8 @@ a { color:var(--accent-light); }
 :focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
 /* Selected text: a neutral gray fill, never the accent (the word being read owns the blue). */
 ::selection { background:#5c5c5c; color:var(--text); }
+/* What a click in the text asks about (the card's focus): the same gray. */
+::highlight(reader-focus) { background-color:#5c5c5c; color:var(--text); }
 .hidden { display:none !important; }
 .visually-hidden { position:absolute !important; width:1px; height:1px; margin:-1px;
                    padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap;
@@ -15277,12 +16127,31 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
              padding-left:44px; }
 .step:not(.is-active) .step-body { display:none; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-/* Step 1: three separate ways to bring a document. */
+/* Step 1: three ways to bring a document, one radio group. The chosen card:
+   a filled dot and a blue border. The others: an empty circle, gray --off
+   text (not opacity alone), disabled controls that keep their values; a
+   click anywhere on one reaches the card (its contents take no pointer) and
+   chooses it. */
 .sources { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:10px; }
 .source-card { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:10px;
-               min-width:0; padding:12px 14px; border:1px solid var(--line); border-radius:10px; }
-.source-title { margin:0; font-size:14px; font-weight:650; }
-.source-card .line > select { flex:1 1 100%; }
+               min-width:0; padding:11px 13px; border:2px solid var(--line); border-radius:10px; }
+.source-card.is-on { border-color:var(--accent); }
+.source-card.is-off { cursor:pointer; }
+.source-card.is-off * { pointer-events:none; }
+.source-card.is-off .source-radio { pointer-events:auto; }
+.source-card.is-off .source-title, .source-card.is-off .field > label, .source-card.is-off .note,
+.source-card.is-off .upload-name { color:var(--off); }
+.source-card.is-off :is(input, select, button):disabled { opacity:1; color:var(--off); }
+.source-card.is-off input::placeholder { color:var(--off); }
+.source-head { display:flex; align-items:center; gap:10px; min-width:0; }
+.source-title { flex:1 1 auto; min-width:0; margin:0; font-size:14px; font-weight:650; }
+.source-title label { cursor:pointer; }
+.source-radio { appearance:none; flex:0 0 auto; width:20px; height:20px; margin:0; border:2px solid var(--off);
+                border-radius:50%; background:var(--field); cursor:pointer; }
+.source-radio:checked { border-color:var(--accent-light);
+                        background:radial-gradient(circle, var(--accent-light) 0 4px, var(--field) 5px); }
+.source-radio:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
+.upload-name { margin:0; overflow-wrap:anywhere; }
 .chosen { overflow-wrap:anywhere; }
 /* Step 3: the book's model in its own box, then each option in its own card:
    checkbox and bold title, one muted line, the smaller "Can change" line, a
@@ -15315,7 +16184,9 @@ button.picker-box:hover:not(:disabled) { background:var(--hover); border-color:v
 button.picker-box:active:not(:disabled) { transform:none; filter:none; }
 button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
 .picker-box .chevron { flex:0 0 auto; color:var(--dim); }
-.picker-box.static { cursor:default; border-style:dashed; }
+/* A read-only value (narration, voice design): plain text and its badge,
+   nothing that looks pressable: no field, border, hover, or pointer. */
+.picker-box.static { cursor:default; background:none; border-color:transparent; padding-left:0; }
 .picker-kind.kind-local .kind-value { color:var(--local); }
 .picker-kind.kind-api .kind-value { color:var(--api); }
 .kind-value, .kind-icon { display:inline-flex; align-items:center; gap:6px; }
@@ -15330,6 +16201,14 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-none button.link { font-size:13px; }
 .model-name { color:var(--dim); overflow-wrap:anywhere; }
 .model-reason { font-size:13px; }
+/* A model chosen or preferred that does not answer: red, with its icon in the text. */
+.model-reason.unreachable { color:var(--bad); font-weight:600; }
+.alternatives { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:6px; }
+.alternatives .alt-title { font-size:13px; color:var(--dim); flex:0 0 100%; }
+.alternatives button.alt { display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:4px 10px;
+                           font-size:13px; max-width:100%; }
+.alternatives button.alt .alt-name { overflow-wrap:anywhere; text-align:left; }
+.alternatives button.alt .alt-size { color:var(--dim); }
 .picker-pop { position:fixed; z-index:40; display:flex; flex-direction:column; gap:6px; padding:8px;
               background:var(--surface); border:1px solid var(--line); border-radius:10px;
               box-shadow:0 12px 32px rgba(0,0,0,.55); }
@@ -15353,6 +16232,7 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-option-name { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; font-size:15px;
                       overflow-wrap:anywhere; }
 .picker-sub { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.picker-sub.problem { color:var(--bad); }
 .picker-marks { display:flex; flex:0 0 auto; align-items:center; gap:6px; }
 .tag { padding:0 6px; border:1px solid var(--line); border-radius:4px; color:var(--dim); font-size:13px;
        line-height:1.4; white-space:nowrap; }
@@ -15696,6 +16576,15 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .chip-head button { min-height:24px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
 .chip-preview { color:var(--dim); overflow-wrap:anywhere; }
+/* The card's focus: Word | Sentence | Paragraph, and Listen from here. */
+.chip-focus { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:2px 0; }
+.chip-scope { display:flex; padding:2px; background:var(--surface); border:1px solid var(--line);
+              border-radius:8px; }
+.chip-scope button { min-height:24px; padding:0 10px; border:0; border-radius:6px; background:transparent;
+                     color:var(--dim); box-shadow:none; font-size:12px; }
+.chip-scope button[aria-checked=true] { background:var(--raised); color:var(--text);
+                                        box-shadow:inset 0 -2px 0 var(--accent-light); }
+.chip-focus button.link { padding:0 4px; color:var(--dim); font-size:12px; }
 .chip-details > summary { width:auto; color:var(--dim); font-size:12px; cursor:pointer; }
 .chip-details > summary::marker { color:var(--accent-light); }
 .chip-group { display:grid; gap:4px; margin-top:6px; }
@@ -15722,13 +16611,20 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 /* The text: a reading column; the paragraph being read has a rail, the word
    being read a soft mark; the text keeps its color. */
 .reader-content { font-size:18px; line-height:1.6; }
-.reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
+.reader-paragraph { position:relative; padding:6px 16px 6px 14px; border-left:2px solid transparent; }
+/* Listen from here: a small ▶ in the left margin of the paragraph under the
+   pointer; a touch screen has it in the long-press menu instead. */
+.reader-paragraph > .reader-margin-play { position:absolute; top:8px; left:-36px; width:28px; height:28px;
+  min-height:0; margin:0; padding:0; border-radius:50%; font-size:11px; line-height:1; visibility:hidden; }
+.reader-margin-play::before { content:"▶\FE0E"; }
+.reader-paragraph:hover > .reader-margin-play { visibility:visible; }
+@media (hover:none), (max-width:767.98px) { .reader-paragraph > .reader-margin-play { display:none; } }
 .reader-paragraph.active, .source-view .reader-original.active {
   border-left-color:var(--accent-light); background:color-mix(in srgb, var(--accent-light) 5%, transparent);
 }
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
-.reader-sentence, .reader-block { cursor:pointer; }
+.reader-sentence, .reader-block, .reader-original { cursor:pointer; }
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
@@ -15859,7 +16755,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .card, .step, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
   .step-body { padding-left:0; }
   .option-line, .more-details, .option .model-pick { padding-left:0; }
-  .picker-box, .picker-none button.link, .picker-option, button.picker-change { min-height:44px; }
+  .picker-box, .picker-none button.link, .picker-option, button.picker-change, .alternatives button.alt,
+  .book-files > summary { min-height:44px; }
   .row { grid-template-columns:minmax(0,1fr); }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .settings fieldset > p.group-note { margin-left:0; }
@@ -15911,6 +16808,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .menu button, .selection-menu button, .chat-options button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-mute, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
+  .chip-scope button, .chip-focus button.link { min-height:44px; }
   .player-seek, .book-meta select { min-height:44px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
@@ -16026,8 +16924,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <legend>Machines and devices</legend>
       <p id="machines-read-only" class="note server-only hidden">Read-only from this device. Manage
         machines from a browser on the Hilde server.</p>
-      <p class="note">Text models (Gemma, Qwen, …) are chosen in the model picker. This section shows
-        the machines that do the work.</p>
+      <p class="note">Text models are chosen in the model picker. This section shows the machines that do the
+        work.</p>
       <section class="machines-part" aria-labelledby="machine-here-title">
         <h3 id="machine-here-title" class="part-title">This server</h3>
         <div id="machine-here"></div>
@@ -16054,7 +16952,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         different settings.</p>
       <div class="row"><span class="row-label">Default text model</span><div class="setting">
         <div class="model-pick" data-picker="settings"></div>
-        <span class="applies">Applies to the next audiobook: the text model Create preselects</span></div></div>
+        <span id="settings-preferred" class="note"></span>
+        <span class="applies">Applies to the next audiobook in this browser: the text model Create
+          preselects</span></div></div>
       <div class="row"><span class="row-label">Connection</span>
         <div class="setting"><span id="connection-note"></span>
           <span id="certificate-note" class="note hidden">Hilde's own certificate: install it once on
@@ -16071,6 +16971,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <h3 id="result-title" tabindex="-1">Your audiobook is ready</h3>
       <p id="result-text" class="clamp"></p>
       <p id="result-time" class="note"></p>
+      <p id="result-models" class="note"></p>
       <div class="actions">
         <button id="result-primary" type="button" onclick="startListening()">Start listening</button>
         <button id="download" type="button" onclick="downloadArtifact(this)">Download MP3</button>
@@ -16089,17 +16990,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
         <div class="step-body">
           <p id="book-chosen" class="chosen hidden"></p>
-          <div class="sources">
-            <section class="source-card" aria-labelledby="source-saved-title">
-              <h4 id="source-saved-title" class="source-title">Saved document</h4>
-              <div class="line">
-                <select id="document" aria-labelledby="source-saved-title"><option value="">Choose a document</option></select>
-                <button id="document-delete" class="link" type="button"
-                  aria-label="Delete the chosen document" onclick="deleteDocument(this)">Delete</button>
+          <!-- One radio group: the chosen card is the only source Continue uses;
+               the others are dimmed and disabled but keep what was entered. -->
+          <div class="sources" role="radiogroup" aria-label="Source document">
+            <section class="source-card" data-source="saved" aria-labelledby="source-saved-title">
+              <div class="source-head">
+                <input id="source-pick-saved" class="source-radio" type="radio" name="source" value="saved">
+                <h4 class="source-title"><label id="source-saved-title" for="source-pick-saved">Saved document</label></h4>
+                <button id="document-more" class="row-more" type="button" aria-label="More for the saved document"
+                  aria-haspopup="menu" aria-expanded="false" aria-controls="row-menu">⋯</button>
               </div>
+              <select id="document" aria-labelledby="source-saved-title"><option value="">Choose a document</option></select>
             </section>
-            <section class="source-card" aria-labelledby="source-url-title">
-              <h4 id="source-url-title" class="source-title">From a URL</h4>
+            <section class="source-card" data-source="url" aria-labelledby="source-url-title">
+              <div class="source-head">
+                <input id="source-pick-url" class="source-radio" type="radio" name="source" value="url">
+                <h4 class="source-title"><label id="source-url-title" for="source-pick-url">From a URL</label></h4>
+              </div>
               <div class="field">
                 <label for="source-url">Link to a PDF, Markdown, or text file</label>
                 <input id="source-url" type="text" inputmode="url"
@@ -16111,13 +17018,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               </div>
               <p class="note">Hilde downloads it when you press Continue.</p>
             </section>
-            <section class="source-card" aria-labelledby="source-file-title">
-              <h4 id="source-file-title" class="source-title">Upload a file</h4>
+            <section class="source-card" data-source="upload" aria-labelledby="source-file-title">
+              <div class="source-head">
+                <input id="source-pick-upload" class="source-radio" type="radio" name="source" value="upload">
+                <h4 class="source-title"><label id="source-file-title" for="source-pick-upload">Upload a file</label></h4>
+              </div>
               <input id="document-file" class="hidden" type="file"
                 accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
               <div class="line">
                 <button id="document-upload" type="button" onclick="chooseDocument()">Choose a file…</button>
               </div>
+              <p id="upload-name" class="upload-name hidden"></p>
               <p class="note">PDF, Markdown, or plain text; or drop a file on this step.</p>
             </section>
           </div>
@@ -16412,6 +17323,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               onchange="openAudiobook(state.player.book, false, this.value)"></select>
             <span id="reader-meta"></span>
           </p>
+          <p id="reader-models" class="book-models note hidden"></p>
           <details id="book-files" class="book-files note hidden">
             <summary id="book-files-summary"></summary>
             <ul id="book-file-list" class="note-list"></ul>
@@ -16667,12 +17579,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div id="paper-openai-device" class="hidden">
         <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
         <p>Enter code: <code id="paper-openai-code"></code>
-          <button id="paper-openai-copy" type="button" class="link" onclick="copyPaperOpenAICode()">Copy</button></p>
+          <button id="paper-openai-copy" type="button" class="link" onclick="copySignInCode('openai')">Copy</button></p>
       </div>
       <div class="footer">
-        <button id="paper-openai-cancel" class="hidden" onclick="cancelPaperOpenAI()">Cancel login</button>
+        <button id="paper-openai-cancel" class="hidden" onclick="cancelSignIn('openai')">Cancel login</button>
         <span class="grow"></span>
-        <button id="paper-openai-start" onclick="startPaperOpenAI()">Sign in with ChatGPT</button>
+        <button id="paper-openai-start" onclick="startSignIn('openai')">Sign in with ChatGPT</button>
       </div>
     </div>
     <div class="connect-method" data-method="api-key">
@@ -16693,8 +17605,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <section class="connect-provider" data-provider="gemini">
     <div class="connect-method" data-method="api-key">
       <h3>API key</h3>
-      <p class="note no-membership">This provider does not allow its membership plans in other apps. Use an API
-        key.</p>
       <p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Free API key at Google AI
         Studio</a></p>
       <p class="note">This server keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
@@ -16712,10 +17622,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <section class="connect-provider" data-provider="anthropic">
     <div class="connect-method" data-method="api-key">
       <h3>API key</h3>
-      <p class="note no-membership">This provider does not allow its membership plans in other apps. Use an API
-        key.</p>
       <p class="note">From the Claude Console, billed per use. This server keeps it in
-        ~/.hilde/anthropic.json, readable only by its user.</p>
+        ~/.hilde/anthropic.json, readable only by its user. A Claude subscription works through
+        Claude Code, under All providers.</p>
       <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
         <input id="paper-anthropic-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
       </div></div>
@@ -16743,6 +17652,42 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
     </div>
   </section>
+  <section class="connect-provider" data-provider="xai">
+    <div class="connect-method" data-method="xai-sign-in">
+      <h3>Sign in with xAI (your SuperGrok or X Premium+ plan)</h3>
+      <p class="note">Uses your xAI account, with no API key: xAI's own page asks you to approve. This
+        server keeps the sign-in in ~/.hilde/xai.json, encrypted and readable only by its user, and
+        renews it itself.</p>
+      <p><strong id="paper-xai-status"></strong></p>
+      <p id="paper-xai-problem" class="problem hidden" role="alert"></p>
+      <div id="paper-xai-device" class="hidden">
+        <p><a id="paper-xai-link" target="_blank" rel="noopener">Open xAI sign-in</a></p>
+        <p>Code: <code id="paper-xai-code"></code>
+          <button id="paper-xai-copy" type="button" class="link" onclick="copySignInCode('xai')">Copy</button></p>
+      </div>
+      <div class="footer">
+        <button id="paper-xai-cancel" class="hidden" onclick="cancelSignIn('xai')">Cancel login</button>
+        <button id="paper-xai-remove" class="hidden" onclick="signOutXai()">Sign out</button>
+        <span class="grow"></span>
+        <button id="paper-xai-use-key" class="hidden" onclick="useXaiKeyInstead()">Use an API key instead</button>
+        <button id="paper-xai-start" onclick="startSignIn('xai')">Sign in with xAI</button>
+      </div>
+    </div>
+    <div class="connect-method" data-method="api-key">
+      <h3>API key</h3>
+      <p class="note">From console.x.ai, billed per use. This server keeps it in
+        ~/.hilde/xai-api.json, readable only by its user.</p>
+      <div class="row"><label for="paper-xai-api-key">API key:</label><div class="line">
+        <input id="paper-xai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…">
+      </div></div>
+      <div class="row"><label>Status:</label><div><strong id="paper-xai-api-status"></strong></div></div>
+      <div class="footer">
+        <button id="paper-xai-api-remove" onclick="removePaperKey('xai-api')">Remove</button>
+        <span class="grow"></span>
+        <button id="paper-xai-api-save" onclick="savePaperKey('xai-api')">Save key</button>
+      </div>
+    </div>
+  </section>
   <div class="footer">
     <button type="button" class="link" onclick="openPaperProviders()">All providers</button>
     <span class="grow"></span>
@@ -16760,7 +17705,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div class="row"><label for="paper-local-type">Server type:</label><div class="line">
       <select id="paper-local-type">
         <option value="" disabled>Choose the server type</option>
-        <option value="lm-studio">OpenAI-compatible (SGLang, vLLM, LM Studio)</option>
+        <option value="lm-studio">OpenAI-compatible (any server with /v1/models)</option>
         <option value="ollama">Ollama</option>
       </select>
     </div></div>
@@ -16847,11 +17792,17 @@ let machine = { name:"", devices:[] };
 // The text-model catalog, for each choice's short name and Local/Cloud badge.
 // Until it has loaded, the default model's place is unknown, so nothing that
 // would send text to it starts.
-let paperCatalog = { models:[], default_model:"", loaded:false };
+let paperCatalog = { models:[], preferred:{ text:[], figure:[] }, first_use:null, loaded:false };
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
-let syncTimer = null, syncSeq = 0, stream = null, paperOAuthTimer = null;
-let paperOpenAIConnected = false, paperOpenAIInfo = { status:"idle" };
+let syncTimer = null, syncSeq = 0, stream = null;
+// Sign-ins this server keeps for every browser, by the name in their element
+// ids, routes, and catalog fields: whether it works, where a sign-in under
+// way stands, and its poll timer.
+const SIGN_INS = {
+  "openai":{ label:"ChatGPT", start:"Sign in with ChatGPT", connected:false, info:{ status:"idle" }, timer:null },
+  "xai":{ label:"xAI", start:"Sign in with xAI", connected:false, info:{ status:"idle" }, timer:null },
+};
 // Providers an API key reaches, by the name in their element ids and routes:
 // who checks the key, their catalog fields' prefix, and whether this server
 // keeps a key.
@@ -16860,15 +17811,18 @@ const paperKeyProviders = {
   "openai-api": { label:"OpenAI", field:"openai_api", connected:false },
   "gemini": { label:"Google", field:"gemini", connected:false },
   "deepseek": { label:"DeepSeek", field:"deepseek", connected:false },
+  "xai-api": { label:"xAI", field:"xai_api", connected:false },
 };
-// Providers under Providers, each with its own Connect dialog showing only
-// the ways in it allows: OpenAI the ChatGPT sign-in and an API key; the
-// others an API key (keys: its paperKeyProviders name).
+// Providers under Providers, each with its own Connect dialog showing the
+// ways in Hilde supports for it: OpenAI the ChatGPT sign-in and an API key,
+// xAI the xAI sign-in and an API key, the others an API key (signIn: its
+// SIGN_INS name; key: its paperKeyProviders name).
 const CONNECT_PROVIDERS = {
-  "openai":{ name:"OpenAI", key:"openai-api", signIn:true },
+  "openai":{ name:"OpenAI", key:"openai-api", signIn:"openai" },
   "gemini":{ name:"Google (Gemini)", key:"gemini" },
   "anthropic":{ name:"Anthropic (Claude)", key:"anthropic" },
   "deepseek":{ name:"DeepSeek", key:"deepseek" },
+  "xai":{ name:"xAI (Grok)", key:"xai-api", signIn:"xai" },
 };
 let settingsOpen = false, voiceFormOpen = false;
 // Create shows a finished run's outcome above its steps while resultShown.
@@ -17052,12 +18006,54 @@ async function replaceDocumentOk(names) {
     confirm:"Replace it", danger:true,
   });
 }
+// Step 1's source cards (state.audiobook.source, remembered in this browser's
+// state cookie): only the chosen card's value is used, the others keep theirs.
+const SOURCE_LABELS = { saved:"Saved document", url:"URL", upload:"Upload" };
+const SOURCE_FIRST = { saved:"document", url:"source-url", upload:"document-upload" };
+let uploading = false;
+function chosenDocument() {
+  const book = state.audiobook;
+  return ({ saved:book.document, url:book.url_document, upload:book.upload }[book.source] || "").trim();
+}
+// The chosen link, while Continue still has to download it (as pending_url()).
+function pendingUrl() {
+  const book = state.audiobook;
+  return book.source === "url" && !chosenDocument() ? book.source_url.trim() : "";
+}
+function selectSource(source, focusField) {
+  if (state.audiobook.source !== source) {
+    state.audiobook.source = source;
+    bookProblemText = ""; overwriting = "";
+    render(); queueSync();
+  }
+  if (focusField) $(SOURCE_FIRST[source]).focus();
+}
+function renderSources() {
+  const book = state.audiobook;
+  for (const card of document.querySelectorAll(".source-card")) {
+    const on = card.dataset.source === book.source;
+    card.classList.toggle("is-on", on);
+    card.classList.toggle("is-off", !on);
+    card.querySelector(".source-radio").checked = on;
+  }
+  const saved = book.source === "saved", url = book.source === "url", upload = book.source === "upload";
+  $("document").disabled = !saved;
+  $("document-more").disabled = !saved || submitting || !(assets.documents || []).includes(book.document);
+  $("document-more").setAttribute("aria-label",
+    book.document ? `More for ${book.document}` : "More for the saved document");
+  $("source-url").disabled = $("download-name").disabled = !url || submitting;
+  $("document-upload").disabled = !upload || uploading;
+  $("upload-name").textContent = book.upload ? `Uploaded: ${book.upload}` : "";
+  $("upload-name").classList.toggle("hidden", !book.upload);
+}
 function chooseDocument() { $("document-file").click(); }
+// A file chosen or dropped anywhere on the step makes Upload the source.
 async function uploadDocument(file) {
-  if (!file || $("document-upload").disabled) return;
+  if (!file || uploading) return;
+  selectSource("upload", false);
   setBookProblem("");
   if (!(await replaceDocumentOk([file.name]))) return;
-  $("document-upload").disabled = true;
+  uploading = true; render();
   setStatus(`Uploading ${file.name}…`);
   try {
     const response = await fetch(
@@ -17067,11 +18063,7 @@ async function uploadDocument(file) {
     const answer = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(answer.error || "The file couldn't be uploaded.");
     assets = answer.assets || assets;
-    state.audiobook.document = answer.name;
-    state.audiobook.source_url = "";
-    state.audiobook.download_name = "";
-    $("source-url").value = "";
-    $("download-name").value = "";
+    state.audiobook.upload = answer.name;
     populateAssets();
     setStatus(`Added ${answer.name}.`);
     await sync();
@@ -17080,12 +18072,12 @@ async function uploadDocument(file) {
     setBookProblem(documentProblem(error.message));
   } finally {
     $("document-file").value = "";
-    $("document-upload").disabled = false;
+    uploading = false; render();
   }
 }
 
 async function materializeUrl() {
-  if (!state.audiobook.source_url.trim()) return true;
+  if (!pendingUrl()) return true;
   setBookProblem("");
   if (!(await replaceDocumentOk(predictedDownloadNames()))) return false;
   setStatus("Downloading your document…");
@@ -17098,11 +18090,7 @@ async function materializeUrl() {
       }),
     });
     assets = answer.assets || assets;
-    state.audiobook.document = answer.name;
-    state.audiobook.source_url = "";
-    state.audiobook.download_name = "";
-    $("source-url").value = "";
-    $("download-name").value = "";
+    state.audiobook.url_document = answer.name;
     populateAssets();
     setStatus(`Added ${answer.name}.`);
     await sync();
@@ -17296,6 +18284,7 @@ function clearReader() {
   readerSampleRate = 0; readerBlocks = []; readerWordElements = [];
   activeReaderBlock = -1; activeReaderWord = -1;
   readerPayload = null; readerRestored = false; bookPausedForSpeech = false;
+  $("reader-models").classList.add("hidden");
   if (readerDownload) {
     readerDownload.controller.abort();
     if (readerDownload.url) URL.revokeObjectURL(readerDownload.url);
@@ -17418,16 +18407,198 @@ function wrapReaderWords(parts, cues) {
   }
 }
 
-function seekReaderBlock(event, block) {
-  if (event.target.closest("a, .figure-card") || !readerAudio) return;
-  // The click that ends a drag selection selects; it never seeks.
+// Clicking the text asks about it: a click (a tap) on a word pauses the book
+// and opens Ask Hilde with that word as the card's focus and its sentence as
+// context; Shift+click stretches the focus from the first word to another;
+// the card's switch widens it to the sentence or the paragraph. Seeking is
+// Listen from here's: the card's, the margin ▶, the selection menu's.
+// A focus: { anchor, the first word's range; base, the range clicked,
+// shift-clicked, or selected; scope: "word" | "sentence" | "paragraph" }.
+const READER_WORD = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
+const TEXT_UNIT = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, blockquote, figcaption";
+// With a mouse, a click waits out a double-click's second click, which
+// selects the word instead (its menu asks or seeks).
+const READER_CLICK_WAIT = 300;
+let readerClickTimer = 0;
+function clickReaderText(event) {
+  clearTimeout(readerClickTimer);
+  if (event.button !== 0 || event.detail > 1) return;
+  const play = event.target.closest(".reader-margin-play");
+  if (play) { listenFromParagraph(play.closest(".reader-paragraph")); return; }
+  if (event.target.closest("a, button, img, .figure-card, .reader-tag, .reader-label")) return;
+  // The click that ends a drag selection selects; its menu asks or seeks.
   if (!window.getSelection().isCollapsed) return;
-  const word = readerWordCues[event.target.closest(".reader-word")?.dataset.cue];
-  const sample = word
-    ? readerWordSeekSample(word)
-    : readerCues.find((candidate) => candidate.block === block)?.start_sample;
-  if (sample === undefined) return;
-  readerAudio.currentTime = sample / readerSampleRate;
+  const part = event.target.closest(".reader-sentence, .reader-block, .reader-original");
+  if (!part) return;
+  const word = clickedWord(event, part);
+  const current = chatAbout && chatAbout.focus;
+  let focus;
+  if (!word) {
+    const sentence = widenRange(part, 0, "sentence");
+    focus = { anchor:sentence, base:sentence, scope:"word" };
+  } else if (event.shiftKey && current && current.anchor.startContainer.isConnected) {
+    const before = current.anchor.compareBoundaryPoints(Range.START_TO_START, word) <= 0;
+    const [first, last] = before ? [current.anchor, word] : [word, current.anchor];
+    const base = document.createRange();
+    base.setStart(first.startContainer, first.startOffset);
+    base.setEnd(last.endContainer, last.endOffset);
+    focus = { anchor:current.anchor, base, scope:"word" };
+  } else focus = { anchor:word, base:word, scope:"word" };
+  const ask = () => {
+    if (!window.getSelection().isCollapsed) return;
+    pauseBookForQuestion();
+    askAboutFocus(focus);
+  };
+  if (window.matchMedia("(pointer:coarse)").matches) ask();
+  else readerClickTimer = setTimeout(ask, READER_CLICK_WAIT);
+}
+// The word under the pointer, else the nearest one in the clicked sentence.
+function clickedWord(event, part) {
+  const range = document.createRange();
+  const word = event.target.closest(".reader-word");
+  if (word) { range.selectNodeContents(word); return range; }
+  const caret = document.caretPositionFromPoint
+    ? document.caretPositionFromPoint(event.clientX, event.clientY)
+    : document.caretRangeFromPoint?.(event.clientX, event.clientY);
+  const node = caret && (caret.offsetNode || caret.startContainer);
+  const offset = caret ? caret.offset ?? caret.startOffset : 0;
+  if (node && node.nodeType === Node.TEXT_NODE && part.contains(node)) {
+    for (const match of node.data.matchAll(READER_WORD)) {
+      if (match.index > offset || offset > match.index + match[0].length) continue;
+      range.setStart(node, match.index); range.setEnd(node, match.index + match[0].length);
+      return range;
+    }
+  }
+  let nearest = null, best = Infinity;
+  for (const candidate of part.querySelectorAll(".reader-word")) {
+    for (const box of candidate.getClientRects()) {
+      const dx = Math.max(box.left - event.clientX, 0, event.clientX - box.right);
+      const dy = Math.max(box.top - event.clientY, 0, event.clientY - box.bottom);
+      if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; nearest = candidate; }
+    }
+  }
+  if (!nearest) return null;
+  range.selectNodeContents(nearest);
+  return range;
+}
+// A range boundary as a point in text: [text node, offset].
+function textPoint(container, offset, atEnd) {
+  if (container.nodeType === Node.TEXT_NODE) return [container, offset];
+  const node = container.childNodes[atEnd ? offset - 1 : offset];
+  if (!node) return [container, offset];
+  if (node.nodeType === Node.TEXT_NODE) return [node, atEnd ? node.length : 0];
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  let text = walker.nextNode();
+  if (atEnd) for (let next = text; next; next = walker.nextNode()) text = next;
+  return text ? [text, atEnd ? text.length : 0] : [container, offset];
+}
+// The sentence or the paragraph around a point: a narrated sentence (all its
+// parts) and its paragraph; in Source text, the sentence by its punctuation
+// and the paragraph as printed.
+function widenRange(container, offset, scope) {
+  const element = container.nodeType === Node.TEXT_NODE ? container.parentElement : container;
+  const range = document.createRange();
+  const narrated = element.closest(".reader-sentence, .reader-block");
+  if (narrated) {
+    const parts = scope === "sentence"
+      ? readerBlocks[narrated.dataset.block] || [narrated]
+      : [...narrated.closest(".reader-paragraph").querySelectorAll(".reader-sentence, .reader-block")];
+    const last = parts[parts.length - 1];
+    range.setStart(parts[0], 0); range.setEnd(last, last.childNodes.length);
+    return range;
+  }
+  const unit = element.closest(TEXT_UNIT) || element.closest(".reader-original") || element;
+  range.selectNodeContents(unit);
+  if (scope !== "sentence") return range;
+  const nodes = [];
+  let text = "", at = 0;
+  const walker = document.createTreeWalker(unit, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node === container) at = text.length + offset;
+    nodes.push([node, text.length]); text += node.data;
+  }
+  let start = 0, end = text.length;
+  for (const stop of text.matchAll(/[.!?…]+["'”’)\]]*\s+/g)) {
+    const after = stop.index + stop[0].length;
+    if (after <= at) start = after;
+    else { end = stop.index + stop[0].trimEnd().length; break; }
+  }
+  const locate = (position) => {
+    for (let index = nodes.length - 1; index >= 0; index--)
+      if (nodes[index][1] <= position) return [nodes[index][0], Math.min(position - nodes[index][1], nodes[index][0].length)];
+    return [unit, 0];
+  };
+  if (nodes.length) { range.setStart(...locate(start)); range.setEnd(...locate(end)); }
+  return range;
+}
+function focusRange(focus, scope = focus.scope) {
+  if (scope === "word") return focus.base;
+  const first = widenRange(...textPoint(focus.base.startContainer, focus.base.startOffset, false), scope);
+  const last = widenRange(...textPoint(focus.base.endContainer, focus.base.endOffset, true), scope);
+  const range = document.createRange();
+  range.setStart(first.startContainer, first.startOffset);
+  range.setEnd(last.endContainer, last.endOffset);
+  return range;
+}
+// The words a range shows, one space between blocks; labels and hidden text left out.
+function rangeText(range) {
+  const root = range.commonAncestorContainer;
+  if (root.nodeType === Node.TEXT_NODE) return range.toString().replace(/\s+/g, " ").trim();
+  let text = "", block = null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!range.intersectsNode(node) || !shown(parent)
+        || parent.closest(".reader-label, .reader-tag, .reader-flag, .reader-margin-play")) continue;
+    let piece = node.data;
+    if (node === range.endContainer) piece = piece.slice(0, range.endOffset);
+    if (node === range.startContainer) piece = piece.slice(range.startOffset);
+    const here = parent.closest(`${TEXT_UNIT}, .reader-block, .reader-paragraph, .reader-original`);
+    if (block && here !== block) text += " ";
+    block = here; text += piece;
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+// What a focus asks about: its words, the passages they are in, and, for
+// less than a sentence, the sentence around them as context.
+function focusAbout(focus) {
+  const range = focusRange(focus);
+  const passages = selectedPassages(range);
+  const text = rangeText(range);
+  if (!text) return playingAbout();
+  const about = selectionAbout({ text, first:passages.length ? Math.min(...passages) : null,
+                                 last:passages.length ? Math.max(...passages) : null });
+  if (focus.scope === "word" && about.kind === "selection") {
+    const sentence = rangeText(focusRange(focus, "sentence"));
+    if (sentence && sentence !== text) about.sentence = sentence.slice(0, 8000);
+  }
+  return about;
+}
+function selectionFocus(picked) {
+  const range = picked.range.cloneRange();
+  return { anchor:range, base:range, scope:"word" };
+}
+// The book shows the card's focus in the selection's gray.
+function renderFocus() {
+  if (!window.CSS || !CSS.highlights) return;
+  const focus = chatAbout && chatAbout.focus;
+  if (focus) CSS.highlights.set("reader-focus", new Highlight(focusRange(focus)));
+  else CSS.highlights.delete("reader-focus");
+}
+function setFocusScope(scope) {
+  if (!chatAbout || !chatAbout.focus || chatAbout.focus.scope === scope) return;
+  const focus = { ...chatAbout.focus, scope };
+  attachAbout(focusAbout(focus), focus);
+}
+function listenFromFocus() {
+  const focus = chatAbout && chatAbout.focus;
+  if (focus) listenFromSelection({ range:focusRange(focus), first:chatAbout.about.start });
+}
+function listenFromParagraph(section) {
+  const part = section && section.querySelector(".reader-sentence, .reader-block");
+  const cue = part && readerCues.find((candidate) => candidate.block === Number(part.dataset.block));
+  if (!readerAudio || !cue) return;
+  readerAudio.currentTime = cue.start_sample / readerSampleRate;
   updateReaderHighlight();
   setDetached(false);
 }
@@ -17568,13 +18739,20 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
     }
     wrapReaderWords(own, wordCuesByBlock.get(item.id) || []);
     for (const part of own) {
-      part.addEventListener("click", (event) => seekReaderBlock(event, item.id));
+      part.dataset.block = item.id;
       if (!part.classList.contains("reader-block") || !part.querySelector("img")) continue;
       // A picture stays in Source text: it is the document's own.
       part.classList.add("reader-picture");
       if (passage && readerPayload.figures[passage]) buildFigureCard(part, passage, item.id);
     }
     parts[item.id] = own;
+  }
+  // Listen from here, in each paragraph's margin.
+  for (const section of content.querySelectorAll(".reader-paragraph")) {
+    const play = document.createElement("button");
+    play.type = "button"; play.className = "reader-margin-play"; play.tabIndex = -1;
+    play.title = "Listen from here"; play.setAttribute("aria-label", "Listen from here");
+    section.append(play);
   }
   return parts;
 }
@@ -18047,6 +19225,9 @@ async function openAudiobook(id, focus, voiceName) {
     );
     if (readerAudio !== audio) return;
     readerPayload = payload;
+    // The book's details: which model wrote which parts.
+    $("reader-models").textContent = partModelsText(payload.part_models);
+    $("reader-models").classList.toggle("hidden", !$("reader-models").textContent);
     showBookVoices(payload);
     readerCues = payload.cues || [];
     readerWordCues = (payload.word_cues || []).map(
@@ -18162,9 +19343,13 @@ async function recreateBook() {
   if (!paperCatalog.loaded) await refreshPaperModels();
   const voice = state.player.voice || book.voice;
   const others = book.voices.filter((item) => item.name !== voice);
-  const model = textModel(state.audiobook.model);
-  const settings = !state.audiobook.adapt ? "adapting is off, so no text model"
-    : model ? `${model.short} · ${model.badge}` : "no text model yet";
+  const choice = pickerChoice("book"), model = choice.model;
+  if (state.audiobook.adapt && !model) {
+    setStatus(choice.unreachable ? `${choice.unreachable.short} is unreachable. Choose another text model under `
+      + "Create first." : "Choose a text model under Create first.", true);
+    return;
+  }
+  const settings = !state.audiobook.adapt ? "adapting is off, so no text model" : `${model.short} · ${model.badge}`;
   const ok = await askConfirm({
     title:`Make '${book.title}' again?`,
     text:`Make '${book.title}' again from its document? Hilde prepares the text again with your `
@@ -18174,7 +19359,13 @@ async function recreateBook() {
       + " Notes stay; the conversation is cleared.",
     confirm:"Make it again", danger:true, where:sendOutBadges("recreate"),
   });
-  if (ok) startBookJob("recreate", voice);
+  if (!ok) return;
+  if (state.audiobook.adapt && state.audiobook.model !== model.selector) {
+    state.audiobook.model = model.selector;
+    noteRecentModel(model.selector);
+    queueSync();
+  }
+  startBookJob("recreate", voice);
 }
 
 // A new voice or a remake of the open book; its progress shows in the progress view.
@@ -18881,12 +20072,15 @@ function jumpToPassage(number) {
 // one offers Retry (the same part again) and Remove.
 const CHAT_CONTEXT_TIMEOUT = 10000;
 let chatAbout = null, askSelection = null, changeSelection = null, chipPulseTimer = 0;
-async function attachAbout(about) {
+// `focus` is the text clicked or selected in the book (clickReaderText());
+// attaching the same part again keeps it.
+async function attachAbout(about, focus) {
   if (!about) return;
   const fresh = !chatAbout || JSON.stringify(chatAbout.about) !== JSON.stringify(about);
+  if (focus === undefined) focus = !fresh && chatAbout ? chatAbout.focus : null;
   if (chatAbout && chatAbout.controller) chatAbout.controller.abort();
   const controller = new AbortController();
-  const current = chatAbout = { about, manifest:null, error:"", controller };
+  const current = chatAbout = { about, focus, manifest:null, error:"", controller };
   renderChatAbout();
   if (fresh) pulseChip();
   const timer = setTimeout(() => controller.abort(), CHAT_CONTEXT_TIMEOUT);
@@ -18938,9 +20132,38 @@ function renderChatAbout() {
     if (chatAbout.about.kind === "selection") chip.append(chipPreview(chatQuote(chatAbout.about.quote)));
     box.append(chip);
   }
+  if (chatAbout && chatAbout.focus && !chatAbout.error)
+    box.querySelector(".chip-head").after(focusControls(chatAbout.focus));
+  renderFocus();
   box.classList.toggle("hidden", !chatAbout);
   renderChatControls();
   renderChatHeader();
+}
+// The focus's scope switch, and Listen from here at its start.
+function focusControls(focus) {
+  const row = document.createElement("div");
+  row.className = "chip-focus";
+  const scopes = document.createElement("div");
+  scopes.className = "chip-scope";
+  scopes.setAttribute("role", "radiogroup");
+  scopes.setAttribute("aria-label", "Ask about");
+  for (const [scope, name] of [["word", "Word"], ["sentence", "Sentence"], ["paragraph", "Paragraph"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "radio");
+    button.setAttribute("aria-checked", String(focus.scope === scope));
+    button.dataset.scope = scope;
+    button.textContent = name;
+    button.addEventListener("click", () => setFocusScope(scope));
+    scopes.append(button);
+  }
+  const listen = document.createElement("button");
+  listen.type = "button"; listen.className = "link chip-listen";
+  listen.textContent = "Listen from here";
+  listen.title = "Move the book to the start of this text";
+  listen.addEventListener("click", listenFromFocus);
+  row.append(scopes, listen);
+  return row;
 }
 function failedChip(message) {
   const chip = document.createElement("div");
@@ -18993,7 +20216,8 @@ function chipHead(title, editable) {
   change.addEventListener("click", () => {
     const picked = changeSelection || readerSelection();
     changeSelection = null;
-    attachAbout(picked ? selectionAbout(picked) : playingAbout());
+    const focus = picked ? selectionFocus(picked) : null;
+    attachAbout(focus ? focusAbout(focus) : playingAbout(), focus);
   });
   const remove = document.createElement("button");
   remove.type = "button"; remove.className = "chip-remove";
@@ -19132,14 +20356,15 @@ function readerSelection() {
 function pauseBookForQuestion() {
   if (readerAudio && !readerAudio.paused) readerAudio.pause();
 }
-// A selection asked about: its card, the panel's chat, and the box left as
-// it was, for the listener's own question.
-function askAboutSelection(picked) {
-  attachAbout(selectionAbout(picked));
+// Text asked about (clicked, or selected): its card, the panel's chat, and
+// the box left as it was, for the listener's own question.
+function askAboutFocus(focus) {
+  attachAbout(focusAbout(focus), focus);
   setPanel(true, "chat");
   if (!chatData) loadChat();
   focusChatInput();
 }
+function askAboutSelection(picked) { askAboutFocus(selectionFocus(picked)); }
 // Ask Hilde opens the panel's chat as it was left. With text selected, that
 // text is attached, as Ask about this does; with nothing attached and
 // nothing written, the part playing is.
@@ -19157,7 +20382,7 @@ async function askHilde() {
   refreshPaperModels();
 }
 
-// The menu on a finished selection in the text: a click seeks, a drag or a
+// The menu on a finished selection in the text: a click asks, a drag or a
 // long press selects and offers this instead.
 let pointerHeld = false, selectionTimer = 0;
 function hideSelectionMenu() { $("selection-menu").classList.add("hidden"); }
@@ -19585,16 +20810,19 @@ async function deleteBook(book, button) {
   setStatus(`Deleted the audiobook ${book.title}.`);
   await refreshLibrary();
 }
+// Saved document's ⋯ → Delete…: the chosen document, after a confirmation naming it.
 async function deleteDocument(button) {
   const name = state.audiobook.document;
   if (!name) return;
   const answer = await deleteAsset("documents", name, {
-    title:`Delete document '${name}'?`,
+    title:`Delete '${name}'?`,
     text:"It is removed from your documents. Audiobooks made from it are kept.",
   }, button);
   if (!answer) return;
   assets = answer.assets || assets;
-  if (state.audiobook.document === name) state.audiobook.document = "";
+  // Every card that held it lets it go.
+  for (const key of ["document", "upload", "url_document"])
+    if (state.audiobook[key] === name) state.audiobook[key] = "";
   populateAssets();
   setStatus(`Deleted ${name}.`);
   render(); queueSync();
@@ -19632,9 +20860,10 @@ function renderSelectedVoice() {
   card.replaceChildren(previewButton(voice), meta);
 }
 
+// Step 1 is done when the chosen card's document is in Documents.
 function bookReady() {
-  return !!state.audiobook.document &&
-    (assets.documents || []).includes(state.audiobook.document);
+  const name = chosenDocument();
+  return !!name && (assets.documents || []).includes(name);
 }
 function voiceReady() {
   return facts.clone_server
@@ -19656,21 +20885,21 @@ function setStep(step) {
 function focusStep() {
   const node = $(`step-${currentStep()}`);
   const target = [...node.querySelectorAll(
-    "select, input:not([type=file]):not([type=checkbox]), button.primary"
+    "select, input:not([type=file]):not([type=checkbox]):not([type=radio]), button.primary"
   )].find((control) => shown(control) && !control.disabled);
   (target || node.querySelector(".step-title")).focus();
 }
 async function continueFromBook() {
   if (submitting) return;
   collect();
-  if (state.audiobook.source_url.trim()) {
+  if (pendingUrl()) {
     submitting = true; render();
     const downloaded = await materializeUrl();
     submitting = false; render();
     if (!downloaded) return;
   }
   // A type Hilde doesn't read stops here; step 1 says so (renderCreate()).
-  if (!bookReady() || !documentType(state.audiobook.document)) return;
+  if (!bookReady() || !documentType(chosenDocument())) return;
   setStep("voice");
 }
 // Overwrite: the existing book is made again, so steps 2 and 3 run as for a
@@ -19689,11 +20918,11 @@ function continueFromVoice() {
   if (voiceReady()) setStep("create");
 }
 // A finished book's document is not the next book's: once a book is made, the
-// first step starts empty, with no document chosen and no link typed.
+// first step starts empty, with no document chosen and no link typed; the
+// chosen source card stays.
 function clearBookChoice() {
-  state.audiobook.document = "";
+  Object.assign(state.audiobook, { document:"", upload:"", url_document:"", source_url:"", download_name:"" });
   overwriting = "";
-  state.audiobook.source_url = ""; state.audiobook.download_name = "";
   $("source-url").value = ""; $("download-name").value = "";
   populateAssets();
 }
@@ -19811,23 +21040,26 @@ function jobTitle(job) {
 // --- Where the work goes: Local, API: <provider>, or a speech server --------
 const PROVIDER_API = {
   "openai-codex":"OpenAI", "openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google",
-  "deepseek":"DeepSeek", "claude-code":"Claude Code",
+  "deepseek":"DeepSeek", "claude-code":"Claude Code", "xai":"xAI", "xai-api":"xAI",
 };
-// A model choice ("" is the default) as its short name, its badge, and
-// whether the catalog lists it and it reads images. A choice the catalog
-// does not list (yet) is named by its model code.
+// A model selector as its short name, its badge, and whether the catalog
+// lists it (reachable now) and it reads images; null for none ("" once the
+// catalog is in). A selector the catalog does not list is named as the
+// owner's preferred list names it, else as an earlier catalog named it
+// (knownModelNames), else by the end of its model code.
+const knownModelNames = new Map();
 function textModel(selector, catalog = paperCatalog) {
-  const chosen = selector || catalog.default_model || "";
-  if (!chosen) return catalog.loaded ? null
-    : { selector:"", short:"Checking the models…", badge:"Checking…", isDefault:false, listed:false, images:true };
-  const model = (catalog.models || []).find((item) => item.selector === chosen);
-  if (model) return { selector:chosen, short:model.name, badge:model.badge, isDefault:!selector, listed:true,
-                      images:model.images };
-  const [provider, ...rest] = chosen.split("/");
+  if (!selector) return catalog.loaded ? null
+    : { selector:"", short:"Checking the models…", badge:"Checking…", listed:false, images:true };
+  const model = (catalog.models || []).find((item) => item.selector === selector);
+  if (model) return { selector, short:model.name, badge:model.badge, listed:true, images:model.images,
+                      size:model.size || "" };
+  const preferred = Object.values(catalog.preferred || {}).flat().find((item) => item.selector === selector);
+  const [provider, ...rest] = selector.split("/");
   const local = ["ollama", "lm-studio"].includes(provider);
   const badge = local ? "Local" : `API: ${PROVIDER_API[provider] || provider}`;
-  return { selector:chosen, short:rest.join("/").split("/").pop(), badge, isDefault:!selector, listed:false,
-           images:!local };
+  const short = preferred ? preferred.name : knownModelNames.get(selector) || rest.join("/").split("/").pop();
+  return { selector, short, badge, listed:false, images:!local, size:preferred ? preferred.size : "" };
 }
 // Local (green, a chip) and API (purple, a cloud): never colour alone.
 const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" '
@@ -19872,15 +21104,15 @@ function speechWhere(role, label) {
 function sendOutBadges(kind) {
   const items = [];
   if ((kind === "create" || kind === "recreate") && state.audiobook.adapt) {
-    const text = textModel(state.audiobook.model);
+    const text = pickerChoice("book").model;
     items.push(text ? whereElement("Text", text.short, text.badge, "Where the document's text goes")
       : whereElement("Text", "", "No model yet"));
     if (state.audiobook.interpret_figures) {
-      const figure = textModel(state.audiobook.figure_model || state.audiobook.model);
+      const figure = pickerChoice("figure").model;
       if (figure) items.push(whereElement("Figures", figure.short, figure.badge, "Where the figure pictures go"));
     }
     if (state.audiobook.verify) {
-      const check = textModel(state.audiobook.verify_model || state.audiobook.model);
+      const check = pickerChoice("verify").model;
       if (check) items.push(whereElement("Checking", check.short, check.badge, "Where descriptions go to be checked"));
     }
   }
@@ -19903,14 +21135,19 @@ function renderCreate() {
     node.querySelector(".step-state").textContent =
       active ? "(current step)" : complete ? "(done)" : "";
   });
-  const documentName = state.audiobook.document;
+  renderSources();
+  const documentName = chosenDocument();
   const type = documentType(documentName);
   const chosen = `${documentName} · ${type || "not a type Hilde reads"}`;
   $("book-summary").textContent = step !== "book" && done.book ? chosen : "";
   $("book-summary").title = documentName;
   $("book-change").classList.toggle("hidden", step === "book");
-  $("book-chosen").textContent = done.book ? `Chosen: ${chosen}` : "";
-  $("book-chosen").classList.toggle("hidden", !done.book || !!state.audiobook.source_url.trim());
+  // Only the chosen card: its link as typed, else its document and type.
+  const source = state.audiobook.source, link = state.audiobook.source_url.trim();
+  const chosenText = source === "url" ? (link ? `Chosen (URL): ${link}` : "")
+    : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}` : "";
+  $("book-chosen").textContent = chosenText;
+  $("book-chosen").classList.toggle("hidden", !chosenText);
   const problem = bookProblemText
     || (done.book && !type ? "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt." : "");
   $("book-problem").textContent = problem;
@@ -19921,9 +21158,9 @@ function renderCreate() {
   $("voice-change").classList.toggle("hidden", step === "voice" || !done.book);
   // A document that is already a book with its own text gets a new voice,
   // read from that text without any model.
-  // A typed link is the next book, whatever the dropdown still shows.
+  // Only the chosen card's document counts; a link not yet downloaded is new.
   const existing = state.tab === "audiobook" && facts.tab === "audiobook" && bookReady()
-    && !state.audiobook.source_url.trim() ? facts.existing_book : null;
+    && !pendingUrl() ? facts.existing_book : null;
   const overwrite = !!(existing && existing.has_text && overwriting === existing.id);
   const voiceOnly = !!(existing && existing.has_text) && !overwrite;
   $("existing-book").classList.toggle("hidden", !existing || step !== "book");
@@ -19937,14 +21174,21 @@ function renderCreate() {
   $("existing-book-overwrite").classList.toggle("hidden", !(existing && existing.has_text));
   $("book-continue").classList.toggle("hidden", !!(existing && existing.has_text) && step === "book");
   $("book-continue").disabled =
-    submitting || !(done.book || state.audiobook.source_url.trim());
+    submitting || !(done.book || pendingUrl());
   $("option-adapt").classList.toggle("hidden", voiceOnly);
   // Figures and checking are part of adapting; they show while it is on.
   $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   $("error-correction").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   // One model for the book; per-option pickers only on request.
   $("book-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
-  if (perOptionModels === null) perOptionModels = !!(state.audiobook.figure_model || state.audiobook.verify_model);
+  // Per-option pickers: as this browser left them, else shown when an
+  // option has its own model (the owner's preferred figure model counts).
+  if (perOptionModels === null && paperCatalog.loaded) {
+    const kept = stored("perOptionModels");
+    perOptionModels = typeof kept === "boolean" ? kept
+      : !!(state.audiobook.figure_model || state.audiobook.verify_model
+           || (paperCatalog.first_use && paperCatalog.first_use.figure.how === "preferred"));
+  }
   $("per-option-toggle").textContent = perOptionModels ? "Use one model for all options" : "Use different models per option";
   $("figure-model-pick").classList.toggle("hidden", !perOptionModels);
   $("verify-model-pick").classList.toggle("hidden", !perOptionModels);
@@ -19954,7 +21198,6 @@ function renderCreate() {
   $("figure-shared-reason").classList.toggle("hidden", !figureWhy);
   renderPickers();
   $("run").textContent = voiceOnly ? "Add this voice" : overwrite ? "Overwrite audiobook" : "Create audiobook";
-  $("document-delete").disabled = submitting || !bookReady();
   $("voice-continue").disabled = !done.voice;
   $("clone-voice-row").classList.toggle("hidden", !facts.clone_server);
   $("shared-voice-row").classList.toggle("hidden", !!facts.clone_server);
@@ -19988,16 +21231,16 @@ function renderCreate() {
 // label outside: "Runs on", Local or API, and "Model", only models of that
 // kind; a small Change opens the model list. Switching Runs on sends
 // nothing: it opens the list of that kind, and closing it unchosen goes back.
-// Each list: the default (the largest Gemma running, marked Default), then
-// this browser's recently used models, then the rest; short names, a "reads
-// images" tag, the full model code on hover; a search box above more than
-// PICKER_SEARCH_FROM models. Local adds each local server that does not
-// answer, disabled "not running", and Add local; API adds each provider not
-// connected, greyed, with Connect. Arrow keys, Home and End move, Enter
-// chooses, Escape closes it and returns to its box. A choice is this
-// browser's last used model for that option (its cookie field); "" is first
-// use: the largest Gemma running, never an API model, or "Same as the text
-// model" for figures and checking.
+// Each list: the default (what a browser that chose nothing starts with,
+// marked Default), then this browser's recently used models, then the rest;
+// short names, a "reads images" tag, the full model code on hover; a search
+// box above more than PICKER_SEARCH_FROM models. Local adds each local
+// server that does not answer, disabled "server unreachable", and Add local;
+// API adds each provider not connected, greyed, with Connect. Arrow keys,
+// Home and End move, Enter chooses, Escape closes it and returns to its box.
+// What a picker has chosen follows pickerChoice(): this browser's last used
+// model for it (its cookie field), else on first use the owner's preferred
+// model, the only model there is, or nothing; never another model by itself.
 const PICKER_SEARCH_FROM = 10;
 const PICKERS = {
   book:{ field:["audiobook", "model"], label:"Model for this book", title:"Adapt the text for listening",
@@ -20016,6 +21259,7 @@ const MODEL_KINDS = {
 const MODEL_SOURCES = {
   "openai-codex":"ChatGPT sign-in", "claude-code":"Claude Code subscription", "anthropic":"Anthropic API",
   "openai":"OpenAI API", "gemini":"Gemini API", "deepseek":"DeepSeek API",
+  "xai":"xAI sign-in", "xai-api":"xAI API",
 };
 const CHEVRON = '<svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">'
   + '<path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
@@ -20023,7 +21267,7 @@ const RECENT_MODELS_KEY = "hilde.recentModels";
 let openPicker = null;          // { name, mode: "kind" or "model" }
 const pickerKinds = {};         // a Runs on switch not yet followed by a model
 let perOptionModels = null;     // per-option pickers shown; from the saved choices at first
-let pickerAutoOpened = false;   // "Gemma is not running" opens the book's list once
+let pickerAutoOpened = false;   // nothing chosen yet: the book's list opens once
 function recentModels() {
   try {
     const list = JSON.parse(localStorage.getItem(RECENT_MODELS_KEY) || "[]");
@@ -20043,19 +21287,54 @@ function pickerValue(name) {
   const [group, key] = PICKERS[name].field;
   return state[group][key] || "";
 }
-// What a picker has chosen: { same, model } (textModel(); null while there
-// is no model to choose), and why it can't be used, or "".
+// What a browser that has chosen nothing starts with for a field ("text" or
+// "figure"): the catalog's first_use (first_use_models()).
+function firstUse(field) {
+  return (paperCatalog.first_use || {})[field]
+    || { selector:"", how:field === "figure" ? "same" : "none", unreachable:false };
+}
+// What a picker has chosen, separately for text and figures:
+// a. this browser's last used model for it (its value), if reachable;
+// b. first use: the owner's first preferred model, if reachable;
+// c. first use with none configured: the only model there is;
+// d. otherwise nothing.
+// Checking, and figures with one model for all options or no preferred
+// figure model, follow the text model ("Same as the text model"). A model
+// from a or b that does not answer selects nothing: `unreachable` is it
+// (textModel()), and the picker offers alternatives (pickerAlternatives()).
+// Returns { same, model, how ("chosen", "preferred", "only", "none",
+// "same"), unreachable, problem }, `problem` saying why it can't be used.
 function pickerChoice(name) {
   const picker = PICKERS[name], value = pickerValue(name);
-  const same = !!picker.same && !value;
-  const model = textModel(same ? pickerValue("book") : value);
-  let problem = "";
+  let selector = value, how = "chosen";
+  if (!value) {
+    const first = firstUse(name === "figure" ? "figure" : "text");
+    if (picker.same && (name !== "figure" || !perOptionModels || first.how === "same")) {
+      const text = pickerChoice("book");
+      const problem = picker.images && paperCatalog.loaded && text.model && !text.model.images
+        ? `The text model can't read images: choose one tagged "reads images".` : "";
+      return { same:true, model:text.model, how:"same", unreachable:null, problem };
+    }
+    selector = first.selector; how = first.how;
+  }
+  const model = textModel(selector);
   if (paperCatalog.loaded && model && model.selector && !model.listed)
-    problem = `${model.short} is not in the model list now: its server is not running or its provider is `
-      + "not connected. Choose another model.";
-  else if (picker.images && paperCatalog.loaded && model && !model.images)
-    problem = `${same ? "The text model" : "This model"} can't read images: choose one tagged "reads images".`;
-  return { same, model, problem };
+    return { same:false, model:null, how, unreachable:model, problem:`⚠ ${model.short} is unreachable` };
+  const problem = picker.images && paperCatalog.loaded && model && !model.images
+    ? `This model can't read images: choose one tagged "reads images".` : "";
+  return { same:false, model, how, unreachable:null, problem };
+}
+// One-click alternatives for a picker whose model is unreachable, or for
+// going on with another model: the owner's other preferred models for its
+// field first, then the other reachable models; for figures only models
+// that read images.
+function pickerAlternatives(name, missing) {
+  const models = paperCatalog.models || [];
+  const usable = (model) => !!model && model.selector !== missing && (!PICKERS[name].images || model.images);
+  const field = name === "figure" ? "figure" : "text";
+  const preferred = ((paperCatalog.preferred || {})[field] || [])
+    .map((item) => models.find((model) => model.selector === item.selector)).filter(usable);
+  return [...preferred, ...models.filter((model) => usable(model) && !preferred.includes(model))];
 }
 // Local or API: a Runs on switch not yet followed by a choice, else the
 // chosen model's; Local before any choice.
@@ -20072,11 +21351,12 @@ function noApiModel() {
 // Why an option's own model can't be used, as Create says it after the
 // option's short name, or "".
 function pickerBlock(name) {
-  const { same, model, problem } = pickerChoice(name);
+  const { same, model, problem, unreachable } = pickerChoice(name);
   if (pickerKind(name) === "api" && noApiModel()) return "no API connected";
-  if (!model) return "no model chosen";
+  if (unreachable) return `${unreachable.short} is unreachable`;
+  // Following the text model: the text option says what is wrong with it.
+  if (!model) return same ? "" : "no model chosen";
   if (!problem) return "";
-  if (!model.listed) return `${model.short} is not available now`;
   return `${same ? "the text model" : model.short} can't read images`;
 }
 // Why Create can't start for want of a model, and its one-click fixes, or
@@ -20093,10 +21373,12 @@ function createBlock() {
   if (!name) return null;
   let useText = "";
   if (name === "book") {
-    const fallback = textModel("");
+    // Back to what a browser that chose nothing starts with, when that is
+    // a reachable model other than the one chosen.
+    const first = firstUse("text"), fallback = pickerValue("book") && !first.unreachable && textModel(first.selector);
     if (fallback && fallback.listed) useText = `Use the default model (${MODEL_KINDS[modelKind(fallback.selector)].label})`;
   } else if (!pickerBlock("book")) {
-    const text = textModel(pickerValue("book"));
+    const text = pickerChoice("book").model;
     if (text && text.listed && (!PICKERS[name].images || text.images))
       useText = `Use the text model (${MODEL_KINDS[modelKind(text.selector)].label})`;
   }
@@ -20110,7 +21392,10 @@ function fixCreateBlock(fix) {
   delete pickerKinds[block.name];
   if (fix === "text") {
     const [group, key] = PICKERS[block.name].field;
-    state[group][key] = "";
+    // The figure option names the text model itself: left open, it would
+    // start with the owner's preferred figure model.
+    state[group][key] = block.name === "figure" && firstUse("figure").how !== "same"
+      ? pickerChoice("book").model.selector : "";
     queueSync();
     render();
   } else {
@@ -20136,10 +21421,12 @@ function mountPicker(host) {
           title="${picker.why}"><span id="${name}-model-name" class="picker-name"></span><span id="${name}-badge"
           class="badge"></span>${CHEVRON}</button>
       </div>
-      <button id="${name}-change" class="picker-change" type="button"
+      <button id="${name}-picker-change" class="picker-change" type="button"
         aria-label="Change the ${picker.label.toLowerCase()}">Change</button>
     </div>
     <p id="${name}-model-reason" class="model-reason note hidden" role="status"></p>
+    <div id="${name}-alternatives" class="alternatives hidden" role="group"
+      aria-label="${picker.label}: other models"></div>
     <p id="${name}-picker-none" class="picker-none hidden"><button class="link" type="button" data-act="local">Add
       local</button><button class="link" type="button" data-act="providers">Connect a provider</button></p>
     <div id="${name}-picker-pop" class="picker-pop hidden">
@@ -20159,11 +21446,18 @@ function mountPicker(host) {
       togglePicker(name, mode, true);
     });
   }
-  $(`${name}-change`).addEventListener("click", () => needsProvider(name)
+  // "-picker-change": "book-change" is Create step 1's own Change, which took this listener.
+  $(`${name}-picker-change`).addEventListener("click", () => needsProvider(name)
     ? openPaperProviders() : togglePicker(name, "model", true));
   $(`${name}-picker-none`).addEventListener("click", (event) => {
     const act = event.target.closest("[data-act]")?.dataset.act;
     if (act === "local") openPaperLocal(); else if (act === "providers") openPaperProviders();
+  });
+  $(`${name}-alternatives`).addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.value) { setPickerModel(name, button.dataset.value); $(`${name}-picker`).focus(); }
+    else togglePicker(name, "model", true);
   });
   $(`${name}-picker-search`).addEventListener("input", () => renderPickerList(name, true));
   // A press in the list keeps the focus where it is (the search box).
@@ -20191,7 +21485,7 @@ function mountPicker(host) {
 function needsProvider(name) { return pickerKind(name) === "api" && noApiModel(); }
 function renderPicker(name) {
   if (!state) return;
-  const { same, model, problem } = pickerChoice(name);
+  const { same, model, problem, unreachable, how } = pickerChoice(name);
   const none = noModelAvailable(), kind = pickerKind(name), connect = !none && needsProvider(name);
   // Runs on switched, no model of that kind chosen yet.
   const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
@@ -20211,28 +21505,81 @@ function renderPicker(name) {
   badge.id = `${name}-badge`;
   $(`${name}-badge`).replaceWith(badge);
   const why = connect ? "No API provider is connected yet."
-    : problem || (model ? defaultStatus(name, shown)
-      : none ? "" : paperCatalog.error || "No local model is reachable. Choose a model.");
+    // Settings names the preferred model on its own line (renderPreferredNote()).
+    : problem || (model ? (name === "settings" ? "" : firstUseStatus(how))
+      : none ? "" : paperCatalog.error || (how === "none" ? "Choose a model." : ""));
   $(`${name}-model-reason`).textContent = why;
   $(`${name}-model-reason`).classList.toggle("hidden", !why);
+  $(`${name}-model-reason`).classList.toggle("unreachable", !!unreachable && !connect);
+  renderAlternatives(name, unreachable && !connect ? pickerAlternatives(name, unreachable.selector) : []);
   $(`${name}-picker-none`).classList.toggle("hidden", !none);
   if (openPicker && openPicker.name === name) renderPickerList(name);
 }
-// On first use (nothing chosen for this option), which local model is in
-// use and why: the catalog's default_status (default_local_model()).
-function defaultStatus(name, shown) {
-  if (pickerValue(name) || PICKERS[name].same || !shown || shown.selector !== paperCatalog.default_model) return "";
-  const using = `using ${shown.short} (local)`;
-  return { gemma:`Using ${shown.short} (local)`, "no-gemma":`Gemma not installed: ${using}`,
-           "gemma-not-running":`Gemma not running: ${using}` }[paperCatalog.default_status] || "";
+// Why a first-use choice is what it is: the owner's preferred model, or the
+// only model there is (shown with its badge in the box).
+function firstUseStatus(how) {
+  return how === "preferred" ? "Preferred on this server" : how === "only" ? "The only model available" : "";
+}
+const ALTERNATIVES_SHOWN = 4;
+// Under an unreachable model: one button per alternative (name, Local or API
+// badge, size when known), and More models… for the whole list. Nothing is
+// used until one is clicked.
+function renderAlternatives(name, models, host = $(`${name}-alternatives`), limit = ALTERNATIVES_SHOWN) {
+  const signature = JSON.stringify(models.map((model) => model.selector));
+  if (host.dataset.signature === signature) return;
+  host.dataset.signature = signature;
+  host.classList.toggle("hidden", !models.length);
+  if (!models.length) { host.replaceChildren(); return; }
+  const title = document.createElement("span");
+  title.className = "alt-title"; title.textContent = "Use another model:";
+  const buttons = models.slice(0, limit).map((model) => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "alt"; button.dataset.value = model.selector;
+    button.title = model.selector;
+    const label = document.createElement("span");
+    label.className = "alt-name"; label.textContent = model.name;
+    button.append(label, badgeElement(model.kind === "local" ? "Local" : model.badge));
+    if (model.size && !model.name.includes(model.size)) {
+      const size = document.createElement("span");
+      size.className = "alt-size"; size.textContent = model.size;
+      button.append(size);
+    }
+    button.setAttribute("aria-label", `Use ${model.name}, ${model.kind === "local" ? "Local" : model.badge}`
+      + `${model.size ? `, ${model.size}` : ""}`);
+    return button;
+  });
+  const nodes = [title, ...buttons];
+  if (models.length > limit) {
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "link"; more.textContent = "More models…";
+    nodes.push(more);
+  }
+  host.replaceChildren(...nodes);
+}
+// Settings › Default text model: the owner's first preferred text model
+// (--preferred-text-model) and where it runs, under this browser's own choice.
+function renderPreferredNote() {
+  const first = ((paperCatalog.preferred || {}).text || [])[0];
+  let text = "";
+  if (paperCatalog.loaded && !first) text = "No preferred text model is set on this server.";
+  else if (first) {
+    const model = (paperCatalog.models || []).find((item) => item.selector === first.selector);
+    const where = model && model.server ? `Local, on ${localServerLabel(model.server)}` : first.badge;
+    text = `Preferred on this server: ${first.name} · ${where}${first.reachable ? "" : " · unreachable"}`;
+  }
+  $("settings-preferred").textContent = text;
+  $("settings-preferred").title = first ? first.selector : "";
 }
 function renderPickers() {
   for (const name of Object.keys(PICKERS)) renderPicker(name);
+  renderPreferredNote();
   // A list whose box left the screen (another tab, an option turned off) closes.
   if (openPicker && !pickerBox(openPicker).getClientRects().length) closePicker(false);
-  // No Gemma running and nothing chosen: the book's list opens, once.
-  if (!pickerAutoOpened && paperCatalog.loaded && state.tab === "audiobook" && !settingsOpen
-      && currentStep() === "create" && state.audiobook.adapt && !pickerChoice("book").model
+  // Nothing chosen and nothing to start with: the book's list opens, once.
+  // An unreachable model offers its alternatives instead.
+  const book = paperCatalog.loaded ? pickerChoice("book") : null;
+  if (!pickerAutoOpened && book && state.tab === "audiobook" && !settingsOpen
+      && currentStep() === "create" && state.audiobook.adapt && !book.model && !book.unreachable
       && !noModelAvailable() && $("book-picker").getClientRects().length) {
     pickerAutoOpened = true;
     setTimeout(() => { if (!openPicker) togglePicker("book", "model", true); }, 0);
@@ -20240,6 +21587,7 @@ function renderPickers() {
 }
 function togglePerOption() {
   perOptionModels = !perOptionModels;
+  store("perOptionModels", perOptionModels);
   // One model again: figures and checking follow the text model.
   if (!perOptionModels) { state.audiobook.figure_model = ""; state.audiobook.verify_model = ""; queueSync(); }
   render();
@@ -20279,7 +21627,7 @@ function pickerOption(name, index, item) {
   main.append(text);
   if (item.sub) {
     const sub = document.createElement("span");
-    sub.className = "picker-sub"; sub.textContent = item.sub;
+    sub.className = `picker-sub${item.problem ? " problem" : ""}`; sub.textContent = item.sub;
     main.append(sub);
   }
   const marks = document.createElement("span");
@@ -20311,7 +21659,7 @@ function renderPickerList(name, typed = false) {
   if (!searching) search.value = "";
   const query = search.value.trim().toLowerCase();
   const signature = JSON.stringify([mode, kind, models, rows, pickerValue(name), pickerValue("book"),
-    paperCatalog.default_model, query]);
+    paperCatalog.first_use, perOptionModels, query]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${MODEL_KINDS[kind].label} models`);
@@ -20333,15 +21681,21 @@ function renderPickerList(name, typed = false) {
         sub:`${modelSource(model)}${cannot ? " · can't read images" : ""}`, badge:kind === "api" ? model.badge : "",
         selected:!same && !!chosen && chosen.selector === model.selector, disabled:cannot });
     };
-    const text = picker.same ? textModel(pickerValue("book")) : null;
+    const text = picker.same ? pickerChoice("book").model : null;
     if (text && text.selector && modelKind(text.selector) === kind && matches("Same as the text model", text.short)) {
       const cannot = !!(picker.images && !text.images);
-      nodes.push(pickerOption(name, index++, { key:"same", value:"", text:"Same as the text model",
+      // Left open, figures would start with the owner's preferred figure
+      // model: "Same" then names the text model itself.
+      const value = name === "figure" && perOptionModels && firstUse("figure").how !== "same" ? text.selector : "";
+      nodes.push(pickerOption(name, index++, { key:"same", value, text:"Same as the text model",
         tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
         title:text.selector, selected:same, disabled:cannot }));
     }
     const shown = models.filter((model) => matches(model.name, model.selector, modelSource(model)));
-    const fallback = shown.find((model) => model.selector === paperCatalog.default_model);
+    // Default: what this picker starts with when nothing is chosen.
+    const first = picker.same && name !== "figure" ? null : firstUse(name === "figure" ? "figure" : "text");
+    const fallback = first && !first.unreachable && ["preferred", "only"].includes(first.how)
+      ? shown.find((model) => model.selector === first.selector) : null;
     const recent = recentModels().map((selector) => shown.find((model) => model.selector === selector))
       .filter((model) => model && model !== fallback);
     if (fallback) nodes.push(option(fallback, ["Default"]));
@@ -20356,7 +21710,8 @@ function renderPickerList(name, typed = false) {
             sub:`${row.provider === "ollama" ? "Ollama" : "OpenAI-compatible"} server`
               + `${row.on_server ? " · added on the server" : ""}`, title:row.note, disabled:true })
         : pickerOption(name, index++, { key:`connect:${row.provider}`, action:"connect", provider:row.provider,
-            text:row.label, sub:row.note, offer:true, actionText:"Connect" }));
+            text:row.label, sub:row.note, offer:true, problem:!!row.problem,
+            actionText:row.refused ? "Use an API key instead" : "Connect" }));
     }
     if (kind === "local")
       nodes.push(pickerOption(name, index++, { key:"add-local", action:"add-local", text:"Add local",
@@ -20440,11 +21795,16 @@ function choosePickerOption(name, option) {
   }
   if (option.dataset.action === "add-local") { closePicker(true); openPaperLocal(); return; }
   if (option.dataset.action === "connect") { closePicker(true); openPaperProviders(option.dataset.provider); return; }
-  const [group, key] = PICKERS[name].field;
-  state[group][key] = option.dataset.value;
-  noteRecentModel(option.dataset.value);
-  delete pickerKinds[name];
   closePicker(true, true);
+  setPickerModel(name, option.dataset.value);
+}
+// A model the user chose for a picker (from its list, or one of the
+// alternatives under an unreachable model): this browser's choice from now.
+function setPickerModel(name, selector) {
+  const [group, key] = PICKERS[name].field;
+  state[group][key] = selector;
+  noteRecentModel(selector);
+  delete pickerKinds[name];
   queueSync();
   render();
   if (name !== "chat") return;
@@ -20499,7 +21859,7 @@ function renderSummary(voiceOnly) {
     item.append(dt, dd);
     rows.push(item);
   };
-  const documentName = state.audiobook.document;
+  const documentName = chosenDocument();
   add("Document", `${documentName} (${documentType(documentName) || "unknown type"})`);
   add("Voice", facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice);
   if (voiceOnly) add("Text", "The book's own text; no text model", " ", badgeElement("Local"));
@@ -20507,15 +21867,15 @@ function renderSummary(voiceOnly) {
   else {
     // An option whose model can't be used says so (pickerBlock()), as beside Create.
     const blocked = (name, on = true) => on && paperCatalog.loaded ? pickerBlock(name) : "";
-    const text = textModel(state.audiobook.model), textBlock = blocked("book");
+    const text = pickerChoice("book").model, textBlock = blocked("book");
     add("Text", ...(textBlock ? [`Not ready: ${textBlock}`] : ["Adapted for listening by ",
       ...(text ? [text.short, " ", badgeElement(text.badge)] : ["no model yet"])]));
-    const figure = textModel(state.audiobook.figure_model || state.audiobook.model);
+    const figure = pickerChoice("figure").model;
     const figureBlock = blocked("figure", state.audiobook.interpret_figures);
     add("Figures", ...(figureBlock ? [`Not ready: ${figureBlock}`] : state.audiobook.interpret_figures && figure
       ? ["Read from their pictures by ", figure.short, " ", badgeElement(figure.badge)]
       : ["Described from their captions and the text"]));
-    const check = textModel(state.audiobook.verify_model || state.audiobook.model);
+    const check = pickerChoice("verify").model;
     const checkBlock = blocked("verify", state.audiobook.verify);
     add("Checking", ...(checkBlock ? [`Not ready: ${checkBlock}`] : state.audiobook.verify && check
       ? ["On, by ", check.short, " ", badgeElement(check.badge)] : ["Off"]));
@@ -20569,7 +21929,17 @@ function renderResult() {
   if (!info) return;
   $("result-text").textContent = info.title || "";
   $("result-time").textContent = info.total_time ? `Total time: ${info.total_time}.` : "";
+  $("result-models").textContent = partModelsText(info.part_models);
   $("airdrop").classList.toggle("hidden", !caps.airdrop || !info.artifact);
+}
+// Which model wrote which parts ([{first, last, model}], the book's
+// part_models), as the job's report and the book's details say it.
+function partModelsText(ranges) {
+  if (!ranges || !ranges.length) return "";
+  const name = (item) => item.name || textModel(item.model).short;
+  if (ranges.length === 1) return `Text written by ${name(ranges[0])}.`;
+  return `Text written by ${ranges.map((item) => `${item.last > item.first ? "parts" : "part"} ${item.first}`
+    + `${item.last > item.first ? `–${item.last}` : ""}: ${name(item)}`).join("; ")}.`;
 }
 
 // --- A stopped or failed job, also after a reload: the newest one this
@@ -20635,14 +22005,14 @@ function fillFailureCard(card, entry) {
   // Rebuilt only on change, so the two-second poll keeps focus and an open details.
   const key = entry ? JSON.stringify([problemKey(entry), known === undefined ? "" : known === null ? "none"
     : known === "loading" ? "loading" : "done", submitting, state.audiobook.adapt, state.audiobook.model,
-    paperCatalog.loaded]) : "";
+    paperCatalog.loaded, (paperCatalog.models || []).map((model) => model.selector)]) : "";
   if (card.dataset.key === key) return;
   card.dataset.key = key;
   if (!entry) { card.replaceChildren(); return; }
   const history = historyOf(entry);
-  const stopped = entry.status === "stopped";
+  const stopped = entry.status === "stopped", paused = entry.paused;
   const title = document.createElement("h3");
-  title.textContent = `${stopped ? "Stopped" : "Couldn't finish"}: ${jobTitle(entry)}`;
+  title.textContent = `${paused ? "Paused" : stopped ? "Stopped" : "Couldn't finish"}: ${jobTitle(entry)}`;
   const subject = document.createElement("p");
   subject.className = "note";
   subject.textContent = `${entry.document} · read by ${entry.voice}`;
@@ -20654,18 +22024,63 @@ function fillFailureCard(card, entry) {
   finished.textContent = `What was finished: ${finishedText(history)}`;
   const resume = document.createElement("div");
   resume.className = "failure-continue";
-  const button = document.createElement("button");
-  button.type = "button"; button.className = "primary";
-  button.textContent = "Continue from the last completed part";
-  button.disabled = submitting || (entry.mode !== "voice" && state.audiobook.adapt && !paperCatalog.loaded);
-  button.addEventListener("click", () => continueJob(entry));
-  const condition = document.createElement("p");
-  condition.className = "note";
-  condition.textContent = "Changing the settings or the voice since then starts the changed steps again.";
-  const places = document.createElement("div");
-  places.className = "line";
-  places.append(...sendOutBadges(entry.mode === "voice" ? "voice" : entry.mode));
-  resume.append(button, condition, places);
+  if (paused) {
+    // A model stopped answering: the parts written stay; Retry asks the same
+    // model again, or another model, once chosen here, writes only the rest.
+    where.className = "model-reason unreachable";
+    where.setAttribute("role", "alert");
+    where.textContent = `⚠ ${paused.message}`;
+    finished.textContent = paused.part_models.length
+      ? `Kept: ${paused.part_models.map((item) => `${item.last > item.first ? "parts" : "part"} ${item.first}`
+        + `${item.last > item.first ? `–${item.last}` : ""} by ${item.name || textModel(item.model).short}`).join("; ")}.`
+      : "No part was finished yet.";
+    const retry = document.createElement("button");
+    retry.type = "button"; retry.className = "primary"; retry.textContent = "Retry";
+    retry.disabled = submitting;
+    retry.addEventListener("click", () => resumePaused(entry, paused.model));
+    const other = document.createElement("button");
+    other.type = "button"; other.textContent = "Continue with another model…";
+    other.setAttribute("aria-expanded", "false");
+    other.disabled = submitting;
+    const list = document.createElement("div");
+    list.className = "alternatives hidden";
+    list.setAttribute("role", "group");
+    list.setAttribute("aria-label", "Continue with another model");
+    other.addEventListener("click", () => {
+      const open = list.classList.contains("hidden");
+      other.setAttribute("aria-expanded", String(open));
+      if (!open) { list.classList.add("hidden"); return; }
+      const models = pickerAlternatives(paused.picker, paused.model);
+      list.dataset.signature = "";
+      renderAlternatives(paused.picker, models, list, Infinity);
+      if (!models.length) list.textContent = "No other model is available: add a local server or connect a provider.";
+      list.classList.remove("hidden");
+    });
+    list.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-value]");
+      if (button) resumePaused(entry, button.dataset.value);
+    });
+    const buttons = document.createElement("div");
+    buttons.className = "line";
+    buttons.append(retry, other);
+    const condition = document.createElement("p");
+    condition.className = "note";
+    condition.textContent = "Another model writes only the parts not finished yet; the parts above stay as they are.";
+    resume.append(buttons, list, condition);
+  } else {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "primary";
+    button.textContent = "Continue from the last completed part";
+    button.disabled = submitting || (entry.mode !== "voice" && state.audiobook.adapt && !paperCatalog.loaded);
+    button.addEventListener("click", () => continueJob(entry));
+    const condition = document.createElement("p");
+    condition.className = "note";
+    condition.textContent = "Changing the settings or the voice since then starts the changed steps again.";
+    const places = document.createElement("div");
+    places.className = "line";
+    places.append(...sendOutBadges(entry.mode === "voice" ? "voice" : entry.mode));
+    resume.append(button, condition, places);
+  }
   const details = document.createElement("details");
   details.className = "technical";
   const summary = document.createElement("summary");
@@ -20684,6 +22099,20 @@ function fillFailureCard(card, entry) {
   actions.append(dismiss);
   card.replaceChildren(title, subject, where, finished, resume, details, actions);
 }
+// A paused job goes on with the model clicked: the one that stopped
+// answering (Retry, after the model list is asked again) or another, which
+// becomes this browser's choice for that option and writes only the
+// remaining parts.
+async function resumePaused(entry, selector) {
+  const name = entry.paused.picker || "book";
+  const [group, key] = PICKERS[name].field;
+  state[group][key] = selector;
+  noteRecentModel(selector);
+  if (name !== "book" && !perOptionModels) { perOptionModels = true; store("perOptionModels", true); }
+  queueSync();
+  if (selector === entry.paused.model) await refreshPaperModels(true);
+  continueJob(entry);
+}
 // Continue resubmits the job: the same document (or book), voice, and mode,
 // so the same job and its checkpoints, with this browser's current settings.
 async function continueJob(entry) {
@@ -20696,9 +22125,10 @@ async function continueJob(entry) {
     } finally { submitting = false; render(); }
     return;
   }
+  // The job's document, as the Saved document card's choice.
+  state.audiobook.source = "saved";
   state.audiobook.document = entry.document;
   state.audiobook[facts.clone_server ? "server_voice" : "voice"] = entry.voice;
-  state.audiobook.source_url = ""; state.audiobook.download_name = "";
   state.audiobook.step = "create";
   overwriting = "";
   for (const [id, path] of FIELDS) $(id).value = at(path);
@@ -20899,7 +22329,8 @@ function renderIndicator() {
   const parts = [];
   if (running) parts.push(`${running} running`);
   if (queued) parts.push(`${queued} queued`);
-  if (!parts.length && problem) parts.push(problem.status === "stopped" ? "1 stopped" : "1 failed");
+  if (!parts.length && problem)
+    parts.push(problem.paused ? "1 paused" : problem.status === "stopped" ? "1 stopped" : "1 failed");
   const indicator = $("jobs-indicator");
   indicator.textContent = parts.join(" · ");
   indicator.classList.toggle("hidden", !parts.length);
@@ -21073,7 +22504,7 @@ async function requestRun(confirmed, extra) {
     // The server asks before replacing a voice or a book; the question names it.
     const book = extra && extra.book ? bookById(extra.book) : null;
     const title = book ? book.title
-      : (facts.existing_book && facts.existing_book.title) || state.audiobook.document;
+      : (facts.existing_book && facts.existing_book.title) || chosenDocument();
     const ok = await askConfirm({
       title:extra && extra.mode === "voice" ? `Make ${extra.voice} for '${title}' again?` : `Make '${title}' again?`,
       text:answer.message, confirm:"Make it again", danger:true,
@@ -21108,10 +22539,21 @@ async function startAudiobook() {
         + "and its other voices will need to be made again. Notes stay; the conversation is cleared.",
       confirm:"Overwrite", danger:true, where:sendOutBadges("recreate"),
     }))) return;
-    // What Create uses is this browser's last used text model.
+    // What Create uses is what the picker shows (pickerChoice()); from now
+    // on it is this browser's last used text model. An unreachable model
+    // sends nothing.
     if (!(existing && existing.has_text && !overwrite) && state.audiobook.adapt) {
-      if (!state.audiobook.model) state.audiobook.model = paperCatalog.default_model || "";
+      const text = pickerChoice("book");
+      if (!text.model) {
+        setStatus(text.unreachable ? `${text.unreachable.short} is unreachable. Choose another model.`
+          : "Choose a model for this book first.", true);
+        return;
+      }
+      state.audiobook.model = text.model.selector;
       noteRecentModel(state.audiobook.model);
+      const figure = pickerChoice("figure");
+      if (state.audiobook.interpret_figures && !state.audiobook.figure_model && !figure.same && figure.model)
+        state.audiobook.figure_model = figure.model.selector;
     }
     const voice = facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice;
     const answer = await requestRun(false, overwrite ? { book: existing.id, mode: "recreate", voice } : undefined);
@@ -21389,13 +22831,14 @@ function localServerLabel(server) { return server.replace(/^http:\/\//, ""); }
 const ON_SERVER = " · added on the server";
 function applyPaperCatalog(catalog) {
   paperCatalog = { ...catalog, loaded:true, error:"" };
-  paperOpenAIConnected = !!catalog.openai_connected;
+  for (const model of catalog.models || []) knownModelNames.set(model.selector, model.name);
+  for (const [name, signIn] of Object.entries(SIGN_INS)) signIn.connected = !!catalog[`${name}_connected`];
   for (const [name, provider] of Object.entries(paperKeyProviders)) {
     provider.connected = !!catalog[`${provider.field}_connected`];
     renderPaperKey(name, catalog[`${provider.field}_error`]);
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
-  renderPaperOpenAI(paperOpenAIInfo);
+  for (const [name, signIn] of Object.entries(SIGN_INS)) renderSignIn(name, signIn.info);
   renderProviderList();
   // Every picker's model names, badges, and list come from the catalog.
   render();
@@ -21417,57 +22860,75 @@ async function refreshPaperModels(refresh) {
 function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
-// The ChatGPT sign-in: "Signed in as <e-mail>" (the account the server's
-// stored sign-in names), or where a sign-in under way stands.
-function renderPaperOpenAI(info) {
-  paperOpenAIInfo = info;
-  const connected = paperOpenAIConnected || info.status === "connected";
-  const account = paperCatalog.openai_account || "";
-  setText($("paper-openai-status"), info.status === "idle" || (info.status === "connected" && paperOpenAIConnected)
-    ? connected ? (account ? `Signed in as ${account}` : "Signed in with ChatGPT.") : "Not signed in."
+const XAI_REFUSED = "xAI refused this account (403)";
+// A sign-in's part of its Connect dialog: "Signed in as <e-mail>" (the
+// account the server's stored sign-in names), or where a sign-in under way
+// stands. xAI's also says in red why its sign-in can't be used ("Sign in to
+// xAI again", or xAI refusing the account with "Use an API key instead"),
+// and offers Sign out.
+function renderSignIn(name, info) {
+  const signIn = SIGN_INS[name];
+  signIn.info = info;
+  // A sign-in completed here that the server can no longer use (its catalog
+  // names the error) is settled: the dialog says so, not "Signed in".
+  const failed = !signIn.connected && !!paperCatalog[`${name}_error`];
+  const connected = signIn.connected || (info.status === "connected" && !failed);
+  const account = paperCatalog[`${name}_account`] || "";
+  setText($(`paper-${name}-status`), info.status === "idle" || (info.status === "connected" && (signIn.connected || failed))
+    ? connected ? (account ? `Signed in as ${account}` : `Signed in with ${signIn.label}.`) : "Not signed in."
     : (info.message || info.status));
   const hasDevice = !!(info.url || info.code);
-  $("paper-openai-device").classList.toggle("hidden", !hasDevice);
-  $("paper-openai-link").href = info.url || "#";
-  setText($("paper-openai-code"), info.code || "waiting…");
-  $("paper-openai-copy").classList.toggle("hidden", !info.code);
-  setText($("paper-openai-start"), connected ? "Sign in again" : "Sign in with ChatGPT");
-  $("paper-openai-start").disabled = !!info.active;
-  $("paper-openai-cancel").classList.toggle("hidden", !info.active);
+  $(`paper-${name}-device`).classList.toggle("hidden", !hasDevice);
+  $(`paper-${name}-link`).href = info.url || "#";
+  setText($(`paper-${name}-code`), info.code || "waiting…");
+  $(`paper-${name}-copy`).classList.toggle("hidden", !info.code);
+  setText($(`paper-${name}-start`), connected ? "Sign in again" : signIn.start);
+  $(`paper-${name}-start`).disabled = !!info.active;
+  $(`paper-${name}-cancel`).classList.toggle("hidden", !info.active);
+  if (name !== "xai") return;
+  const refused = info.status === "refused" || (!info.active && !!paperCatalog.xai_refused);
+  const problem = refused ? XAI_REFUSED : info.active || info.status === "failed" ? "" : paperCatalog.xai_error || "";
+  setText($("paper-xai-problem"), problem);
+  $("paper-xai-problem").classList.toggle("hidden", !problem);
+  $("paper-xai-use-key").classList.toggle("hidden", !refused);
+  $("paper-xai-remove").classList.toggle("hidden", !!info.active || !(signIn.connected || paperCatalog.xai_account));
 }
-async function copyPaperOpenAICode() {
-  const code = $("paper-openai-code").textContent;
+async function copySignInCode(name) {
+  const code = $(`paper-${name}-code`).textContent, button = $(`paper-${name}-copy`);
   try {
     await navigator.clipboard.writeText(code);
-    setText($("paper-openai-copy"), "Copied");
+    setText(button, "Copied");
   } catch (_) {
     // The clipboard needs a secure page, as on another device over plain
     // HTTP; select the code for the user to copy instead.
-    getSelection().selectAllChildren($("paper-openai-code"));
-    setText($("paper-openai-copy"), "Press ⌘C or Ctrl+C");
+    getSelection().selectAllChildren($(`paper-${name}-code`));
+    setText(button, "Press ⌘C or Ctrl+C");
   }
-  setTimeout(() => setText($("paper-openai-copy"), "Copy"), 2000);
+  setTimeout(() => setText(button, "Copy"), 2000);
 }
-async function pollPaperOpenAI() {
-  clearTimeout(paperOAuthTimer);
+async function pollSignIn(name) {
+  const signIn = SIGN_INS[name];
+  clearTimeout(signIn.timer);
   try {
-    const info = await jsonRequest("/api/paper/openai/status");
-    renderPaperOpenAI(info);
-    if (info.active) paperOAuthTimer = setTimeout(pollPaperOpenAI, 1000);
+    const info = await jsonRequest(`/api/paper/${name}/status`);
+    renderSignIn(name, info);
+    if (info.active) signIn.timer = setTimeout(() => pollSignIn(name), 1000);
     else if (info.status === "connected") { await refreshPaperModels(); await sync(); }
-  } catch (error) { $("paper-openai-status").textContent = error.message; }
+  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
 }
-// What each provider's row under Providers says: how it is connected (the
-// ChatGPT account by its e-mail address; a key only as "Key saved"), or why not.
+// What each provider's row under Providers says: how it is connected (a
+// sign-in's account by its e-mail address; a key only as "Key saved"), and
+// what stops it, which the row shows in red.
 function providerStatus(id) {
-  const key = paperKeyProviders[CONNECT_PROVIDERS[id].key];
-  const parts = [];
-  if (CONNECT_PROVIDERS[id].signIn && paperOpenAIConnected)
-    parts.push(paperCatalog.openai_account ? `Signed in as ${paperCatalog.openai_account}` : "Signed in with ChatGPT");
-  if (key.connected) parts.push(CONNECT_PROVIDERS[id].signIn ? "API key saved" : "Key saved");
-  const errors = [...(CONNECT_PROVIDERS[id].signIn ? [paperCatalog.openai_error] : []), paperCatalog[`${key.field}_error`]]
+  const provider = CONNECT_PROVIDERS[id], key = paperKeyProviders[provider.key], parts = [];
+  if (provider.signIn && SIGN_INS[provider.signIn].connected) {
+    const account = paperCatalog[`${provider.signIn}_account`];
+    parts.push(account ? `Signed in as ${account}` : `Signed in with ${SIGN_INS[provider.signIn].label}`);
+  }
+  if (key.connected) parts.push(provider.signIn ? "API key saved" : "Key saved");
+  const errors = [...(provider.signIn ? [paperCatalog[`${provider.signIn}_error`]] : []), paperCatalog[`${key.field}_error`]]
     .filter(Boolean);
-  return [...(parts.length ? parts : ["Not connected"]), ...errors].join(" · ");
+  return { text:(parts.length ? parts : ["Not connected"]).join(" · "), errors };
 }
 function renderProviderList() {
   const rows = Object.entries(CONNECT_PROVIDERS).map(([id, provider]) => {
@@ -21477,10 +22938,15 @@ function renderProviderList() {
     text.className = "provider-row-text";
     const name = document.createElement("strong");
     name.textContent = provider.name;
-    const status = document.createElement("span");
-    status.className = "note provider-status"; status.textContent = providerStatus(id);
+    const status = document.createElement("span"), said = providerStatus(id);
+    status.className = "note provider-status"; status.textContent = said.text;
+    if (said.errors.length) {
+      const problem = document.createElement("span");
+      problem.className = "problem"; problem.textContent = said.errors.join(" · ");
+      status.append(" · ", problem);
+    }
     text.append(name, status);
-    const connected = (provider.signIn && paperOpenAIConnected) || paperKeyProviders[provider.key].connected;
+    const connected = (provider.signIn && SIGN_INS[provider.signIn].connected) || paperKeyProviders[provider.key].connected;
     const button = document.createElement("button");
     button.type = "button"; button.textContent = connected ? "Change" : "Connect";
     button.setAttribute("aria-label", `${button.textContent} ${provider.name}`);
@@ -21501,8 +22967,9 @@ async function openPaperProviders(provider) {
   if (section) { section.scrollIntoView({ block:"start" }); section.focus({ preventScroll:true }); }
 }
 function closePaperProviders() { $("paper-providers-dialog").close(); }
-// One provider's Connect dialog: only the ways in it allows; a key field is
-// a password field, emptied when the dialog opens and once the key is saved.
+// One provider's Connect dialog: the ways in Hilde supports for it; a key
+// field is a password field, emptied when the dialog opens and once the key
+// is saved. A refused xAI sign-in puts the key field first in line.
 async function openProviderConnect(id) {
   const provider = CONNECT_PROVIDERS[id];
   if ($("paper-providers-dialog").open) closePaperProviders();
@@ -21512,12 +22979,19 @@ async function openProviderConnect(id) {
   $(`paper-${provider.key}-key`).value = "";
   renderPaperKey(provider.key, paperCatalog[`${paperKeyProviders[provider.key].field}_error`]);
   if (!$("provider-connect-dialog").open) $("provider-connect-dialog").showModal();
-  [...document.querySelectorAll(`.connect-provider[data-provider="${id}"] :is(input, button)`)]
-    .find((node) => node.getClientRects().length)?.focus();
-  if (provider.signIn) await pollPaperOpenAI();
+  const fields = [...document.querySelectorAll(`.connect-provider[data-provider="${id}"] :is(input, button)`)]
+    .filter((node) => node.getClientRects().length && node.id !== "paper-xai-remove");
+  (id === "xai" && paperCatalog.xai_refused ? $("paper-xai-api-key") : fields[0])?.focus();
+  if (provider.signIn) await pollSignIn(provider.signIn);
+}
+// "Use an API key instead": the xAI key field, ready for a key. Nothing else
+// changes until the key is saved and the user chooses one of its models.
+function useXaiKeyInstead() {
+  $("paper-xai-api-key").scrollIntoView({ block:"center" });
+  $("paper-xai-api-key").focus();
 }
 function closeProviderConnect() {
-  clearTimeout(paperOAuthTimer);
+  for (const signIn of Object.values(SIGN_INS)) clearTimeout(signIn.timer);
   if ($("provider-connect-dialog").open) $("provider-connect-dialog").close();
 }
 function renderPaperKey(name, message) {
@@ -21548,20 +23022,30 @@ async function removePaperKey(name) {
     await sync();
   } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
 }
-async function startPaperOpenAI() {
+async function startSignIn(name) {
   try {
-    renderPaperOpenAI(await jsonRequest("/api/paper/openai/login", {
+    renderSignIn(name, await jsonRequest(`/api/paper/${name}/login`, {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     }));
-    paperOAuthTimer = setTimeout(pollPaperOpenAI, 250);
-  } catch (error) { $("paper-openai-status").textContent = error.message; }
+    SIGN_INS[name].timer = setTimeout(() => pollSignIn(name), 250);
+  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
 }
-async function cancelPaperOpenAI() {
+async function cancelSignIn(name) {
   try {
-    renderPaperOpenAI(await jsonRequest("/api/paper/openai/cancel", {
+    renderSignIn(name, await jsonRequest(`/api/paper/${name}/cancel`, {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     }));
-  } catch (error) { $("paper-openai-status").textContent = error.message; }
+  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
+}
+// Sign out of xAI: this server forgets the sign-in; an API key stays.
+async function signOutXai() {
+  try {
+    SIGN_INS.xai.info = { status:"idle" };
+    applyPaperCatalog(await jsonRequest("/api/paper/xai/remove", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
+    }));
+    await sync();
+  } catch (error) { $("paper-xai-status").textContent = error.message; }
 }
 
 // Add local: the servers registered on this server (--local-server), each
@@ -22041,9 +23525,26 @@ async function removeWorkerNode(host) {
   } catch (error) { setStatus(error.message, true); }
 }
 
-// A new choice or link in step 1 clears the last problem adding a document.
+// A new choice or link in step 1 clears the last problem adding a document;
+// a changed link or Save as name is downloaded again.
 for (const id of ["document", "source-url", "download-name"])
-  $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => { bookProblemText = ""; });
+  $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => {
+    bookProblemText = "";
+    if (id !== "document") state.audiobook.url_document = "";
+  });
+// Step 1's source cards: the radios (arrow keys move the choice and keep focus
+// on the radio), and a click anywhere on a dimmed card, which chooses it and
+// focuses its first field. A keyboard's click (Space, arrows) has detail 0.
+for (const radio of document.querySelectorAll(".source-radio"))
+  radio.addEventListener("change", () => { if (radio.checked) selectSource(radio.value, false); });
+for (const card of document.querySelectorAll(".source-card"))
+  card.addEventListener("click", (event) => {
+    if (!card.classList.contains("is-off") || event.detail === 0) return;
+    selectSource(card.dataset.source, true);
+  });
+$("document-more").addEventListener("click", () => openRowMenu($("document-more"),
+  $("document-more").getAttribute("aria-label"),
+  [{ label:"Delete…", run:(button) => deleteDocument(button) }]));
 for (const [id] of FIELDS) {
   const node = $(id);
   node.addEventListener(node.tagName === "SELECT" ? "change" : "input", () => {
@@ -22212,6 +23713,11 @@ $("chat-speak").addEventListener("change", (event) => {
 });
 
 // Listen: the player bar, the panel, the selection menu, and the reading position.
+$("reader-content").addEventListener("click", clickReaderText);
+// Shift+click stretches the focus; the browser would stretch a selection.
+$("reader-content").addEventListener("mousedown", (event) => {
+  if (event.shiftKey && chatAbout && chatAbout.focus && !event.target.closest("a, button")) event.preventDefault();
+});
 $("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection(); });
 $("ask-hilde").addEventListener("click", askHilde);
 $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
@@ -22609,20 +24115,33 @@ def main():
         default=[],
         help=(
             "A local model server every browser can use, before the ones it adds under Add local; "
-            "repeat for more. PROVIDER is ollama or lm-studio (any OpenAI-compatible server: "
-            "LM Studio, vLLM, SGLang); ,vision says its models see images. "
+            "repeat for more. PROVIDER is lm-studio for any OpenAI-compatible server, or ollama for "
+            "an Ollama server; ,vision says its models see images. "
             "For example lm-studio=http://127.0.0.1:8000,vision."
         ),
     )
     parser.add_argument(
-        "--default-model",
+        "--preferred-text-model",
         metavar="SELECTOR",
-        type=default_model_option,
-        default=None,
+        type=preferred_model_option,
+        action="append",
+        default=[],
         help=(
-            "The server's own default text model, a LOCAL model such as "
-            "lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4: used when no Gemma is installed on the "
-            "local servers and the browser has not chosen a model. API models are refused."
+            "One of your preferred text models, local (lm-studio/MODEL, ollama/MODEL) or an API "
+            "model (PROVIDER/MODEL); repeat for more, in order of preference. A browser that has "
+            "chosen no model starts with the first while it is reachable; the others come first "
+            "among the alternatives offered when it is not. Hilde never switches to one by itself."
+        ),
+    )
+    parser.add_argument(
+        "--preferred-figure-model",
+        metavar="SELECTOR",
+        type=preferred_model_option,
+        action="append",
+        default=[],
+        help=(
+            "One of your preferred models for reading figures from their pictures, as "
+            "--preferred-text-model; repeat for more. Without one, figures go to the text model."
         ),
     )
     models = parser.add_argument_group("voice model configuration")
@@ -22746,14 +24265,17 @@ def main():
     server.workers_lock = threading.Lock()
     server.worker_setup = None
     server.openai_login = OpenAIOAuthLogin()
+    server.xai_login = XaiOAuthLogin()
     server.chats = ChatRegistry()
     server.search_server = args.search_server
     SERVER_LOCAL_SERVERS[:] = [
         entry for index, entry in enumerate(args.local_server)
         if all(entry["server"] != earlier["server"] for earlier in args.local_server[:index])
     ]
-    global SERVER_DEFAULT_MODEL
-    SERVER_DEFAULT_MODEL = args.default_model or ""
+    SERVER_PREFERRED_MODELS.update(
+        text=tuple(dict.fromkeys(args.preferred_text_model)),
+        figure=tuple(dict.fromkeys(args.preferred_figure_model)),
+    )
     server.chat_speaker = (
         ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
     )
@@ -22781,7 +24303,8 @@ def main():
     print("Local model servers for every browser: "
           + (", ".join(f"{local_server_label(entry['server'])} ({entry['provider']})"
                        for entry in SERVER_LOCAL_SERVERS) or "none"), flush=True)
-    print(f"Default text model: {SERVER_DEFAULT_MODEL or 'none'} (after the largest Gemma installed)", flush=True)
+    print("Preferred text models: " + (", ".join(SERVER_PREFERRED_MODELS["text"]) or "none"), flush=True)
+    print("Preferred figure models: " + (", ".join(SERVER_PREFERRED_MODELS["figure"]) or "none"), flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)
     print(model_summary(tts_models["clone"], "clone"), flush=True)
     print(
@@ -22798,6 +24321,10 @@ def main():
             print("Plain HTTP: browsers on other devices flag downloads; --https serves HTTPS.", flush=True)
     if args.open:
         webbrowser.open(url)
+    # The xAI sign-in is renewed in the background while this server runs.
+    renewal_stop = threading.Event()
+    threading.Thread(target=keep_xai_sign_in_fresh, args=(renewal_stop,), daemon=True,
+                     name="xai-sign-in-renewal").start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -22805,6 +24332,8 @@ def main():
     finally:
         server.jobs.shutdown()
         server.openai_login.stop()
+        server.xai_login.stop()
+        renewal_stop.set()
         server.server_close()
 
 

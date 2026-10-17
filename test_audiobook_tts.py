@@ -2268,13 +2268,16 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(recent, [
             {"id": done["id"], "document": "done.txt", "voice": "Narrator",
              "book": "made--0123456789ab", "mode": "create", "status": "done",
-             "stage": "alignment", "progress": {"done": 40, "total": 40, "unit": "sentence"}},
+             "stage": "alignment", "progress": {"done": 40, "total": 40, "unit": "sentence"},
+             "paused": None, "part_models": []},
             {"id": stopped["id"], "document": "stopped.txt", "voice": "Narrator", "book": "",
              "mode": "create", "status": "stopped",
-             "stage": "extraction", "progress": {"done": 3, "total": 3, "unit": "page"}},
+             "stage": "extraction", "progress": {"done": 3, "total": 3, "unit": "page"},
+             "paused": None, "part_models": []},
             {"id": failed["id"], "document": "failed.txt", "voice": "Narrator", "book": "",
              "mode": "create", "status": "failed",
-             "stage": "narration", "progress": {"done": 5, "total": 20, "unit": None}},
+             "stage": "narration", "progress": {"done": 5, "total": 20, "unit": None},
+             "paused": None, "part_models": []},
         ])
 
     def test_auto_job_claims_all_gpu_workers_before_next_job(self):
@@ -4054,7 +4057,7 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         self.assertEqual(names, ("deepseek-v4-flash:latest", "qwen3.8:27b"))
 
-    def test_without_gemma_a_local_model_is_the_default_and_never_gives_way_to_the_cloud(self):
+    def test_the_catalog_lists_local_models_before_the_cloud_and_chooses_nothing_by_itself(self):
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
@@ -4062,30 +4065,27 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
             added = [{"server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
-            with mock.patch.object(web, "local_model_names", return_value=["deepseek"]):
+            with mock.patch.object(web, "local_model_names", return_value=["text-model"]):
                 catalog = web.paper_model_catalog(added)
-            # No Gemma: the first local model, never the API one.
-            self.assertEqual(catalog["default_model"], "lm-studio/deepseek")
             self.assertEqual(
                 [model["selector"] for model in catalog["models"]],
-                ["lm-studio/deepseek", "openai-codex/gpt-a"],
+                ["lm-studio/text-model", "openai-codex/gpt-a"],
             )
             # Each model says where it runs, as Chat's picker shows it before sending.
             self.assertEqual(
                 [model["badge"] for model in catalog["models"]], ["Local", "API: OpenAI"],
             )
-            with mock.patch.object(web, "local_model_names", return_value=["deepseek", "gemma-3-4b-it"]):
-                self.assertEqual(web.paper_model_catalog(added)["default_model"], "lm-studio/gemma-3-4b-it")
-            # While it does not answer, a job gets no default rather than
-            # sending the document to OpenAI.
+            # Two models, none preferred: nothing is chosen.
+            self.assertEqual(catalog["first_use"]["text"]["how"], "none")
+            # The local server does not answer: the one API model is the only
+            # model there is, offered with its badge (rule c).
             with mock.patch.object(
                 web, "local_model_names", side_effect=RuntimeError("Cannot reach it")
             ):
                 catalog = web.paper_model_catalog(added)
-            self.assertEqual(catalog["default_model"], "")
+            self.assertEqual(catalog["first_use"]["text"],
+                             {"selector": "openai-codex/gpt-a", "how": "only", "unreachable": False})
             self.assertEqual(catalog["local_error"], "127.0.0.1:8010: Cannot reach it")
-            # Without a local server, an API is never the default.
-            self.assertEqual(web.paper_model_catalog()["default_model"], "")
 
     def catalog_with(self, local_servers, names_by_server, loaded_by_server=None):
         """paper_model_catalog() with ChatGPT signed in (gpt-a, gpt-b), a
@@ -4136,10 +4136,11 @@ class LocalPaperProviderTests(unittest.TestCase):
                 ("not-running", "local", "127.0.0.1:9", None, "ollama"),
                 ("provider", "api", "Anthropic (Claude)", "connect", "anthropic"),
                 ("provider", "api", "DeepSeek", "connect", "deepseek"),
+                ("provider", "api", "xAI (Grok)", "connect", "xai"),
                 ("provider", "api", "Claude Code", "connect", "claude-code"),
             ],
         )
-        self.assertEqual(catalog["rows"][3]["note"], "Claude Code is not installed.")
+        self.assertEqual(catalog["rows"][4]["note"], "Claude Code is not installed.")
         # Without a Gemini key, Google is a row to connect, with no model named.
         with mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "read_openai_credentials", return_value=None), \
@@ -4151,54 +4152,50 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIn({"kind": "api", "row": "provider", "label": "Google (Gemini)", "provider": "gemini",
                        "action": "connect", "note": "No API key"}, bare["rows"])
         self.assertFalse(any(model["provider"] == "gemini" for model in bare["models"]))
-        # OpenAI is one row for both ways in (ChatGPT sign-in, API key).
+        # OpenAI is one row for both ways in (ChatGPT sign-in, API key), and so is xAI.
         self.assertEqual([row["label"] for row in bare["rows"]],
-                         ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "Claude Code"])
+                         ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "xAI (Grok)", "Claude Code"])
         self.assertEqual(bare["rows"][0]["note"], "Not connected")
         # A local model without the server's vision mark reads no images.
         plain = self.catalog_with([{"server": qwen, "provider": "lm-studio", "vision": False}], {qwen: ["llama-4"]})
         self.assertFalse(plain["models"][0]["images"])
 
-    def test_the_default_is_the_largest_gemma_installed_then_the_server_default_never_an_api_model(self):
+    def test_first_use_follows_the_owners_preferred_models_and_never_falls_back(self):
         one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
         servers = [{"server": one, "provider": "lm-studio", "vision": True},
                    {"server": two, "provider": "ollama", "vision": False}]
-        catalog = self.catalog_with(servers, {
-            one: ["google/gemma-3-12b-it", "qwen3-32b", "embeddinggemma-300m"],
-            two: ["gemma3:27b", "gemma3n:e4b"],
-        })
-        self.assertEqual((catalog["default_model"], catalog["default_status"]), ("ollama/gemma3:27b", "gemma"))
-        # The larger Gemma's server does not answer: the one listed wins.
-        self.assertEqual(self.catalog_with(servers, {one: ["google/gemma-3-12b-it"]})["default_model"],
-                         "lm-studio/google/gemma-3-12b-it")
-        # Installed counts: Ollama loads the larger Gemma on its first request.
-        catalog = self.catalog_with(servers, {one: ["google/gemma-3-12b-it"], two: ["gemma3:27b"]}, {two: set()})
-        self.assertEqual([model["loaded"] for model in catalog["models"][:2]], [None, False])
-        self.assertEqual(catalog["default_model"], "ollama/gemma3:27b")
-        # No Gemma: the server's --default-model while listed, else the first local model;
-        # "gemma-not-running" while a local server does not answer.
-        with mock.patch.object(web, "SERVER_DEFAULT_MODEL", "lm-studio/qwen3-32b"):
-            catalog = self.catalog_with(servers, {one: ["llama-4", "qwen3-32b"], two: ["phi-4"]})
-            self.assertEqual((catalog["default_model"], catalog["default_status"]), ("lm-studio/qwen3-32b", "no-gemma"))
-            catalog = self.catalog_with(servers, {one: ["llama-4", "qwen3-32b"]})
-            self.assertEqual((catalog["default_model"], catalog["default_status"]),
-                             ("lm-studio/qwen3-32b", "gemma-not-running"))
-            catalog = self.catalog_with(servers, {two: ["phi-4"]})
-            self.assertEqual(catalog["default_model"], "ollama/phi-4")
-        # No local model reachable: no default, though API models (a Gemma among them) are listed.
-        catalog = self.catalog_with(servers, {})
-        self.assertEqual((catalog["default_model"], catalog["default_status"]), ("", "none"))
+        preferred = {"text": ("lm-studio/flash-model", "ollama/mid-model:35b"),
+                     "figure": ("lm-studio/vision-model", "ollama/mid-model:35b")}
+        with mock.patch.dict(web.SERVER_PREFERRED_MODELS, preferred):
+            # b: the first preferred model, reachable.
+            catalog = self.catalog_with(servers, {one: ["flash-model", "vision-model"], two: ["mid-model:35b"]})
+            self.assertEqual(catalog["first_use"]["text"],
+                             {"selector": "lm-studio/flash-model", "how": "preferred", "unreachable": False})
+            self.assertEqual(catalog["first_use"]["figure"]["selector"], "lm-studio/vision-model")
+            self.assertEqual([entry["reachable"] for entry in catalog["preferred"]["text"]], [True, True])
+            # Its server does not answer: nothing is chosen, though the second
+            # preferred model answers; the page names the first as unreachable.
+            catalog = self.catalog_with(servers, {two: ["mid-model:35b"]})
+            self.assertEqual(catalog["first_use"]["text"],
+                             {"selector": "lm-studio/flash-model", "how": "preferred", "unreachable": True})
+            self.assertEqual(
+                [(entry["name"], entry["badge"], entry["size"], entry["reachable"])
+                 for entry in catalog["preferred"]["text"]],
+                [("Flash Model", "Local", "", False), ("Mid Model 35B", "Local", "35B", True)],
+            )
+        # Figures with no preferred figure model follow the text model.
+        self.assertEqual(catalog["first_use"]["figure"]["how"], "preferred")
+        catalog = self.catalog_with(servers, {one: ["a", "b"]})
+        self.assertEqual(catalog["first_use"]["figure"]["how"], "same")
+        # d: several models, none preferred.
+        self.assertEqual(catalog["first_use"]["text"]["how"], "none")
 
-    def test_default_model_option_takes_only_a_local_model(self):
-        self.assertEqual(web.default_model_option(" lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4 "),
-                         "lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4")
-        self.assertEqual(web.default_model_option("ollama/gemma3:27b"), "ollama/gemma3:27b")
-        for api in ("openai-codex/gpt-5.6-sol", "anthropic/claude-new", "gemini/gemini-10-pro"):
-            with self.assertRaisesRegex(web.argparse.ArgumentTypeError, "is not a local model"):
-                web.default_model_option(api)
-        for bad in ("qwen", "lm-studio/"):
+    def test_preferred_model_option_takes_local_and_api_models(self):
+        for selector in ("lm-studio/my-model", "ollama/my-model:7b", "openai/gpt-new", "gemini/gemini-10-pro"):
+            self.assertEqual(web.preferred_model_option(f" {selector} "), selector)
+        for bad in ("qwen", "lm-studio/", "nowhere/model"):
             with self.assertRaises(web.argparse.ArgumentTypeError):
-                web.default_model_option(bad)
+                web.preferred_model_option(bad)
 
     def test_ollama_and_lm_studio_say_what_is_loaded(self):
         def answers(routes):
@@ -4421,6 +4418,22 @@ class LocalPaperProviderTests(unittest.TestCase):
             [f"http://127.0.0.1:{port}" for port in (8000, 8001, 8002, 8004, 8005, 8006, 8007)],
         )
 
+    def test_only_the_chosen_source_card_gives_the_document(self):
+        filled = {"document": "saved.pdf", "upload": "uploaded.pdf",
+                  "source_url": "https://example.com/linked.pdf", "download_name": "linked.pdf"}
+        for source, document, link in (("saved", "saved.pdf", ""), ("upload", "uploaded.pdf", ""),
+                                       ("url", "", "https://example.com/linked.pdf")):
+            audiobook = normalize({"audiobook": {**filled, "source": source}})["audiobook"]
+            self.assertEqual(audiobook["source"], source)
+            self.assertEqual(web.chosen_document(audiobook), document)
+            self.assertEqual(web.pending_url(audiobook), link)
+        # Once Continue downloaded the link, its document is used and nothing is downloaded again.
+        downloaded = normalize({"audiobook": {**filled, "source": "url", "url_document": "linked.pdf"}})["audiobook"]
+        self.assertEqual((web.chosen_document(downloaded), web.pending_url(downloaded)), ("linked.pdf", ""))
+        # A browser from before the cards: its typed link is the source, else the dropdown.
+        self.assertEqual(normalize({"audiobook": {"source_url": "https://example.com/a.pdf"}})["audiobook"]["source"], "url")
+        self.assertEqual(normalize({"audiobook": {"source": "elsewhere"}})["audiobook"]["source"], "saved")
+
     def test_a_local_server_registered_on_the_server_is_parsed_and_checked(self):
         option = web.local_server_option
         self.assertEqual(option("lm-studio=http://127.0.0.1:8000,vision"),
@@ -4488,9 +4501,9 @@ class LocalPaperProviderTests(unittest.TestCase):
                 ("openai-codex/gpt-a", None, None),
             ],
         )
-        self.assertEqual(catalog["default_model"], "lm-studio/gemma")
+        self.assertEqual(catalog["first_use"]["text"]["how"], "none")
         self.assertEqual(catalog["local_error"], "")
-        self.assertEqual(unreachable["default_model"], "lm-studio/gemma")
+        self.assertEqual([model["selector"] for model in unreachable["models"]][:1], ["lm-studio/gemma"])
         self.assertTrue(unreachable["local_error"].startswith("127.0.0.1:9: "))
 
         source = root / "paper.pdf"
@@ -4534,6 +4547,72 @@ class LocalPaperProviderTests(unittest.TestCase):
                 "lm-studio/qwen": {"server": f"http://{qwen}", "vision": qwen_sees_images},
             })
             self.assertEqual(run.local_vision(), {"lm-studio/gemma": True, "lm-studio/qwen": qwen_sees_images})
+
+    def test_a_model_unreachable_mid_job_keeps_finished_parts_and_another_model_writes_only_the_rest(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        first_requests, second_requests = [], []
+        first = fake_local_server(self, ["model-a"], first_requests)
+        second = fake_local_server(self, ["model-b"], second_requests)
+        servers = [{"server": first, "provider": "lm-studio", "vision": False},
+                   {"server": second, "provider": "lm-studio", "vision": False}]
+        source = root / "paper.md"
+        source.write_text("\n\n".join(
+            f"Paragraph {number} says that recurrent models are slow to train." for number in range(1, 7)
+        ), encoding="utf-8")
+        prompt = root / "prompt.md"
+        prompt.write_text("Adapt every paragraph.", encoding="utf-8")
+        stage = root / "stage"
+        checkpoints = stage / "paragraph-checkpoints"
+        answered = []
+        real = web.local_model_response
+
+        def stops_after_three(server, provider, model, system_prompt, text, *rest):
+            # The first model's server goes away before the fourth part.
+            if model == "model-a" and "Paragraph 4 " in text:
+                raise web.ModelConnectionError("Model request failed: connection refused")
+            answered.append(model)
+            return real(server, provider, model, system_prompt, text, *rest)
+
+        def run_with(model):
+            run = PaperRun(source, stage / "prepared.txt", "utf-8", model, servers, in_flight=1,
+                           paragraphs_per_worker=1, prompt_path=prompt, scratch_path=stage)
+            run.pump()
+            return run
+
+        with mock.patch.object(web, "MODEL_RETRIES", 0), \
+                mock.patch.object(web, "local_model_response", side_effect=stops_after_three):
+            paused = run_with("lm-studio/model-a")
+        self.assertEqual(paused.code, 1)
+        # The finished parts stay, each naming the model that wrote it.
+        self.assertEqual(web.batch_models(checkpoints), [{"first": 1, "last": 3, "model": "lm-studio/model-a"}])
+        self.assertEqual(str(web.ModelUnreachable("lm-studio/model-a", 4)), "Model A became unreachable at part 4")
+        self.assertEqual(str(web.ModelUnreachable("lm-studio/model-a")), "Model A is unreachable")
+        # Continue with another model: only the remaining parts go to it.
+        second_requests.clear()
+        resumed = run_with("lm-studio/model-b")
+        self.assertEqual(resumed.code, 0)
+        asked = {int(number) for body in second_requests
+                 for number in re.findall(r"Paragraph (\d) says", str(body["messages"][1]["content"]))}
+        self.assertEqual(asked, {4, 5, 6})
+        self.assertEqual(resumed.part_models, [
+            {"first": 1, "last": 3, "model": "lm-studio/model-a"},
+            {"first": 4, "last": 6, "model": "lm-studio/model-b"},
+        ])
+        self.assertEqual(web.part_models_text(resumed.part_models),
+                         "parts 1–3: Model A (lm-studio/model-a); parts 4–6: Model B (lm-studio/model-b)")
+        # Any other change to the identity still starts the adaptation again.
+        manifest = json.loads((stage / "extraction.json").read_text(encoding="utf-8"))
+        self.assertTrue(web.same_but_models(manifest, {**manifest, "model": "lm-studio/model-a", "complete": False}))
+        self.assertFalse(web.same_but_models(manifest, {**manifest, "in_flight": 2}))
+        moved = {**manifest, "local": {"lm-studio/model-b": {"server": "http://elsewhere:1", "vision": False}}}
+        self.assertFalse(web.same_but_models(manifest, moved))
+
+    def test_an_earlier_message_whose_context_kept_only_its_section_still_reads(self):
+        # Such an entry is in older conversations; every later turn sends it again.
+        entry = {"role": "user", "text": "A question.", "context": {"section": "3.2.1 Attention"}}
+        self.assertEqual(web._chat_user_parts(entry), [("text", "A question.")])
 
     def test_a_local_model_no_added_server_offers_stops_the_job(self):
         temporary = tempfile.TemporaryDirectory()
@@ -4764,8 +4843,8 @@ class OpenAISignInTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai-codex/gpt-a", "openai-codex/gpt-b"],
         )
-        # Listed, but an API model is never chosen without the user.
-        self.assertEqual(catalog["default_model"], "")
+        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
 
         source = self.root / "paper.pdf"
         write_figure_pdf(source)
@@ -5046,8 +5125,8 @@ class AnthropicProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["anthropic/claude-new", "anthropic/claude-old"],
         )
-        # Listed, but an API model is never chosen without the user.
-        self.assertEqual(catalog["default_model"], "")
+        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual(run.code, 0)
         self.assertIn(
             "Figure one is described.", (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5200,8 +5279,8 @@ class OpenAIAPIProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai/gpt-new", "openai/chatgpt-4o-latest", "openai/o4-mini", "openai/gpt-old"],
         )
-        # Listed, but an API model is never chosen without the user.
-        self.assertEqual(catalog["default_model"], "")
+        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual((catalog["openai_api_connected"], catalog["openai_connected"]), (True, False))
         self.assertEqual(run.code, 0)
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5325,8 +5404,8 @@ class GeminiProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["gemini/gemini-10-pro", "gemini/gemini-3.8-flash", "gemini/gemini-2.5-pro"],
         )
-        # Listed, but an API model is never chosen without the user.
-        self.assertEqual(catalog["default_model"], "")
+        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertTrue(catalog["gemini_connected"])
         self.assertEqual(run.code, 0)
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
@@ -5480,7 +5559,7 @@ class DeepSeekProviderTests(unittest.TestCase):
              ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", "API: DeepSeek", False),
              ("deepseek/deepseek-vision-check", "DeepSeek Vision Check", "API: DeepSeek", False)],
         )
-        self.assertEqual(catalog["default_model"], "")
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertTrue(catalog["deepseek_connected"])
         self.assertNotIn("DeepSeek", [row["label"] for row in catalog["rows"]])
         # The key goes nowhere but DeepSeek: not into the catalog the page gets.
@@ -5504,6 +5583,302 @@ class DeepSeekProviderTests(unittest.TestCase):
         self.assertTrue(flash[0]["image_url"]["url"].startswith("data:image/png;base64,"))
         self.assertEqual(images(requests[runs["deepseek-v4-pro"][0]:]), [])
         self.assertTrue(all(body["model"] == "deepseek-v4-pro" for body in requests[runs["deepseek-v4-pro"][0]:]))
+
+
+class XaiProviderTests(unittest.TestCase):
+    """xAI (Grok) against a fake xAI (fake tokens and key only): the device
+    sign-in with PKCE, its encrypted store and background renewal, the live
+    model list with its image marks, 403, a refused renewal, and the API key."""
+
+    KEY = "xai-fake-api-key-0123"
+    EMAIL = "reader@example.test"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / ".hilde"
+        self.calls = []
+        self.xai = {"approved": False, "challenge": "", "refuse": False, "renew": True, "issued": 0}
+        test = self
+
+        def jwt(claims):
+            part = lambda data: base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+            return f"{part({'alg': 'none'})}.{part(claims)}.signature"
+
+        def issue():
+            test.xai["issued"] += 1
+            number = test.xai["issued"]
+            return {"access_token": f"xai-fake-access-{number}", "refresh_token": f"xai-fake-refresh-{number}",
+                    "expires_in": 21600, "token_type": "Bearer",
+                    **({"id_token": jwt({"email": test.EMAIL})} if number == 1 else {})}
+
+        def signed_in(auth):
+            return auth == f"Bearer xai-fake-access-{test.xai['issued']}"
+
+        class XaiHandler(FakeProviderHandler):
+            def form(self):
+                return dict(urllib.parse.parse_qsl(self.rfile.read(int(self.headers["Content-Length"])).decode()))
+
+            def api_caller(self):
+                """None for a refused caller (answered here), else whether it is the sign-in."""
+                auth = self.headers.get("Authorization")
+                if not (signed_in(auth) or auth == f"Bearer {test.KEY}"):
+                    self.reply(401, {"error": "Incorrect API key or token provided."})
+                    return None
+                if signed_in(auth) and test.xai["refuse"]:
+                    self.reply(403, {"code": "permission-denied",
+                                     "error": "The caller does not have permission to execute the specified operation"})
+                    return None
+                return auth
+
+            def do_GET(self):
+                test.calls.append(("GET", self.path, self.headers.get("Authorization"), None))
+                if self.api_caller() is None:
+                    return None
+                if self.path == "/v1/models":
+                    # As documented: no modalities here; an image generator listed too.
+                    return self.reply(200, {"object": "list", "data": [
+                        {"id": "grok-4.20-reasoning", "object": "model", "owned_by": "xai", "context_length": 2000000},
+                        {"id": "grok-3-mini", "object": "model", "owned_by": "xai"},
+                        {"id": "grok-imagine-image", "object": "model", "owned_by": "xai"},
+                    ]})
+                if self.path == "/v1/language-models":
+                    return self.reply(200, {"models": [
+                        {"id": "grok-4.20-reasoning", "aliases": [], "input_modalities": ["text", "image"],
+                         "output_modalities": ["text"]},
+                        {"id": "grok-3-mini-0101", "aliases": ["grok-3-mini"], "input_modalities": ["text"],
+                         "output_modalities": ["text"]},
+                    ]})
+                return self.reply(404, {})
+
+            def do_POST(self):
+                if self.path == "/auth/oauth2/device/code":
+                    form = self.form()
+                    test.calls.append(("POST", self.path, None, form))
+                    if form.get("client_id") != web.XAI_CLIENT_ID or form.get("code_challenge_method") != "S256":
+                        return self.reply(400, {"error": "invalid_request"})
+                    test.xai["challenge"] = form["code_challenge"]
+                    return self.reply(200, {
+                        "device_code": "fake-device-code", "user_code": "FAKE-CODE",
+                        "verification_uri": "https://accounts.x.ai/oauth2/device",
+                        "verification_uri_complete": "https://accounts.x.ai/oauth2/device?user_code=FAKE-CODE",
+                        "expires_in": 60, "interval": 0,
+                    })
+                if self.path == "/auth/oauth2/token":
+                    form = self.form()
+                    test.calls.append(("POST", self.path, None, form))
+                    if form.get("grant_type") == "urn:ietf:params:oauth:grant-type:device_code":
+                        if not test.xai["approved"]:
+                            return self.reply(400, {"error": "authorization_pending",
+                                                    "error_description": "User has not yet authorized"})
+                        verifier = form.get("code_verifier", "").encode()
+                        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier).digest()).rstrip(b"=").decode()
+                        if challenge != test.xai["challenge"] or form.get("device_code") != "fake-device-code":
+                            return self.reply(400, {"error": "invalid_grant"})
+                        return self.reply(200, issue())
+                    if form.get("grant_type") == "refresh_token":
+                        if not test.xai["renew"] or form.get("refresh_token") != f"xai-fake-refresh-{test.xai['issued']}":
+                            return self.reply(400, {"error": "invalid_grant",
+                                                    "error_description": "Invalid or unknown refresh token"})
+                        return self.reply(200, issue())
+                    return self.reply(400, {"error": "unsupported_grant_type"})
+                if self.path == "/v1/chat/completions":
+                    body = self.body()
+                    test.calls.append(("POST", self.path, self.headers.get("Authorization"), body))
+                    if self.api_caller() is None:
+                        return None
+                    return self.stream((
+                        {"choices": [{"index": 0, "delta": {"reasoning_content": "Thinking."}}]},
+                        {"choices": [{"index": 0, "delta": {"content": "Grok answers "}}]},
+                        {"choices": [{"index": 0, "delta": {"content": "from the book."}}]},
+                        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                    ))
+                return self.reply(404, {})
+
+        origin = serve_fake_provider(self, XaiHandler)
+        patch_for_test(
+            self,
+            mock.patch.object(web, "HILDE_HOME", self.home),
+            mock.patch.object(web, "XAI_AUTH_URL", f"{origin}/auth"),
+            mock.patch.object(web, "XAI_API_URL", f"{origin}/v1"),
+            mock.patch.object(web, "_XAI_MODELS", {}),
+            mock.patch.object(web, "OPENAI_DEVICE_POLL_FLOOR", 0.01),
+            mock.patch.object(web, "claude_code_status", return_value=(False, "")),
+        )
+
+    def sign_in(self):
+        """Sign in as the page does, approving at the fake xAI."""
+        login = web.XaiOAuthLogin()
+        login.start()
+        deadline = time.monotonic() + 10
+        while login.snapshot()["status"] != "waiting" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        waiting = login.snapshot()
+        self.xai["approved"] = True
+        while login.snapshot()["status"] == "waiting" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return waiting, login.snapshot()
+
+    def secrets_in(self, text):
+        return [secret for secret in ("xai-fake-access", "xai-fake-refresh", "fake-device-code", self.KEY)
+                if secret in text]
+
+    def chat(self, selector, tools=()):
+        @contextmanager
+        def open_stream(url, headers, body):
+            stream = web.ModelStream(url, headers, body)
+            try:
+                yield stream.open()
+            finally:
+                stream.close()
+        streamed = []
+        reply = web.chat_model_reply(
+            selector, [], "Answer from the book.", [{"role": "user", "text": "What is attention?"}],
+            list(tools), lambda delta: streamed.append(delta), open_stream, lambda seconds: False,
+        )
+        return reply, streamed
+
+    def test_device_sign_in_with_pkce_is_kept_encrypted_lists_grok_models_and_answers_ask_hilde(self):
+        waiting, done = self.sign_in()
+        # The page gets xAI's page and the code to compare, never the device code.
+        self.assertEqual((waiting["url"], waiting["code"]),
+                         ("https://accounts.x.ai/oauth2/device?user_code=FAKE-CODE", "FAKE-CODE"))
+        self.assertEqual(self.secrets_in(json.dumps(waiting)), [])
+        self.assertEqual(done["status"], "connected", done)
+        device = next(form for method, path, _, form in self.calls if path == "/auth/oauth2/device/code")
+        self.assertEqual(set(device["scope"].split()),
+                         {"openid", "profile", "email", "offline_access", "grok-cli:access", "api:access"})
+        # Server-wide, owner-only, and encrypted: no token readable in the file.
+        stored = (self.home / "xai.json").read_text()
+        self.assertEqual(self.secrets_in(stored), [])
+        self.assertEqual(json.loads(stored)["sealed"], "AES-256-GCM")
+        for name in ("xai.json", "credentials.key"):
+            self.assertEqual(stat.S_IMODE((self.home / name).stat().st_mode), 0o600, name)
+        self.assertEqual(len((self.home / "credentials.key").read_bytes()), 32)
+        credentials = web.read_xai_credentials()
+        self.assertEqual((credentials["access_token"], credentials["refresh_token"], credentials["email"]),
+                         ("xai-fake-access-1", "xai-fake-refresh-1", self.EMAIL))
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None):
+            catalog = web.paper_model_catalog()
+        # Grok's text models from the live list; reads images from
+        # /language-models' input_modalities (by id or alias); the image
+        # generator left out.
+        self.assertEqual(
+            [(model["selector"], model["name"], model["badge"], model["images"]) for model in catalog["models"]],
+            [("xai/grok-4.20-reasoning", "Grok 4.20 Reasoning", "API: xAI", True),
+             ("xai/grok-3-mini", "Grok 3 Mini", "API: xAI", False)],
+        )
+        self.assertEqual((catalog["xai_connected"], catalog["xai_account"], catalog["xai_error"],
+                          catalog["xai_refused"], catalog["xai_api_connected"]), (True, self.EMAIL, "", False, False))
+        self.assertNotIn("xai", [row.get("provider") for row in catalog["rows"]])
+        self.assertEqual(self.secrets_in(json.dumps(catalog)), [])
+        self.assertEqual(web.chat_context_window("xai/grok-4.20-reasoning", ""), 2000000)
+        self.assertEqual(web.chat_sees_images("xai/grok-3-mini", []),
+                         (False, "This xAI model reads text only."))
+        # One Ask Hilde answer, with the tools, through chat completions.
+        tool = {"name": "read_passage", "description": "Read a passage.",
+                "parameters": {"type": "object", "properties": {}}}
+        (text, calls, extra), streamed = self.chat("xai/grok-4.20-reasoning", [tool])
+        self.assertEqual((text, calls, extra), ("Grok answers from the book.", [], {}))
+        self.assertEqual("".join(delta for delta in streamed if delta), "Grok answers from the book.")
+        _, _, auth, body = self.calls[-1]
+        self.assertEqual(auth, "Bearer xai-fake-access-1")
+        self.assertEqual((body["model"], body["stream"], body["tool_choice"]), ("grok-4.20-reasoning", True, "auto"))
+        self.assertEqual(body["tools"], [{"type": "function", "function": tool}])
+        self.assertEqual([message["role"] for message in body["messages"]], ["system", "user"])
+        # Another key, or a damaged file, opens nothing.
+        key = (self.home / "credentials.key").read_bytes()
+        (self.home / "credentials.key").write_bytes(bytes(32))
+        self.assertIsNone(web.read_xai_credentials())
+        (self.home / "credentials.key").write_bytes(key)
+        sealed = json.loads(stored)
+        data = bytearray(base64.b64decode(sealed["data"]))
+        data[0] ^= 1
+        (self.home / "xai.json").write_text(json.dumps({**sealed, "data": base64.b64encode(bytes(data)).decode()}))
+        self.assertIsNone(web.read_xai_credentials())
+
+    def test_the_sign_in_is_renewed_in_the_background_and_a_refused_renewal_says_sign_in_again(self):
+        self.sign_in()
+        # Near expiry: the background pass renews it; xAI's new refresh token is kept.
+        web._write_xai_credentials({**web.read_xai_credentials(), "expires_at": time.time() + 60})
+        stop = threading.Event()
+        stop.set()
+        web.keep_xai_sign_in_fresh(stop)
+        renewed = web.read_xai_credentials()
+        self.assertEqual((renewed["access_token"], renewed["refresh_token"], renewed["email"]),
+                         ("xai-fake-access-2", "xai-fake-refresh-2", self.EMAIL))
+        self.assertGreater(renewed["expires_at"], time.time() + 3600)
+        # A fresh sign-in is left alone.
+        web.renew_xai_sign_in()
+        self.assertEqual(self.xai["issued"], 2)
+        # xAI refuses the renewal: kept as failed; every use says to sign in again.
+        self.xai["renew"] = False
+        web._write_xai_credentials({**web.read_xai_credentials(), "expires_at": time.time() + 30})
+        web.renew_xai_sign_in()
+        self.assertIn("Invalid or unknown refresh token", web.read_xai_credentials()["failed"])
+        with self.assertRaisesRegex(RuntimeError, "^Sign in to xAI again"):
+            web.xai_access()
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None):
+            catalog = web.paper_model_catalog()
+        self.assertEqual((catalog["xai_connected"], catalog["xai_error"], catalog["models"]),
+                         (False, "Sign in to xAI again", []))
+        self.assertIn({"kind": "api", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
+                       "action": "connect", "note": "Sign in to xAI again", "problem": True}, catalog["rows"])
+        values = {"adapt": True, "model": "xai/grok-4.20-reasoning", "local_servers": [], "verify": False,
+                  "verify_model": "", "interpret_figures": False, "figure_model": "", "in_flight": 1,
+                  "paragraphs_per_worker": 1}
+        self.assertTrue(web._adaptation_problem(values).startswith("Sign in to xAI again"))
+        # A new sign-in clears it.
+        self.xai.update(renew=True, approved=False)
+        self.assertEqual(self.sign_in()[1]["status"], "connected")
+        self.assertEqual(web.read_xai_credentials()["failed"], "")
+
+    def test_a_403_is_said_with_use_an_api_key_instead_and_hilde_never_switches_by_itself(self):
+        self.sign_in()
+        self.xai["refuse"] = True
+        others = (mock.patch.object(web, "read_openai_credentials", return_value=None),
+                  mock.patch.object(web, "read_anthropic_key", return_value=None),
+                  mock.patch.object(web, "read_openai_api_key", return_value=None),
+                  mock.patch.object(web, "read_gemini_key", return_value=None),
+                  mock.patch.object(web, "read_deepseek_key", return_value=None))
+        patch_for_test(self, *others)
+        catalog = web.paper_model_catalog()
+        self.assertEqual((catalog["xai_connected"], catalog["xai_refused"], catalog["xai_error"], catalog["models"]),
+                         (True, True, "xAI refused this account (403)", []))
+        self.assertIn({"kind": "api", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
+                       "action": "connect", "note": "xAI refused this account (403)", "problem": True, "refused": True},
+                      catalog["rows"])
+        # With an API key as well: its models are listed under the key, the
+        # sign-in's stay refused, and a request for a sign-in model still
+        # goes with the sign-in only, and fails with the 403.
+        with self.assertRaisesRegex(RuntimeError, "xAI rejected the API key"):
+            web.connect_xai_api("xai-wrong-key")
+        self.assertFalse(web.xai_api_key_path().exists())
+        web.connect_xai_api(f" {self.KEY}\n")
+        self.assertEqual(stat.S_IMODE(web.xai_api_key_path().stat().st_mode), 0o600)
+        catalog = web.paper_model_catalog()
+        self.assertEqual([model["selector"] for model in catalog["models"]],
+                         ["xai-api/grok-4.20-reasoning", "xai-api/grok-3-mini"])
+        self.assertEqual((catalog["xai_refused"], catalog["xai_api_connected"]), (True, True))
+        self.assertEqual(self.secrets_in(json.dumps(catalog)), [])
+        before = len(self.calls)
+        with self.assertRaises(web.XaiRefused) as refused:
+            self.chat("xai/grok-4.20-reasoning")
+        self.assertIn("Use an API key instead", str(refused.exception))
+        sent = [auth for method, path, auth, _ in self.calls[before:] if path == "/v1/chat/completions"]
+        self.assertEqual(sent, [f"Bearer xai-fake-access-{self.xai['issued']}"])
+        # The key's model, chosen by the user, answers.
+        (text, _, _), _ = self.chat("xai-api/grok-4.20-reasoning")
+        self.assertEqual(text, "Grok answers from the book.")
+        self.assertEqual(self.calls[-1][2], f"Bearer {self.KEY}")
 
 
 class ChatGPTAccountTests(unittest.TestCase):
@@ -5599,8 +5974,8 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             (state / "limit").touch()
             limited = run(root / "limited")
 
-        # Listed, but an API model is never chosen without the user.
-        self.assertEqual(catalog["default_model"], "")
+        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual(
             [model["selector"] for model in catalog["models"]],
             ["claude-code/sonnet", "claude-code/opus", "claude-code/haiku"],
@@ -7522,11 +7897,12 @@ class GroundingTests(unittest.TestCase):
         self.assertEqual(len(logs), 2)
         self.assertIn("Connection reset by peer; asking again in 1 s (1 of 4)", logs[0])
 
-        # One that keeps dropping fails after the retries; Stop ends the wait.
+        # One that keeps dropping pauses the job after the retries (the model
+        # is unreachable, never replaced); Stop ends the wait.
         with mock.patch.object(run, "request_model",
                                side_effect=web.ModelConnectionError("Model request failed")), \
                 mock.patch.object(run.stop_requested, "wait", return_value=False), \
-                self.assertRaises(web.ModelConnectionError):
+                self.assertRaises(web.ModelUnreachable):
             run.model_response(Path("request.txt"), "prompt")
         with mock.patch.object(run, "request_model",
                                side_effect=web.ModelConnectionError("Model request failed")), \
@@ -8824,6 +9200,10 @@ class FigureAndContextTests(unittest.TestCase):
 
                 figure = post({"kind": "figure", "passage": 4})
                 selection = post({"kind": "selection", "start": 2, "end": 3, "quote": "reads  the\ninput"})
+                word = post({"kind": "selection", "start": 2, "end": 2, "quote": "reads",
+                             "sentence": "The model  reads the input."})
+                same = post({"kind": "selection", "start": 2, "end": 2, "quote": "The model reads the input.",
+                             "sentence": "The model reads the input."})
                 wrong = post({"kind": "figure", "passage": 3})
             finally:
                 server.shutdown()
@@ -8836,6 +9216,17 @@ class FigureAndContextTests(unittest.TestCase):
         )
         self.assertEqual(selection[1]["items"][0], {"kind": "selection", "label": "Your selection", "text": "reads the input"})
         self.assertEqual(selection[1]["image"], {"sent": False, "count": 0, "why": "Only text is attached."})
+        # A clicked word: the word, then its sentence as context, then the paragraph.
+        self.assertEqual(word[1]["about"]["sentence"], "The model reads the input.")
+        self.assertEqual(
+            [(item["kind"], item["label"], item.get("passage"), item["text"]) for item in word[1]["items"][:2]],
+            [("selection", "Your selection", None, "reads"),
+             ("sentence", "The sentence around it", 2, "The model reads the input.")],
+        )
+        self.assertEqual([item["kind"] for item in word[1]["items"][2:]], ["narration", "source"])
+        # A sentence that is the selection itself is not listed twice.
+        self.assertNotIn("sentence", same[1]["about"])
+        self.assertEqual([item["kind"] for item in same[1]["items"]], ["selection", "narration", "source"])
         self.assertEqual(wrong[0], 400)
 
 
@@ -9384,6 +9775,20 @@ class WorkerNodeTests(unittest.TestCase):
             with self.subTest(extra), mock.patch("sys.stderr", io.StringIO()), \
                     self.assertRaises(SystemExit):
                 cli.check_distributed_mode(parser.parse_args(base + extra), parser)
+
+
+_TEST_HOME = None
+
+
+def setUpModule():
+    """Every test runs with an empty HILDE_HOME of its own unless it sets
+    one: no sign-in or key of the user running the tests is read or used."""
+    global _TEST_HOME
+    _TEST_HOME = tempfile.TemporaryDirectory()
+    patch = mock.patch.object(web, "HILDE_HOME", Path(_TEST_HOME.name) / ".hilde")
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+    unittest.addModuleCleanup(_TEST_HOME.cleanup)
 
 
 if __name__ == "__main__":

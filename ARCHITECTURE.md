@@ -357,7 +357,7 @@ needs the text written again. The browser asks and retries with
 
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
-- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, document, URL plus optional download name, adaptation settings (model, `local_servers`, the local model servers added under **Add local**, in the order added: at most `LOCAL_SERVERS_MAX` (8) `{"server", "provider", "vision"}`, one per server, the server an origin from `normalize_local_server()`, `provider` `ollama` or `lm-studio`, `vision` whether its models see images, true only when stored as `true`; `normalize_local_servers()` drops invalid and repeated entries, and a state from before the list, with `local_server`, `local_provider`, and `local_vision`, becomes its one entry, those keys dropped; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
+- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model, `local_servers`, the local model servers added under **Add local**, in the order added: at most `LOCAL_SERVERS_MAX` (8) `{"server", "provider", "vision"}`, one per server, the server an origin from `normalize_local_server()`, `provider` `ollama` or `lm-studio`, `vision` whether its models see images, true only when stored as `true`; `normalize_local_servers()` drops invalid and repeated entries, and a state from before the list, with `local_server`, `local_provider`, and `local_vision`, becomes its one entry, those keys dropped; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
 - `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
@@ -622,7 +622,8 @@ The web server calls the model itself; `PaperRun.model_response()` routes by the
 - `openai/<model>` (an OpenAI API key, `OPENAI_API_MODEL_PROVIDER`, distinct from the `openai-codex` sign-in) streams the same Responses payload as `openai-codex/` to `OPENAI_API_URL/responses` with the key as a Bearer token (`openai_api_response()`, `openai_api_request()`), read by the same `_openai_text()`, so reasoning is never text. `openai_api_model_names()` lists `/models` and keeps the ids that write text through Responses (`gpt-`, `o<digit>`, `chatgpt-`, without audio, realtime, transcribe, tts, image, search, embedding, moderation, or instruct models), newest `created` first.
 - `gemini/<model>` (a Google Gemini API key, `GEMINI_MODEL_PROVIDER`) streams `POST models/<model>:streamGenerateContent?alt=sse` to `GEMINI_API_URL` with the key in `x-goog-api-key`, the system prompt as `systemInstruction`, and the batch plus figures as `inlineData` parts (`gemini_response()`, `gemini_request()`). No `maxOutputTokens` is sent, so the model's own maximum applies. `_gemini_text()` reads each event's first candidate: parts marked `thought` are never text, `MAX_TOKENS` fails with advice to lower **Paragraphs per request**, any other finish reason than `STOP` or a `promptFeedback.blockReason` fails naming it, and an `error` event whose status is `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, or `INTERNAL`, or a stream that ends without a finish reason, is `ModelBusy`. `gemini_model_names()` follows `nextPageToken` through `/models?pageSize=1000` and keeps `gemini-` models that support `generateContent`, without embedding, tts, image, live, native-audio, or aqa ones, sorted newest version first with numbers compared as numbers.
 - `deepseek/<model>` (a DeepSeek API key, `DEEPSEEK_MODEL_PROVIDER`) streams `POST /chat/completions` to `DEEPSEEK_API_URL` (`https://api.deepseek.com`, OpenAI-compatible) with the key as a Bearer token (`deepseek_response()`, `deepseek_request()`): the system prompt, then the batch as plain text or, for a model that reads images, OpenAI-style `image_url` parts (`_chat_completion_content()`, shared with local servers). No `max_tokens` or temperature is sent: DeepSeek thinks by default, its reasoning counts toward the limit, and temperature does nothing then. `_chat_completion_stream()`, shared with local servers and chat, reads the answer from `content` deltas only, never `reasoning_content`; a `length` finish fails with advice to lower **Paragraphs per request**. `deepseek_models()` lists `/models` and keeps each text model with `images` (its `input_modalities` holds `image`) and `context` (`context_window`, else `DEEPSEEK_DEFAULT_CONTEXT`), remembered in `_DEEPSEEK_MODELS` for `deepseek_model_info()`, which `PaperRun.sees_images()`, `chat_sees_images()`, and `chat_context_window()` ask, never the model's name.
-- The four API-key providers share `_keyed_request()`: a status in `RETRYABLE_STATUSES` before the stream, or a `ModelBusy` from reading it, is asked again up to `MODEL_RETRIES` times after `_retry_delay()`, and Stop cuts the wait short.
+- `xai/<model>` (the xAI sign-in, `XAI_MODEL_PROVIDER`) and `xai-api/<model>` (an xAI API key, `XAI_API_MODEL_PROVIDER`) stream `POST /chat/completions` to `XAI_API_URL` (`https://api.x.ai/v1`, OpenAI-compatible: chat completions with OpenAI-style `image_url` parts, function `tools`, and SSE, per docs.x.ai) through `xai_response()` / `xai_request()`, the same message shapes and `_chat_completion_stream()` as DeepSeek and local servers (reasoning never text). The key goes through `_keyed_request()`; the sign-in's token through the same loop with one renewal when xAI answers 401 and `XaiRefused` ("xAI refused this account (403). Use an API key instead: …") when it answers 403. The two ways in are separate selectors, so a book or question never moves from one to the other by itself. `xai_models()` lists `/models` (context from `context_length`) and, since that list has no modalities, takes each model's `input_modalities` from `/language-models` (by id or alias), which also leaves out the image and video generators; `xai_model_info()` serves image marks and context windows from that listing, per way in.
+- The API-key providers share `_keyed_request()`: a status in `RETRYABLE_STATUSES` before the stream, or a `ModelBusy` from reading it, is asked again up to `MODEL_RETRIES` times after `_retry_delay()`, and Stop cuts the wait short.
 - `claude-code/<alias>` (`sonnet`, `opus`, `haiku`: `CLAUDE_CODE_MODELS`) runs the user's own, unmodified Claude Code for each batch through `PaperRun.run_child()`, so Stop terminates it: `claude -p --model <alias> --system-prompt <prompt> --tools "" --strict-mcp-config --disable-slash-commands --no-session-persistence` with stream-json input and output (`claude_code_request()`). The batch goes in as one user message whose content is `_claude_content()`, the same text and base64 image blocks the Anthropic API gets; the answer is the final `result` event, and an error result, such as a plan's usage limit, fails the job with Claude Code's own text (`claude_code_answer()`). It runs in `~/.hilde`, outside the project, so no instructions file joins the prompt. Never `--bare`: that mode reads only `ANTHROPIC_API_KEY` and skips the subscription sign-in. `claude_code_command()` finds `claude` on PATH or where its installer puts it (`CLAUDE_CODE_CANDIDATES`), and `claude_code_status()` asks `claude auth status` whether it is signed in; Hilde never reads Claude Code's credentials.
 - Claude Code has no model list, and Hilde never reads its sign-in to ask Anthropic for one, so `claude_code_model_names()` asks Claude Code what each nickname runs: `_claude_code_model()` sends a prompt as `claude_code_request()` would and reads only the first `init` event, which names the model about half a second in, then kills the child before it answers. The three run in parallel, are remembered `CLAUDE_CODE_RESOLVE_SECONDS` (6 hours), and are asked again when **Check again** requests `/api/paper/models?refresh=1`. The catalog keeps the nickname as the selector, so a book follows the family's latest model, and adds a `label` (`claude_model_label()`: "Claude Opus 5.5 (opus)") that every model picker shows; a nickname Claude Code does not resolve shows bare.
 - `ollama/<model>` and `lm-studio/<model>` (the model id is everything after the first `/`) stream `POST /v1/chat/completions` to the model's own local server at `temperature` `LOCAL_MODEL_TEMPERATURE` (0.2); left to the server, a model samples at its own default, often 1.0, and the same paper reads differently on every run. Adapting the Attention paper twice with Mistral Small 4 kept 48 of 92 prose batches word for word at 0.2 against 31 at 1.0, with the same tone, and 0 was no steadier. Only `content` deltas form the answer, never reasoning. The user message is plain text, or, when the server's `vision` is set and the batch links figures, OpenAI-style content parts with each figure as an `image_url` data URL, which Ollama, vLLM, SGLang, and LM Studio accept. Whether a server's models see images is the user's choice, never detected: a 400 from a text-only model fails the job with advice to clear that setting.
@@ -632,9 +633,11 @@ The web server calls the model itself; `PaperRun.model_response()` routes by the
 
 ChatGPT sign-in (`OpenAIOAuthLogin`) is OpenAI's device-code flow with the Codex CLI's OAuth client: `deviceauth/usercode` issues a code the user enters at `OPENAI_DEVICE_PAGE`, `deviceauth/token` answers 403 or 404 until then, and `/oauth/token` exchanges the grant. `save_openai_credentials()` writes the access token, refresh token, ChatGPT account ID (from the token claims), id token (a renewal without one keeps the earlier), and expiry to `~/.hilde/openai.json` through a private temporary file (mode 0600, directory 0700). `openai_access()` renews the sign-in under one lock when it is within five minutes of expiry or a request was refused with 401, and keeps OpenAI's rotated refresh token. Tokens never leave the server process; `openai_account_email()` reads the account's e-mail from the id token's claims (`email`, or the `https://api.openai.com/profile` claim's) for the catalog's `openai_account`.
 
-Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps and forbid other applications to collect, store, or intermediate them, so Hilde offers a subscription only through the user's own Claude Code, and otherwise a Console API key. `connect_anthropic()`, `connect_openai_api()`, `connect_gemini()`, and `connect_deepseek()` trim the pasted key (`_pasted_api_key()`), list the key's models to prove the provider accepts it (`_provider_models_json()`: 401 or 403 is a rejected key), and only then write `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`, `~/.hilde/gemini.json`, or `~/.hilde/deepseek.json` through the same private temporary file. **Remove** deletes that file.
+xAI sign-in (`XaiOAuthLogin`, a subclass of `OpenAIOAuthLogin` sharing its state and snapshot) is RFC 8628 device authorization with PKCE against `XAI_AUTH_URL` (`https://auth.x.ai`, whose OIDC discovery lists `/oauth2/device/code` and `/oauth2/token`), with the public client id of xAI's Grok CLI (`XAI_CLIENT_ID`) and the scopes `openid profile email offline_access grok-cli:access api:access`. That client takes only loopback redirects, and a Hilde server is often not the browser's machine, so the device flow is the one that works everywhere: the page shows `verification_uri_complete` on `accounts.x.ai` and the user code; the server polls the token endpoint with the device code and the PKCE verifier (`authorization_pending`, `slow_down`, `access_denied`, `expired_token`; 403 settles as `refused`). `save_xai_credentials()` keeps the access and refresh tokens, expiry, and the account's e-mail (id token claim) in `~/.hilde/xai.json` sealed with AES-256-GCM (`_seal()`, `_unseal()`, associated data `XAI_SEALED_AS`) under `~/.hilde/credentials.key`, 32 random bytes made once (`_credentials_key()`, linked into place so two threads never write different keys), both mode 0600; a file that cannot be opened (another key, altered bytes) reads as no sign-in. `xai_access()` renews under `_XAI_SIGN_IN_LOCK` within `XAI_RENEW_MARGIN` (15 minutes) of expiry or after a 401, keeping xAI's rotated refresh token; 400/401 from the token endpoint marks the sign-in `failed` (kept, encrypted) so every use says "Sign in to xAI again" until a new sign-in; 403 raises `XaiRefused`; a renewal xAI could not answer leaves a still valid token in use. `keep_xai_sign_in_fresh()` runs in the background from `main()`, every `XAI_RENEW_CHECK_SECONDS`. The catalog reports `xai_connected`, `xai_error`, `xai_refused`, `xai_account` (e-mail only), `xai_api_connected`, and `xai_api_error`; no route returns a token. The ChatGPT store (`openai.json`) is not encrypted yet.
 
-`extraction.json` binds checkpoints to the paragraph-selection `schema` (`EXTRACTION_SCHEMA`), input bytes, adaptation toggle, model selector, `local` (for each local model used, by selector, the `server` it ran on and whether it saw images, `vision`; `null` when none), worker configuration, the complete system prompt (the prompt file plus the transport contract), the figure-kind prompt's hash, the figure model when figures are interpreted, and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state. A complete matching preparation is reused without conversion or model calls.
+Anthropic's terms keep Claude Free, Pro, and Max sign-ins to its own apps and forbid other applications to collect, store, or intermediate them, so Hilde offers a subscription only through the user's own Claude Code, and otherwise a Console API key. `connect_anthropic()`, `connect_openai_api()`, `connect_gemini()`, `connect_deepseek()`, and `connect_xai_api()` trim the pasted key (`_pasted_api_key()`), list the key's models to prove the provider accepts it (`_provider_models_json()` or `_xai_get()`: 401 or 403 is a rejected key), and only then write `~/.hilde/anthropic.json`, `~/.hilde/openai-api.json`, `~/.hilde/gemini.json`, `~/.hilde/deepseek.json`, or `~/.hilde/xai-api.json` through the same private temporary file. **Remove** deletes that file.
+
+`extraction.json` binds checkpoints to the paragraph-selection `schema` (`EXTRACTION_SCHEMA`), input bytes, adaptation toggle, model selector, `local` (for each local model used, by selector, the `server` it ran on and whether it saw images, `vision`; `null` when none), worker configuration, the complete system prompt (the prompt file plus the transport contract), the figure-kind prompt's hash, the figure model when figures are interpreted, and, for PDFs, the converter script, so changed harness instructions redo adaptations made under the old ones and a changed converter redoes page conversion. A mismatched identity clears incompatible extraction state, except a change of models alone (`same_but_models()`: the text, figure, or checking model, with a local model both runs use still on the same server with the same vision): then the batches written so far stay and only the rest go to the model chosen now. Each batch checkpoint records the model that wrote it (`"model"`, `null` for a numbered heading; a checkpoint from before took the model of the manifest it was kept under, `earlier_models`), and `batch_models()` joins them into `part_models` (`[{first, last, model}]`) for `book.json`, the `done` event, `/api/jobs` `recent`, the reader payload, and the job's log ("Written by: …", `part_models_text()`). A model still unreachable after `MODEL_RETRIES` (or whose server does not offer it at the start) raises `ModelUnreachable`; the batch loop keeps the batches that came back with it and raises it at the earliest unfinished batch, and `AudiobookRun` ends the job with `paused` (`{model, name, part, message, picker, part_models}`, also in `recent`): the page's card says "⚠ <model> became unreachable at part N" with **Retry** and **Continue with another model…** (`resumePaused()`). Nothing switches models by itself. A complete matching preparation is reused without conversion or model calls.
 
 ## Unified `AudiobookRun`
 
@@ -817,18 +820,32 @@ Each page:
 - **Create** shows three steps, one open at a time; a finished step collapses
   to a summary with **Change**, a later step opens only after the earlier
   ones are complete, and going back resets nothing.
-  1. **Add the source document**: three separate `.source` sections, **Saved
-     document** (the dropdown, with **Delete**), **From a URL** (a link and an
-     optional save-as name, which **Continue** downloads first), and **Upload
-     a file** (**Choose a file…**; a file dropped anywhere on the step uploads
-     too). `#book-chosen` then reads "Chosen: <name> · PDF|Markdown|Text";
-     **Continue** refuses other types. Server errors for links and uploads
-     become short plain sentences in `#book-problem`. An upload or link whose
-     predicted file name (`documentNamesFor()`) is already in Documents asks
-     first (`replaceDocumentOk()`). A typed link outranks the dropdown: it
-     hides **You already have this one** and shows **Continue**.
-     `clearBookChoice()` empties the step (document, link, and save-as name)
-     once **Create audiobook** has queued a book, and when **Create another
+  1. **Add the source document**: three `.source-card`s, always shown, in
+     one radio group (`.sources`, `role="radiogroup"` "Source document"; a
+     native radio `.source-radio` in each header, named by the card's title,
+     so arrow keys move the choice). The chosen card (`audiobook.source`,
+     `selectSource()`, `renderSources()`) is `.is-on`: filled dot, `--accent`
+     border, controls enabled. The others are `.is-off`: empty circle, text
+     in `--off` gray (at least 3:1; never opacity alone), controls disabled
+     with their values kept, and their contents take no pointer, so a click
+     anywhere on the card reaches it, chooses it, and focuses its first field
+     (`SOURCE_FIRST`); a keyboard click (`detail` 0) leaves focus on the
+     radio. **Saved document** is the dropdown, with **⋯** (`#document-more`,
+     the shared `#row-menu`) holding **Delete…**, which asks "Delete
+     '<name>'?" in the page; **From a URL** is a link and an optional save-as
+     name, which **Continue** downloads first (`materializeUrl()`, only while
+     `pendingUrl()`); **Upload a file** is **Choose a file…**, uploading at
+     once and naming the file in `#upload-name`; a file dropped anywhere on
+     the step chooses Upload and uploads. **Continue** uses only
+     `chosenDocument()`. `#book-chosen` shows the chosen card alone:
+     "Chosen (URL): <link>", or "Chosen (Saved document|Upload): <name> ·
+     PDF|Markdown|Text"; **Continue** refuses other types. Server errors for
+     links and uploads become short plain sentences in `#book-problem`. An
+     upload or link whose predicted file name (`predictedDownloadNames()`) is
+     already in Documents asks first (`replaceDocumentOk()`). A link still to
+     download hides **You already have this one** and shows **Continue**.
+     `clearBookChoice()` empties every card (the chosen card stays) once
+     **Create audiobook** has queued a book, and when **Create another
      book** or **Start listening** begins the next one.
   2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
      state Voices' **Select** sets) and a card previewing the chosen voice. A
@@ -867,17 +884,24 @@ Each page:
      models. Arrow keys, Home, End, Enter, and Escape (focus back to the box)
      work in the list; the player's shortcuts skip `[role=listbox]`. A
      choice is stored in the option's cookie field, the browser's last used;
-     `""` means first use: the catalog's `default_model` (the largest Gemma
-     running), never an API model. `pickerChoice()` says why a choice can't
-     be used (not listed now; for figures, no image input), and with no
-     Gemma and nothing chosen the reason is "Gemma is not running. Choose a
-     model." and the book's list opens once (`pickerAutoOpened`). With one
+     `""` means first use: the catalog's `first_use` (`first_use_models()`:
+     the owner's first `--preferred-text-model` / `--preferred-figure-model`,
+     else the only model there is, else nothing; figures with no preferred
+     figure model follow the text model). `pickerChoice()` applies the rules
+     a–d per field and never falls back: a last used or preferred model the
+     catalog does not list selects nothing, `#<name>-model-reason` says in red
+     "⚠ <name> is unreachable", and `#<name>-alternatives`
+     (`pickerAlternatives()`, `renderAlternatives()`) offers one-click
+     alternatives, the other preferred models first, then the other
+     reachable ones (name, badge, size); `setPickerModel()` applies a click.
+     With nothing chosen and nothing to start with, the book's list opens
+     once (`pickerAutoOpened`). With one
      model for all, `#figure-shared-reason` says on the figure option when
      it can't read images. Until every turned-on option has a usable model,
      **Create audiobook** is disabled with the option and why beside it
      (`#run-blocked`: `#run-reason` from `createBlock()`, "<Text|Figures|
      Checking>: <pickerBlock()>": "no API connected", "no model chosen",
-     "<model> is not available now", "the text model can't read images";
+     "<model> is unreachable", "the text model can't read images";
      or "No model available: …", with **Add local** and **Connect a
      provider** under the picker) and one-click fixes (`fixCreateBlock()`):
      `#run-fix-text`, "Use the text model (Local|API)" when the text model
@@ -889,17 +913,28 @@ Each page:
      `startAudiobook()` sends the shown model, so a book never resolves its
      model later. **Providers** (`#paper-providers-dialog`)
      lists `CONNECT_PROVIDERS` (OpenAI, Google (Gemini), Anthropic (Claude),
-     DeepSeek; `renderProviderList()`), each with its status
+     DeepSeek, xAI (Grok); `renderProviderList()`), each with its status
      (`providerStatus()`: "Signed in as <e-mail>" from the catalog's
-     `openai_account`, "Key saved", "Not connected", errors) and **Connect**
-     or **Change**, then Claude Code's status. Each opens
-     `#provider-connect-dialog` showing only that provider's
-     `.connect-provider` section, whose `.connect-method`s are the ways in
-     it allows: OpenAI `chatgpt` (the device sign-in) and `api-key`, the
-     others `api-key`; Google and Anthropic add the `.no-membership` note,
-     Google the AI Studio key link. The OpenAI, Anthropic, Gemini, and
-     DeepSeek keys share `paperKeyProviders`, `renderPaperKey()` ("Key
-     saved" / "No key yet"), `savePaperKey()`, and `removePaperKey()`; a
+     `openai_account` or `xai_account`, "Key saved", "Not connected", and
+     errors in red with ⚠) and **Connect** or **Change**, then Claude Code's
+     status. Each opens `#provider-connect-dialog` showing only that
+     provider's `.connect-provider` section, whose `.connect-method`s are the
+     ways in Hilde supports for it: OpenAI `chatgpt` (the device sign-in) and
+     `api-key`, xAI `xai-sign-in` and `api-key`, the others `api-key`; Google
+     adds the AI Studio key link, Anthropic a pointer to Claude Code. No
+     dialog says a provider forbids its membership in other apps. The two
+     sign-ins share `SIGN_INS` and `renderSignIn()` / `pollSignIn()` /
+     `startSignIn()` / `cancelSignIn()` / `copySignInCode()` by name
+     (`/api/paper/<name>/status|login|cancel`); xAI's also shows
+     `#paper-xai-problem` in red (the catalog's `xai_error`: "Sign in to xAI
+     again", or "xAI refused this account (403)" with **Use an API key
+     instead**, `useXaiKeyInstead()`, which only focuses the key field, also
+     focused when the dialog opens for a refused sign-in) and **Sign out**
+     (`signOutXai()`). In the pickers the refused xAI row (`refused` in the
+     catalog's rows) shows its note red (`.picker-sub.problem`) with "Use an
+     API key instead" in place of Connect. The OpenAI, Anthropic, Gemini,
+     DeepSeek, and xAI keys share `paperKeyProviders`, `renderPaperKey()`
+     ("Key saved" / "No key yet"), `savePaperKey()`, and `removePaperKey()`; a
      key field is `type=password` and emptied when the dialog opens and
      after saving; **Add local** (`renderPaperLocal()`) lists the
      servers registered on the server (`--local-server`, "added on the
@@ -1079,8 +1114,8 @@ clips it at its width.
 `askConfirm({title, text, confirm, danger, input, where})` opens the one
 in-page `#confirm-dialog` (no `window.confirm` or `window.prompt` remain) and
 resolves to true, false, or the entered text. Every title names its target:
-"Delete voice '<name>'?", "Delete audiobook '<title>'?", "Delete document
-'<name>'?", "Rename voice '<name>'" (with a **New name** field), "Make
+"Delete voice '<name>'?", "Delete audiobook '<title>'?", "Delete '<name>'?"
+(a document), "Rename voice '<name>'" (with a **New name** field), "Make
 '<title>' again?" (Recreate, and the server's 409 replace questions), "Make
 <voice> for '<title>' again?", "Overwrite '<title>'?", "Replace voice
 '<name>'?", "Replace document '<name>'?", "Stop making '<title>'?", "Stop
@@ -1410,10 +1445,10 @@ seeking are unchanged, and nothing later waits on the network. A failed
 download leaves playback streaming. Leaving the book aborts the download and
 revokes the URL.
 
-Clicking a word seeks to it, starting up to 0.1 s before its aligned onset but
-never inside the previous word or sentence; clicking elsewhere in a sentence or
-its attached visual seeks to its sentence cue. The upcoming word is highlighted
-within the same lead.
+**Listen from here** seeks to a word starting up to 0.1 s before its aligned
+onset but never inside the previous word or sentence
+(`readerWordSeekSample()`), else to its sentence cue. The upcoming word is
+highlighted within the same lead.
 While playing, the highlight follows the media clock every animation frame.
 The sentence cue is authoritative over a disagreeing word cue, so a word
 alignment error cannot outlive its sentence. Narration-ready visual descriptions
@@ -1444,12 +1479,34 @@ shows at the bottom of the text until it is pressed or the sentence is back
 on screen; opening a figure or a source page, or a ¶ link in an answer, does
 the same.
 
-A click on a word seeks; a click that ends a drag selection does not
-(`seekReaderBlock()` ignores a non-collapsed selection), nor does a long
-press. A finished selection in the text shows a small menu above it (below
-it on a touch screen, whose own menu is above): **Ask about this** (a
-context card), **Listen from here** (the first selected word, by
-`readerWordSeekSample()`, else its sentence or passage), and **Copy**.
+A click (a tap) in the text asks about it and never seeks
+(`clickReaderText()`, one listener on `#reader-content`, Narration and Source
+text alike): it pauses the book (`pauseBookForQuestion()`), opens the chat
+(`askAboutFocus()`; with a mouse after `READER_CLICK_WAIT`, 300 ms, so that a
+double-click only selects its word), and attaches a focus `{anchor, base, scope}`: the word
+under the pointer (`clickedWord()`: its `.reader-word`, else the word at the
+caret point, else the nearest word of the clicked sentence), or with
+Shift+click while a focus is attached, the span from the focus's first word
+to the clicked one (`mousedown` with Shift is prevented so the browser does
+not stretch a selection instead). The card's **Word | Sentence | Paragraph**
+switch (`focusControls()`, `setFocusScope()`) widens it: `widenRange()`
+takes a narrated sentence by its parts (`data-block`) and its
+`.reader-paragraph`, and in Source text the sentence by its punctuation
+within the printed paragraph. `focusAbout()` sends it as a `selection`
+`about` (`rangeText()`, `selectedPassages()`), with `sentence`, the sentence
+around a focus smaller than a sentence, as context. The book marks the focus
+with the CSS Custom Highlight `reader-focus` in the selection's gray
+(`renderFocus()`, from `renderChatAbout()`); it goes when the card does. A
+click that ends a drag selection does not ask (a non-collapsed selection),
+nor does a long press. A finished selection in the text shows a small menu
+above it (below it on a touch screen, whose own menu is above): **Ask about
+this** (the selection as the focus), **Listen from here** (the first selected
+word, by `readerWordSeekSample()`, else its sentence or passage), and
+**Copy**. Seeking is only: **Listen from here** in that menu, on the card
+(`listenFromFocus()`, the start of the focus), and the ▶ in a paragraph's
+left margin (`.reader-margin-play`, shown on hover, not on touch screens;
+`listenFromParagraph()`, its first sentence cue). None of them plays or
+pauses; closing the panel never resumes the book.
 
 Figures: a figure or table passage with pictures (`figures`) shows them on a
 light paper card that is never inverted, at their own aspect ratio, with its
@@ -1507,8 +1564,8 @@ the selection takes words from, so a triple-click ending at offset 0 of the
 next paragraph does not attach it. The chat's head shows the book, the
 section of the card (else of the passage playing), the shared model picker
 (the `chat` picker of Create step 3's component; `chatModel()` is its usable
-choice, kept as `player.chat_model` once used; first use is the default
-Gemma, never an API model),
+choice, kept as `player.chat_model` once used; first use follows the same
+rules as the text model, and an unreachable model is never replaced silently),
 **Read answers aloud**, and **New conversation**; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
 **Providers** and **Add local**), the conversation, the hint line
@@ -1525,14 +1582,18 @@ attached: playback moving on never changes it. The page asks
 (`chipElement()`), one per attached part: `chipHead()` titles it with the
 section heading as in the book, with a small **Change** (attaches the text
 selected in the book instead, or else the part playing) and **×** (removes
-it); `chipPreview()` shows the selected text in quotes, else the part's
+it); with a focus (text clicked or selected in the book), `focusControls()`
+puts the **Word | Sentence | Paragraph** switch and **Listen from here** under
+the title, on the **Preparing…** card too; `chipPreview()` shows the selected text in quotes, else the part's
 preview, cut to 80 characters by `cutText()`; `chipDetails()` is a collapsed
 **Context details** listing exactly the manifest's items, grouped by label,
-each label once ("Your selection", "Hilde's narration", "From the paper",
-"Hilde's description", "Picture"), then each piece with its ¶ number and
+each label once ("Your selection", "The sentence around it", "Hilde's
+narration", "From the paper", "Hilde's description", "Picture"), then each
+piece with its ¶ number and
 page or place (the card's own section not repeated), plus whether the
 figure's picture goes ("Not sent: the figure's picture." and why, when it
 does not). Past questions show the same card, collapsed, without controls.
+Attaching the same `about` again (Retry, another model) keeps its focus.
 Choosing another model asks for the
 manifest again, since the picture depends on the model. A newly attached
 card pulses (`pulseChip()`: the `.attached` class for 1.6 s, a background
@@ -1612,7 +1673,8 @@ web text as others' writing whose instructions are never followed.
 
 A message may be about part of the book: `about` is
 `{"kind": "passages", "start", "end"}` (at most `CHAT_CONTEXT_MAX_PASSAGES`),
-`{"kind": "selection", "start", "end", "quote"}`, or
+`{"kind": "selection", "start", "end", "quote"}` (optionally `sentence`, the
+sentence around a quote smaller than it, dropped when it equals the quote), or
 `{"kind": "figure", "passage"}` (a figure or table passage), checked by
 `chat_about()`. `chat_attachment()` turns it into a manifest, the same for
 `POST /api/chat/context` (the page's context card) and `POST /api/chat/send`:
@@ -1622,13 +1684,14 @@ A message may be about part of the book: `about` is
 `badge` (`Local`, or `Cloud: ` and `CHAT_PROVIDER_NAMES`). Paragraphs bring
 each one's narration ("Hilde's narration") and, unless it is `unchanged`, its
 source text ("From the paper · <section>, PDF p. N"); a selection brings its
-words first ("Your selection"). A figure brings its caption ("From the paper
+words first ("Your selection"), then its `sentence` ("The sentence around it",
+with the first passage's number). A figure brings its caption ("From the paper
 · caption"), every other passage whose source text names it by number
 (`_mentioned_visuals()`: "Figure 2", "Fig. 2", "Figures 1 and 2"; never one
 only printed near it), and its narration ("Hilde's description"); and its
 picture, the `/api/figure` rendering or else its crops, when the model takes
-pictures in chat (`chat_sees_images()`: `CHAT_IMAGE_PROVIDERS`, a DeepSeek
-model when its list entry reads images (`deepseek_model_info()`), a local model
+pictures in chat (`chat_sees_images()`: `CHAT_IMAGE_PROVIDERS`, a DeepSeek or
+xAI model when its list entry reads images (`deepseek_model_info()`, `xai_model_info()`), a local model
 when its server is marked as seeing images; Claude Code cannot chat). Every
 converter sends the user message as the same parts (`_chat_user_parts()`): the
 items under their labels (`chat_attachment_text()`), the pictures, then the
@@ -1679,7 +1742,11 @@ DeepSeek wants each earlier answer's `reasoning_content` back while tools are
 on, so a DeepSeek answer keeps its reasoning in `reasoning_content` on its
 stored entry and `_chat_openai_messages(reasoning=True)` sends every
 assistant message with it ("" for another model's). The page never gets it
-(`chat_display_entry()`). Claude Code, which runs with its
+(`chat_display_entry()`). The xAI sign-in and key go the same way
+(`xai_request()`) with `max_completion_tokens` (xAI counts only the visible
+answer) and no reasoning sent back; a 403 to the sign-in ends the turn with
+"xAI refused this account (403). Use an API key instead: …" and never retries
+with the key. Claude Code, which runs with its
 tools off, refuses chat with a message. A local reply still writing at its
 `max_tokens` fails the turn.
 
@@ -1776,9 +1843,10 @@ last answer of a finished turn is read.
 | `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
 | `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). |
-| `GET /api/paper/models` | Adaptation model catalog (`paper_model_catalog()`): the local servers' models (`local_servers_of()`: those registered with `--local-server` first, then the browser's added ones), server by server, each `{provider, selector, server, label: "<model> · <host:port>", images (the server's vision mark), loaded}`, with `on_server` for a registered server's (a model two servers offer is listed once, on the first); `loaded` is `true`/`false` where the server says (`local_loaded_names()`: Ollama `/api/ps` against `/api/tags`, LM Studio `/api/v0/models` states) and `null` otherwise (vLLM and SGLang list only what they serve). Then the signed-in ChatGPT account's models, Claude Code's aliases once it is signed in, the Anthropic key's, the OpenAI API key's, and the Gemini key's (`images: true`, as `PaperRun.sees_images()` sends them figures), then the DeepSeek key's, each with `images` from its live `/models` entry's `input_modalities` (`deepseek_models()`). Every model has `name` (`model_name()`/`short_model_name()`: "Gemma 3 27B"), `kind` (`local` or `api`), `badge` (`model_badge()`: `Local`, or `API: <provider>`), and `running: true`. `rows` (`catalog_rows()`): each local server that does not answer (`{kind: "local", row: "not-running", label, server, provider, on_server, note}`) and each provider with no way in that is connected and lists its models (`{kind: "api", row: "provider", label, provider, action: "connect", note}`; `CONNECT_PROVIDER_LABELS`: `openai` "OpenAI" for both the ChatGPT sign-in and the API key, `gemini`, `anthropic`, `deepseek`, `claude-code`), never a made-up model. `default_model` (`default_gemma()`): of the Gemma models listed (`GEMMA_NAME`), one loaded before one not, then the largest by the size in its name (`model_size()`), else `""`; never an API model. Also `local_servers` (each `{label, server, provider, vision, on_server, running, error}`), Claude Code's status line, `*_connected` flags, `openai_account` (the signed-in ChatGPT account's e-mail from the stored id token's claims, `openai_account_email()`, or `""`; nothing else of the sign-in), and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`, `deepseek_error`). |
+| `GET /api/paper/models` | Adaptation model catalog (`paper_model_catalog()`): the local servers' models (`local_servers_of()`: those registered with `--local-server` first, then the browser's added ones), server by server, each `{provider, selector, server, label: "<model> · <host:port>", images (the server's vision mark), loaded}`, with `on_server` for a registered server's (a model two servers offer is listed once, on the first); `loaded` is `true`/`false` where the server says (`local_loaded_names()`: Ollama `/api/ps` against `/api/tags`, a server's optional `/api/v0/models` states) and `null` otherwise (a server that lists only what it serves). Then the signed-in ChatGPT account's models, Claude Code's aliases once it is signed in, the Anthropic key's, the OpenAI API key's, and the Gemini key's (`images: true`, as `PaperRun.sees_images()` sends them figures), then the DeepSeek key's, each with `images` from its live `/models` entry's `input_modalities` (`deepseek_models()`), then the xAI sign-in's (`xai/`) and the xAI key's (`xai-api/`), each with `images` from xAI's `/language-models` (`xai_models()`). Every model has `name` (`model_name()`/`short_model_name()`: "GLM 4 9B"), `kind` (`local` or `api`), `badge` (`model_badge()`: `Local`, or `API: <provider>`), `size` (`model_size_text()`: "35B" from the name, or `""`), and `running: true`. `rows` (`catalog_rows()`): each local server that does not answer (`{kind: "local", row: "not-running", label, server, provider, on_server, note}`) and each provider with no way in that is connected and lists its models (`{kind: "api", row: "provider", label, provider, action: "connect", note}`; `CONNECT_PROVIDER_LABELS`: `openai` "OpenAI" for both the ChatGPT sign-in and the API key, `gemini`, `anthropic`, `deepseek`, `xai` "xAI (Grok)" for both the xAI sign-in and its key, with `problem: true` for "Sign in to xAI again" and also `refused: true` for a 403, `claude-code`), never a made-up model. `preferred` (`preferred_models()`): the owner's `--preferred-text-model` and `--preferred-figure-model` lists (`SERVER_PREFERRED_MODELS`), each entry `{selector, name, badge, kind, size, images, reachable}`; `first_use` (`first_use_models()`): per field `{selector, how, unreachable}`, text the first preferred model (`how: "preferred"`, `unreachable` while not listed), else the only model there is (`"only"`), else `""` (`"none"`); figures the first preferred figure model, else `"same"` (the text model). Never a fallback to another model. Also `local_servers` (each `{label, server, provider, vision, on_server, running, error}`), Claude Code's status line, `*_connected` flags, `openai_account` and `xai_account` (a sign-in's e-mail from its id token's claims, or `""`; nothing else of the sign-in), `xai_refused`, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`, `deepseek_error`, `xai_error`, `xai_api_error`). |
 | `GET /api/paper/openai/status`, `POST /api/paper/openai/login`, `POST /api/paper/openai/cancel` | Server-side ChatGPT device sign-in, stored in `~/.hilde/openai.json`. |
-| `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove`, `POST /api/paper/deepseek/key`, `POST /api/paper/deepseek/remove` | Save an Anthropic, OpenAI, Google Gemini, or DeepSeek API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
+| `GET /api/paper/xai/status`, `POST /api/paper/xai/login`, `POST /api/paper/xai/cancel`, `POST /api/paper/xai/remove` | Server-side xAI device sign-in (`XaiOAuthLogin`; status `refused` when xAI answers 403), stored encrypted in `~/.hilde/xai.json`; **Sign out** removes it and returns the refreshed catalog. |
+| `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove`, `POST /api/paper/deepseek/key`, `POST /api/paper/deepseek/remove`, `POST /api/paper/xai-api/key`, `POST /api/paper/xai-api/remove` | Save an Anthropic, OpenAI, Google Gemini, DeepSeek, or xAI API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/paper/local/check` | Validate one local model server of the chosen type (`provider`: `ollama` or `lm-studio`) and answer its normalized `server` and `provider`; the page then appends it to `audiobook.local_servers` and asks for the catalog. HTTP 400 once the browser has `LOCAL_SERVERS_MAX` servers and this is not one of them, 502 when the server does not list models. The type is the user's choice, never detected. Ollama must answer `/api/version`, since SGLang also answers Ollama's `/api/tags`. OpenAI-compatible servers (SGLang, vLLM, LM Studio) list `/v1/models`. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no added server of its type ("Add a local server of this model's type under Add local."). |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
@@ -1835,7 +1903,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Automatic local audiobook work receives its complete worker set before the child coordinator starts.
 - OpenAI-compatible narration never uploads local reference clips because that schema names a server-owned voice. SSH model workers do receive the staged reference and text.
 - Browser-facing payloads describe local devices (runtime GPU index, device name, memory, the first 8 hex digits of a GPU's UUID) and model directory names or IDs, but omit hostnames other than this server's own short host name, SSH targets, speech-server URLs, script paths, model paths, and storage paths. Nodes appear only as `Machine N · <device>`; their hosts, Python, and model paths go only to a browser on the server's own machine.
-- The ChatGPT sign-in and the Anthropic, OpenAI, Gemini, and DeepSeek API keys stay in `~/.hilde/`, readable only by the server's user; no route or event returns them (the page gets only whether each is connected and, for the sign-in, its account's e-mail). Claude Code's sign-in stays with Claude Code: Hilde only runs `claude` and asks `claude auth status` whether it is signed in. Hilde's certificate authority's key stays in `~/.hilde/tls`, readable only by the server's user; only its certificate is served.
+- The ChatGPT and xAI sign-ins and the Anthropic, OpenAI, Gemini, DeepSeek, and xAI API keys stay in `~/.hilde/`, readable only by the server's user, the xAI sign-in also encrypted under `~/.hilde/credentials.key`; no route or event returns them (the page gets only whether each is connected and, for a sign-in, its account's e-mail). Claude Code's sign-in stays with Claude Code: Hilde only runs `claude` and asks `claude auth status` whether it is signed in. Hilde's certificate authority's key stays in `~/.hilde/tls`, readable only by the server's user; only its certificate is served.
 - A document reaches a cloud provider only when one of its models is chosen, or when Default is used and the browser has added no local server; added local servers that do not answer never hand the document to the cloud.
 
 ## Build, run, and verify
@@ -2045,7 +2113,13 @@ Gemini chat that sends its function-call parts back exactly as received with
 their thought signatures, OpenAI API chat through Responses function calls, a
 DeepSeek key checked and kept owner-only, its models' reads-images marks from
 the live list's `input_modalities` deciding which get figures as images, and
-its chat sending each answer's reasoning back with tool calls, the ChatGPT
+its chat sending each answer's reasoning back with tool calls, the xAI device
+sign-in with PKCE kept encrypted and owner-only (unreadable with another key
+or altered bytes), renewed in the background with its rotated refresh token, a
+refused renewal kept as "Sign in to xAI again", Grok's image marks from
+`/language-models` with image generators left out, a 403 said with "Use an
+API key instead" while a request for the sign-in's model never goes with the
+key, and the key's own models answering, the ChatGPT
 account's e-mail as the only part of the sign-in the page gets, the user's own
 Claude Code listed and accepted only once signed in, run in print mode with
 tools off, Hilde's instructions, figures as image blocks, and outside the
@@ -2063,4 +2137,4 @@ stopping the job, and Stop
 cutting off requests a busy model server has not answered. It does not load a
 Qwen model or require a GPU.
 
-Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, OpenCV (`opencv-python`, which RapidOCR also needs; figure layout), `markdown-it-py`, PyYAML (for `workers.yaml`), `cryptography` (for `--https`), matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT sign-in, a signed-in Claude Code, an Anthropic, OpenAI, Google Gemini, or DeepSeek API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.
+Runtime dependencies include Python, `soundfile`, NumPy, `pymupdf4llm`, RapidOCR, OpenCV (`opencv-python`, which RapidOCR also needs; figure layout), `markdown-it-py`, PyYAML (for `workers.yaml`), `cryptography` (for `--https` and the encrypted xAI sign-in), matched Torch/TorchAudio, and `qwen-tts`. Adaptation needs a ChatGPT or xAI sign-in, a signed-in Claude Code, an Anthropic, OpenAI, Google Gemini, DeepSeek, or xAI API key, or a local Ollama/OpenAI-compatible server, not extra packages. MP3 support depends on the installed SoundFile/libsndfile build.

@@ -31,8 +31,8 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
-| `--local-server PROVIDER=URL[,vision]` | None. A local model server every browser can use (repeatable): `ollama`, or `lm-studio` for any OpenAI-compatible server (LM Studio, vLLM, SGLang); `,vision` says its models read images. Its models come first in every model picker's Local list, marked "added on the server". |
-| `--default-model SELECTOR` | None. The server's own default text model; it must be a local model (`ollama/…` or `lm-studio/…`, such as `lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4`); an API model is refused at startup. With nothing chosen in a browser yet, a picker uses the largest Gemma a local server lists (installed counts); without one, this model while a local server lists it, else the first local model listed; never an API model. The picker says which is in use ("Using Gemma 3 27B (local)", "Gemma not installed: using …", "Gemma not running: using …"). |
+| `--local-server PROVIDER=URL[,vision]` | None. A local model server every browser can use (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. Its models come first in every model picker's Local list, marked "added on the server". |
+| `--preferred-text-model SELECTOR`, `--preferred-figure-model SELECTOR` | None. Your preferred models (repeatable, in order of preference), local or API; see [Choose your default local models](#choose-your-default-local-models). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -69,6 +69,42 @@ without a login. `systemctl --user restart hilde` restarts it and
 `journalctl --user -u hilde` shows its log. Restarting stops any book being
 made; started again with the same document and voice, it continues where it
 stopped.
+
+## Choose your default local models
+
+Hilde uses no model nobody chose. Tell it which models you prefer with
+`--preferred-text-model` and `--preferred-figure-model`, each repeatable, in
+order of preference. A selector is written as the model picker shows it in a
+model's details: `lm-studio/<model>` or `ollama/<model>` for a model on a
+registered local server (as that server lists it), or `PROVIDER/<model>` for an
+API model (such as `openai/<model>`).
+
+```bash
+python audiobook_tts_web.py \
+  --local-server lm-studio=http://192.0.2.10:8000,vision \
+  --preferred-text-model lm-studio/my-big-model \
+  --preferred-text-model lm-studio/my-small-model \
+  --preferred-figure-model lm-studio/my-vision-model
+```
+
+For text and for figures separately, a browser uses:
+
+1. the model it used last, if it is reachable;
+2. on first use, your first preferred model, if it is reachable;
+3. on first use with no preferred model set, the only model there is, if
+   exactly one is connected (shown with its Local or API badge);
+4. otherwise nothing: the picker asks for a model.
+
+Figures without a preferred figure model use the text model. When the model
+from 1 or 2 does not answer, nothing is selected: the model row says
+"⚠ <name> is unreachable", Create waits, and one-click alternatives follow,
+your other preferred models first, then the other reachable models. The list
+is never a fallback chain. A local server is "available" when it answers its
+OpenAI-compatible `/v1/models`, "server unreachable" when it does not. If a
+model stops answering during a book, the job pauses with the parts finished so
+far kept; **Retry** asks the same model again, and **Continue with another
+model…** sends only the remaining parts to the model you click. The book
+records which model wrote which parts.
 
 ## Web search for Chat
 
@@ -196,12 +232,40 @@ and kept next to the library, readable only by the user running Hilde:
 ├── openai-api.json   # OpenAI API key
 ├── anthropic.json    # Anthropic API key
 ├── gemini.json       # Google Gemini API key
-└── deepseek.json     # DeepSeek API key
+├── deepseek.json     # DeepSeek API key
+├── xai.json          # the xAI sign-in, encrypted (see below)
+├── xai-api.json      # xAI API key
+└── credentials.key   # this server's key for the encrypted sign-ins
 ```
 
-Delete a file to sign out or forget a key (**Remove** does the same for a key).
-The page never receives a key or a sign-in token; a saved key shows only as
-"Key saved". These files follow the server user's home, not `--storage-root`.
+Delete a file to sign out or forget a key (**Remove** does the same for a key,
+**Sign out** for the xAI sign-in). The page never receives a key or a sign-in
+token; a saved key shows only as "Key saved". These files follow the server
+user's home, not `--storage-root`.
+
+Each provider's **Connect** dialog offers the ways in Hilde supports for it:
+
+| Provider | Sign-in with your account | API key |
+| --- | --- | --- |
+| OpenAI | ChatGPT sign-in (device code) | yes |
+| Google (Gemini) | — | yes |
+| Anthropic (Claude) | — (a Claude subscription works through **Claude Code**, its own row under Providers) | yes |
+| DeepSeek | — | yes |
+| xAI (Grok) | xAI sign-in (SuperGrok or X Premium+; device code with PKCE) | yes |
+
+The xAI sign-in uses the public OAuth client of xAI's Grok CLI against
+`auth.x.ai`: Hilde shows xAI's page (`accounts.x.ai`) and a code, the user
+approves there, and the server collects the token, since the browser may be on
+another machine. The token is kept in `xai.json` encrypted with AES-256-GCM
+under `credentials.key` (32 random bytes made on first use, mode 0600 like the
+file itself), and renewed in the background about 15 minutes before it
+expires. If xAI refuses a renewal, the page says **Sign in to xAI again**; if
+xAI answers 403 to the account, it says **xAI refused this account (403)** and
+offers **Use an API key instead**. Hilde never switches to the key by itself:
+the key's models are listed separately ("xAI API"), and a book or question
+uses them only when the user chooses one. Copying `xai.json` without
+`credentials.key` gives nothing usable; anyone who can read both as the server
+user can still use the sign-in.
 
 ## Speech models
 

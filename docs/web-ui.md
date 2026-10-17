@@ -26,24 +26,35 @@ At the right of the header:
 collapses to a summary with **Change**; going back to a step keeps what you
 chose in the others.
 
-The first step offers three separate ways to choose a document:
+The first step offers three ways to choose a document, as three cards that
+are always shown. A radio circle in each card's header says which one is used:
+exactly one is chosen, with a filled dot and a blue border. The other two are
+dimmed, with gray text and their fields switched off, but they keep what you
+entered. Click anywhere on a dimmed card to choose it; its first field gets
+the focus. With the keyboard, the arrow keys move between the three choices.
+On a phone the cards are stacked and work the same way.
 
-- **Saved document**: one you added before. **Delete** beside it removes the
-  chosen document after you confirm. Audiobooks made from it are kept, and a
-  job already queued keeps its own copy.
+- **Saved document**: one you added before. Its **⋯** menu holds **Delete…**,
+  which removes the chosen document after you confirm ("Delete 'X.pdf'?").
+  Audiobooks made from it are kept, and a job already queued keeps its own
+  copy.
 - **From a URL**: a direct HTTP(S) link to a PDF, Markdown, or text file,
   downloaded when you press **Continue**. **Save as** is optional: the server
   works out the document type and adds the matching extension when needed,
   including for PDF links without one, such as arXiv `/pdf/<id>` links.
-- **Upload a file**: **Choose a file…**, or drop a file anywhere on the step.
+- **Upload a file**: **Choose a file…**; the card then names the uploaded
+  file. Dropping a file anywhere on the step chooses this card and uploads it.
 
-Files are limited to 64 MiB. Supported document types are PDF (`.pdf`),
+**Continue** uses only the chosen card, whatever the others hold: no link is
+downloaded unless **From a URL** is chosen. The step shows **Chosen** for that
+card only: "Chosen (URL): https://…", "Chosen (Saved document): X.pdf · PDF",
+or "Chosen (Upload): X.pdf · PDF". This browser remembers which card you
+chose. Files are limited to 64 MiB. Supported document types are PDF (`.pdf`),
 Markdown (`.md` or `.markdown`), and plain text (`.txt` or `.text`), not HTML
-web pages. Once chosen, the step shows **Chosen:** with the file name and its
-type (PDF, Markdown, or Text). A problem, such as a link that is not a
-document or a file type Hilde can't read, is said in a short sentence inside
-the step. Adding a document under a name you already have asks first, naming
-the file it would replace.
+web pages. A problem, such as a link that is not a document or a file type
+Hilde can't read, is said in a short sentence inside the step. Adding a
+document under a name you already have asks first, naming the file it would
+replace.
 
 The voice step is a dropdown of your saved voices (the same choice as
 **Select** on **Voices**), with a card that previews the one you choose.
@@ -68,7 +79,7 @@ opens **Providers**. Any connected API model takes three
 clicks: Runs on, API, the model. Each list, from the live model lists only:
 
 - The default first (marked **Default**), then the models this browser used
-  recently, then the rest, each by a short name such as "Gemma 3 27B" with a
+  recently, then the rest, each by a short name such as "Model 35B" with a
   **reads images** tag where it applies (a local model when its server is
   marked "This model sees images", a DeepSeek model when DeepSeek's model
   list says it takes images, every other API model); the full model code
@@ -84,18 +95,21 @@ clicks: Runs on, API, the model. Each list, from the live model lists only:
   keys, Home, and End move through it, Enter chooses, and Escape closes it and
   returns to its box.
 
-Each picker preselects the model this browser used last for that option. On
-first use it is the largest Gemma your local servers list (installed is
-enough: Ollama loads it on first use); without one, the server's
-`--default-model` (a local model, see [Configuration](configuration.md)),
-else the first local model listed. An API model is never preselected unless
-you chose it last time. Under the boxes the picker says which is in use:
-"Using Gemma 3 27B (local)", "Gemma not installed: using … (local)", or
-"Gemma not running: using … (local)" (a local server does not answer). With
-no local model reachable and nothing chosen, it says "No local model is
-reachable", its list opens, and **Create audiobook** waits for your choice.
-A model chosen earlier that is no longer listed is shown with why
-it can't be used. When one model serves all options and it can't read images,
+Each picker, for text and for figures separately, preselects: the model this
+browser used last, if it is reachable; on first use, the server owner's first
+preferred model (`--preferred-text-model`, `--preferred-figure-model`, see
+[Choose your default local models](configuration.md#choose-your-default-local-models)),
+if it is reachable, said as "Preferred on this server"; with none set, the
+only model there is, with its badge ("The only model available"); otherwise
+nothing ("Choose a model"), its list opens once, and **Create audiobook**
+waits. When the last used or preferred model does not answer, nothing is
+selected: the model row says in red "⚠ <name> is unreachable", **Create
+audiobook** names that reason, and under it one-click alternatives follow,
+the owner's other preferred models first, then the other reachable models,
+each with its name, Local or API badge, and size when known; nothing is used
+until you click one. Ask Hilde does the same and never answers with another
+model by itself. Figures without a preferred figure model follow the text
+model. When one model serves all options and it can't read images,
 the figure option says so, and blocks Create only while it is ticked. With no
 model at all the picker reads **No model available**, with **Add local** and
 **Connect a provider**. **Create audiobook** stays disabled only while an
@@ -109,23 +123,33 @@ for the text option itself, and **Turn off this option**. The summary says
 "Not ready: …" for that option until then.
 
 **Providers** (from **Connect a provider**, or Ask Hilde's **Providers**)
-lists OpenAI, Google (Gemini), Anthropic (Claude), and DeepSeek, each with how
-it is connected and **Connect** (**Change** once connected), then Claude
-Code. Each provider's Connect dialog offers only the ways in it allows:
+lists OpenAI, Google (Gemini), Anthropic (Claude), DeepSeek, and xAI (Grok),
+each with how it is connected and **Connect** (**Change** once connected),
+then Claude Code. Each provider's Connect dialog offers the ways in Hilde
+supports for it:
 
 - OpenAI: **Sign in with ChatGPT (your membership)**, which uses your ChatGPT
   plan without an API key (OpenAI's device sign-in: open the sign-in page and
   enter the code shown), and **API key**. Once signed in, the OpenAI row and
   the dialog say "Signed in as <e-mail>", the ChatGPT account in use.
 - Google (Gemini): **API key**, with a link to a free key at Google AI Studio.
-- Anthropic (Claude): **API key**.
+- Anthropic (Claude): **API key**; a Claude subscription works through
+  **Claude Code**, its own entry under Providers.
 - DeepSeek: **API key**. Its models come from DeepSeek's own model list.
+- xAI (Grok): **Sign in with xAI (your SuperGrok or X Premium+ plan)** and
+  **API key**. The sign-in opens xAI's own page with a code to compare; once
+  you approve there, the row and the dialog say "Signed in as <e-mail>", and
+  **Sign out** forgets it. Grok models come from xAI's live list, "reads
+  images" where xAI says so, listed as "xAI sign-in" or "xAI API" by the way
+  in they use. If xAI stops renewing the sign-in, the dialog and the xAI row
+  in the API list say **Sign in to xAI again**. If xAI refuses the account
+  (403), both say **xAI refused this account (403)** in red and offer **Use an
+  API key instead**, which puts the key field first; nothing switches to a key
+  by itself, and a book or question uses a key's model only once you choose it.
 
-Google and Anthropic do not allow their membership plans in other apps, so
-their dialogs say so and take an API key. A key is typed into a password
-field and never shown again: afterwards the dialog says only "Key saved".
-Keys and the ChatGPT sign-in are kept on the server, for every browser; the
-page never receives a key.
+A key is typed into a password field and never shown again: afterwards the
+dialog says only "Key saved". Keys and sign-ins are kept on the server, for
+every browser; the page never receives a key or a token.
 
 A **Summary** above **Create audiobook** lists the document, the voice, and
 what each option will do, with the same badges, so you see where the text goes
@@ -147,8 +171,9 @@ Overwrite continues through the voice and preparation steps as for a new book,
 and **Overwrite audiobook** asks (naming the book), then makes the book again
 from this document with those settings, as **Recreate with the latest Hilde**
 does on Listen: its text is written again, and its other voices will need to
-be made again. A link typed under **From a URL** is the next book whatever the
-dropdown shows, so that notice gives way to **Continue**.
+be made again. While **From a URL** is chosen and its link not yet
+downloaded, the link is the next book, so that notice gives way to
+**Continue**.
 
 Once **Create audiobook** has queued a book, the first step is empty again,
 ready for the next one; **Start listening** empties it too. You can queue as
@@ -227,6 +252,17 @@ lines, and **Dismiss**, which hides the card in this browser only. The server
 forgets these when it restarts; a job you were following then says "The
 server restarted, so this work stopped", and starting it again continues
 where it left off.
+
+A model that stops answering during a book (still refused after the retries)
+pauses the job instead: the card reads **Paused**, with a red "⚠ <model>
+became unreachable at part N", the parts kept and which model wrote them,
+**Retry** (the same model, after the model list is asked again), and
+**Continue with another model…**, which lists the other models (the owner's
+preferred ones first) and sends only the remaining parts to the one you
+click; the parts already written stay. Hilde never switches models inside a
+job by itself. The finished card, the job's log ("Written by: parts 1–12:
+…"), and the book's details on **Listen** ("Text written by …") say which
+model wrote which parts.
 
 The queue is global across browsers. Every web submission uses the
 server-owned pool of [narration workers](configuration.md#narration-workers): one job claims
@@ -322,13 +358,22 @@ underline and slightly brighter text; with **Highlight style B** (Settings,
 **Reading**; a test for now) the word also gets a faint blue fill. Text you
 select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
-readers regain their paragraphs automatically. Clicking a word seeks to that
-word (just before its aligned onset); clicking elsewhere in a sentence seeks
-to the start of the sentence. Selecting text (dragging, or a long press on a
-phone) never seeks: a small menu offers **Ask about this**, **Listen from
-here** (from the first selected word), and **Copy**.
+readers regain their paragraphs automatically.
 
-Nothing you do in the view moves the audio or your place: closing the chat,
+Clicking a word (tapping it on a phone) asks about it: the book pauses and
+the chat opens (on a phone, as a full-screen sheet) with that word on the
+card and the sentence around it attached as context. The card's **Word |
+Sentence | Paragraph** switch widens what you ask about, and the book marks
+it in gray. On a computer, Shift+click another word to stretch it from the
+first word to that one, or drag over any span; on a phone, a long press
+selects a word and its handles stretch it. Selecting text shows a small menu:
+**Ask about this**, **Listen from here** (from the first selected word), and
+**Copy**. Clicking never moves the audio. To listen from somewhere else,
+press the small ▶ in the left margin of a paragraph (it shows when the
+pointer is over it), **Listen from here** on the card (from the start of
+what it asks about), or the selection menu's.
+
+Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a
 page, going to another tab and back. If you scroll away while **Follow
 along** is on, it stops following and **Back to where you're listening**
@@ -345,9 +390,10 @@ with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
 **Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
-in its place, with **← Back to the book**) and pauses the book, as **Ask about
-this** on selected words and **Ask about this figure** do; it waits at that
-sentence until you press play. Ask
+in its place, with **← Back to the book**) and pauses the book, as clicking a
+word, **Ask about this** on selected words, and **Ask about this figure** do;
+it waits at that sentence until you press play or **Resume book**; closing the
+chat never starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
 the paragraphs it needs before answering. For a long book on a model with a
@@ -374,15 +420,16 @@ close the chat and open it again; an answer keeps arriving meanwhile. When a
 conversation grows long, its oldest messages and reads leave what Hilde
 remembers, and the chat says so.
 
-Ask Hilde attaches the part being read (or the words you selected) as a card
-above the message box: the section heading as in the book, below it your
-selected words in quotes or the part's first words, **Change** to attach what
+Ask Hilde attaches the part being read (or the words you clicked or selected)
+as a card above the message box: the section heading as in the book, below it
+your words in quotes or the part's first words, **Change** to attach what
 you have selected, or else what is playing now, and **×** to remove it. It
 stays as attached while you write, even if you play the book again. Its
 collapsed **Context details** list exactly what goes with
 your question, grouped by where it comes from, each with its ¶ number and
-page: "Your selection", "Hilde's narration" of those paragraphs and, where the
-adaptation changed them, "From the paper". A selection brings only the
+page: "Your selection", "The sentence around it" (for less than a sentence),
+"Hilde's narration" of those paragraphs and, where the adaptation changed
+them, "From the paper". A selection brings only the
 paragraphs it takes words from, never their neighbours. A question about a figure or table brings its caption, every
 paragraph of the paper that names it by number ("Figure 2", "Fig. 2",
 "Figures 1 and 2"; never one only printed near it), and "Hilde's description".
@@ -440,8 +487,8 @@ the book first.
 The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
-away. Safari and Chrome both play this MP4, so a clicked word is the word you
-hear; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
+away. Safari and Chrome both play this MP4, so **Listen from here** starts at
+the word you chose; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
 approximate seeking. From the first press of play the whole book downloads in
 the background, with its progress in the player; once it is in, playback moves
 to that copy at the next sentence start, and from then on nothing waits on the
@@ -618,8 +665,11 @@ takes effect: "Applies to the next audiobook" or "Applies now". The groups:
   its last design ran on, by name and ID, or "Device chosen on first use"
   before the first; with several GPUs, each design takes the one with the
   most free memory. Hilde sets these when it starts; to change them, restart
-  Hilde with different settings. **Default text model** is the same picker
-  and choice as Create's text model, which a book can change. **Connection**
+  Hilde with different settings. **Default text model** is this browser's own
+  choice, the same picker and choice as Create's text model, which a book can
+  change; it works from any device. Under it, "Preferred on this server:
+  <name> · Local, on <host:port>" names the owner's first preferred text model
+  and where it runs. **Connection**
   says "local (this computer)" on this computer, "HTTPS" over HTTPS, or, over
   plain HTTP from another device, that browsers may warn about or block
   downloads such as audiobook exports, with a link to
