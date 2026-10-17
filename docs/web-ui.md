@@ -62,35 +62,39 @@ The voice step is a dropdown of your saved voices (the same choice as
 The third step, **How Hilde prepares the text**, starts with **Model for this
 book**: the model all three options use. **Use different models per option**
 shows a picker in the figure and checking options too; they start at **Same
-as the text model (<model>)**, and each has its own Local or API choice. Then
+as the text model (<model>)**, and each has its own Local or Cloud choice. Then
 each option has its own card: a checkbox with its title, one line on what it
 does, a smaller line on what it can change, and **More** with the longer
 explanation.
 
 A model picker is two dropdown boxes, each with its label above it: **Runs
-on**, **Local** (open models on your own machines, a green badge with a chip)
-or **API** (cloud providers, and open models a cloud host serves, a purple
-**API: <provider>** badge with a cloud), and **Model**, which lists only
-models of that kind; **Change** beside them opens the model list. Switching
-Runs on sends nothing: it opens the list of that kind, and closing it
-without a choice keeps the model you had. Choosing API while no provider is
-connected opens no empty list: the Model box reads **Connect a provider** and
-opens **Providers**. Any connected API model takes three
-clicks: Runs on, API, the model. Each list, from the live model lists only:
+on**, **Local** (open models on your own machines, a green **Local · <server
+name>** badge with a chip) or **Cloud** (cloud providers, a purple **Cloud:
+<Provider> · Subscription** or **Cloud: <Provider> · API key** badge with a
+cloud), and **Model**, which lists only models of that kind; **Change** beside
+them opens the model list. Switching Runs on sends nothing: it opens the list
+of that kind, and closing it without a choice keeps the model you had.
+Choosing Cloud while no provider is connected opens no empty list: the Model
+box reads **Connect a provider**. Any connected cloud model takes three
+clicks: Runs on, Cloud, the model. Each list, from the live model lists only:
 
 - The default first (marked **Default**), then the models this browser used
   recently, then the rest, each by a short name such as "Model 35B" with a
   **reads images** tag where it applies (a local model when its server is
-  marked "This model sees images", a DeepSeek model when DeepSeek's model
-  list says it takes images, every other API model); the full model code
+  marked "Models here read images", a DeepSeek model when DeepSeek's model
+  list says it takes images, every other cloud model); the full model code
   shows on hover. The figure option disables models that can't read images.
-- Local: the models each local server lists. An Ollama model that is
-  installed but not loaded is tagged **loads on first use** and can be
-  chosen; a server that does not answer is disabled, "<host:port> — server
-  unreachable"; **Add local** is at the bottom.
-- API: the connected providers' models; a provider not connected is a greyed
-  row with **Connect**, which opens that provider's Connect dialog (Claude
-  Code: its section under **Providers**).
+- Local: the models each local server under **Settings › Providers** lists,
+  as "<model> · <server name>" with the server's address underneath. An
+  Ollama model that is installed but not loaded is tagged **loads on first
+  use** and can be chosen; a server that does not answer is disabled,
+  "<server name> — server unreachable"; **Add local** is at the bottom.
+- Cloud: the connected providers' models; a provider not connected is a
+  greyed row with **Connect** (Anthropic's covers Claude Code too).
+- **Connect** opens the provider dialog of **Settings › Providers** on Cloud
+  with that provider chosen, **Add local** opens it on Local, and **Connect a
+  provider** and **No model available** open it too. In a browser that may
+  not change providers, they open **Settings** at **Providers** instead.
 - With more than ten models a search box at the top filters the list. Arrow
   keys, Home, and End move through it, Enter chooses, and Escape closes it and
   returns to its box.
@@ -106,7 +110,7 @@ waits. When the last used or preferred model does not answer, nothing is
 selected: the model row says in red "⚠ <name> is unreachable", **Create
 audiobook** names that reason, and under it one-click alternatives follow,
 the owner's other preferred models first, then the other reachable models,
-each with its name, Local or API badge, and size when known; nothing is used
+each with its name, Local or Cloud badge, and size when known; nothing is used
 until you click one. Ask Hilde does the same and never answers with another
 model by itself. Figures without a preferred figure model follow the text
 model. When one model serves all options and it can't read images,
@@ -115,41 +119,16 @@ model at all the picker reads **No model available**, with **Add local** and
 **Connect a provider**. **Create audiobook** stays disabled only while an
 option you turned on has no usable model; with "Adapt the text for
 listening" off no text model is needed. Beside the button it names the option
-and why, such as "Figures: no API connected" or "Figures: the text model
+and why, such as "Figures: no cloud provider connected" or "Figures: the text model
 can't read images", with one-click fixes: **Use the text model (Local)** (or
-API, where the text model runs; offered only when the text model can do
+Cloud, where the text model runs; offered only when the text model can do
 that option's work, for figures read images), **Use the default model**
 for the text option itself, and **Turn off this option**. The summary says
 "Not ready: …" for that option until then.
 
-**Providers** (from **Connect a provider**, or Ask Hilde's **Providers**)
-lists OpenAI, Google (Gemini), Anthropic (Claude), DeepSeek, and xAI (Grok),
-each with how it is connected and **Connect** (**Change** once connected),
-then Claude Code. Each provider's Connect dialog offers the ways in Hilde
-supports for it:
-
-- OpenAI: **Sign in with ChatGPT (your membership)**, which uses your ChatGPT
-  plan without an API key (OpenAI's device sign-in: open the sign-in page and
-  enter the code shown), and **API key**. Once signed in, the OpenAI row and
-  the dialog say "Signed in as <e-mail>", the ChatGPT account in use.
-- Google (Gemini): **API key**, with a link to a free key at Google AI Studio.
-- Anthropic (Claude): **API key**; a Claude subscription works through
-  **Claude Code**, its own entry under Providers.
-- DeepSeek: **API key**. Its models come from DeepSeek's own model list.
-- xAI (Grok): **Sign in with xAI (your SuperGrok or X Premium+ plan)** and
-  **API key**. The sign-in opens xAI's own page with a code to compare; once
-  you approve there, the row and the dialog say "Signed in as <e-mail>", and
-  **Sign out** forgets it. Grok models come from xAI's live list, "reads
-  images" where xAI says so, listed as "xAI sign-in" or "xAI API" by the way
-  in they use. If xAI stops renewing the sign-in, the dialog and the xAI row
-  in the API list say **Sign in to xAI again**. If xAI refuses the account
-  (403), both say **xAI refused this account (403)** in red and offer **Use an
-  API key instead**, which puts the key field first; nothing switches to a key
-  by itself, and a book or question uses a key's model only once you choose it.
-
-A key is typed into a password field and never shown again: afterwards the
-dialog says only "Key saved". Keys and sign-ins are kept on the server, for
-every browser; the page never receives a key or a token.
+Cloud providers are connected under **Settings › Providers** (see
+[Providers](#providers)); keys and sign-ins are kept on the server, for every
+browser, and the page never receives a key or a token.
 
 A **Summary** above **Create audiobook** lists the document, the voice, and
 what each option will do, with the same badges, so you see where the text goes
@@ -407,10 +386,11 @@ it used; those links open in a new tab, and the chat's header shows **Web
 search on**. Its answer streams in as it writes;
 **Stop** ends it. The model is one of yours: pick it at the top of the chat
 with the same model picker as on **Create** (see above); a local model
-answers from the server that offers it. The picker shows **Local** or **API:
-<provider>**, so you see where your question goes before you send it, and
-remembers the model you used last; it never starts on an API model by itself.
-With no model at all, the chat asks you to add one first. ChatGPT, the Anthropic, OpenAI, Google Gemini, and
+answers from the server that offers it. The picker shows **Local** or **Cloud:
+<Provider> · Subscription/API key**, so you see where your question goes before you send it, and
+remembers the model you used last; it never starts on a cloud model by itself.
+With no model at all, the chat asks you to add one first, with a **Providers…**
+link that opens **Settings** at **Providers**. ChatGPT, the Anthropic, OpenAI, Google Gemini, and
 DeepSeek API keys, and local models can chat; Claude Code models cannot:
 Hilde says so when you send with one. The conversation is kept with the book,
 one per book, for everyone using this server, and survives a refresh. **New
@@ -659,6 +639,27 @@ takes effect: "Applies to the next audiobook" or "Applies now". The groups:
   on its own server), narrates while one of its narration workers is on, and
   designs voices with a local voice-design model; other machines only
   narrate.
+- <a id="providers"></a>**Providers**: one row per local model server (its
+  name, a **Local** badge, its address, "reads images" when set, "set at
+  startup" for one given with `--local-server`, and whether it is reachable)
+  and per cloud connection, such as "OpenAI · Subscription — Signed in as
+  <e-mail>", "OpenAI · API key — Key saved", or "Anthropic · Subscription —
+  Claude Code: <its status>". Each row has **Edit** and **Delete**; Delete asks
+  on the page first ("Remove 'Workstation'?", "Sign out of OpenAI
+  (Subscription)?", "Remove the Google API key?"). A server set at startup can
+  only be renamed. **Add** at the end opens the provider dialog: **Local** or
+  **Cloud** (fixed when editing). Local takes **Name**, **Address**, and
+  **Models here read images**, then **Check and add** (or **Save**), which
+  asks the address what it is (Ollama or OpenAI-compatible) and keeps it only
+  if it lists models. Cloud takes the provider (OpenAI, Anthropic, Google,
+  DeepSeek, or xAI) and an **API key** (a password field, never shown again;
+  afterwards "Key saved") with **Save key**, or **Subscription**, offered only
+  for OpenAI (ChatGPT sign-in), Anthropic (Claude Code on the server: turns it
+  on and shows its status), and xAI (SuperGrok or X Premium+ sign-in); see
+  [Text adaptation](text-adaptation.md) for each. Applies now. On other
+  devices the rows are read-only, without Add, Edit, or Delete, under the note
+  "Read-only from this device. Manage providers from a browser on the Hilde
+  server."
 - **Models and connection**: the narration and voice-design models by
   readable name (such as `Qwen3-TTS 1.7B (Base)`; the model ID is in the
   tooltip), with **Local** or **Speech server**. Voice design adds the device
@@ -692,12 +693,10 @@ what is affected. Previewing, opening, and playing never ask.
 
 ## Browser state
 
-Editable form settings, the local model servers added under **Add local**
-among them, are stored in bounded `HttpOnly; SameSite=Strict`
-cookies per browser. Local servers the operator started Hilde with
-(`--local-server`) are offered to every browser: they come first in the model
-lists, marked "added on the server", and **Add local** shows them without
-**Remove**. This browser alone also remembers, in its local storage,
+Editable form settings are stored in bounded `HttpOnly; SameSite=Strict`
+cookies per browser. Local model servers and cloud providers are the
+server's, under **Settings › Providers**, the same for every browser. This
+browser alone also remembers, in its local storage,
 each book's place and speed, the side panel's width, the highlight style, and which stopped or
 failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
 worker devices/hosts, credentials, storage paths, and output paths remain

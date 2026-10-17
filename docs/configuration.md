@@ -31,7 +31,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--verbose` | Logs every request to stderr. |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
-| `--local-server PROVIDER=URL[,vision]` | None. A local model server every browser can use (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. Its models come first in every model picker's Local list, marked "added on the server". |
+| `--local-server PROVIDER=URL[,vision]` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
 | `--preferred-text-model SELECTOR`, `--preferred-figure-model SELECTOR` | None. Your preferred models (repeatable, in order of preference), local or API; see [Choose your default local models](#choose-your-default-local-models). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
@@ -223,7 +223,7 @@ books made by newer versions into the layout it knows.
 ### Provider sign-ins and keys
 
 Cloud providers for text adaptation and Ask Hilde are connected once for the
-whole server, under **Providers** (see [Text adaptation](text-adaptation.md)),
+whole server, under **Settings › Providers** (see [Web UI](web-ui.md#providers)),
 and kept next to the library, readable only by the user running Hilde:
 
 ```text
@@ -238,18 +238,21 @@ and kept next to the library, readable only by the user running Hilde:
 └── credentials.key   # this server's key for the encrypted sign-ins
 ```
 
-Delete a file to sign out or forget a key (**Remove** does the same for a key,
-**Sign out** for the xAI sign-in). The page never receives a key or a sign-in
+Delete a file to sign out or forget a key (**Delete** under **Settings ›
+Providers** does the same). The page never receives a key or a sign-in
 token; a saved key shows only as "Key saved". These files follow the server
-user's home, not `--storage-root`.
+user's home, not `--storage-root`. Providers are added, changed, and removed
+only from a browser on the server's own machine; other devices see them
+read-only.
 
-Each provider's **Connect** dialog offers the ways in Hilde supports for it:
+**Add** under **Settings › Providers** offers the ways in Hilde supports for
+each cloud provider:
 
 | Provider | Sign-in with your account | API key |
 | --- | --- | --- |
 | OpenAI | ChatGPT sign-in (device code) | yes |
 | Google (Gemini) | — | yes |
-| Anthropic (Claude) | — (a Claude subscription works through **Claude Code**, its own row under Providers) | yes |
+| Anthropic (Claude) | Subscription: through **Claude Code** on the server | yes |
 | DeepSeek | — | yes |
 | xAI (Grok) | xAI sign-in (SuperGrok or X Premium+; device code with PKCE) | yes |
 
@@ -266,6 +269,29 @@ the key's models are listed separately ("xAI API"), and a book or question
 uses them only when the user chooses one. Copying `xai.json` without
 `credentials.key` gives nothing usable; anyone who can read both as the server
 user can still use the sign-in.
+
+### Local model servers
+
+Local model servers are kept for the whole server in `~/.hilde/providers.yaml`,
+written by **Settings › Providers** (owner-only: the file 0600, its folder
+0700). Stop the server before editing it by hand; an invalid file stops
+startup with an error naming it. At most 16 servers:
+
+```yaml
+local:
+- name: Workstation               # 1–32 characters, unique
+  address: http://192.0.2.10:8000 # unique
+  type: openai-compatible         # or ollama (detected when added)
+  images: true                    # "Models here read images"
+claude_code: false                # only after Claude Code was removed
+```
+
+`claude_code: false` means Hilde no longer uses this server's Claude Code;
+**Subscription** for Anthropic turns it on again.
+
+Local servers that browsers once added for themselves (earlier versions kept
+up to eight per browser) are no longer used and are not migrated: they were
+personal. Add them again under **Settings › Providers**.
 
 ## Speech models
 

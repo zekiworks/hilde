@@ -2801,11 +2801,13 @@ class UnifiedWorkflowTests(unittest.TestCase):
                     "server_model": "tts-1",
                 },
             }
-            values = web.values_of(normalize({"audiobook": {
-                "document": document.name, "server_voice": "alloy", "adapt": True,
-                "model": "lm-studio/faithful",
-                "local_servers": [{"server": "127.0.0.1:9", "provider": "lm-studio"}],
-            }}), models, storage)
+            with mock.patch.object(web, "LOCAL_ENDPOINTS", [
+                {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False},
+            ]):
+                values = web.values_of(normalize({"audiobook": {
+                    "document": document.name, "server_voice": "alloy", "adapt": True,
+                    "model": "lm-studio/faithful",
+                }}), models, storage)
             input_version, voice_version = web.audiobook_versions(values)
             try:
                 with mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
@@ -2912,9 +2914,11 @@ class UnifiedWorkflowTests(unittest.TestCase):
             state = normalize({"tab": "audiobook", "audiobook": {
                 "document": document.name, "server_voice": "alloy", "adapt": True,
                 "model": "lm-studio/faithful",
-                "local_servers": [{"server": "127.0.0.1:9", "provider": "lm-studio"}],
             }})
             with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, \
+                    mock.patch.object(web, "LOCAL_ENDPOINTS", [
+                        {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False},
+                    ]), \
                     mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
                     mock.patch.object(web, "local_model_names", return_value=("faithful",)), \
                     mock.patch.object(web.PaperRun, "model_response", faithful):
@@ -4064,17 +4068,20 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
                 mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
-            added = [{"server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
+            added = [{"name": "Desk", "server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
             with mock.patch.object(web, "local_model_names", return_value=["text-model"]):
                 catalog = web.paper_model_catalog(added)
             self.assertEqual(
                 [model["selector"] for model in catalog["models"]],
                 ["lm-studio/text-model", "openai-codex/gpt-a"],
             )
-            # Each model says where it runs, as Chat's picker shows it before sending.
+            # Each model says where it runs, as Chat's picker shows it before
+            # sending: a local one by its server's name, a cloud one by its
+            # provider and how this server reaches it.
             self.assertEqual(
-                [model["badge"] for model in catalog["models"]], ["Local", "API: OpenAI"],
+                [model["badge"] for model in catalog["models"]], ["Local · Desk", "Cloud: OpenAI · Subscription"],
             )
+            self.assertEqual(catalog["models"][0]["endpoint"], "Desk")
             # Two models, none preferred: nothing is chosen.
             self.assertEqual(catalog["first_use"]["text"]["how"], "none")
             # The local server does not answer: the one API model is the only
@@ -4085,7 +4092,7 @@ class LocalPaperProviderTests(unittest.TestCase):
                 catalog = web.paper_model_catalog(added)
             self.assertEqual(catalog["first_use"]["text"],
                              {"selector": "openai-codex/gpt-a", "how": "only", "unreachable": False})
-            self.assertEqual(catalog["local_error"], "127.0.0.1:8010: Cannot reach it")
+            self.assertEqual(catalog["local_error"], "Desk: Cannot reach it")
 
     def catalog_with(self, local_servers, names_by_server, loaded_by_server=None):
         """paper_model_catalog() with ChatGPT signed in (gpt-a, gpt-b), a
@@ -4112,35 +4119,43 @@ class LocalPaperProviderTests(unittest.TestCase):
     def test_the_catalog_gives_each_model_its_picker_entry_and_rows_for_what_is_not_connected(self):
         qwen = "http://127.0.0.1:8010"
         servers = [
-            {"server": qwen, "provider": "lm-studio", "vision": True, "on_server": True},
-            {"server": "http://127.0.0.1:9", "provider": "ollama", "vision": False},
+            {"name": "Spark2", "server": qwen, "provider": "lm-studio", "vision": True, "from_flag": True},
+            {"name": "Bariton", "server": "http://127.0.0.1:9", "provider": "ollama", "vision": False},
         ]
         catalog = self.catalog_with(servers, {qwen: ["unsloth/Qwen3.6-35B-A3B-NVFP4"]})
         self.assertEqual(
             [(m["selector"], m["name"], m["kind"], m["badge"], m["images"], m["running"]) for m in catalog["models"]],
             [
-                ("lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4", "Qwen 3.6 35B A3B NVFP4", "local", "Local", True, True),
-                ("openai-codex/gpt-a", "GPT A", "api", "API: OpenAI", True, True),
-                ("openai-codex/gpt-b", "GPT B", "api", "API: OpenAI", True, True),
-                ("gemini/gemini-10-pro", "Gemini 10 Pro", "api", "API: Google", True, True),
-                # An open model served by a cloud host is an API model.
-                ("gemini/gemma-4-27b-it", "Gemma 4 27B", "api", "API: Google", True, True),
+                ("lm-studio/unsloth/Qwen3.6-35B-A3B-NVFP4", "Qwen 3.6 35B A3B NVFP4", "local", "Local · Spark2",
+                 True, True),
+                ("openai-codex/gpt-a", "GPT A", "cloud", "Cloud: OpenAI · Subscription", True, True),
+                ("openai-codex/gpt-b", "GPT B", "cloud", "Cloud: OpenAI · Subscription", True, True),
+                ("gemini/gemini-10-pro", "Gemini 10 Pro", "cloud", "Cloud: Google · API key", True, True),
+                # An open model served by a cloud host is a cloud model.
+                ("gemini/gemma-4-27b-it", "Gemma 4 27B", "cloud", "Cloud: Google · API key", True, True),
             ],
         )
-        # The server that does not answer is a Local row, then each provider
-        # with no way in connected, by name only: no model name is made up for
-        # it. OpenAI is connected by its ChatGPT sign-in alone.
+        # The server that does not answer is a Local row by its name, then
+        # each provider with no way in connected, by name only: no model name
+        # is made up for it. OpenAI is connected by its ChatGPT sign-in alone;
+        # Anthropic is one row for Claude Code and an API key.
         self.assertEqual(
             [(row["row"], row["kind"], row["label"], row.get("action"), row.get("provider")) for row in catalog["rows"]],
             [
-                ("not-running", "local", "127.0.0.1:9", None, "ollama"),
-                ("provider", "api", "Anthropic (Claude)", "connect", "anthropic"),
-                ("provider", "api", "DeepSeek", "connect", "deepseek"),
-                ("provider", "api", "xAI (Grok)", "connect", "xai"),
-                ("provider", "api", "Claude Code", "connect", "claude-code"),
+                ("not-running", "local", "Bariton", None, "ollama"),
+                ("provider", "cloud", "Anthropic (Claude)", "connect", "anthropic"),
+                ("provider", "cloud", "DeepSeek", "connect", "deepseek"),
+                ("provider", "cloud", "xAI (Grok)", "connect", "xai"),
             ],
         )
-        self.assertEqual(catalog["rows"][4]["note"], "Claude Code is not installed.")
+        self.assertEqual(catalog["rows"][0]["address"], "127.0.0.1:9")
+        self.assertEqual(catalog["rows"][1]["note"], "Not connected")
+        # Settings › Providers lists each local server: name, address, whether
+        # it answers, and whether it was set at startup.
+        self.assertEqual(
+            [(e["name"], e["label"], e["images"], e["from_flag"], e["running"]) for e in catalog["endpoints"]],
+            [("Spark2", "127.0.0.1:8010", True, True, True), ("Bariton", "127.0.0.1:9", False, False, False)],
+        )
         # Without a Gemini key, Google is a row to connect, with no model named.
         with mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "read_openai_credentials", return_value=None), \
@@ -4149,21 +4164,23 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_deepseek_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
             bare = web.paper_model_catalog()
-        self.assertIn({"kind": "api", "row": "provider", "label": "Google (Gemini)", "provider": "gemini",
+        self.assertIn({"kind": "cloud", "row": "provider", "label": "Google (Gemini)", "provider": "gemini",
                        "action": "connect", "note": "No API key"}, bare["rows"])
         self.assertFalse(any(model["provider"] == "gemini" for model in bare["models"]))
-        # OpenAI is one row for both ways in (ChatGPT sign-in, API key), and so is xAI.
+        # OpenAI is one row for both ways in (ChatGPT sign-in, API key), and so
+        # are Anthropic (Claude Code, API key) and xAI.
         self.assertEqual([row["label"] for row in bare["rows"]],
-                         ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "xAI (Grok)", "Claude Code"])
+                         ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "xAI (Grok)"])
         self.assertEqual(bare["rows"][0]["note"], "Not connected")
         # A local model without the server's vision mark reads no images.
-        plain = self.catalog_with([{"server": qwen, "provider": "lm-studio", "vision": False}], {qwen: ["llama-4"]})
+        plain = self.catalog_with([{"name": "Spark2", "server": qwen, "provider": "lm-studio", "vision": False}],
+                                  {qwen: ["llama-4"]})
         self.assertFalse(plain["models"][0]["images"])
 
     def test_first_use_follows_the_owners_preferred_models_and_never_falls_back(self):
         one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
-        servers = [{"server": one, "provider": "lm-studio", "vision": True},
-                   {"server": two, "provider": "ollama", "vision": False}]
+        servers = [{"name": "One", "server": one, "provider": "lm-studio", "vision": True},
+                   {"name": "Two", "server": two, "provider": "ollama", "vision": False}]
         preferred = {"text": ("lm-studio/flash-model", "ollama/mid-model:35b"),
                      "figure": ("lm-studio/vision-model", "ollama/mid-model:35b")}
         with mock.patch.dict(web.SERVER_PREFERRED_MODELS, preferred):
@@ -4181,7 +4198,7 @@ class LocalPaperProviderTests(unittest.TestCase):
             self.assertEqual(
                 [(entry["name"], entry["badge"], entry["size"], entry["reachable"])
                  for entry in catalog["preferred"]["text"]],
-                [("Flash Model", "Local", "", False), ("Mid Model 35B", "Local", "35B", True)],
+                [("Flash Model", "Local", "", False), ("Mid Model 35B", "Local · Two", "35B", True)],
             )
         # Figures with no preferred figure model follow the text model.
         self.assertEqual(catalog["first_use"]["figure"]["how"], "preferred")
@@ -4233,11 +4250,10 @@ class LocalPaperProviderTests(unittest.TestCase):
         home = root / ".hilde"
 
         def problem(model, local_server="127.0.0.1:8010", **settings):
-            state = normalize({"tab": "audiobook", "audiobook": {
-                "adapt": True, "model": model, **settings,
-                "local_servers": [{"server": local_server, "provider": "lm-studio"}] if local_server else [],
-            }})
-            with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
+            state = normalize({"tab": "audiobook", "audiobook": {"adapt": True, "model": model, **settings}})
+            endpoints = [{"name": "Desk", "server": f"http://{local_server}", "provider": "lm-studio", "vision": False}]
+            with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]), \
+                    mock.patch.object(web, "LOCAL_ENDPOINTS", endpoints if local_server else []):
                 values = web.values_of(state, web.unconfigured_tts_models(), storage)
             with mock.patch.object(web, "PAPER_PROMPT_PATH", prompt), \
                     mock.patch.object(web, "HILDE_HOME", home):
@@ -4248,7 +4264,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         # The checking and figure models need a server of their type too, once used.
         self.assertEqual(
             problem("lm-studio/a", verify=True, verify_model="ollama/b"),
-            "Add a local server of this model's type under Add local.",
+            "No local server of this model's type is added: add one under Settings › Providers.",
         )
         self.assertIsNone(problem("lm-studio/a", verify_model="ollama/b"))
         self.assertIsNotNone(problem("lm-studio/a", interpret_figures=True, figure_model="ollama/b"))
@@ -4287,10 +4303,10 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertIsNone(problem("gemini/gemini-a", local_server=""))
         self.assertIsNone(problem("", local_server=""))
         self.assertIsNotNone(problem("openai/gpt-a", local_server=""))
-        self.assertEqual(
-            normalize({"audiobook": {"local_servers": [{"server": "127.0.0.1:1", "provider": "vllm"}]}})
-            ["audiobook"]["local_servers"], []
-        )
+        # A browser's own local servers, from before Settings › Providers, are dropped from its state.
+        self.assertNotIn("local_servers", normalize({"audiobook": {
+            "local_servers": [{"server": "127.0.0.1:1", "provider": "lm-studio"}],
+        }})["audiobook"])
 
     def test_local_server_gets_figures_as_images_only_when_it_sees_them(self):
         temporary = tempfile.TemporaryDirectory()
@@ -4371,7 +4387,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         # them, and the job says how to fix that.
         self.assertEqual(refused.code, 1)
         self.assertTrue(any(
-            event == "log" and "This model sees images" in str(data)
+            event == "log" and "Models here read images" in str(data)
             for event, data in refused.history
         ))
         # A model that sees images gets the figure as an image.
@@ -4386,37 +4402,17 @@ class LocalPaperProviderTests(unittest.TestCase):
         prepared = (stage / "prepared.txt").read_text(encoding="utf-8")
         self.assertIn("Spoken text.", prepared)
         self.assertNotIn("Wrong", prepared)
-        # The setting survives only as a real yes.
-        for stored, kept in ((True, True), ("yes", False), (None, False)):
-            [entry] = normalize({"audiobook": {"local_servers": [
-                {"server": "127.0.0.1:1", "provider": "lm-studio", "vision": stored},
-            ]}})["audiobook"]["local_servers"]
-            self.assertIs(entry["vision"], kept)
 
-    def test_an_old_single_server_state_becomes_the_first_of_a_list_of_unique_servers(self):
+    def test_a_browsers_own_local_servers_from_before_are_no_longer_read(self):
         audiobook = normalize({"audiobook": {
             "local_server": "127.0.0.1:8894", "local_provider": "lm-studio", "local_vision": True,
+            "local_servers": [{"server": "127.0.0.1:8003", "provider": "ollama", "vision": True}],
         }})["audiobook"]
-        self.assertEqual(
-            audiobook["local_servers"],
-            [{"server": "http://127.0.0.1:8894", "provider": "lm-studio", "vision": True}],
-        )
-        self.assertFalse({"local_server", "local_provider", "local_vision"} & set(audiobook))
-        self.assertEqual(normalize({"audiobook": {}})["audiobook"]["local_servers"], [])
-        # One entry a server, the first kept; invalid ones dropped; at most LOCAL_SERVERS_MAX.
-        entries = [{"server": f"127.0.0.1:{8000 + number}", "provider": "lm-studio"} for number in range(12)]
-        servers = normalize({"audiobook": {"local_servers": [
-            {"server": "127.0.0.1:8003", "provider": "ollama", "vision": True},
-            {"server": "127.0.0.1:1/v1", "provider": "lm-studio"},
-            "127.0.0.1:2",
-            *entries,
-        ]}})["audiobook"]["local_servers"]
-        self.assertEqual(len(servers), web.LOCAL_SERVERS_MAX)
-        self.assertEqual(servers[0], {"server": "http://127.0.0.1:8003", "provider": "ollama", "vision": True})
-        self.assertEqual(
-            [entry["server"] for entry in servers[1:]],
-            [f"http://127.0.0.1:{port}" for port in (8000, 8001, 8002, 8004, 8005, 8006, 8007)],
-        )
+        self.assertFalse({"local_server", "local_provider", "local_vision", "local_servers"} & set(audiobook))
+        with mock.patch.object(web, "LOCAL_ENDPOINTS", []):
+            values = web.values_of(normalize({"audiobook": audiobook}), web.unconfigured_tts_models(),
+                                   web.SharedStorage(Path(tempfile.gettempdir()) / "hilde-no-library"))
+        self.assertEqual(values["local_servers"], [])
 
     def test_only_the_chosen_source_card_gives_the_document(self):
         filled = {"document": "saved.pdf", "upload": "uploaded.pdf",
@@ -4445,31 +4441,64 @@ class LocalPaperProviderTests(unittest.TestCase):
             with self.assertRaises(argparse.ArgumentTypeError, msg=wrong):
                 option(wrong)
 
-    def test_registered_local_servers_come_before_the_browsers_own_and_the_catalog_says_which(self):
-        shared = [{"server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": True}]
+    def test_local_servers_are_kept_server_wide_and_a_startup_flag_is_added_once(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / ".hilde"
         gemma = fake_local_server(self, ["gemma"], [])
-        added = normalize({"audiobook": {"local_servers": [
-            {"server": "127.0.0.1:9", "provider": "lm-studio"}, {"server": gemma, "provider": "lm-studio"},
-        ]}})["audiobook"]["local_servers"]
-        merged = web.local_servers_of(added, shared)
-        # The registered one first, marked; the browser's copy of it dropped; its own after.
-        self.assertEqual([(entry["server"], entry.get("on_server", False), entry["vision"]) for entry in merged],
-                         [("http://127.0.0.1:9", True, True), (f"http://{gemma}", False, False)])
-        with mock.patch.object(web, "SERVER_LOCAL_SERVERS", shared):
-            self.assertEqual(web.local_servers_of([]), [{**shared[0], "on_server": True}])
-        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
-                mock.patch.object(web, "read_anthropic_key", return_value=None), \
-                mock.patch.object(web, "read_openai_api_key", return_value=None), \
-                mock.patch.object(web, "read_gemini_key", return_value=None), \
-                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
-            catalog = web.paper_model_catalog(merged)
-        # A registered server that does not answer is listed as not running; the browser's models stay.
-        self.assertEqual(
-            [(entry["label"], entry["on_server"], entry["running"]) for entry in catalog["local_servers"]],
-            [("127.0.0.1:9", True, False), (gemma, False, True)],
-        )
-        self.assertEqual([model["selector"] for model in catalog["models"]], ["lm-studio/gemma"])
-        self.assertNotIn("on_server", catalog["models"][0])
+        flag = web.local_server_option("lm-studio=http://127.0.0.1:9,vision")
+        patches = (mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
+                   mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        # A flag's server is added to providers.yaml once, named by its host, set at startup.
+        web.load_providers([flag])
+        path = home / "providers.yaml"
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(web.local_endpoints(), [{"name": "127.0.0.1", "server": "http://127.0.0.1:9",
+                                                  "provider": "lm-studio", "vision": True, "from_flag": True}])
+        # Its name changes; its address, images, and presence stay while the flag is given.
+        web.save_local_endpoint("127.0.0.1", "Spark2", "127.0.0.1:9", True)
+        for change in (("Spark2", "Spark2", "127.0.0.1:10", True), ("Spark2", "Spark2", "127.0.0.1:9", False)):
+            with self.assertRaises(ValueError):
+                web.save_local_endpoint(*change)
+        with self.assertRaises(ValueError):
+            web.remove_local_endpoint("Spark2")
+        # Added from Settings: asked what it is, checked, named uniquely by name and address.
+        web.save_local_endpoint("", "Bariton", gemma, False)
+        for name, address in (("spark2", "127.0.0.1:2"), ("Other", gemma), ("", gemma), ("x" * 33, gemma)):
+            with self.assertRaises(ValueError, msg=(name, address)):
+                web.save_local_endpoint("", name, address, False)
+        # A server that does not answer is not added.
+        with self.assertRaises(RuntimeError):
+            web.save_local_endpoint("", "Down", "127.0.0.1:1", False)
+        web.save_local_endpoint("Bariton", "Bariton", gemma, True)
+        # Read again at the next start, the flag's server keeps its new name and is not added twice.
+        web.LOCAL_ENDPOINTS[:] = []
+        web.load_providers([flag])
+        self.assertEqual([(e["name"], e["server"], e["vision"], e["from_flag"]) for e in web.local_endpoints()],
+                         [("Spark2", "http://127.0.0.1:9", True, True), ("Bariton", f"http://{gemma}", True, False)])
+        self.assertIn("type: openai-compatible", path.read_text(encoding="utf-8"))
+        # Started without the flag, it is an ordinary server that may be removed.
+        web.load_providers([])
+        web.remove_local_endpoint("Spark2")
+        self.assertEqual([e["name"] for e in web.local_endpoints()], ["Bariton"])
+        # Claude Code removed is kept in the same file.
+        web.use_claude_code(False)
+        self.assertEqual(web.read_providers(path)[1], False)
+        self.assertEqual(web.claude_code_status(), (False, "Hilde does not use Claude Code: choose Anthropic's "
+                                                            "Subscription under Settings › Providers to use it again."))
+        # A file that is not what Hilde writes is refused, naming what is wrong.
+        for text in ("local: [{name: A, address: 'h:1', type: vllm}]", "local: [{name: A}]",
+                     "local: [{name: A, address: 'h:1', type: ollama, images: 'yes'}]",
+                     "local: [{name: A, address: 'h:1', type: ollama}, {name: a, address: 'h:2', type: ollama}]",
+                     "remote: []"):
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(ValueError, msg=text):
+                web.read_providers(path)
 
     def test_models_of_several_local_servers_are_listed_together_and_each_asked_on_its_own(self):
         temporary = tempfile.TemporaryDirectory()
@@ -4478,9 +4507,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         gemma_requests, qwen_requests = [], []
         gemma = fake_local_server(self, ["gemma"], gemma_requests)
         qwen = fake_local_server(self, ["qwen"], qwen_requests)
-        added = normalize({"audiobook": {"local_servers": [
-            {"server": gemma, "provider": "lm-studio"}, {"server": qwen, "provider": "lm-studio"},
-        ]}})["audiobook"]["local_servers"]
+        added = [{"name": "Gemma box", "server": gemma, "provider": "lm-studio", "vision": False},
+                 {"name": "Qwen box", "server": qwen, "provider": "lm-studio", "vision": False}]
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
@@ -4490,21 +4518,23 @@ class LocalPaperProviderTests(unittest.TestCase):
             catalog = web.paper_model_catalog(added)
             # A server that does not answer is named; the others' models stay.
             unreachable = web.paper_model_catalog([
-                {"server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False}, *added,
+                {"name": "Down", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False}, *added,
             ])
-        # Local models first, server by server, each with its server; then the cloud's.
+        # Local models first, server by server, each with its server and its
+        # server's name; then the cloud's.
         self.assertEqual(
-            [(model["selector"], model.get("server"), model.get("label")) for model in catalog["models"]],
+            [(model["selector"], model.get("server"), model.get("endpoint"), model["badge"])
+             for model in catalog["models"]],
             [
-                ("lm-studio/gemma", f"http://{gemma}", f"gemma · {gemma}"),
-                ("lm-studio/qwen", f"http://{qwen}", f"qwen · {qwen}"),
-                ("openai-codex/gpt-a", None, None),
+                ("lm-studio/gemma", gemma, "Gemma box", "Local · Gemma box"),
+                ("lm-studio/qwen", qwen, "Qwen box", "Local · Qwen box"),
+                ("openai-codex/gpt-a", None, None, "Cloud: OpenAI · Subscription"),
             ],
         )
         self.assertEqual(catalog["first_use"]["text"]["how"], "none")
         self.assertEqual(catalog["local_error"], "")
         self.assertEqual([model["selector"] for model in unreachable["models"]][:1], ["lm-studio/gemma"])
-        self.assertTrue(unreachable["local_error"].startswith("127.0.0.1:9: "))
+        self.assertTrue(unreachable["local_error"].startswith("Down: "))
 
         source = root / "paper.pdf"
         write_figure_pdf(source, prose=FIGURE_PROSE)
@@ -4626,7 +4656,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         for selector in ("lm-studio/qwen", "ollama/gemma"):
             with self.assertRaises(RuntimeError) as caught:
                 web.local_route(selector, added)
-            self.assertEqual(str(caught.exception), f"No local server you added offers {selector.split('/', 1)[1]}.")
+            self.assertEqual(str(caught.exception),
+                             f"No local server under Settings › Providers offers {selector.split('/', 1)[1]}.")
         source = root / "paper.md"
         source.write_text("Recurrent models are slow to train.", encoding="utf-8")
         prompt = root / "prompt.md"
@@ -4637,7 +4668,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         )
         run.pump()
         self.assertEqual(run.code, 1)
-        self.assertTrue(any("No local server you added offers qwen." in str(data) for _, data in run.history))
+        self.assertTrue(any("No local server under Settings › Providers offers qwen." in str(data)
+                            for _, data in run.history))
         self.assertEqual(requests, [])
 
     def test_a_model_still_writing_at_its_limit_is_asked_again_and_never_hangs(self):
@@ -5557,9 +5589,9 @@ class DeepSeekProviderTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((home / "deepseek.json").stat().st_mode), 0o600)
         self.assertEqual(
             [(model["selector"], model["name"], model["badge"], model["images"]) for model in catalog["models"]],
-            [("deepseek/deepseek-flash", "DeepSeek Flash", "API: DeepSeek", True),
-             ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", "API: DeepSeek", False),
-             ("deepseek/deepseek-vision-check", "DeepSeek Vision Check", "API: DeepSeek", False)],
+            [("deepseek/deepseek-flash", "DeepSeek Flash", "Cloud: DeepSeek · API key", True),
+             ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro", "Cloud: DeepSeek · API key", False),
+             ("deepseek/deepseek-vision-check", "DeepSeek Vision Check", "Cloud: DeepSeek · API key", False)],
         )
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertTrue(catalog["deepseek_connected"])
@@ -5771,8 +5803,8 @@ class XaiProviderTests(unittest.TestCase):
         # generator left out.
         self.assertEqual(
             [(model["selector"], model["name"], model["badge"], model["images"]) for model in catalog["models"]],
-            [("xai/grok-4.20-reasoning", "Grok 4.20 Reasoning", "API: xAI", True),
-             ("xai/grok-3-mini", "Grok 3 Mini", "API: xAI", False)],
+            [("xai/grok-4.20-reasoning", "Grok 4.20 Reasoning", "Cloud: xAI · Subscription", True),
+             ("xai/grok-3-mini", "Grok 3 Mini", "Cloud: xAI · Subscription", False)],
         )
         self.assertEqual((catalog["xai_connected"], catalog["xai_account"], catalog["xai_error"],
                           catalog["xai_refused"], catalog["xai_api_connected"]), (True, self.EMAIL, "", False, False))
@@ -5832,7 +5864,7 @@ class XaiProviderTests(unittest.TestCase):
             catalog = web.paper_model_catalog()
         self.assertEqual((catalog["xai_connected"], catalog["xai_error"], catalog["models"]),
                          (False, "Sign in to xAI again", []))
-        self.assertIn({"kind": "api", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
+        self.assertIn({"kind": "cloud", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
                        "action": "connect", "note": "Sign in to xAI again", "problem": True}, catalog["rows"])
         values = {"adapt": True, "model": "xai/grok-4.20-reasoning", "local_servers": [], "verify": False,
                   "verify_model": "", "interpret_figures": False, "figure_model": "", "in_flight": 1,
@@ -5855,7 +5887,7 @@ class XaiProviderTests(unittest.TestCase):
         catalog = web.paper_model_catalog()
         self.assertEqual((catalog["xai_connected"], catalog["xai_refused"], catalog["xai_error"], catalog["models"]),
                          (True, True, "xAI refused this account (403)", []))
-        self.assertIn({"kind": "api", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
+        self.assertIn({"kind": "cloud", "row": "provider", "label": "xAI (Grok)", "provider": "xai",
                        "action": "connect", "note": "xAI refused this account (403)", "problem": True, "refused": True},
                       catalog["rows"])
         # With an API key as well: its models are listed under the key, the
@@ -9106,7 +9138,7 @@ class FigureAndContextTests(unittest.TestCase):
         self.assertNotIn("appendix", sent)
         self.assertEqual(manifest["section"], "1 Model")
         self.assertEqual(manifest["preview"], "Figure 1: Encoder (left) and decoder (right).")
-        self.assertEqual(manifest["badge"], "API: Anthropic")
+        self.assertEqual(manifest["badge"], "Cloud: Anthropic · API key")
         # The picture as printed goes to a cloud model, never into the manifest.
         self.assertEqual(manifest["image"], {"sent": True, "count": 1})
         self.assertEqual(images[0]["mime"], "image/png")

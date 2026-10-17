@@ -272,11 +272,21 @@ MODEL_STREAM_TIMEOUT = 30 * 60
 LOCAL_SERVER_TIMEOUT = 5
 PAPER_DOWNLOAD_TIMEOUT = 60
 LOCAL_MODEL_PROVIDERS = ("ollama", "lm-studio")
-# Local model servers one browser may add under Add local.
-LOCAL_SERVERS_MAX = 8
-# Local model servers registered for every browser with --local-server, as
-# {"server", "provider", "vision"}; set once at startup.
-SERVER_LOCAL_SERVERS = []
+# The local model servers every browser uses, as {"name", "server",
+# "provider", "vision"}: read from providers.yaml under HILDE_HOME at startup
+# (load_providers()), changed under Settings › Providers in a browser on the
+# server's machine, and kept in that file. LOCAL_ENDPOINTS_LOCK guards them.
+LOCAL_ENDPOINTS = []
+LOCAL_ENDPOINTS_LOCK = threading.Lock()
+# At most this many local servers, so a model list never waits on dozens.
+LOCAL_ENDPOINTS_MAX = 16
+LOCAL_ENDPOINT_NAME_MAX = 32
+# The addresses given with --local-server this run: their rows say "set at
+# startup", and only their names change under Settings.
+STARTUP_LOCAL_SERVERS = set()
+# Whether Hilde uses this server's Claude Code (Anthropic's subscription):
+# on until it is removed under Settings › Providers; kept in providers.yaml.
+CLAUDE_CODE_USED = {"on": True}
 # The owner's preferred models, by field ("text", "figure"), in order of
 # preference (--preferred-text-model, --preferred-figure-model): the first is
 # a browser's first-use model when it is reachable, and the others come first
@@ -4909,18 +4919,23 @@ def search_server_origin(value):
         ) from None
 
 
-def _write_private_json(path, payload):
-    """Replace path with JSON only this user can read, in a private folder."""
+def _write_private_text(path, text):
+    """Replace path with text only this user can read, in a private folder."""
     HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream)
+            stream.write(text)
         os.replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _write_private_json(path, payload):
+    """Replace path with JSON only this user can read, in a private folder."""
+    _write_private_text(path, json.dumps(payload))
 
 
 def openai_credentials_path():
@@ -5055,6 +5070,12 @@ def _model_error(data, fallback):
 _OPENAI_SIGN_IN_LOCK = threading.Lock()
 
 
+def remove_openai_sign_in():
+    """Forget this server's ChatGPT sign-in (Delete under Settings › Providers)."""
+    with _OPENAI_SIGN_IN_LOCK:
+        openai_credentials_path().unlink(missing_ok=True)
+
+
 def openai_access(refused_token=None):
     """Return a usable sign-in, renewing it near expiry or once it is refused."""
     # One renewal at a time: OpenAI rotates the refresh token on each one.
@@ -5062,7 +5083,7 @@ def openai_access(refused_token=None):
         credentials = read_openai_credentials()
         if credentials is None:
             raise RuntimeError(
-                "Sign in with OpenAI in Providers, under Adapt the text for listening, first."
+                "Sign in with OpenAI under Settings › Providers first."
             )
         # Another request may already have renewed the token that was refused.
         if (
@@ -5078,7 +5099,7 @@ def openai_access(refused_token=None):
         if status != 200:
             raise RuntimeError(
                 "OpenAI sign-in could not be renewed "
-                f"({_model_error(tokens, f'HTTP {status}')}); sign in again in Providers."
+                f"({_model_error(tokens, f'HTTP {status}')}); sign in again under Settings › Providers."
             )
         return save_openai_credentials(tokens, credentials)
 
@@ -5274,7 +5295,7 @@ def openai_request(payload, open_stream, pause, read):
             if response.status == 401:
                 if refused is not None:
                     raise RuntimeError(
-                        "OpenAI refused the renewed sign-in; sign in again in Providers."
+                        "OpenAI refused the renewed sign-in; sign in again under Settings › Providers."
                     )
                 refused = credentials["access_token"]
                 continue
@@ -5374,8 +5395,8 @@ def local_model_response(server, provider, model, system_prompt, text, images, o
             failure = _stream_failure(response, "The local model server")
             if images and response.status == 400:
                 raise RuntimeError(
-                    f"{failure}. If this model reads text only, clear \"This model "
-                    "sees images\" under Add local."
+                    f"{failure}. If this model reads text only, clear \"Models here read "
+                    "images\" for its server under Settings › Providers."
                 )
             raise failure
         answer, _, _, reason = _chat_completion_stream(response, "The local model server")
@@ -5414,7 +5435,7 @@ def openai_model_names():
             raise RuntimeError(f"Cannot list OpenAI models: {exc}") from exc
         break
     else:
-        raise RuntimeError("OpenAI refused the renewed sign-in; sign in again in Providers.")
+        raise RuntimeError("OpenAI refused the renewed sign-in; sign in again under Settings › Providers.")
     rows = payload.get("models") if isinstance(payload, dict) else None
     models = []
     for row in rows if isinstance(rows, list) else ():
@@ -5498,7 +5519,7 @@ def anthropic_model_names(key=None):
     key = key or read_anthropic_key()
     if not key:
         raise RuntimeError(
-            "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
+            "Add an Anthropic API key under Settings › Providers first."
         )
     payload = _provider_models_json(
         f"{ANTHROPIC_API_URL}/v1/models?limit=1000", _anthropic_headers(key), "Anthropic",
@@ -5593,7 +5614,7 @@ def anthropic_request(payload, open_stream, pause, read):
     key = read_anthropic_key()
     if key is None:
         raise RuntimeError(
-            "Add an Anthropic API key in Providers, under Adapt the text for listening, first."
+            "Add an Anthropic API key under Settings › Providers first."
         )
     return _keyed_request(
         f"{ANTHROPIC_API_URL}/v1/messages", _anthropic_headers(key, "text/event-stream"),
@@ -5648,7 +5669,7 @@ def openai_api_model_names(key=None):
     key = key or read_openai_api_key()
     if not key:
         raise RuntimeError(
-            "Add an OpenAI API key in Providers, under Adapt the text for listening, first."
+            "Add an OpenAI API key under Settings › Providers first."
         )
     payload = _provider_models_json(f"{OPENAI_API_URL}/models", _openai_api_headers(key), "OpenAI")
     rows = payload.get("data") if isinstance(payload, dict) else None
@@ -5695,7 +5716,7 @@ def openai_api_request(payload, open_stream, pause, read):
     key = read_openai_api_key()
     if key is None:
         raise RuntimeError(
-            "Add an OpenAI API key in Providers, under Adapt the text for listening, first."
+            "Add an OpenAI API key under Settings › Providers first."
         )
     return _keyed_request(
         f"{OPENAI_API_URL}/responses", _openai_api_headers(key, "text/event-stream"),
@@ -5725,7 +5746,7 @@ def deepseek_models(key=None):
     key = key or read_deepseek_key()
     if not key:
         raise RuntimeError(
-            "Add a DeepSeek API key in Providers, under Adapt the text for listening, first."
+            "Add a DeepSeek API key under Settings › Providers first."
         )
     payload = _provider_models_json(f"{DEEPSEEK_API_URL}/models", _openai_api_headers(key), "DeepSeek")
     rows = payload.get("data") if isinstance(payload, dict) else None
@@ -5791,7 +5812,7 @@ def deepseek_request(payload, open_stream, pause, read):
     key = read_deepseek_key()
     if key is None:
         raise RuntimeError(
-            "Add a DeepSeek API key in Providers, under Adapt the text for listening, first."
+            "Add a DeepSeek API key under Settings › Providers first."
         )
     return _keyed_request(
         f"{DEEPSEEK_API_URL}/chat/completions", _openai_api_headers(key, "text/event-stream"),
@@ -5980,7 +6001,7 @@ def xai_access(refused_token=None):
     with _XAI_SIGN_IN_LOCK:
         credentials = read_xai_credentials()
         if credentials is None:
-            raise RuntimeError("Sign in to xAI in Providers, under Adapt the text for listening, first.")
+            raise RuntimeError("Sign in to xAI under Settings › Providers first.")
         if credentials["failed"]:
             raise RuntimeError(f"{XAI_SIGN_IN_AGAIN}: {credentials['failed']}")
         now = time.time()
@@ -6100,7 +6121,7 @@ def xai_models(provider, key=None):
     else:
         key = key or read_xai_api_key()
         if not key:
-            raise RuntimeError("Add an xAI API key in Providers, under Adapt the text for listening, first.")
+            raise RuntimeError("Add an xAI API key under Settings › Providers first.")
         fetch = lambda path: _xai_get(path, key, signed_in=False)  # noqa: E731
     rows = (fetch("/models") or {}).get("data")
     rows = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]] \
@@ -6178,7 +6199,7 @@ def xai_request(provider, payload, open_stream, pause, read):
     if provider == XAI_API_MODEL_PROVIDER:
         key = read_xai_api_key()
         if key is None:
-            raise RuntimeError("Add an xAI API key in Providers, under Adapt the text for listening, first.")
+            raise RuntimeError("Add an xAI API key under Settings › Providers first.")
         return _keyed_request(url, _openai_api_headers(key, "text/event-stream"), payload, "xAI",
                               open_stream, pause, read)
     body = json.dumps(payload).encode("utf-8")
@@ -6238,7 +6259,7 @@ def gemini_model_names(key=None):
     key = key or read_gemini_key()
     if not key:
         raise RuntimeError(
-            "Add a Gemini API key in Providers, under Adapt the text for listening, first."
+            "Add a Gemini API key under Settings › Providers first."
         )
     names, token = set(), ""
     while True:
@@ -6354,7 +6375,7 @@ def gemini_request(payload, model, open_stream, pause, read):
     key = read_gemini_key()
     if key is None:
         raise RuntimeError(
-            "Add a Gemini API key in Providers, under Adapt the text for listening, first."
+            "Add a Gemini API key under Settings › Providers first."
         )
     return _keyed_request(
         f"{GEMINI_API_URL}/models/{urllib.parse.quote(model, safe='')}:streamGenerateContent?alt=sse",
@@ -6372,11 +6393,16 @@ def claude_code_command():
 
 
 def claude_code_status():
-    """Whether this server's Claude Code is signed in, and what to tell the user.
+    """Whether this server's Claude Code is signed in and used, and what to
+    tell the user.
 
     Returns (signed_in, message). Claude Code reports its own sign-in; Hilde
-    never reads its credentials.
+    never reads its credentials. Removed under Settings › Providers
+    (CLAUDE_CODE_USED), it is not used, whatever its sign-in.
     """
+    if not CLAUDE_CODE_USED["on"]:
+        return False, ("Hilde does not use Claude Code: choose Anthropic's Subscription under "
+                       "Settings › Providers to use it again.")
     command = claude_code_command()
     if command is None:
         return False, "Claude Code is not installed on this server."
@@ -6595,7 +6621,7 @@ def local_model_names(local_server, provider):
         return ollama_model_names(local_server)
     if provider == "lm-studio":
         return openai_compatible_model_names(local_server)
-    raise RuntimeError("Choose the local server's type under Add local.")
+    raise RuntimeError("A local server is OpenAI-compatible or Ollama.")
 
 
 def local_loaded_names(local_server, provider):
@@ -6617,26 +6643,224 @@ def local_loaded_names(local_server, provider):
     return {name for name, state in states.items() if state == "loaded"} if states else None
 
 
-def normalize_local_servers(entries):
-    """The local servers a browser added: at most LOCAL_SERVERS_MAX
-    {"server", "provider", "vision"}, one per server, in the order added.
-    Invalid entries are dropped."""
-    servers = []
-    for entry in entries if isinstance(entries, list) else ():
-        if not isinstance(entry, dict) or entry.get("provider") not in LOCAL_MODEL_PROVIDERS:
+PROVIDERS_FILE = "providers.yaml"
+PROVIDERS_HEADER = """\
+# Hilde's model providers, for every browser: the local model servers (name,
+# address, type, and whether their models read images), and claude_code: false
+# when Hilde does not use this server's Claude Code. Hilde writes this file
+# when they change under Settings > Providers in a browser on the server's
+# machine; --local-server adds its server here at startup. Stop the server
+# before editing it by hand. Cloud sign-ins and API keys have their own files.
+"""
+# A local server's type as providers.yaml names it, and as model selectors do.
+LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
+LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "images")
+PROVIDERS_LOCAL_ONLY = (
+    "Providers are added, changed, and removed in a browser on the server's own machine."
+)
+
+
+def providers_path():
+    return HILDE_HOME / PROVIDERS_FILE
+
+
+def local_endpoint_name(value):
+    """A local server's name as the user gave it: one line of at most
+    LOCAL_ENDPOINT_NAME_MAX characters, spaces collapsed."""
+    name = " ".join(str(value or "").split())
+    if not name:
+        raise ValueError("Give the local server a name, such as the machine it runs on.")
+    if len(name) > LOCAL_ENDPOINT_NAME_MAX or any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError(f"Use a name of at most {LOCAL_ENDPOINT_NAME_MAX} letters, digits, or spaces.")
+    return name
+
+
+def local_endpoint_conflict(endpoints, name, server, skip=None):
+    """Why a local server can't take this name and address beside the others
+    (each name and each address once), or None. `skip` is the one it replaces."""
+    for entry in endpoints:
+        if entry is skip:
             continue
-        try:
-            server = normalize_local_server(stored_text(entry, "server"))
-        except ValueError:
+        if entry["name"].casefold() == name.casefold():
+            return f"'{entry['name']}' is already the name of a local server; choose another."
+        if entry["server"] == server:
+            return f"{local_server_label(server)} is already added as '{entry['name']}'."
+    return None
+
+
+def read_providers(path):
+    """providers.yaml's local servers, as {"name", "server", "provider",
+    "vision"} in the file's order, and whether Claude Code is used. An absent
+    file has no local server and uses Claude Code."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], True
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"not valid YAML: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("local") or [], list):
+        raise ValueError("expected a 'local:' list")
+    unknown = sorted(set(data) - {"local", "claude_code"})
+    if unknown:
+        raise ValueError(f"unknown setting: {unknown[0]}")
+    endpoints = []
+    for item in data.get("local") or []:
+        if not isinstance(item, dict):
+            raise ValueError("each local server needs name, address, type, and images")
+        unknown = sorted(set(item) - set(LOCAL_ENDPOINT_KEYS))
+        if unknown:
+            raise ValueError(f"unknown local server setting: {unknown[0]}")
+        name = local_endpoint_name(item.get("name"))
+        server = normalize_local_server(str(item.get("address") or ""))
+        if not server:
+            raise ValueError(f"{name}: address is missing")
+        if item.get("type") not in LOCAL_ENDPOINT_TYPES:
+            raise ValueError(f"{name}: type is {' or '.join(LOCAL_ENDPOINT_TYPES)}")
+        if not isinstance(item.get("images", False), bool):
+            raise ValueError(f"{name}: images is true or false")
+        conflict = local_endpoint_conflict(endpoints, name, server)
+        if conflict:
+            raise ValueError(conflict)
+        endpoints.append({"name": name, "server": server, "provider": LOCAL_ENDPOINT_TYPES[item["type"]],
+                          "vision": item.get("images", False)})
+    claude_code = data.get("claude_code", True)
+    if not isinstance(claude_code, bool):
+        raise ValueError("claude_code is true or false")
+    return endpoints, claude_code
+
+
+def write_providers(endpoints, claude_code):
+    """Replace providers.yaml, readable only by this user, in its private folder."""
+    types = {provider: name for name, provider in LOCAL_ENDPOINT_TYPES.items()}
+    data = {"local": [
+        {"name": entry["name"], "address": entry["server"], "type": types[entry["provider"]],
+         "images": entry["vision"]}
+        for entry in endpoints
+    ]}
+    if not claude_code:
+        data["claude_code"] = False
+    _write_private_text(providers_path(), PROVIDERS_HEADER + yaml.safe_dump(data, sort_keys=False))
+
+
+def default_endpoint_name(server, endpoints):
+    """A name for a local server added with --local-server: its host, else
+    its host and port, else either with a number, whichever is free."""
+    host = urllib.parse.urlsplit(server).hostname or local_server_label(server)
+    label = local_server_label(server)
+    candidates = [host, label] + [f"{label} {number}" for number in range(2, LOCAL_ENDPOINTS_MAX + 2)]
+    for candidate in candidates:
+        name = candidate[:LOCAL_ENDPOINT_NAME_MAX]
+        if all(entry["name"].casefold() != name.casefold() for entry in endpoints):
+            return name
+    return label[:LOCAL_ENDPOINT_NAME_MAX]
+
+
+def load_providers(flags):
+    """Read providers.yaml into LOCAL_ENDPOINTS and CLAUDE_CODE_USED, adding
+    each --local-server server it lacks (named by default_endpoint_name()) and
+    saving the file then; those addresses are this run's "set at startup"."""
+    endpoints, claude_code = read_providers(providers_path())
+    added = False
+    for flag in flags:
+        if any(entry["server"] == flag["server"] for entry in endpoints):
             continue
-        if not server or any(added["server"] == server for added in servers):
-            continue
-        servers.append({
-            "server": server, "provider": entry["provider"], "vision": entry.get("vision") is True,
-        })
-        if len(servers) == LOCAL_SERVERS_MAX:
-            break
-    return servers
+        endpoints.append({"name": default_endpoint_name(flag["server"], endpoints), **flag})
+        added = True
+    if added:
+        write_providers(endpoints, claude_code)
+    with LOCAL_ENDPOINTS_LOCK:
+        LOCAL_ENDPOINTS[:] = endpoints
+        STARTUP_LOCAL_SERVERS.clear()
+        STARTUP_LOCAL_SERVERS.update(flag["server"] for flag in flags)
+        CLAUDE_CODE_USED["on"] = claude_code
+
+
+def local_endpoints():
+    """The local model servers every browser uses, in the order added, each
+    {"name", "server", "provider", "vision", "from_flag"}."""
+    with LOCAL_ENDPOINTS_LOCK:
+        return [{**entry, "from_flag": entry["server"] in STARTUP_LOCAL_SERVERS} for entry in LOCAL_ENDPOINTS]
+
+
+def local_server_type(server):
+    """Ask a local server what it is: Ollama when it answers Ollama's
+    /api/version (its extras are then used), else OpenAI-compatible; either
+    way it must list its models. Raises RuntimeError when it does not."""
+    try:
+        version = local_server_json(server, "/api/version", "Ollama")
+    except RuntimeError:
+        version = None
+    provider = "ollama" if isinstance(version, dict) and "version" in version else "lm-studio"
+    local_model_names(server, provider)
+    return provider
+
+
+def save_local_endpoint(original, name, address, images):
+    """Add a local server (`original` empty) or change the one named
+    `original`. A new address is asked what it is and must list models; a
+    server set at startup changes only its name. Raises ValueError for the
+    user to fix, RuntimeError when the server does not answer."""
+    name = local_endpoint_name(name)
+    server = normalize_local_server(address)
+    if not server:
+        raise ValueError("Enter the local server's address: host and port, such as 192.0.2.10:8000.")
+    images = images is True
+    with LOCAL_ENDPOINTS_LOCK:
+        current = next((entry for entry in LOCAL_ENDPOINTS
+                        if original and entry["name"].casefold() == str(original).casefold()), None)
+        if original and current is None:
+            raise ValueError(f"No local server is named '{original}'.")
+        if current is None and len(LOCAL_ENDPOINTS) >= LOCAL_ENDPOINTS_MAX:
+            raise ValueError(f"Add at most {LOCAL_ENDPOINTS_MAX} local servers; remove one first.")
+        if current is not None and current["server"] in STARTUP_LOCAL_SERVERS and (
+            server != current["server"] or images != current["vision"]
+        ):
+            raise ValueError("This server is set at startup (--local-server): only its name changes here.")
+        conflict = local_endpoint_conflict(LOCAL_ENDPOINTS, name, server, current)
+        if conflict:
+            raise ValueError(conflict)
+        provider = current["provider"] if current is not None and current["server"] == server else None
+    if provider is None:
+        provider = local_server_type(server)
+    with LOCAL_ENDPOINTS_LOCK:
+        entry = {"name": name, "server": server, "provider": provider, "vision": images}
+        endpoints = list(LOCAL_ENDPOINTS)
+        index = next((at for at, saved in enumerate(endpoints)
+                      if original and saved["name"].casefold() == str(original).casefold()), None)
+        # Asked again under the lock: another browser may have changed the list meanwhile.
+        conflict = local_endpoint_conflict(endpoints, name, server, endpoints[index] if index is not None else None)
+        if conflict or (original and index is None):
+            raise ValueError(conflict or f"No local server is named '{original}'.")
+        if index is None:
+            endpoints.append(entry)
+        else:
+            endpoints[index] = entry
+        write_providers(endpoints, CLAUDE_CODE_USED["on"])
+        LOCAL_ENDPOINTS[:] = endpoints
+
+
+def remove_local_endpoint(name):
+    """Remove the local server of this name; one set at startup stays."""
+    with LOCAL_ENDPOINTS_LOCK:
+        current = next((entry for entry in LOCAL_ENDPOINTS
+                        if entry["name"].casefold() == str(name).casefold()), None)
+        if current is None:
+            raise ValueError(f"No local server is named '{name}'.")
+        if current["server"] in STARTUP_LOCAL_SERVERS:
+            raise ValueError("This server is set at startup (--local-server); it stays while Hilde "
+                             "starts with it.")
+        endpoints = [entry for entry in LOCAL_ENDPOINTS if entry is not current]
+        write_providers(endpoints, CLAUDE_CODE_USED["on"])
+        LOCAL_ENDPOINTS[:] = endpoints
+
+
+def use_claude_code(on):
+    """Whether Hilde uses this server's Claude Code, kept in providers.yaml."""
+    with LOCAL_ENDPOINTS_LOCK:
+        write_providers(LOCAL_ENDPOINTS, on)
+        CLAUDE_CODE_USED["on"] = on
 
 
 def local_server_option(value):
@@ -6681,60 +6905,51 @@ def preferred_model_option(value):
     return selector
 
 
-def local_servers_of(added, on_server=None):
-    """The local servers a browser's requests use: those registered on this
-    server (--local-server, SERVER_LOCAL_SERVERS), marked "on_server", then
-    the ones the browser added, without a server twice."""
-    servers = [
-        {**entry, "on_server": True}
-        for entry in (SERVER_LOCAL_SERVERS if on_server is None else on_server)
-    ]
-    servers += [entry for entry in added if all(entry["server"] != kept["server"] for kept in servers)]
-    return servers
-
-
-
 def local_server_label(server):
     """A local server as the user typed it: host:port, no http://."""
     return server.removeprefix("http://")
 
 
 def local_route(selector, local_servers):
-    """The added local server a local selector's requests go to: the first of
-    its provider that offers the model, as {"server", "provider", "vision"}."""
+    """The local server a local selector's requests go to: the first of its
+    provider that offers the model, as {"name", "server", "provider", "vision"}."""
     provider, _, model = selector.partition("/")
     for entry in local_servers:
         if entry["provider"] != provider:
             continue
         try:
             if model in local_model_names(entry["server"], provider):
-                return dict(entry)
+                server = normalize_local_server(entry["server"])
+                return {"name": entry.get("name") or local_server_label(server), "server": server,
+                        "provider": provider, "vision": entry.get("vision") is True}
         except RuntimeError:
             continue
-    raise RuntimeError(f"No local server you added offers {model}.")
+    raise RuntimeError(f"No local server under Settings › Providers offers {model}.")
 
 
 def paper_model_catalog(local_servers=(), refresh=False):
-    """List the local servers' models (local_servers_of()), server by
-    server, then those of this server's providers, each as the shared model
-    picker shows it: {selector, provider, name (short), kind ("local" or
-    "api"), badge, images, running}, a local one with its server; the
-    picker's other rows (catalog_rows()): a local server that does not
-    answer, and each provider not connected; the owner's preferred models and
-    what a choice left open starts with (first_use_models()); and each local server's status: whether it
-    answered, and whether it was registered on this server ("on_server"),
-    so the page offers no Remove for it."""
+    """List the local servers' models (local_endpoints()), server by server,
+    then those of this server's providers, each as the shared model picker
+    shows it: {selector, provider, name (short), kind ("local" or "cloud"),
+    badge, images, running}, a local one with its server and the server's
+    name ("endpoint"); the picker's other rows (catalog_rows()): a local
+    server that does not answer, and each provider not connected; the owner's
+    preferred models and what a choice left open starts with
+    (first_use_models()); and each local server as Settings › Providers lists
+    it ("endpoints"): name, address, whether it answered, and whether it was
+    set at startup ("from_flag"), which the page offers no Delete for."""
     local_models, cloud_models, local_errors, local_status = [], [], [], []
     for entry in local_servers:
         label = local_server_label(entry["server"])
-        on_server = entry.get("on_server") is True
-        status = {"label": label, "server": entry["server"], "provider": entry["provider"],
-                  "vision": entry.get("vision") is True, "on_server": on_server, "running": True, "error": ""}
+        endpoint = entry.get("name") or label
+        status = {"name": endpoint, "label": label, "server": entry["server"], "provider": entry["provider"],
+                  "images": entry.get("vision") is True, "from_flag": entry.get("from_flag") is True,
+                  "running": True, "error": ""}
         local_status.append(status)
         try:
             names = local_model_names(entry["server"], entry["provider"])
         except RuntimeError as exc:
-            local_errors.append(f"{label}: {exc}")
+            local_errors.append(f"{endpoint}: {exc}")
             status.update(running=False, error=str(exc))
             continue
         # Installed and listed is selectable: Ollama loads a model on its
@@ -6748,11 +6963,10 @@ def paper_model_catalog(local_servers=(), refresh=False):
                 "provider": entry["provider"],
                 "selector": f"{entry['provider']}/{name}",
                 "server": entry["server"],
-                "label": f"{name} · {label}",
+                "endpoint": endpoint,
                 # A local model sees images when its server is marked so.
                 "images": entry.get("vision") is True,
                 "loaded": None if loaded is None else name in loaded,
-                **({"on_server": True} if on_server else {}),
             }
             for name in names
             if f"{entry['provider']}/{name}" not in listed
@@ -6845,8 +7059,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
                 xai_error = str(exc)
     for model in local_models + cloud_models:
         model.update(
-            name=model_name(model), badge=model_badge(model["selector"]), running=True,
-            kind="local" if model["provider"] in LOCAL_MODEL_PROVIDERS else "api",
+            name=model_name(model), badge=model_badge(model["selector"], model.get("endpoint", "")), running=True,
+            kind="local" if model["provider"] in LOCAL_MODEL_PROVIDERS else "cloud",
             size=model_size_text(model["selector"].partition("/")[2]),
         )
         # A cloud model gets figures as images (PaperRun.sees_images()).
@@ -6863,11 +7077,12 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "openai": (*reach((openai_connected, openai_error), (openai_api_connected, openai_api_error)),
                    "Not connected"),
         GEMINI_MODEL_PROVIDER: (*reach((gemini_connected, gemini_error)), "No API key"),
-        ANTHROPIC_MODEL_PROVIDER: (*reach((anthropic_connected, anthropic_error)), "No API key"),
+        # Anthropic: Claude Code (the subscription) or an API key.
+        ANTHROPIC_MODEL_PROVIDER: (*reach((claude_code_connected, ""), (anthropic_connected, anthropic_error)),
+                                   "Not connected"),
         DEEPSEEK_MODEL_PROVIDER: (*reach((deepseek_connected, deepseek_error)), "No API key"),
         # xAI: the xAI sign-in or an API key.
         "xai": (*reach((xai_connected, xai_error), (xai_api_connected, xai_api_error)), "Not connected"),
-        CLAUDE_CODE_MODEL_PROVIDER: (claude_code_connected, "", claude_code_message),
     }
     models = local_models + cloud_models
     preferred = preferred_models(models)
@@ -6883,7 +7098,7 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "preferred": preferred,
         "first_use": first_use_models(models, preferred),
         "local_error": local_error,
-        "local_servers": local_status,
+        "endpoints": local_status,
         "openai_error": openai_error,
         "openai_connected": openai_connected,
         # The ChatGPT account in use, by its e-mail address only.
@@ -6945,8 +7160,8 @@ def preferred_models(models):
             entries.append({
                 "selector": selector,
                 "name": model["name"] if model else model_name({"provider": provider, "selector": selector}),
-                "badge": model_badge(selector),
-                "kind": "local" if provider in LOCAL_MODEL_PROVIDERS else "api",
+                "badge": model["badge"] if model else model_badge(selector),
+                "kind": "local" if provider in LOCAL_MODEL_PROVIDERS else "cloud",
                 "size": model["size"] if model else model_size_text(selector.partition("/")[2]),
                 "images": model["images"] if model else None,
                 "reachable": model is not None,
@@ -6977,33 +7192,33 @@ def first_use_models(models, preferred):
 
 
 # The providers a picker offers to connect, by their name under Providers;
-# "openai" stands for both ways in to OpenAI (ChatGPT sign-in, API key), "xai"
-# for both ways in to xAI (xAI sign-in, API key).
+# "openai" stands for both ways in to OpenAI (ChatGPT sign-in, API key),
+# "anthropic" for Claude Code (the subscription) and an API key, "xai" for
+# both ways in to xAI (xAI sign-in, API key).
 CONNECT_PROVIDER_LABELS = {
     "openai": "OpenAI",
     GEMINI_MODEL_PROVIDER: "Google (Gemini)",
     ANTHROPIC_MODEL_PROVIDER: "Anthropic (Claude)",
     DEEPSEEK_MODEL_PROVIDER: "DeepSeek",
     XAI_MODEL_PROVIDER: "xAI (Grok)",
-    CLAUDE_CODE_MODEL_PROVIDER: "Claude Code",
 }
 
 
 def catalog_rows(local_status, connections):
     """The model picker's rows that are not models, none with an invented
     model name: each local server that does not answer, "not running"
-    (Local), and each provider with no way in that is connected and lists
-    its models, with Connect (API). `connections` maps a provider to
-    (usable, error, what it lacks)."""
+    (Local), by its name, and each provider with no way in that is connected
+    and lists its models, with Connect (Cloud). `connections` maps a
+    provider to (usable, error, what it lacks)."""
     rows = [
-        {"kind": "local", "row": "not-running", "label": status["label"], "server": status["server"],
-         "provider": status["provider"], "on_server": status["on_server"], "note": status["error"]}
+        {"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
+         "server": status["server"], "provider": status["provider"], "note": status["error"]}
         for status in local_status if not status["running"]
     ]
     for provider, (usable, error, missing) in connections.items():
         if usable:
             continue
-        rows.append({"kind": "api", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
+        rows.append({"kind": "cloud", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
                      "provider": provider, "action": "connect", "note": error or missing})
     return rows
 
@@ -9416,23 +9631,18 @@ def _document_problem(values):
 
 
 def local_model_problem(selector, local_servers):
-    """What stops a local selector: no added server of its type to ask."""
+    """What stops a local selector: no local server of its type to ask."""
     provider = selector.partition("/")[0]
     if provider in LOCAL_MODEL_PROVIDERS and not any(
         entry["provider"] == provider for entry in local_servers
     ):
-        return "Add a local server of this model's type under Add local."
+        return "No local server of this model's type is added: add one under Settings › Providers."
     return None
 
 
 def _adaptation_problem(values):
     if not values["adapt"]:
         return None
-    for entry in values["local_servers"]:
-        try:
-            normalize_local_server(entry["server"])
-        except ValueError as exc:
-            return str(exc)
     # Each local model's requests go to an added server of its type: the
     # text model's, the checking model's, and the figure model's.
     for key, used in (
@@ -9487,35 +9697,35 @@ def _adaptation_problem(values):
             )
     elif provider == OPENAI_MODEL_PROVIDER:
         if read_openai_credentials() is None:
-            return ("Sign in with OpenAI in Providers, under Adapt the text for listening, "
+            return ("Sign in with OpenAI under Settings › Providers "
                     "to use this model.")
     elif provider == ANTHROPIC_MODEL_PROVIDER:
         if read_anthropic_key() is None:
-            return ("Add an Anthropic API key in Providers, under Adapt the text for "
-                    "listening, to use this model.")
+            return ("Add an Anthropic API key under Settings › Providers "
+                    "to use this model.")
     elif provider == OPENAI_API_MODEL_PROVIDER:
         if read_openai_api_key() is None:
-            return ("Add an OpenAI API key in Providers, under Adapt the text for "
-                    "listening, to use this model.")
+            return ("Add an OpenAI API key under Settings › Providers "
+                    "to use this model.")
     elif provider == GEMINI_MODEL_PROVIDER:
         if read_gemini_key() is None:
-            return ("Add a Google Gemini API key in Providers, under Adapt the text for "
-                    "listening, to use this model.")
+            return ("Add a Google Gemini API key under Settings › Providers "
+                    "to use this model.")
     elif provider == DEEPSEEK_MODEL_PROVIDER:
         if read_deepseek_key() is None:
-            return ("Add a DeepSeek API key in Providers, under Adapt the text for "
-                    "listening, to use this model.")
+            return ("Add a DeepSeek API key under Settings › Providers "
+                    "to use this model.")
     elif provider == XAI_MODEL_PROVIDER:
         credentials = read_xai_credentials()
         if credentials is None:
-            return ("Sign in to xAI in Providers, under Adapt the text for listening, "
+            return ("Sign in to xAI under Settings › Providers "
                     "to use this model.")
         if credentials["failed"]:
-            return f"{XAI_SIGN_IN_AGAIN} in Providers, under Adapt the text for listening, to use this model."
+            return f"{XAI_SIGN_IN_AGAIN} under Settings › Providers to use this model."
     elif provider == XAI_API_MODEL_PROVIDER:
         if read_xai_api_key() is None:
-            return ("Add an xAI API key in Providers, under Adapt the text for "
-                    "listening, to use this model.")
+            return ("Add an xAI API key under Settings › Providers "
+                    "to use this model.")
     elif provider == CLAUDE_CODE_MODEL_PROVIDER:
         signed_in, status = claude_code_status()
         if not signed_in:
@@ -9693,14 +9903,9 @@ def normalize(state):
     source = audiobook.get("source")
     if source not in DOCUMENT_SOURCES:
         source = "url" if stored_text(audiobook, "source_url").strip() else "saved"
-    local_servers = audiobook.get("local_servers")
-    if not isinstance(local_servers, list):
-        # A browser from before the list kept one server; it becomes the first.
-        local_servers = [{
-            "server": audiobook.get("local_server"),
-            "provider": audiobook.get("local_provider"),
-            "vision": audiobook.get("local_vision"),
-        }]
+    # Local model servers are server-wide (Settings › Providers): the local
+    # servers a browser once added for itself ("local_servers", and before
+    # that "local_server") are no longer read, and drop out of its cookie.
     return {
         "schema": STATE_SCHEMA_VERSION,
         "tab": tab,
@@ -9733,9 +9938,6 @@ def normalize(state):
             "url_document": stored_text(audiobook, "url_document"),
             "adapt": audiobook.get("adapt") is not False,
             "model": stored_text(audiobook, "model"),
-            # Added in Add local: each server's address, type, and whether
-            # its models see images, so figures go to them as images.
-            "local_servers": normalize_local_servers(local_servers),
             # Error correction of descriptions: off unless ticked, since a
             # checker of the writer's own model fixed none of the review's
             # wrong descriptions (R26); its checking model, the text model when empty.
@@ -9841,8 +10043,8 @@ def values_of(state, tts_models, storage):
         "download_name": audiobook["download_name"].strip() if source_url else "",
         "adapt": audiobook["adapt"],
         "model": audiobook["model"].strip(),
-        # The server's registered local servers, then the browser's own.
-        "local_servers": local_servers_of(audiobook["local_servers"]),
+        # The local model servers of Settings › Providers, as the job starts.
+        "local_servers": local_endpoints(),
         "verify": audiobook["verify"],
         "verify_model": audiobook["verify_model"].strip(),
         "interpret_figures": audiobook["interpret_figures"],
@@ -10402,13 +10604,24 @@ def chat_sees_images(selector, local_servers):
     return False, "This model can't take pictures in Chat."
 
 
-def model_badge(selector):
+# A cloud model's provider and how this server reaches it, as its badge says.
+CLOUD_CONNECTIONS = {
+    OPENAI_MODEL_PROVIDER: ("OpenAI", "Subscription"), OPENAI_API_MODEL_PROVIDER: ("OpenAI", "API key"),
+    CLAUDE_CODE_MODEL_PROVIDER: ("Anthropic", "Subscription"), ANTHROPIC_MODEL_PROVIDER: ("Anthropic", "API key"),
+    GEMINI_MODEL_PROVIDER: ("Google", "API key"), DEEPSEEK_MODEL_PROVIDER: ("DeepSeek", "API key"),
+    XAI_MODEL_PROVIDER: ("xAI", "Subscription"), XAI_API_MODEL_PROVIDER: ("xAI", "API key"),
+}
+
+
+def model_badge(selector, endpoint=""):
     """Where a model runs, as the page labels it before anything is sent:
-    "Local", or "API: <provider>"."""
+    "Local · <the local server's name>" ("Local" when it is not known), or
+    "Cloud: <provider> · Subscription" or "… · API key"."""
     provider = selector.partition("/")[0]
     if provider in LOCAL_MODEL_PROVIDERS:
-        return "Local"
-    return f"API: {CHAT_PROVIDER_NAMES.get(provider, provider)}"
+        return f"Local · {endpoint}" if endpoint else "Local"
+    name, way = CLOUD_CONNECTIONS.get(provider, (provider, "API key"))
+    return f"Cloud: {name} · {way}"
 
 
 def chat_attachment(storage, book, passages, selector, about, local_servers):
@@ -12597,9 +12810,10 @@ class PaperRun(Run):
         self.output_path = Path(output_path)
         self.encoding = encoding
         self.model = model
-        # The browser's added local servers; each local model the run uses is
-        # routed to the first that offers it, once (route_of()).
-        self.local_servers = normalize_local_servers(list(local_servers))
+        # The local servers of Settings › Providers as the job started; each
+        # local model the run uses is routed to the first that offers it,
+        # once (route_of()).
+        self.local_servers = [dict(entry) for entry in local_servers]
         self.local_routes = {}
         self.route_lock = threading.Lock()
         self.in_flight = int(in_flight)
@@ -14704,6 +14918,8 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "airdrop": airdrop_available(),
                         "manage_workers": self.local_client(),
+                        # Settings › Providers: the same rule as machines.
+                        "manage_providers": self.local_client(),
                         # Hilde's own certificate authority, to install on a device.
                         "certificate": self.authority() is not None,
                     },
@@ -14896,6 +15112,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.save_draft(
                 str(body.get("draft", "")), str(body.get("name", "")).strip()
             )
+        # Settings › Providers: only a browser on the server's machine adds,
+        # changes, signs in to, or removes a provider; others read.
+        if (route.startswith("/api/providers/") or re.fullmatch(
+            r"/api/paper/[a-z-]+/(login|cancel|remove|key|use)", route
+        )) and not self.local_client():
+            return self.fail(HTTPStatus.FORBIDDEN, PROVIDERS_LOCAL_ONLY)
+        if route == "/api/providers/local/save":
+            try:
+                save_local_endpoint(str(body.get("original") or ""), body.get("name"),
+                                    str(body.get("address") or ""), body.get("images"))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            except RuntimeError as exc:
+                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            return self.reply_paper_catalog()
+        if route == "/api/providers/local/remove":
+            try:
+                remove_local_endpoint(str(body.get("name") or ""))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return self.reply_paper_catalog()
         if route == "/api/paper/openai/login":
             return self.reply(
                 HTTPStatus.ACCEPTED,
@@ -14906,6 +15143,10 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 self.server.openai_login.stop(),
             )
+        if route == "/api/paper/openai/remove":
+            self.server.openai_login.stop()
+            remove_openai_sign_in()
+            return self.reply_paper_catalog()
         if route == "/api/paper/xai/login":
             return self.reply(HTTPStatus.ACCEPTED, self.server.xai_login.start())
         if route == "/api/paper/xai/cancel":
@@ -14913,6 +15154,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/paper/xai/remove":
             self.server.xai_login.stop()
             remove_xai_sign_in()
+            return self.reply_paper_catalog()
+        # Claude Code keeps its own sign-in: Hilde only starts or stops using it.
+        if route in ("/api/paper/claude-code/use", "/api/paper/claude-code/remove"):
+            use_claude_code(route.endswith("/use"))
             return self.reply_paper_catalog()
         # Providers an API key reaches: check and keep a key, or remove it.
         key_provider = {
@@ -14933,32 +15178,6 @@ class Handler(BaseHTTPRequestHandler):
         if key_provider and route.endswith("/remove"):
             key_provider[1]().unlink(missing_ok=True)
             return self.reply_paper_catalog()
-        if route == "/api/paper/local/check":
-            try:
-                local_server = normalize_local_server(body.get("server", ""))
-            except ValueError as exc:
-                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
-            if not local_server:
-                return self.fail(
-                    HTTPStatus.BAD_REQUEST,
-                    "Enter a local model server IP and port.",
-                )
-            provider = body.get("provider")
-            if provider not in LOCAL_MODEL_PROVIDERS:
-                return self.fail(HTTPStatus.BAD_REQUEST, "Choose the server type.")
-            added = normalize(read_state_cookie(self.headers.get("Cookie")))["audiobook"]["local_servers"]
-            if len(added) >= LOCAL_SERVERS_MAX and all(entry["server"] != local_server for entry in added):
-                return self.fail(
-                    HTTPStatus.BAD_REQUEST,
-                    f"Add at most {LOCAL_SERVERS_MAX} local servers; remove one first.",
-                )
-            # Only the server being added is asked; the page then adds it to
-            # the browser's list and asks for the whole catalog.
-            try:
-                local_model_names(local_server, provider)
-            except RuntimeError as exc:
-                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
-            return self.reply(HTTPStatus.OK, {"server": local_server, "provider": provider})
         if route == "/api/sync":
             state = normalize(body.get("state", {}))
             try:
@@ -15422,9 +15641,8 @@ class Handler(BaseHTTPRequestHandler):
             about = chat_about(about, passages)
         except ValueError as exc:
             return None, (HTTPStatus.BAD_REQUEST, str(exc))
-        state = normalize(read_state_cookie(self.headers.get("Cookie")))
         return chat_attachment(
-            self.server.storage, book, passages, model, about, local_servers_of(state["audiobook"]["local_servers"]),
+            self.server.storage, book, passages, model, about, local_endpoints(),
         ), None
 
     def chat_context_manifest(self, body):
@@ -15456,9 +15674,8 @@ class Handler(BaseHTTPRequestHandler):
             attachment, failure = self.chat_attach(book, model, body["about"])
             if failure:
                 return self.fail(*failure)
-        state = normalize(read_state_cookie(self.headers.get("Cookie")))
         turn = ChatTurn(
-            self.server.storage, book, text, model, local_servers_of(state["audiobook"]["local_servers"]), attachment,
+            self.server.storage, book, text, model, local_endpoints(), attachment,
             self.server.search_server,
         )
         try:
@@ -15519,10 +15736,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def reply_paper_catalog(self, refresh=False):
-        """Answer with the adaptation models this browser can choose from."""
-        state = normalize(read_state_cookie(self.headers.get("Cookie")))
+        """Answer with the models every browser can choose from."""
         try:
-            catalog = paper_model_catalog(local_servers_of(state["audiobook"]["local_servers"]), refresh)
+            catalog = paper_model_catalog(local_endpoints(), refresh)
         except (RuntimeError, ValueError) as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, catalog)
@@ -15979,7 +16195,7 @@ PAGE = r"""<!doctype html>
            of a selected tab or a switch that is on, and the reading
            highlight (6.6:1 on the ground);
            green --local: the Local badge (with a chip) and Runs on Local;
-           purple --api: the API badge (with a cloud) and Runs on API;
+           purple --cloud: the Cloud badge (with a cloud) and Runs on Cloud;
            gray --off: disabled and "not running" items (the selection
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
@@ -15988,7 +16204,7 @@ PAGE = r"""<!doctype html>
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
-        --local:#3fb950; --api:#c678dd; --off:#8b8f98;
+        --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
         --bad:#e5534b; --radius:12px; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -16191,7 +16407,7 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
    nothing that looks pressable: no field, border, hover, or pointer. */
 .picker-box.static { cursor:default; background:none; border-color:transparent; padding-left:0; }
 .picker-kind.kind-local .kind-value { color:var(--local); }
-.picker-kind.kind-api .kind-value { color:var(--api); }
+.picker-kind.kind-cloud .kind-value { color:var(--cloud); }
 .kind-value, .kind-icon { display:inline-flex; align-items:center; gap:6px; }
 /* A long name wraps, then is cut short after two lines; the badge stays. */
 .picker-name { display:-webkit-box; min-width:0; overflow:hidden; overflow-wrap:anywhere;
@@ -16230,7 +16446,7 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
                                                text-underline-offset:3px; }
 .picker-option .kind-icon { margin-right:6px; }
 .picker-option[data-kind=local] .picker-option-name { color:var(--local); }
-.picker-option[data-kind=api] .picker-option-name { color:var(--api); }
+.picker-option[data-kind=cloud] .picker-option-name { color:var(--cloud); }
 .picker-main { display:grid; flex:1 1 auto; min-width:0; }
 .picker-option-name { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; font-size:15px;
                       overflow-wrap:anywhere; }
@@ -16524,7 +16740,7 @@ html:has(main.reading) { scrollbar-gutter:stable; }
          font-size:13px; font-weight:600; line-height:1.4; white-space:nowrap; }
 /* Badge text is its colour lightened by 30% white, so it keeps 4.5:1 on every ground it sits on. */
 .badge.local { color:color-mix(in srgb, var(--local) 70%, #fff); background:color-mix(in srgb, var(--local) 15%, transparent); }
-.badge.api { color:color-mix(in srgb, var(--api) 70%, #fff); background:color-mix(in srgb, var(--api) 15%, transparent); }
+.badge.cloud { color:color-mix(in srgb, var(--cloud) 70%, #fff); background:color-mix(in srgb, var(--cloud) 15%, transparent); }
 .badge:empty { display:none; }
 .chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
@@ -16730,22 +16946,23 @@ dialog { min-width:min(560px,92vw); padding:20px; background:var(--surface);
 dialog::backdrop { background:rgba(0,0,0,.6); }
 dialog h2 { margin:0 0 12px; font-size:16px; }
 dialog h3 { margin:0 0 6px; font-size:15px; }
-/* Providers: one row each, its status and Connect; the Connect dialog shows
-   one provider's ways in. */
+/* Settings › Providers: one row per local server or cloud connection, with
+   Edit and Delete; the provider dialog adds or edits one. */
+.provider-rows { display:grid; margin:6px 0 10px; }
 .provider-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; padding:10px 0;
                 border-bottom:1px solid var(--line); }
 .provider-row-text { display:grid; gap:2px; flex:1; min-width:0; overflow-wrap:anywhere; }
-.provider + .provider, .provider-list + .provider { margin-top:18px; padding-top:18px; }
-.provider + .provider { border-top:1px solid var(--line); }
-.connect-method + .connect-method { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+.provider-row-text .tags { display:flex; flex-wrap:wrap; gap:4px 10px; }
+.provider-row .actions { display:flex; gap:8px; }
+.provider-state[data-state=unreachable] { color:var(--off); }
+.provider-kind { display:flex; gap:20px; margin:0 0 14px; }
+.provider-part > .note:first-child { margin-bottom:10px; }
+.subscription-line { margin:14px 0 0; }
+.connect-provider { margin-top:14px; }
+.connect-method + .connect-method, .subscription-line + .connect-method { margin-top:18px; padding-top:18px;
+  border-top:1px solid var(--line); }
 .connect-method p { margin:6px 0; }
-/* Connect in a model picker lands on Claude Code's section; other providers open their Connect dialog. */
-.provider:focus { outline:2px solid var(--accent-light); outline-offset:6px; border-radius:4px; }
-#paper-providers-dialog, #provider-connect-dialog { width:min(620px,92vw); }
-/* Add local: one line per added server. */
-.local-server { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:8px 0;
-                border-bottom:1px solid var(--line); }
-.local-server .grow { flex:1; }
+#provider-dialog { width:min(620px,92vw); }
 /* One click selects the whole sign-in code. */
 #paper-openai-code { user-select:all; -webkit-user-select:all; font-size:1.1em; }
 @media (max-width:640px) {
@@ -16946,6 +17163,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <p id="nodes-applies" class="applies hidden">Applies now: a running audiobook keeps its
           narration workers</p>
       </section>
+    </fieldset>
+    <fieldset id="settings-providers" tabindex="-1">
+      <legend>Providers</legend>
+      <p id="providers-read-only" class="note server-only hidden">Read-only from this device. Manage
+        providers from a browser on the Hilde server.</p>
+      <p class="note">The model servers and cloud accounts every browser's model picker offers. This
+        server keeps them.</p>
+      <div id="provider-rows" class="provider-rows"></div>
+      <div class="line"><button id="providers-add" type="button" class="hidden"
+        onclick="openProviderDialog({ kind:'local' })">Add</button></div>
     </fieldset>
     <fieldset id="settings-models">
       <legend>Models and connection</legend>
@@ -17424,8 +17651,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div id="chat-problem" class="chat-problem hidden" role="status">
             <p id="chat-problem-text"></p>
             <div id="chat-add-model" class="line hidden">
-              <button type="button" onclick="openPaperProviders()">Providers</button>
-              <button type="button" onclick="openPaperLocal()">Add local</button>
+              <button type="button" class="link" onclick="openProvidersPanel()">Providers…</button>
             </div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
@@ -17545,192 +17771,192 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   </div>
 </dialog>
 
-<dialog id="paper-providers-dialog" aria-labelledby="providers-title">
-  <h2 id="providers-title">Providers</h2>
-  <p class="note">Cloud models this server may use. Sign-ins and API keys are kept on this server, for
-    every browser.</p>
-  <div id="provider-list" class="provider-list"></div>
-  <section class="provider" id="provider-claude-code" tabindex="-1">
-    <h3>Claude Code</h3>
-    <p class="note">Uses your Claude subscription through your own Claude Code: this
-      server runs the claude command for each passage, with its tools off, and
-      Claude Code keeps its sign-in to itself. Install Claude Code on this server
-      and sign in by running claude once in a terminal. Passages count against
-      your plan's usage limits.</p>
-    <div class="row"><label>Status:</label><div>
-      <strong id="paper-claude-code-status"></strong>
-    </div></div>
-    <div class="footer">
-      <span class="grow"></span>
-      <button onclick="refreshPaperModels(true).then(sync)">Check again</button>
-    </div>
-  </section>
-  <div class="footer">
-    <span class="grow"></span>
-    <button onclick="closePaperProviders()">Close</button>
+<dialog id="provider-dialog" aria-labelledby="provider-title" onclose="stopSignInPolls()">
+  <h2 id="provider-title">Add a provider</h2>
+  <div class="provider-kind" role="radiogroup" aria-label="Where its models run">
+    <label class="check"><input id="provider-kind-local" type="radio" name="provider-kind" value="local"
+      onchange="showProviderKind()"> Local</label>
+    <label class="check"><input id="provider-kind-cloud" type="radio" name="provider-kind" value="cloud"
+      onchange="showProviderKind()"> Cloud</label>
   </div>
-</dialog>
-
-<dialog id="provider-connect-dialog" aria-labelledby="connect-title">
-  <h2 id="connect-title">Connect</h2>
-  <section class="connect-provider" data-provider="openai">
-    <div class="connect-method" data-method="chatgpt">
-      <h3>Sign in with ChatGPT (your membership)</h3>
-      <p class="note">Uses your ChatGPT plan, with no API key. This server keeps the sign-in in
-        ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
-      <p><strong id="paper-openai-status"></strong></p>
-      <div id="paper-openai-device" class="hidden">
-        <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
-        <p>Enter code: <code id="paper-openai-code"></code>
-          <button id="paper-openai-copy" type="button" class="link" onclick="copySignInCode('openai')">Copy</button></p>
-      </div>
-      <div class="footer">
-        <button id="paper-openai-cancel" class="hidden" onclick="cancelSignIn('openai')">Cancel login</button>
-        <span class="grow"></span>
-        <button id="paper-openai-start" onclick="startSignIn('openai')">Sign in with ChatGPT</button>
-      </div>
-    </div>
-    <div class="connect-method" data-method="api-key">
-      <h3>API key</h3>
-      <p class="note">From platform.openai.com, billed per use. This server keeps it in
-        ~/.hilde/openai-api.json, readable only by its user.</p>
-      <div class="row"><label for="paper-openai-api-key">API key:</label><div class="line">
-        <input id="paper-openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
-      </div></div>
-      <div class="row"><label>Status:</label><div><strong id="paper-openai-api-status"></strong></div></div>
-      <div class="footer">
-        <button id="paper-openai-api-remove" onclick="removePaperKey('openai-api')">Remove</button>
-        <span class="grow"></span>
-        <button id="paper-openai-api-save" onclick="savePaperKey('openai-api')">Save key</button>
-      </div>
-    </div>
-  </section>
-  <section class="connect-provider" data-provider="gemini">
-    <div class="connect-method" data-method="api-key">
-      <h3>API key</h3>
-      <p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Free API key at Google AI
-        Studio</a></p>
-      <p class="note">This server keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
-      <div class="row"><label for="paper-gemini-key">API key:</label><div class="line">
-        <input id="paper-gemini-key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
-      </div></div>
-      <div class="row"><label>Status:</label><div><strong id="paper-gemini-status"></strong></div></div>
-      <div class="footer">
-        <button id="paper-gemini-remove" onclick="removePaperKey('gemini')">Remove</button>
-        <span class="grow"></span>
-        <button id="paper-gemini-save" onclick="savePaperKey('gemini')">Save key</button>
-      </div>
-    </div>
-  </section>
-  <section class="connect-provider" data-provider="anthropic">
-    <div class="connect-method" data-method="api-key">
-      <h3>API key</h3>
-      <p class="note">From the Claude Console, billed per use. This server keeps it in
-        ~/.hilde/anthropic.json, readable only by its user. A Claude subscription works through
-        Claude Code, under All providers.</p>
-      <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
-        <input id="paper-anthropic-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
-      </div></div>
-      <div class="row"><label>Status:</label><div><strong id="paper-anthropic-status"></strong></div></div>
-      <div class="footer">
-        <button id="paper-anthropic-remove" onclick="removePaperKey('anthropic')">Remove</button>
-        <span class="grow"></span>
-        <button id="paper-anthropic-save" onclick="savePaperKey('anthropic')">Save key</button>
-      </div>
-    </div>
-  </section>
-  <section class="connect-provider" data-provider="deepseek">
-    <div class="connect-method" data-method="api-key">
-      <h3>API key</h3>
-      <p class="note">From platform.deepseek.com, billed per use. This server keeps it in
-        ~/.hilde/deepseek.json, readable only by its user.</p>
-      <div class="row"><label for="paper-deepseek-key">API key:</label><div class="line">
-        <input id="paper-deepseek-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
-      </div></div>
-      <div class="row"><label>Status:</label><div><strong id="paper-deepseek-status"></strong></div></div>
-      <div class="footer">
-        <button id="paper-deepseek-remove" onclick="removePaperKey('deepseek')">Remove</button>
-        <span class="grow"></span>
-        <button id="paper-deepseek-save" onclick="savePaperKey('deepseek')">Save key</button>
-      </div>
-    </div>
-  </section>
-  <section class="connect-provider" data-provider="xai">
-    <div class="connect-method" data-method="xai-sign-in">
-      <h3>Sign in with xAI (your SuperGrok or X Premium+ plan)</h3>
-      <p class="note">Uses your xAI account, with no API key: xAI's own page asks you to approve. This
-        server keeps the sign-in in ~/.hilde/xai.json, encrypted and readable only by its user, and
-        renews it itself.</p>
-      <p><strong id="paper-xai-status"></strong></p>
-      <p id="paper-xai-problem" class="problem hidden" role="alert"></p>
-      <div id="paper-xai-device" class="hidden">
-        <p><a id="paper-xai-link" target="_blank" rel="noopener">Open xAI sign-in</a></p>
-        <p>Code: <code id="paper-xai-code"></code>
-          <button id="paper-xai-copy" type="button" class="link" onclick="copySignInCode('xai')">Copy</button></p>
-      </div>
-      <div class="footer">
-        <button id="paper-xai-cancel" class="hidden" onclick="cancelSignIn('xai')">Cancel login</button>
-        <button id="paper-xai-remove" class="hidden" onclick="signOutXai()">Sign out</button>
-        <span class="grow"></span>
-        <button id="paper-xai-use-key" class="hidden" onclick="useXaiKeyInstead()">Use an API key instead</button>
-        <button id="paper-xai-start" onclick="startSignIn('xai')">Sign in with xAI</button>
-      </div>
-    </div>
-    <div class="connect-method" data-method="api-key">
-      <h3>API key</h3>
-      <p class="note">From console.x.ai, billed per use. This server keeps it in
-        ~/.hilde/xai-api.json, readable only by its user.</p>
-      <div class="row"><label for="paper-xai-api-key">API key:</label><div class="line">
-        <input id="paper-xai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…">
-      </div></div>
-      <div class="row"><label>Status:</label><div><strong id="paper-xai-api-status"></strong></div></div>
-      <div class="footer">
-        <button id="paper-xai-api-remove" onclick="removePaperKey('xai-api')">Remove</button>
-        <span class="grow"></span>
-        <button id="paper-xai-api-save" onclick="savePaperKey('xai-api')">Save key</button>
-      </div>
-    </div>
-  </section>
-  <div class="footer">
-    <button type="button" class="link" onclick="openPaperProviders()">All providers</button>
-    <span class="grow"></span>
-    <button onclick="closeProviderConnect()">Close</button>
-  </div>
-</dialog>
-
-<dialog id="paper-local-dialog">
-  <h2>Local model servers</h2>
-  <p class="note">The models of every server added here appear in each model list. A
-    model two servers offer runs on the one added first.</p>
-  <div id="paper-local-list"></div>
-  <section class="provider">
-    <h3>Add a server</h3>
-    <div class="row"><label for="paper-local-type">Server type:</label><div class="line">
-      <select id="paper-local-type">
-        <option value="" disabled>Choose the server type</option>
-        <option value="lm-studio">OpenAI-compatible (any server with /v1/models)</option>
-        <option value="ollama">Ollama</option>
-      </select>
+  <section id="provider-local" class="provider-part">
+    <p class="note">A model server on one of your machines that answers the OpenAI-compatible
+      interface (/v1/models). Its models appear in every browser's model picker.</p>
+    <div class="row"><label for="provider-local-name">Name:</label><div class="line">
+      <input id="provider-local-name" type="text" maxlength="32" autocomplete="off"
+        placeholder="The machine it runs on">
     </div></div>
-    <div class="row"><label for="paper-local-url">Server:</label><div class="line">
-      <input id="paper-local-url" type="text" placeholder="host:port">
+    <div class="row"><label for="provider-local-address">Address:</label><div class="line">
+      <input id="provider-local-address" type="text" autocomplete="off" spellcheck="false" placeholder="host:port">
     </div></div>
     <div class="row"><span></span><div class="line">
       <div class="field">
-        <label class="check"><input id="paper-local-vision" type="checkbox"> This model sees images</label>
-        <span class="note">Figures and equations go to its models as images. Leave this off
-          for a text-only model: it reads the text extracted from each figure instead.</span>
+        <label class="check"><input id="provider-local-images" type="checkbox"> Models here read images</label>
+        <span class="note">Figures go to its models as pictures. Leave this off for text-only models:
+          they read the text extracted from each figure instead.</span>
       </div>
     </div></div>
-    <div id="paper-local-status" class="note"></div>
+    <p id="provider-local-startup" class="note hidden">Set at startup (--local-server): only its name
+      changes here.</p>
+    <p id="provider-local-status" class="note" role="status"></p>
     <div class="footer">
       <span class="grow"></span>
-      <button id="paper-local-save" class="primary" onclick="savePaperLocal()">Check and add</button>
+      <button id="provider-local-save" class="primary" type="button" onclick="saveLocalProvider()">Check and
+        save</button>
     </div>
+  </section>
+  <section id="provider-cloud" class="provider-part hidden">
+    <div class="row"><label for="provider-cloud-name">Provider:</label><div class="line">
+      <select id="provider-cloud-name" onchange="showCloudProvider()">
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+        <option value="gemini">Google</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="xai">xAI</option>
+      </select>
+    </div></div>
+    <section class="connect-provider" data-provider="openai">
+      <div class="connect-method" data-method="api-key">
+        <h3>API key</h3>
+        <p class="note">From platform.openai.com, billed per use. This server keeps it in
+          ~/.hilde/openai-api.json, readable only by its user.</p>
+        <div class="row"><label for="paper-openai-api-key">API key:</label><div class="line">
+          <input id="paper-openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+        </div></div>
+        <div class="row"><label>Status:</label><div><strong id="paper-openai-api-status"></strong></div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button id="paper-openai-api-save" type="button" onclick="savePaperKey('openai-api')">Save key</button>
+        </div>
+      </div>
+      <p class="line subscription-line"><span class="note">or</span>
+        <button type="button" data-subscription="openai" onclick="showSubscription('openai')">Subscription</button>
+        <span class="note">your ChatGPT plan</span></p>
+      <div class="connect-method subscription hidden" data-method="subscription">
+        <h3>Sign in with ChatGPT (your plan)</h3>
+        <p class="note">Uses your ChatGPT plan, with no API key. This server keeps the sign-in in
+          ~/.hilde/openai.json, readable only by its user, and renews it itself.</p>
+        <p><strong id="paper-openai-status"></strong></p>
+        <div id="paper-openai-device" class="hidden">
+          <p><a id="paper-openai-link" target="_blank" rel="noopener">Open sign-in</a></p>
+          <p>Enter code: <code id="paper-openai-code"></code>
+            <button id="paper-openai-copy" type="button" class="link" onclick="copySignInCode('openai')">Copy</button></p>
+        </div>
+        <div class="footer">
+          <button id="paper-openai-cancel" type="button" class="hidden" onclick="cancelSignIn('openai')">Cancel
+            login</button>
+          <span class="grow"></span>
+          <button id="paper-openai-start" type="button" onclick="startSignIn('openai')">Sign in with ChatGPT</button>
+        </div>
+      </div>
+    </section>
+    <section class="connect-provider" data-provider="anthropic">
+      <div class="connect-method" data-method="api-key">
+        <h3>API key</h3>
+        <p class="note">From the Claude Console, billed per use. This server keeps it in
+          ~/.hilde/anthropic.json, readable only by its user.</p>
+        <div class="row"><label for="paper-anthropic-key">API key:</label><div class="line">
+          <input id="paper-anthropic-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…">
+        </div></div>
+        <div class="row"><label>Status:</label><div><strong id="paper-anthropic-status"></strong></div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button id="paper-anthropic-save" type="button" onclick="savePaperKey('anthropic')">Save key</button>
+        </div>
+      </div>
+      <p class="line subscription-line"><span class="note">or</span>
+        <button type="button" data-subscription="anthropic" onclick="showSubscription('anthropic')">Subscription</button>
+        <span class="note">your Claude plan, through Claude Code</span></p>
+      <div class="connect-method subscription hidden" data-method="subscription">
+        <h3>Claude Code (your Claude plan)</h3>
+        <p class="note">Uses your Claude subscription through your own Claude Code: this
+          server runs the claude command for each passage, with its tools off, and
+          Claude Code keeps its sign-in to itself. Install Claude Code on this server
+          and sign in by running claude once in a terminal. Passages count against
+          your plan's usage limits.</p>
+        <div class="row"><label>Status:</label><div>
+          <strong id="paper-claude-code-status"></strong>
+        </div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button type="button" onclick="useClaudeCode()">Check again</button>
+        </div>
+      </div>
+    </section>
+    <section class="connect-provider" data-provider="gemini">
+      <div class="connect-method" data-method="api-key">
+        <h3>API key</h3>
+        <p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Free API key at Google AI
+          Studio</a></p>
+        <p class="note">This server keeps it in ~/.hilde/gemini.json, readable only by its user.</p>
+        <div class="row"><label for="paper-gemini-key">API key:</label><div class="line">
+          <input id="paper-gemini-key" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+        </div></div>
+        <div class="row"><label>Status:</label><div><strong id="paper-gemini-status"></strong></div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button id="paper-gemini-save" type="button" onclick="savePaperKey('gemini')">Save key</button>
+        </div>
+      </div>
+    </section>
+    <section class="connect-provider" data-provider="deepseek">
+      <div class="connect-method" data-method="api-key">
+        <h3>API key</h3>
+        <p class="note">From platform.deepseek.com, billed per use. This server keeps it in
+          ~/.hilde/deepseek.json, readable only by its user.</p>
+        <div class="row"><label for="paper-deepseek-key">API key:</label><div class="line">
+          <input id="paper-deepseek-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+        </div></div>
+        <div class="row"><label>Status:</label><div><strong id="paper-deepseek-status"></strong></div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button id="paper-deepseek-save" type="button" onclick="savePaperKey('deepseek')">Save key</button>
+        </div>
+      </div>
+    </section>
+    <section class="connect-provider" data-provider="xai">
+      <div class="connect-method" data-method="api-key">
+        <h3>API key</h3>
+        <p class="note">From console.x.ai, billed per use. This server keeps it in
+          ~/.hilde/xai-api.json, readable only by its user.</p>
+        <div class="row"><label for="paper-xai-api-key">API key:</label><div class="line">
+          <input id="paper-xai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…">
+        </div></div>
+        <div class="row"><label>Status:</label><div><strong id="paper-xai-api-status"></strong></div></div>
+        <div class="footer">
+          <span class="grow"></span>
+          <button id="paper-xai-api-save" type="button" onclick="savePaperKey('xai-api')">Save key</button>
+        </div>
+      </div>
+      <p class="line subscription-line"><span class="note">or</span>
+        <button type="button" data-subscription="xai" onclick="showSubscription('xai')">Subscription</button>
+        <span class="note">your SuperGrok or X Premium+ plan</span></p>
+      <div class="connect-method subscription hidden" data-method="subscription">
+        <h3>Sign in with xAI (your SuperGrok or X Premium+ plan)</h3>
+        <p class="note">Uses your xAI account, with no API key: xAI's own page asks you to approve. This
+          server keeps the sign-in in ~/.hilde/xai.json, encrypted and readable only by its user, and
+          renews it itself.</p>
+        <p><strong id="paper-xai-status"></strong></p>
+        <p id="paper-xai-problem" class="problem hidden" role="alert"></p>
+        <div id="paper-xai-device" class="hidden">
+          <p><a id="paper-xai-link" target="_blank" rel="noopener">Open xAI sign-in</a></p>
+          <p>Code: <code id="paper-xai-code"></code>
+            <button id="paper-xai-copy" type="button" class="link" onclick="copySignInCode('xai')">Copy</button></p>
+        </div>
+        <div class="footer">
+          <button id="paper-xai-cancel" type="button" class="hidden" onclick="cancelSignIn('xai')">Cancel
+            login</button>
+          <span class="grow"></span>
+          <button id="paper-xai-use-key" type="button" class="hidden" onclick="useXaiKeyInstead()">Use an API key
+            instead</button>
+          <button id="paper-xai-start" type="button" onclick="startSignIn('xai')">Sign in with xAI</button>
+        </div>
+      </div>
+    </section>
   </section>
   <div class="footer">
     <span class="grow"></span>
-    <button onclick="closePaperLocal()">Close</button>
+    <button type="button" onclick="closeProviderDialog()">Close</button>
   </div>
 </dialog>
 
@@ -17816,16 +18042,16 @@ const paperKeyProviders = {
   "deepseek": { label:"DeepSeek", field:"deepseek", connected:false },
   "xai-api": { label:"xAI", field:"xai_api", connected:false },
 };
-// Providers under Providers, each with its own Connect dialog showing the
-// ways in Hilde supports for it: OpenAI the ChatGPT sign-in and an API key,
-// xAI the xAI sign-in and an API key, the others an API key (signIn: its
-// SIGN_INS name; key: its paperKeyProviders name).
+// The cloud providers of Settings › Providers, in its dialog's order, each
+// with the ways in Hilde supports for it: an API key (key: its
+// paperKeyProviders name) and, where the provider has one, a subscription
+// (subscription: a SIGN_INS name, or "claude-code" for Claude Code).
 const CONNECT_PROVIDERS = {
-  "openai":{ name:"OpenAI", key:"openai-api", signIn:"openai" },
-  "gemini":{ name:"Google (Gemini)", key:"gemini" },
-  "anthropic":{ name:"Anthropic (Claude)", key:"anthropic" },
+  "openai":{ name:"OpenAI", key:"openai-api", subscription:"openai" },
+  "anthropic":{ name:"Anthropic", key:"anthropic", subscription:"claude-code" },
+  "gemini":{ name:"Google", key:"gemini" },
   "deepseek":{ name:"DeepSeek", key:"deepseek" },
-  "xai":{ name:"xAI (Grok)", key:"xai-api", signIn:"xai" },
+  "xai":{ name:"xAI", key:"xai-api", subscription:"xai" },
 };
 let settingsOpen = false, voiceFormOpen = false;
 // Create shows a finished run's outcome above its steps while resultShown.
@@ -21052,10 +21278,12 @@ function jobTitle(job) {
   return book ? book.title : job.document;
 }
 
-// --- Where the work goes: Local, API: <provider>, or a speech server --------
-const PROVIDER_API = {
-  "openai-codex":"OpenAI", "openai":"OpenAI", "anthropic":"Anthropic", "gemini":"Google",
-  "deepseek":"DeepSeek", "claude-code":"Claude Code", "xai":"xAI", "xai-api":"xAI",
+// --- Where the work goes: Local · <server>, Cloud: <provider> · <way in>, or a speech server
+// A cloud selector's provider and how this server reaches it (model_badge()).
+const CLOUD_BADGES = {
+  "openai-codex":"OpenAI · Subscription", "openai":"OpenAI · API key", "claude-code":"Anthropic · Subscription",
+  "anthropic":"Anthropic · API key", "gemini":"Google · API key", "deepseek":"DeepSeek · API key",
+  "xai":"xAI · Subscription", "xai-api":"xAI · API key",
 };
 // A model selector as its short name, its badge, and whether the catalog
 // lists it (reachable now) and it reads images; null for none ("" once the
@@ -21072,11 +21300,11 @@ function textModel(selector, catalog = paperCatalog) {
   const preferred = Object.values(catalog.preferred || {}).flat().find((item) => item.selector === selector);
   const [provider, ...rest] = selector.split("/");
   const local = ["ollama", "lm-studio"].includes(provider);
-  const badge = local ? "Local" : `API: ${PROVIDER_API[provider] || provider}`;
+  const badge = local ? "Local" : `Cloud: ${CLOUD_BADGES[provider] || `${provider} · API key`}`;
   const short = preferred ? preferred.name : knownModelNames.get(selector) || rest.join("/").split("/").pop();
   return { selector, short, badge, listed:false, images:!local, size:preferred ? preferred.size : "" };
 }
-// Local (green, a chip) and API (purple, a cloud): never colour alone.
+// Local (green, a chip) and Cloud (purple, a cloud): never colour alone.
 const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" '
   + 'height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 1.5v2M10 1.5v2M6 '
   + '12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" stroke="currentColor" stroke-width="1.3"/></svg>';
@@ -21085,7 +21313,7 @@ const CLOUD_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden=
   + 'stroke-width="1.5" stroke-linejoin="round"/></svg>';
 function badgeElement(text, title = "") {
   const badge = document.createElement("span");
-  const kind = text === "Local" ? "local" : text.startsWith("API") ? "api" : "";
+  const kind = text.startsWith("Local") ? "local" : text.startsWith("Cloud") ? "cloud" : "";
   badge.className = `badge${kind ? ` ${kind}` : ""}`;
   if (kind) badge.insertAdjacentHTML("afterbegin", kind === "local" ? CHIP_ICON : CLOUD_ICON);
   badge.append(text);
@@ -21243,15 +21471,17 @@ function renderCreate() {
 // The shared model picker, one per model choice: the book's model at the top
 // of Create step 3, the figure and checking models (per option, on request),
 // Ask Hilde, and Settings' text model. Two boxes, each a dropdown with its
-// label outside: "Runs on", Local or API, and "Model", only models of that
+// label outside: "Runs on", Local or Cloud, and "Model", only models of that
 // kind; a small Change opens the model list. Switching Runs on sends
 // nothing: it opens the list of that kind, and closing it unchosen goes back.
 // Each list: the default (what a browser that chose nothing starts with,
 // marked Default), then this browser's recently used models, then the rest;
 // short names, a "reads images" tag, the full model code on hover; a search
-// box above more than PICKER_SEARCH_FROM models. Local adds each local
-// server that does not answer, disabled "server unreachable", and Add local;
-// API adds each provider not connected, greyed, with Connect. Arrow keys,
+// box above more than PICKER_SEARCH_FROM models. Local names each model with
+// its server ("<model> · <server name>") and adds each local server that does
+// not answer, disabled "server unreachable", and Add local; Cloud adds each
+// provider not connected, greyed, with Connect; both open the provider dialog
+// (Settings › Providers). Arrow keys,
 // Home and End move, Enter chooses, Escape closes it and returns to its box.
 // What a picker has chosen follows pickerChoice(): this browser's last used
 // model for it (its cookie field), else on first use the owner's preferred
@@ -21269,7 +21499,7 @@ const PICKERS = {
 };
 const MODEL_KINDS = {
   local:{ label:"Local", detail:"Open models on your own machines", all:"All local models" },
-  api:{ label:"API", detail:"Cloud providers, and open models a cloud host serves", all:"All API models" },
+  cloud:{ label:"Cloud", detail:"Cloud providers, and open models a cloud host serves", all:"All cloud models" },
 };
 const MODEL_SOURCES = {
   "openai-codex":"ChatGPT sign-in", "claude-code":"Claude Code subscription", "anthropic":"Anthropic API",
@@ -21297,7 +21527,7 @@ function noteRecentModel(selector) {
       JSON.stringify([selector, ...recentModels().filter((item) => item !== selector)].slice(0, 6)));
   } catch (_) { /* private mode: no recent list */ }
 }
-function modelKind(selector) { return ["ollama", "lm-studio"].includes(selector.split("/")[0]) ? "local" : "api"; }
+function modelKind(selector) { return ["ollama", "lm-studio"].includes(selector.split("/")[0]) ? "local" : "cloud"; }
 function pickerValue(name) {
   const [group, key] = PICKERS[name].field;
   return state[group][key] || "";
@@ -21351,7 +21581,7 @@ function pickerAlternatives(name, missing) {
     .map((item) => models.find((model) => model.selector === item.selector)).filter(usable);
   return [...preferred, ...models.filter((model) => usable(model) && !preferred.includes(model))];
 }
-// Local or API: a Runs on switch not yet followed by a choice, else the
+// Local or Cloud: a Runs on switch not yet followed by a choice, else the
 // chosen model's; Local before any choice.
 function pickerKind(name) {
   if (pickerKinds[name]) return pickerKinds[name];
@@ -21359,15 +21589,15 @@ function pickerKind(name) {
   return model && model.selector ? modelKind(model.selector) : "local";
 }
 function noModelAvailable() { return paperCatalog.loaded && !(paperCatalog.models || []).length; }
-// Runs on is API and no provider is connected: box 2 offers Connect a provider.
-function noApiModel() {
-  return paperCatalog.loaded && !(paperCatalog.models || []).some((model) => model.kind === "api");
+// Runs on is Cloud and no provider is connected: box 2 offers Connect a provider.
+function noCloudModel() {
+  return paperCatalog.loaded && !(paperCatalog.models || []).some((model) => model.kind === "cloud");
 }
 // Why an option's own model can't be used, as Create says it after the
 // option's short name, or "".
 function pickerBlock(name) {
   const { same, model, problem, unreachable } = pickerChoice(name);
-  if (pickerKind(name) === "api" && noApiModel()) return "no API connected";
+  if (pickerKind(name) === "cloud" && noCloudModel()) return "no cloud provider connected";
   if (unreachable) return `${unreachable.short} is unreachable`;
   // Following the text model: the text option says what is wrong with it.
   if (!model) return same ? "" : "no model chosen";
@@ -21454,7 +21684,7 @@ function mountPicker(host) {
   const pop = $(`${name}-picker-pop`), list = $(`${name}-picker-list`);
   for (const [id, mode] of [[`${name}-kind`, "kind"], [`${name}-picker`, "model"]]) {
     $(id).addEventListener("click", () => mode === "model" && needsProvider(name)
-      ? openPaperProviders() : togglePicker(name, mode));
+      ? openProviderDialog({ kind:"cloud" }) : togglePicker(name, mode));
     $(id).addEventListener("keydown", (event) => {
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
       event.preventDefault();
@@ -21463,10 +21693,10 @@ function mountPicker(host) {
   }
   // "-picker-change": "book-change" is Create step 1's own Change, which took this listener.
   $(`${name}-picker-change`).addEventListener("click", () => needsProvider(name)
-    ? openPaperProviders() : togglePicker(name, "model", true));
+    ? openProviderDialog({ kind:"cloud" }) : togglePicker(name, "model", true));
   $(`${name}-picker-none`).addEventListener("click", (event) => {
     const act = event.target.closest("[data-act]")?.dataset.act;
-    if (act === "local") openPaperLocal(); else if (act === "providers") openPaperProviders();
+    if (act) openProviderDialog({ kind:act === "local" ? "local" : "cloud" });
   });
   $(`${name}-alternatives`).addEventListener("click", (event) => {
     const button = event.target.closest("button");
@@ -21495,9 +21725,9 @@ function mountPicker(host) {
     event.stopPropagation();
   });
 }
-// Runs on is API with no provider connected: box 2 is "Connect a provider",
-// which opens Providers, in place of an empty list.
-function needsProvider(name) { return pickerKind(name) === "api" && noApiModel(); }
+// Runs on is Cloud with no provider connected: box 2 is "Connect a provider",
+// which opens the provider dialog on Cloud, in place of an empty list.
+function needsProvider(name) { return pickerKind(name) === "cloud" && noCloudModel(); }
 function renderPicker(name) {
   if (!state) return;
   const { same, model, problem, unreachable, how } = pickerChoice(name);
@@ -21509,7 +21739,7 @@ function renderPicker(name) {
     : none ? "No model available" : connect ? "Connect a provider" : "Choose a model";
   const kindBox = $(`${name}-kind`);
   kindBox.classList.toggle("kind-local", kind === "local");
-  kindBox.classList.toggle("kind-api", kind === "api");
+  kindBox.classList.toggle("kind-cloud", kind === "cloud");
   $(`${name}-kind-value`).replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
   const label = $(`${name}-model-name`);
   label.textContent = text;
@@ -21519,7 +21749,7 @@ function renderPicker(name) {
   const badge = badgeElement(shown ? shown.badge : "");
   badge.id = `${name}-badge`;
   $(`${name}-badge`).replaceWith(badge);
-  const why = connect ? "No API provider is connected yet."
+  const why = connect ? "No cloud provider is connected yet."
     // Settings names the preferred model on its own line (renderPreferredNote()).
     : problem || (model ? (name === "settings" ? "" : firstUseStatus(how))
       : none ? "" : paperCatalog.error || (how === "none" ? "Choose a model." : ""));
@@ -21536,7 +21766,7 @@ function firstUseStatus(how) {
   return how === "preferred" ? "Preferred on this server" : how === "only" ? "The only model available" : "";
 }
 const ALTERNATIVES_SHOWN = 4;
-// Under an unreachable model: one button per alternative (name, Local or API
+// Under an unreachable model: one button per alternative (name, Local or Cloud
 // badge, size when known), and More models… for the whole list. Nothing is
 // used until one is clicked.
 function renderAlternatives(name, models, host = $(`${name}-alternatives`), limit = ALTERNATIVES_SHOWN) {
@@ -21553,13 +21783,13 @@ function renderAlternatives(name, models, host = $(`${name}-alternatives`), limi
     button.title = model.selector;
     const label = document.createElement("span");
     label.className = "alt-name"; label.textContent = model.name;
-    button.append(label, badgeElement(model.kind === "local" ? "Local" : model.badge));
+    button.append(label, badgeElement(model.badge));
     if (model.size && !model.name.includes(model.size)) {
       const size = document.createElement("span");
       size.className = "alt-size"; size.textContent = model.size;
       button.append(size);
     }
-    button.setAttribute("aria-label", `Use ${model.name}, ${model.kind === "local" ? "Local" : model.badge}`
+    button.setAttribute("aria-label", `Use ${model.name}, ${model.badge}`
       + `${model.size ? `, ${model.size}` : ""}`);
     return button;
   });
@@ -21578,9 +21808,7 @@ function renderPreferredNote() {
   let text = "";
   if (paperCatalog.loaded && !first) text = "No preferred text model is set on this server.";
   else if (first) {
-    const model = (paperCatalog.models || []).find((item) => item.selector === first.selector);
-    const where = model && model.server ? `Local, on ${localServerLabel(model.server)}` : first.badge;
-    text = `Preferred on this server: ${first.name} · ${where}${first.reachable ? "" : " · unreachable"}`;
+    text = `Preferred on this server: ${first.name} · ${first.badge}${first.reachable ? "" : " · unreachable"}`;
   }
   $("settings-preferred").textContent = text;
   $("settings-preferred").title = first ? first.selector : "";
@@ -21613,9 +21841,10 @@ function kindIcon(kind) {
   icon.innerHTML = kind === "local" ? CHIP_ICON : CLOUD_ICON;
   return icon;
 }
+// Under a model's name in the list: its local server's address, or how this
+// server reaches its cloud provider.
 function modelSource(model) {
-  return model.server ? `${localServerLabel(model.server)}${model.on_server ? " · added on the server" : ""}`
-    : MODEL_SOURCES[model.provider] || model.provider;
+  return model.server ? localServerLabel(model.server) : MODEL_SOURCES[model.provider] || model.provider;
 }
 function pickerOption(name, index, item) {
   const option = document.createElement("div");
@@ -21688,12 +21917,14 @@ function renderPickerList(name, typed = false) {
   } else {
     const matches = (...texts) => !query || texts.some((text) => String(text || "").toLowerCase().includes(query));
     const { same, model:chosen } = pickerChoice(name);
+    // A local model by its name and its server's ("<model> · <server name>").
     const option = (model, tags = []) => {
       const cannot = !!picker.images && !model.images;
-      return pickerOption(name, index++, { key:model.selector, value:model.selector, text:model.name,
+      return pickerOption(name, index++, { key:model.selector, value:model.selector,
+        text:model.endpoint ? `${model.name} · ${model.endpoint}` : model.name,
         tags:[...tags, ...(model.images ? ["reads images"] : []),
               ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
-        sub:`${modelSource(model)}${cannot ? " · can't read images" : ""}`, badge:kind === "api" ? model.badge : "",
+        sub:`${modelSource(model)}${cannot ? " · can't read images" : ""}`, badge:model.badge,
         selected:!same && !!chosen && chosen.selector === model.selector, disabled:cannot });
     };
     const text = picker.same ? pickerChoice("book").model : null;
@@ -21706,7 +21937,7 @@ function renderPickerList(name, typed = false) {
         tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
         title:text.selector, selected:same, disabled:cannot }));
     }
-    const shown = models.filter((model) => matches(model.name, model.selector, modelSource(model)));
+    const shown = models.filter((model) => matches(model.name, model.endpoint, model.selector, modelSource(model)));
     // Default: what this picker starts with when nothing is chosen.
     const first = picker.same && name !== "figure" ? null : firstUse(name === "figure" ? "figure" : "text");
     const fallback = first && !first.unreachable && ["preferred", "only"].includes(first.how)
@@ -21719,11 +21950,10 @@ function renderPickerList(name, typed = false) {
     if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all", MODEL_KINDS[kind].all));
     nodes.push(...rest.map((model) => option(model)));
     for (const row of rows) {
-      if (!matches(row.label, row.note)) continue;
+      if (!matches(row.label, row.address, row.note)) continue;
       nodes.push(row.row === "not-running"
         ? pickerOption(name, index++, { key:`down:${row.server}`, text:`${row.label} — server unreachable`,
-            sub:`${row.provider === "ollama" ? "Ollama" : "OpenAI-compatible"} server`
-              + `${row.on_server ? " · added on the server" : ""}`, title:row.note, disabled:true })
+            sub:row.address, title:row.note, disabled:true })
         : pickerOption(name, index++, { key:`connect:${row.provider}`, action:"connect", provider:row.provider,
             text:row.label, sub:row.note, offer:true, problem:!!row.problem,
             actionText:row.refused ? "Use an API key instead" : "Connect" }));
@@ -21799,7 +22029,7 @@ function placePicker() {
 function choosePickerOption(name, option) {
   if (openPicker.mode === "kind") {
     // Runs on: the model list of that kind opens; nothing is chosen yet.
-    // API with no provider connected: box 2 says Connect a provider instead.
+    // Cloud with no provider connected: box 2 says Connect a provider instead.
     const { model } = pickerChoice(name);
     if (model && model.selector && modelKind(model.selector) === option.dataset.kind) delete pickerKinds[name];
     else pickerKinds[name] = option.dataset.kind;
@@ -21808,8 +22038,12 @@ function choosePickerOption(name, option) {
     togglePicker(name, "model", true);
     return;
   }
-  if (option.dataset.action === "add-local") { closePicker(true); openPaperLocal(); return; }
-  if (option.dataset.action === "connect") { closePicker(true); openPaperProviders(option.dataset.provider); return; }
+  if (option.dataset.action === "add-local") { closePicker(true); openProviderDialog({ kind:"local" }); return; }
+  if (option.dataset.action === "connect") {
+    closePicker(true);
+    openProviderDialog({ kind:"cloud", provider:option.dataset.provider });
+    return;
+  }
   closePicker(true, true);
   setPickerModel(name, option.dataset.value);
 }
@@ -22315,6 +22549,7 @@ function progressJobRow(job) {
 }
 function renderQueue() {
   renderMachines();
+  renderProviders();
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
   const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab,
@@ -22845,7 +23080,6 @@ async function sendAirdrop() {
 
 // A local server as the user typed it: host:port, no http://.
 function localServerLabel(server) { return server.replace(/^http:\/\//, ""); }
-const ON_SERVER = " · added on the server";
 function applyPaperCatalog(catalog) {
   paperCatalog = { ...catalog, loaded:true, error:"" };
   for (const model of catalog.models || []) knownModelNames.set(model.selector, model.name);
@@ -22856,8 +23090,8 @@ function applyPaperCatalog(catalog) {
   }
   $("paper-claude-code-status").textContent = catalog.claude_code_status || "";
   for (const [name, signIn] of Object.entries(SIGN_INS)) renderSignIn(name, signIn.info);
-  renderProviderList();
-  // Every picker's model names, badges, and list come from the catalog.
+  // Every picker's model names, badges, and list, and Settings › Providers'
+  // rows (renderProviders()), come from the catalog.
   render();
   renderChatControls();
 }
@@ -22878,11 +23112,11 @@ function setText(element, text) {
   if (element.textContent !== text) element.textContent = text;
 }
 const XAI_REFUSED = "xAI refused this account (403)";
-// A sign-in's part of its Connect dialog: "Signed in as <e-mail>" (the
-// account the server's stored sign-in names), or where a sign-in under way
-// stands. xAI's also says in red why its sign-in can't be used ("Sign in to
-// xAI again", or xAI refusing the account with "Use an API key instead"),
-// and offers Sign out.
+// A sign-in's part of the provider dialog (its Subscription): "Signed in as
+// <e-mail>" (the account the server's stored sign-in names), or where a
+// sign-in under way stands. xAI's also says in red why its sign-in can't be
+// used ("Sign in to xAI again", or xAI refusing the account with "Use an API
+// key instead"). Signing out is Delete on its row under Settings › Providers.
 function renderSignIn(name, info) {
   const signIn = SIGN_INS[name];
   signIn.info = info;
@@ -22908,7 +23142,6 @@ function renderSignIn(name, info) {
   setText($("paper-xai-problem"), problem);
   $("paper-xai-problem").classList.toggle("hidden", !problem);
   $("paper-xai-use-key").classList.toggle("hidden", !refused);
-  $("paper-xai-remove").classList.toggle("hidden", !!info.active || !(signIn.connected || paperCatalog.xai_account));
 }
 async function copySignInCode(name) {
   const code = $(`paper-${name}-code`).textContent, button = $(`paper-${name}-copy`);
@@ -22933,73 +23166,260 @@ async function pollSignIn(name) {
     else if (info.status === "connected") { await refreshPaperModels(); await sync(); }
   } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
 }
-// What each provider's row under Providers says: how it is connected (a
-// sign-in's account by its e-mail address; a key only as "Key saved"), and
-// what stops it, which the row shows in red.
-function providerStatus(id) {
-  const provider = CONNECT_PROVIDERS[id], key = paperKeyProviders[provider.key], parts = [];
-  if (provider.signIn && SIGN_INS[provider.signIn].connected) {
-    const account = paperCatalog[`${provider.signIn}_account`];
-    parts.push(account ? `Signed in as ${account}` : `Signed in with ${SIGN_INS[provider.signIn].label}`);
+// Settings › Providers: one row per local server (the catalog's endpoints)
+// and per cloud connection this server has, each with Edit and Delete in a
+// browser on the server's machine; read-only elsewhere (caps.manage_providers).
+let providersSignature = "";
+// The cloud connections this server has, each as its row says it: provider,
+// way in (Subscription or API key), what it says of the connection, what
+// stops it, and the route that removes it.
+function cloudConnections() {
+  const catalog = paperCatalog, rows = [];
+  const add = (provider, way, detail, problem, remove) => rows.push({ provider, way, detail, problem:problem || "", remove });
+  const key = (provider, field, route) => {
+    if (catalog[`${field}_connected`]) add(provider, "API key", "Key saved", catalog[`${field}_error`], route);
+  };
+  if (catalog.openai_connected)
+    add("openai", "Subscription", catalog.openai_account ? `Signed in as ${catalog.openai_account}` : "Signed in with ChatGPT",
+        catalog.openai_error, "/api/paper/openai/remove");
+  key("openai", "openai_api", "/api/paper/openai-api/remove");
+  if (catalog.claude_code_connected)
+    add("anthropic", "Subscription", `Claude Code: ${catalog.claude_code_status}`, "", "/api/paper/claude-code/remove");
+  key("anthropic", "anthropic", "/api/paper/anthropic/remove");
+  key("gemini", "gemini", "/api/paper/gemini/remove");
+  key("deepseek", "deepseek", "/api/paper/deepseek/remove");
+  if (catalog.xai_connected || catalog.xai_account)
+    add("xai", "Subscription", catalog.xai_account ? `Signed in as ${catalog.xai_account}` : "Signed in with xAI",
+        catalog.xai_refused ? XAI_REFUSED : catalog.xai_error, "/api/paper/xai/remove");
+  key("xai", "xai_api", "/api/paper/xai-api/remove");
+  return rows;
+}
+function providerRow({ key, title, kind, tags, problem, edit, remove }) {
+  const row = document.createElement("div");
+  row.className = "provider-row"; row.dataset.key = key;
+  const text = document.createElement("div");
+  text.className = "provider-row-text";
+  const head = document.createElement("span");
+  const name = document.createElement("strong");
+  name.textContent = title;
+  head.append(name, " ", badgeElement(kind));
+  const line = document.createElement("span");
+  line.className = "note tags";
+  for (const item of tags) {
+    const tag = document.createElement("span");
+    tag.textContent = item.text;
+    if (item.state) { tag.className = "provider-state"; tag.dataset.state = item.state; }
+    if (item.title) tag.title = item.title;
+    line.append(tag);
   }
-  if (key.connected) parts.push(provider.signIn ? "API key saved" : "Key saved");
-  const errors = [...(provider.signIn ? [paperCatalog[`${provider.signIn}_error`]] : []), paperCatalog[`${key.field}_error`]]
-    .filter(Boolean);
-  return { text:(parts.length ? parts : ["Not connected"]).join(" · "), errors };
-}
-function renderProviderList() {
-  const rows = Object.entries(CONNECT_PROVIDERS).map(([id, provider]) => {
-    const row = document.createElement("div");
-    row.className = "provider-row"; row.id = `provider-${id}`;
-    const text = document.createElement("div");
-    text.className = "provider-row-text";
-    const name = document.createElement("strong");
-    name.textContent = provider.name;
-    const status = document.createElement("span"), said = providerStatus(id);
-    status.className = "note provider-status"; status.textContent = said.text;
-    if (said.errors.length) {
-      const problem = document.createElement("span");
-      problem.className = "problem"; problem.textContent = said.errors.join(" · ");
-      status.append(" · ", problem);
+  text.append(head, line);
+  if (problem) {
+    const note = document.createElement("span");
+    note.className = "problem"; note.textContent = problem;
+    text.append(note);
+  }
+  row.append(text);
+  if (caps.manage_providers) {
+    const actions = document.createElement("span");
+    actions.className = "actions";
+    for (const [label, act] of [["Edit", edit], ["Delete", remove]]) {
+      if (!act) continue;
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "link"; button.textContent = label;
+      button.setAttribute("aria-label", `${label} ${title}`);
+      button.addEventListener("click", act);
+      actions.append(button);
     }
-    text.append(name, status);
-    const connected = (provider.signIn && SIGN_INS[provider.signIn].connected) || paperKeyProviders[provider.key].connected;
-    const button = document.createElement("button");
-    button.type = "button"; button.textContent = connected ? "Change" : "Connect";
-    button.setAttribute("aria-label", `${button.textContent} ${provider.name}`);
-    button.addEventListener("click", () => openProviderConnect(id));
-    row.append(text, button);
-    return row;
-  });
-  $("provider-list").replaceChildren(...rows);
+    row.append(actions);
+  }
+  return row;
 }
-// Providers lists every provider; Connect in a model picker opens that
-// provider's own Connect dialog, Claude Code's section under Providers.
-async function openPaperProviders(provider) {
-  if (CONNECT_PROVIDERS[provider]) return openProviderConnect(provider);
-  closeProviderConnect();
-  renderProviderList();
-  if (!$("paper-providers-dialog").open) $("paper-providers-dialog").showModal();
-  const section = provider ? $(`provider-${provider}`) : null;
-  if (section) { section.scrollIntoView({ block:"start" }); section.focus({ preventScroll:true }); }
+function renderProviders() {
+  const manage = !!caps.manage_providers, cloud = cloudConnections();
+  const signature = JSON.stringify([manage, paperCatalog.loaded, paperCatalog.endpoints, cloud]);
+  if (signature === providersSignature) return;
+  providersSignature = signature;
+  $("providers-read-only").classList.toggle("hidden", manage);
+  $("providers-add").classList.toggle("hidden", !manage);
+  const rows = (paperCatalog.endpoints || []).map((endpoint) => providerRow({
+    key:`local:${endpoint.name}`, title:endpoint.name, kind:"Local",
+    tags:[{ text:endpoint.label }, ...(endpoint.images ? [{ text:"reads images" }] : []),
+          ...(endpoint.from_flag ? [{ text:"set at startup" }] : []),
+          endpoint.running ? { text:"reachable", state:"reachable" }
+            : { text:"unreachable", state:"unreachable", title:endpoint.error }],
+    edit:() => openProviderDialog({ kind:"local", endpoint }),
+    // A server set at startup stays while Hilde starts with it.
+    remove:endpoint.from_flag ? null : () => deleteLocalProvider(endpoint.name),
+  }));
+  for (const connection of cloud) {
+    const name = CONNECT_PROVIDERS[connection.provider].name;
+    rows.push(providerRow({
+      key:`cloud:${connection.provider}:${connection.way}`, title:`${name} · ${connection.way}`, kind:"Cloud",
+      tags:[{ text:connection.detail }], problem:connection.problem,
+      edit:() => openProviderDialog({ kind:"cloud", provider:connection.provider, edit:true,
+                                      subscription:connection.way === "Subscription" }),
+      remove:() => deleteCloudProvider(connection),
+    }));
+  }
+  if (!rows.length) {
+    const none = document.createElement("p");
+    none.className = "note";
+    none.textContent = paperCatalog.loaded ? "No provider yet." : "Checking the providers…";
+    rows.push(none);
+  }
+  $("provider-rows").replaceChildren(...rows);
 }
-function closePaperProviders() { $("paper-providers-dialog").close(); }
-// One provider's Connect dialog: the ways in Hilde supports for it; a key
-// field is a password field, emptied when the dialog opens and once the key
-// is saved. A refused xAI sign-in puts the key field first in line.
-async function openProviderConnect(id) {
-  const provider = CONNECT_PROVIDERS[id];
-  if ($("paper-providers-dialog").open) closePaperProviders();
-  $("connect-title").textContent = `Connect ${provider.name}`;
-  for (const section of document.querySelectorAll(".connect-provider"))
+async function deleteLocalProvider(name) {
+  if (!(await askConfirm({
+    title:`Remove '${name}'?`,
+    text:"Its models leave every browser's model list. Books already made keep their text.",
+    confirm:"Remove", danger:true,
+  }))) return;
+  try {
+    applyPaperCatalog(await jsonRequest("/api/providers/local/remove", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ name }),
+    }));
+    setStatus(`Removed '${name}'.`);
+    await sync();
+  } catch (error) { setStatus(error.message, true); }
+}
+// Delete of a subscription signs out (Claude Code: Hilde stops using it);
+// of an API key removes the key.
+async function deleteCloudProvider(connection) {
+  const name = CONNECT_PROVIDERS[connection.provider].name, subscription = connection.way === "Subscription";
+  const claudeCode = connection.provider === "anthropic" && subscription;
+  if (!(await askConfirm({
+    title:subscription ? `Sign out of ${name} (Subscription)?` : `Remove the ${name} API key?`,
+    text:claudeCode ? "Hilde stops using Claude Code on this server; Claude Code itself stays signed in."
+      : subscription ? "This server forgets the sign-in; its models leave every browser's model list."
+      : "This server deletes the key; its models leave every browser's model list.",
+    confirm:subscription ? "Sign out" : "Remove", danger:true,
+  }))) return;
+  try {
+    if (subscription && SIGN_INS[connection.provider]) SIGN_INS[connection.provider].info = { status:"idle" };
+    applyPaperCatalog(await jsonRequest(connection.remove, {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
+    }));
+    setStatus(subscription ? `Signed out of ${name}.` : `Removed the ${name} API key.`);
+    await sync();
+  } catch (error) { setStatus(error.message, true); }
+}
+// Settings, scrolled to Providers: where a browser that may not change them
+// reads them, and the "Providers…" link goes.
+function openProvidersPanel() {
+  if ($("provider-dialog").open) closeProviderDialog();
+  setSettings(true);
+  $("settings-providers").scrollIntoView({ block:"start" });
+  $("settings-providers").focus({ preventScroll:true });
+}
+// The provider dialog: Add (radio Local / Cloud), Edit of a row (its kind
+// fixed), and Connect / Add local in a model picker (preselected). Local:
+// name, address, and whether its models read images; a server set at
+// startup changes only its name. Cloud: the provider, its API key (a
+// password field, emptied whenever it shows and once the key is saved), and
+// Subscription where the provider has one.
+let providerEditing = "", providerSubscription = false;
+function openProviderDialog({ kind = "local", provider = "", endpoint = null, edit = false, subscription = false } = {}) {
+  if (!caps.manage_providers) { openProvidersPanel(); return; }
+  const editing = !!endpoint || (kind === "cloud" && edit);
+  $("provider-title").textContent = endpoint ? `Edit '${endpoint.name}'`
+    : editing ? `Edit ${CONNECT_PROVIDERS[provider].name}` : "Add a provider";
+  $(`provider-kind-${kind}`).checked = true;
+  for (const id of ["provider-kind-local", "provider-kind-cloud"]) $(id).disabled = editing;
+  providerEditing = endpoint ? endpoint.name : "";
+  const fixed = !!(endpoint && endpoint.from_flag);
+  $("provider-local-name").value = endpoint ? endpoint.name : "";
+  $("provider-local-address").value = endpoint ? endpoint.label : "";
+  $("provider-local-images").checked = !!(endpoint && endpoint.images);
+  $("provider-local-address").disabled = fixed;
+  $("provider-local-images").disabled = fixed;
+  $("provider-local-startup").classList.toggle("hidden", !fixed);
+  $("provider-local-status").textContent = "";
+  $("provider-local-save").textContent = endpoint ? "Save" : "Check and add";
+  $("provider-cloud-name").value = CONNECT_PROVIDERS[provider] ? provider : "openai";
+  providerSubscription = subscription;
+  if (!$("provider-dialog").open) $("provider-dialog").showModal();
+  showProviderKind();
+}
+function stopSignInPolls() {
+  for (const signIn of Object.values(SIGN_INS)) clearTimeout(signIn.timer);
+}
+function closeProviderDialog() {
+  stopSignInPolls();
+  if ($("provider-dialog").open) $("provider-dialog").close();
+}
+function showProviderKind() {
+  const cloud = $("provider-kind-cloud").checked;
+  $("provider-local").classList.toggle("hidden", cloud);
+  $("provider-cloud").classList.toggle("hidden", !cloud);
+  if (cloud) { showCloudProvider(); return; }
+  stopSignInPolls();
+  $("provider-local-name").focus();
+}
+// The chosen cloud provider's ways in: its API key, and Subscription behind
+// its button, open at once when this server has that sign-in (working or
+// not, so a problem with it shows) or for Edit of a subscription. A refused
+// xAI sign-in puts the key field first in line.
+function showCloudProvider() {
+  const id = $("provider-cloud-name").value, provider = CONNECT_PROVIDERS[id];
+  stopSignInPolls();
+  for (const section of document.querySelectorAll("#provider-dialog .connect-provider"))
     section.classList.toggle("hidden", section.dataset.provider !== id);
+  for (const method of document.querySelectorAll("#provider-dialog .connect-method.subscription"))
+    method.classList.add("hidden");
   $(`paper-${provider.key}-key`).value = "";
   renderPaperKey(provider.key, paperCatalog[`${paperKeyProviders[provider.key].field}_error`]);
-  if (!$("provider-connect-dialog").open) $("provider-connect-dialog").showModal();
-  const fields = [...document.querySelectorAll(`.connect-provider[data-provider="${id}"] :is(input, button)`)]
-    .filter((node) => node.getClientRects().length && node.id !== "paper-xai-remove");
-  (id === "xai" && paperCatalog.xai_refused ? $("paper-xai-api-key") : fields[0])?.focus();
-  if (provider.signIn) await pollSignIn(provider.signIn);
+  const way = provider.subscription;
+  const kept = way === "claude-code" ? !!paperCatalog.claude_code_connected
+    : !!way && !!(SIGN_INS[way].connected || paperCatalog[`${way}_account`] || paperCatalog[`${way}_error`]);
+  const subscription = !!way && (providerSubscription || kept);
+  providerSubscription = false;
+  if (subscription) showSubscription(id, false);
+  $(`paper-${provider.key}-key`).focus();
+}
+// Subscription: the provider's own sign-in starts (ChatGPT, xAI), or Hilde
+// uses this server's Claude Code and shows what it reports; `start` false
+// only shows where it stands (Edit).
+async function showSubscription(id, start = true) {
+  const way = CONNECT_PROVIDERS[id].subscription;
+  const method = document.querySelector(`#provider-dialog .connect-provider[data-provider="${id}"] .subscription`);
+  method.classList.remove("hidden");
+  method.scrollIntoView({ block:"nearest" });
+  if (way === "claude-code") {
+    if (start) await useClaudeCode();
+    return;
+  }
+  await pollSignIn(way);
+  if (start && !SIGN_INS[way].connected && !SIGN_INS[way].info.active) await startSignIn(way);
+  if (start) $(`paper-${way}-start`).focus();
+}
+// Use this server's Claude Code again, and say what it reports.
+async function useClaudeCode() {
+  $("paper-claude-code-status").textContent = "Checking Claude Code…";
+  try {
+    applyPaperCatalog(await jsonRequest("/api/paper/claude-code/use", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
+    }));
+    await sync();
+  } catch (error) { $("paper-claude-code-status").textContent = error.message; }
+}
+async function saveLocalProvider() {
+  const name = $("provider-local-name").value.trim(), original = providerEditing;
+  $("provider-local-save").disabled = true;
+  $("provider-local-status").textContent = "Checking the server…";
+  try {
+    applyPaperCatalog(await jsonRequest("/api/providers/local/save", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ original, name, address:$("provider-local-address").value,
+                            images:$("provider-local-images").checked }),
+    }));
+    closeProviderDialog();
+    setStatus(original ? `Saved '${name}'.` : `Added '${name}'.`);
+    // Create's model check reads the server's providers; ask it again.
+    await sync();
+  } catch (error) {
+    $("provider-local-status").textContent = error.message;
+  } finally { $("provider-local-save").disabled = false; }
 }
 // "Use an API key instead": the xAI key field, ready for a key. Nothing else
 // changes until the key is saved and the user chooses one of its models.
@@ -23007,14 +23427,9 @@ function useXaiKeyInstead() {
   $("paper-xai-api-key").scrollIntoView({ block:"center" });
   $("paper-xai-api-key").focus();
 }
-function closeProviderConnect() {
-  for (const signIn of Object.values(SIGN_INS)) clearTimeout(signIn.timer);
-  if ($("provider-connect-dialog").open) $("provider-connect-dialog").close();
-}
 function renderPaperKey(name, message) {
   const connected = paperKeyProviders[name].connected;
   $(`paper-${name}-status`).textContent = message || (connected ? "Key saved" : "No key yet");
-  $(`paper-${name}-remove`).disabled = !connected;
 }
 async function savePaperKey(name) {
   $(`paper-${name}-save`).disabled = true;
@@ -23031,14 +23446,6 @@ async function savePaperKey(name) {
   } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
   finally { $(`paper-${name}-save`).disabled = false; }
 }
-async function removePaperKey(name) {
-  try {
-    applyPaperCatalog(await jsonRequest(`/api/paper/${name}/remove`, {
-      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
-    }));
-    await sync();
-  } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
-}
 async function startSignIn(name) {
   try {
     renderSignIn(name, await jsonRequest(`/api/paper/${name}/login`, {
@@ -23053,108 +23460,6 @@ async function cancelSignIn(name) {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
     }));
   } catch (error) { $(`paper-${name}-status`).textContent = error.message; }
-}
-// Sign out of xAI: this server forgets the sign-in; an API key stays.
-async function signOutXai() {
-  try {
-    SIGN_INS.xai.info = { status:"idle" };
-    applyPaperCatalog(await jsonRequest("/api/paper/xai/remove", {
-      method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}",
-    }));
-    await sync();
-  } catch (error) { $("paper-xai-status").textContent = error.message; }
-}
-
-// Add local: the servers registered on this server (--local-server), each
-// with its type and "added on the server", none removable here; then this
-// browser's, each with its type, whether its models see images (saved at
-// once), and Remove; below them the form that adds one.
-function renderPaperLocal() {
-  const shared = (paperCatalog.local_servers || []).filter((entry) => entry.on_server);
-  const servers = state.audiobook.local_servers
-    .filter((entry) => !shared.some((other) => other.server === entry.server));
-  const typeName = (entry) => entry.provider === "ollama" ? "Ollama" : "OpenAI-compatible";
-  const sharedRows = shared.map((entry) => {
-    const row = document.createElement("div");
-    row.className = "local-server";
-    const name = document.createElement("strong");
-    name.textContent = entry.label;
-    const type = document.createElement("span");
-    type.className = "note";
-    type.textContent = `${typeName(entry)}${entry.vision ? ", sees images" : ""}`;
-    const grow = document.createElement("span");
-    grow.className = "grow";
-    const where = document.createElement("span");
-    where.className = "note";
-    where.textContent = ON_SERVER.slice(3);
-    row.append(name, type, grow, where);
-    return row;
-  });
-  $("paper-local-list").replaceChildren(...sharedRows, ...servers.map((entry) => {
-    const row = document.createElement("div");
-    row.className = "local-server";
-    const name = document.createElement("strong");
-    name.textContent = localServerLabel(entry.server);
-    const type = document.createElement("span");
-    type.className = "note";
-    type.textContent = typeName(entry);
-    const grow = document.createElement("span");
-    grow.className = "grow";
-    const vision = document.createElement("label");
-    vision.className = "check";
-    const box = document.createElement("input");
-    box.type = "checkbox"; box.checked = entry.vision;
-    // A sync replaces the state, so the server is looked up again.
-    box.addEventListener("change", async () => {
-      const saved = state.audiobook.local_servers.find((added) => added.server === entry.server);
-      if (saved) { saved.vision = box.checked; await sync(); }
-    });
-    vision.append(box, " This model sees images");
-    const remove = document.createElement("button");
-    remove.type = "button"; remove.textContent = "Remove";
-    remove.addEventListener("click", () => removePaperLocal(entry.server));
-    row.append(name, type, grow, vision, remove);
-    return row;
-  }));
-  if (!servers.length && !shared.length) {
-    const empty = document.createElement("p");
-    empty.className = "note"; empty.textContent = "No local server added yet.";
-    $("paper-local-list").append(empty);
-  }
-}
-function openPaperLocal() {
-  $("paper-local-type").value = "";
-  $("paper-local-url").value = "";
-  $("paper-local-vision").checked = false;
-  $("paper-local-status").textContent = "";
-  renderPaperLocal();
-  $("paper-local-dialog").showModal();
-}
-function closePaperLocal() { $("paper-local-dialog").close(); }
-async function savePaperLocal() {
-  $("paper-local-save").disabled = true;
-  $("paper-local-status").textContent = "Checking local models…";
-  try {
-    const added = await jsonRequest("/api/paper/local/check", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({
-        server:$("paper-local-url").value, provider:$("paper-local-type").value,
-      }),
-    });
-    const entry = { server:added.server, provider:added.provider, vision:$("paper-local-vision").checked };
-    const servers = state.audiobook.local_servers;
-    const index = servers.findIndex((saved) => saved.server === entry.server);
-    if (index >= 0) servers[index] = entry; else servers.push(entry);
-    $("paper-local-url").value = ""; $("paper-local-vision").checked = false;
-    $("paper-local-status").textContent = `Added ${localServerLabel(entry.server)}.`;
-    await sync(); renderPaperLocal(); await refreshPaperModels();
-  } catch (error) {
-    $("paper-local-status").textContent = error.message;
-  } finally { $("paper-local-save").disabled = false; }
-}
-async function removePaperLocal(server) {
-  state.audiobook.local_servers = state.audiobook.local_servers.filter((saved) => saved.server !== server);
-  await sync(); renderPaperLocal(); await refreshPaperModels();
 }
 
 // Narration workers on other machines: only a browser on the server's
@@ -24131,9 +24436,10 @@ def main():
         action="append",
         default=[],
         help=(
-            "A local model server every browser can use, before the ones it adds under Add local; "
-            "repeat for more. PROVIDER is lm-studio for any OpenAI-compatible server, or ollama for "
-            "an Ollama server; ,vision says its models see images. "
+            "A local model server for every browser, added once to Settings › Providers "
+            "(~/.hilde/providers.yaml), where it shows as set at startup; repeat for more. "
+            "PROVIDER is lm-studio for any OpenAI-compatible server, or ollama for an Ollama "
+            "server; ,vision says its models see images. "
             "For example lm-studio=http://127.0.0.1:8000,vision."
         ),
     )
@@ -24285,10 +24591,14 @@ def main():
     server.xai_login = XaiOAuthLogin()
     server.chats = ChatRegistry()
     server.search_server = args.search_server
-    SERVER_LOCAL_SERVERS[:] = [
-        entry for index, entry in enumerate(args.local_server)
-        if all(entry["server"] != earlier["server"] for earlier in args.local_server[:index])
-    ]
+    # Settings › Providers' local servers, each --local-server added once.
+    try:
+        load_providers([
+            entry for index, entry in enumerate(args.local_server)
+            if all(entry["server"] != earlier["server"] for earlier in args.local_server[:index])
+        ])
+    except (OSError, ValueError) as exc:
+        parser.error(f"{providers_path()}: {exc}")
     SERVER_PREFERRED_MODELS.update(
         text=tuple(dict.fromkeys(args.preferred_text_model)),
         figure=tuple(dict.fromkeys(args.preferred_figure_model)),
@@ -24317,9 +24627,10 @@ def main():
     print("State: per-browser cookies", flush=True)
     print(f"Shared storage: {storage.root}", flush=True)
     print(f"Web search for Chat: {args.search_server or 'off'}", flush=True)
-    print("Local model servers for every browser: "
-          + (", ".join(f"{local_server_label(entry['server'])} ({entry['provider']})"
-                       for entry in SERVER_LOCAL_SERVERS) or "none"), flush=True)
+    print("Local model servers (Settings › Providers, " + str(providers_path()) + "): "
+          + (", ".join(f"{entry['name']} = {local_server_label(entry['server'])} ({entry['provider']}"
+                       f"{', set at startup' if entry['from_flag'] else ''})"
+                       for entry in local_endpoints()) or "none"), flush=True)
     print("Preferred text models: " + (", ".join(SERVER_PREFERRED_MODELS["text"]) or "none"), flush=True)
     print("Preferred figure models: " + (", ".join(SERVER_PREFERRED_MODELS["figure"]) or "none"), flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)

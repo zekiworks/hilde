@@ -10,29 +10,30 @@ or bibliography under its own heading is removed before the model sees the
 text, even without adaptation and even when the PDF runs the heading into the
 paragraph before it. Inline attributions and the sections after the
 bibliography, such as appendices, remain.
-**More** under that option holds **Text model**, **Providers**, and **Add
-local**, and **Settings** holds **Parallel text requests** under **Text preparation**. The
-option shows the chosen model and a **Local** or **Cloud: <provider>** badge
-saying where the document's text goes:
+**More** under that option holds **Text model**, and **Settings** holds
+**Parallel text requests** under **Text preparation** and the model servers
+and cloud providers under **Providers**. The option shows the chosen model and
+a **Local · <server name>** or **Cloud: <Provider> · Subscription/API key**
+badge saying where the document's text goes:
 
 - **Text model** picks the model that rewrites the text. Left on Default, a job uses
-  the first model of the first local server you added under **Add local** that
-  answers; if none answers, the job stops rather than send your document to a
-  cloud provider. Without a local server, Default is OpenAI's first model once
+  the first model of the first local server under **Settings › Providers**
+  that answers; if none answers, the job stops rather than send your document
+  to a cloud provider. Without a local server, Default is OpenAI's first model once
   signed in, then Claude Code's, then the Anthropic API's, the OpenAI API's,
   and the Google Gemini API's. A cloud provider that is busy or has a passing
   error is asked again, up to four times.
-- **Providers** connects cloud models: one row each for OpenAI, Google
-  (Gemini), Anthropic (Claude), DeepSeek, and xAI (Grok), whose **Connect**
-  opens a dialog with the ways in Hilde supports for that provider, then
-  Claude Code.
+- **Settings › Providers** connects cloud models for the whole server, from a
+  browser on the server's own machine: **Add**, then **Cloud**, a provider,
+  and either an **API key** or, for OpenAI, Anthropic, and xAI,
+  **Subscription**.
   - **OpenAI** offers two: **Sign in with ChatGPT (your membership)**, which
     signs this server in with a ChatGPT account and needs no API key (open the
     sign-in page it shows and enter the code, which **Copy** puts on the
     clipboard, or one click selects; the sign-in renews itself, and the row
-    then says "Signed in as <e-mail>"; delete `~/.hilde/openai.json` to sign
-    out), and an **API key**, below.
-  - **Claude Code** uses a Claude Pro or Max subscription through your own
+    then says "Signed in as <e-mail>"; **Delete** signs out), and an **API
+    key**, below.
+  - **Anthropic · Subscription** is Claude Code: it uses a Claude Pro or Max subscription through your own
     [Claude Code](https://code.claude.com/): install it on the machine running
     Hilde and sign in by running `claude` once in a terminal. Hilde then runs
     `claude` for each passage, with its tools turned off and Hilde's
@@ -44,7 +45,8 @@ saying where the document's text goes:
     inside its own apps, and passages count against your plan's usage limits;
     a limit reached ends the job with Claude Code's message. **Check again**
     looks for Claude Code after you install it or sign in, and asks again what
-    each nickname runs. Connecting any
+    each nickname runs. **Delete** makes Hilde stop using it (Claude Code keeps
+    its own sign-in). Connecting any
     provider updates **Create** at once: a "needs a model" message goes away
     without choosing another model.
   - **Anthropic (Claude)** takes an API key from the
@@ -79,8 +81,8 @@ saying where the document's text goes:
     instead**; it never moves a book or a question to the key by itself. If
     xAI stops renewing the sign-in, it says **Sign in to xAI again**.
 
-  Each API key is checked with its provider before it is kept; **Remove**
-  deletes it. A key is typed into a password field and the page never gets it
+  Each API key is checked with its provider before it is kept; **Delete**
+  removes it. A key is typed into a password field and the page never gets it
   back: afterwards it says only "Key saved". The server keeps the ChatGPT
   sign-in in `~/.hilde/openai.json`, the xAI sign-in encrypted in
   `~/.hilde/xai.json` (its key in `~/.hilde/credentials.key`), and the keys in
@@ -88,22 +90,23 @@ saying where the document's text goes:
   `~/.hilde/gemini.json`, `~/.hilde/deepseek.json`, and
   `~/.hilde/xai-api.json`, readable only by the user running it, for every
   browser.
-- **Add local** connects model servers on your network, up to eight. It lists
-  the servers you added, each with its type, a **This model sees images** box
-  that is saved as soon as you change it, and **Remove**. To add one, choose its
-  type, **Ollama** or **OpenAI-compatible** (SGLang, vLLM, LM Studio), enter its
-  `host:port`, for example `127.0.0.1:8010`, and press **Check and add**. The
-  models of every added server then appear together in each model list
-  (**Text model**, the checking model, the figure model, and Ask Hilde),
-  grouped by server, so the text model can run on one server and the figure
-  model on another. Each request goes to the server that offers its model; a
-  model two servers offer runs on the one added first. Tick **This model sees
-  images** for a server whose models accept images, as Gemma 4 does; figures
-  and equations then go to them as images. Removing a server clears its tick,
-  so check it when you add the server again: from labels alone, Gemma 4
-  misread chart values and trends that it read right from the image. If a
-  chosen local model is offered by none of your servers when a job starts,
-  the job stops and says so.
+- **Settings › Providers** also holds the model servers on your network, up
+  to 16, for every browser. **Add**, then **Local**, takes a **Name**, its
+  **Address** (`host:port`, for example `192.0.2.10:8000`), and **Models here
+  read images**; **Check and add** finds out whether it is an Ollama or an
+  OpenAI-compatible server and keeps it only if it lists models. The models of
+  every server then appear together in each model list (**Text model**, the
+  checking model, the figure model, and Ask Hilde) as "<model> · <server
+  name>", so the text model can run on one server and the figure model on
+  another. Each request goes to the server that offers its model; a model two
+  servers offer runs on the one listed first. Tick **Models here read images**
+  for a server whose models accept images, as Gemma 4 does; figures and
+  equations then go to them as images: from labels alone, Gemma 4 misread
+  chart values and trends that it read right from the image. If a chosen
+  local model is offered by none of the servers when a job starts, the job
+  stops with "No local server under Settings › Providers offers <model>."
+  Servers a browser once added for itself in earlier versions are not
+  carried over; add them again here.
 - **Parallel text requests** (default 4, at most 32) is how many paragraph batches are adapted
   at once, and **Paragraphs per request** (default 1, at most 32) is how many
   paragraphs each batch holds. A figure or table is never split: its image,
@@ -153,7 +156,7 @@ of the paper stays on your network. The book records the figure model.
 
 Figures reach OpenAI, Claude, and Gemini models as images, a DeepSeek model when DeepSeek's model list says it
 takes images, and a local model too once
-**This model sees images** is ticked for its server. Otherwise a local model receives the text
+**Models here read images** is ticked for its server under **Settings › Providers**. Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows
 what it says. Its description opens with the number printed beside it,

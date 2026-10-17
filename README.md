@@ -158,7 +158,7 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   (`local_vision`).
 - **Cloud providers receive your document.** A document goes to OpenAI,
   Anthropic (directly, or through Claude Code), or Google when you choose one of their models, or, with **Text model** left on
-  Default, when you have added no local server. The text and figures of each
+  Default, when no local server is set up under **Settings › Providers**. The text and figures of each
   adapted document are then sent to that provider. Use a local model server for
   private documents.
 - **Expression can still vary.** The saved reference keeps the speaker the
