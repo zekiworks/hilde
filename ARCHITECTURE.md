@@ -1462,7 +1462,7 @@ seeking are unchanged, and nothing later waits on the network. A failed
 download leaves playback streaming. Leaving the book aborts the download and
 revokes the URL.
 
-**Listen from here** seeks to a word starting up to 0.1 s before its aligned
+A click on a word (and **Listen from here** on the card) seeks to a word starting up to 0.1 s before its aligned
 onset but never inside the previous word or sentence
 (`readerWordSeekSample()`), else to its sentence cue. The upcoming word is
 highlighted within the same lead.
@@ -1496,34 +1496,40 @@ shows at the bottom of the text until it is pressed or the sentence is back
 on screen; opening a figure or a source page, or a ¶ link in an answer, does
 the same.
 
-A click (a tap) in the text asks about it and never seeks
+A click (a tap) in the text listens from there and opens nothing
 (`clickReaderText()`, one listener on `#reader-content`, Narration and Source
-text alike): it pauses the book (`pauseBookForQuestion()`), opens the chat
-(`askAboutFocus()`; with a mouse after `READER_CLICK_WAIT`, 300 ms, so that a
-double-click only selects its word), and attaches a focus `{anchor, base, scope}`: the word
-under the pointer (`clickedWord()`: its `.reader-word`, else the word at the
-caret point, else the nearest word of the clicked sentence), or with
-Shift+click while a focus is attached, the span from the focus's first word
-to the clicked one (`mousedown` with Shift is prevented so the browser does
-not stretch a selection instead). The card's **Word | Sentence | Paragraph**
-switch (`focusControls()`, `setFocusScope()`) widens it: `widenRange()`
+text alike; only a trusted primary-button click without Shift): after
+`READER_CLICK_WAIT` (300 ms, so a double-click's second click can cancel it)
+it seeks to the word under the pointer (`clickedWord()`: its `.reader-word`,
+else the word at the caret point, else the nearest word of the clicked
+sentence) with `listenFromSelection()` and plays. The pending seek is
+cancelled by any press in the text meanwhile (`pressReaderText()` on
+`pointerdown`: a double-click, a drag), by a selection that is not collapsed
+when it fires, by a long press, and by a touch that moved past
+`READER_TOUCH_SLOP` (10 px) or that the browser took for a scroll
+(`pointercancel`; `trackReaderPress()`, `pointerType` `touch`). A touch held
+still for `READER_LONG_PRESS` (500 ms) selects its word
+(`selectPressedWord()`; a phone's own long press selects it too, and
+headless Chromium has none). A finished selection (a double-click, a long
+press, a drag, Shift+click extending it) shows a small menu above it (below
+it on a touch screen, whose own menu is above) with exactly **Ask about
+this** and **Copy**; it never seeks or asks. Only **Ask about this** (or
+**Ask Hilde** with text selected) pauses the book
+(`pauseBookForQuestion()`), opens the chat (`askAboutSelection()`) and
+attaches the selection as a focus `{base, scope}`; the box is left as it
+was, never submitted. The card's **Word | Sentence | Paragraph** switch
+(`focusControls()`, `setFocusScope()`) widens it: `widenRange()`
 takes a narrated sentence by its parts (`data-block`) and its
 `.reader-paragraph`, and in Source text the sentence by its punctuation
 within the printed paragraph. `focusAbout()` sends it as a `selection`
 `about` (`rangeText()`, `selectedPassages()`), with `sentence`, the sentence
 around a focus smaller than a sentence, as context. The book marks the focus
 with the CSS Custom Highlight `reader-focus` in the selection's gray
-(`renderFocus()`, from `renderChatAbout()`); it goes when the card does. A
-click that ends a drag selection does not ask (a non-collapsed selection),
-nor does a long press. A finished selection in the text shows a small menu
-above it (below it on a touch screen, whose own menu is above): **Ask about
-this** (the selection as the focus), **Listen from here** (the first selected
-word, by `readerWordSeekSample()`, else its sentence or passage), and
-**Copy**. Seeking is only: **Listen from here** in that menu, on the card
-(`listenFromFocus()`, the start of the focus), and the ▶ in a paragraph's
-left margin (`.reader-margin-play`, shown on hover, not on touch screens;
-`listenFromParagraph()`, its first sentence cue). None of them plays or
-pauses; closing the panel never resumes the book.
+(`renderFocus()`, from `renderChatAbout()`); it goes when the card does.
+In the text, seeking is only: a click on a word (which also plays) and **Listen from
+here** on the card (`listenFromFocus()`, the start of the focus, seek only).
+Selecting, the menu, asking, and the scope switch never seek; closing the
+panel never resumes the book.
 
 Figures: a figure or table passage with pictures (`figures`) shows them on a
 light paper card that is never inverted, at their own aspect ratio, with its
@@ -1573,7 +1579,8 @@ book's title, `#book-files` lists the book's `files/` as download links.
 chat as it was left and, if the book plays, pauses it
 (`pauseBookForQuestion()`, a plain pause: the time and the sentence stay);
 nothing resumes it but Play. **Ask about this** on a selection and **Ask
-about this figure** pause it the same way. Text selected in
+about this figure** pause it the same way; a click in the text never asks
+(it listens from its word). Text selected in
 `#reader-content` (taken on `pointerdown`, before the press can clear it) is
 attached; else, with no card and no draft, the passage playing at the press
 is (a figure passage as a figure). `selectedPassages()` takes only passages
@@ -1599,7 +1606,7 @@ attached: playback moving on never changes it. The page asks
 (`chipElement()`), one per attached part: `chipHead()` titles it with the
 section heading as in the book, with a small **Change** (attaches the text
 selected in the book instead, or else the part playing) and **×** (removes
-it); with a focus (text clicked or selected in the book), `focusControls()`
+it); with a focus (text selected in the book), `focusControls()`
 puts the **Word | Sentence | Paragraph** switch and **Listen from here** under
 the title, on the **Preparing…** card too; `chipPreview()` shows the selected text in quotes, else the part's
 preview, cut to 80 characters by `cutText()`; `chipDetails()` is a collapsed

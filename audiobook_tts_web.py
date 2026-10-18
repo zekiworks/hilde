@@ -16840,14 +16840,7 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 /* The text: a reading column; the paragraph being read has a rail, the word
    being read a soft mark; the text keeps its color. */
 .reader-content { font-size:18px; line-height:1.6; }
-.reader-paragraph { position:relative; padding:6px 16px 6px 14px; border-left:2px solid transparent; }
-/* Listen from here: a small ▶ in the left margin of the paragraph under the
-   pointer; a touch screen has it in the long-press menu instead. */
-.reader-paragraph > .reader-margin-play { position:absolute; top:8px; left:-36px; width:28px; height:28px;
-  min-height:0; margin:0; padding:0; border-radius:50%; font-size:11px; line-height:1; visibility:hidden; }
-.reader-margin-play::before { content:"▶\FE0E"; }
-.reader-paragraph:hover > .reader-margin-play { visibility:visible; }
-@media (hover:none), (max-width:767.98px) { .reader-paragraph > .reader-margin-play { display:none; } }
+.reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
   border-left-color:var(--accent-light); background:color-mix(in srgb, var(--accent-light) 5%, transparent);
 }
@@ -17709,7 +17702,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </aside>
       <div id="selection-menu" class="selection-menu hidden" role="menu" aria-label="Selected text">
         <button type="button" role="menuitem" data-action="ask">Ask about this</button>
-        <button type="button" role="menuitem" data-action="listen">Listen from here</button>
         <button type="button" role="menuitem" data-action="copy">Copy</button>
       </div>
     </div>
@@ -18656,50 +18648,67 @@ function wrapReaderWords(parts, cues) {
   }
 }
 
-// Clicking the text asks about it: a click (a tap) on a word pauses the book
-// and opens Ask Hilde with that word as the card's focus and its sentence as
-// context; Shift+click stretches the focus from the first word to another;
-// the card's switch widens it to the sentence or the paragraph. Seeking is
-// Listen from here's: the card's, the margin ▶, the selection menu's.
-// A focus: { anchor, the first word's range; base, the range clicked,
-// shift-clicked, or selected; scope: "word" | "sentence" | "paragraph" }.
+// Clicking the text listens from there: a click (a tap) on a word seeks to
+// it and plays, and opens nothing. A double-click, a long press (touch), or a
+// drag selects instead; the selection's menu offers Ask about this and Copy,
+// and only Ask about this (or Ask Hilde) pauses the book and asks, with the
+// selection as the card's focus and its sentence as context; the card's
+// switch widens it to the sentence or the paragraph.
+// A focus: { base, the range selected; scope: "word" | "sentence" | "paragraph" }.
 const READER_WORD = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
 const TEXT_UNIT = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, blockquote, figcaption";
-// With a mouse, a click waits out a double-click's second click, which
-// selects the word instead (its menu asks or seeks).
-const READER_CLICK_WAIT = 300;
-let readerClickTimer = 0;
+const READER_SKIP = "a, button, img, .figure-card, .reader-tag, .reader-label";
+// A click waits out a double-click's second click (which selects the word);
+// any press in the text meanwhile, a selection, a long press, or a touch
+// that moved (a scroll) cancels it.
+const READER_CLICK_WAIT = 300, READER_LONG_PRESS = 500, READER_TOUCH_SLOP = 10;
+let readerClickTimer = 0, readerPress = null;
 function clickReaderText(event) {
-  clearTimeout(readerClickTimer);
-  if (event.button !== 0 || event.detail > 1) return;
-  const play = event.target.closest(".reader-margin-play");
-  if (play) { listenFromParagraph(play.closest(".reader-paragraph")); return; }
-  if (event.target.closest("a, button, img, .figure-card, .reader-tag, .reader-label")) return;
-  // The click that ends a drag selection selects; its menu asks or seeks.
+  if (!event.isTrusted || event.button !== 0 || event.detail > 1 || event.shiftKey || !readerAudio) return;
+  if (readerPress && (readerPress.moved || readerPress.long)) return;
+  if (event.target.closest(READER_SKIP)) return;
+  // The click that ends a drag selection selects; its menu asks or copies.
   if (!window.getSelection().isCollapsed) return;
   const part = event.target.closest(".reader-sentence, .reader-block, .reader-original");
   if (!part) return;
-  const word = clickedWord(event, part);
-  const current = chatAbout && chatAbout.focus;
-  let focus;
-  if (!word) {
-    const sentence = widenRange(part, 0, "sentence");
-    focus = { anchor:sentence, base:sentence, scope:"word" };
-  } else if (event.shiftKey && current && current.anchor.startContainer.isConnected) {
-    const before = current.anchor.compareBoundaryPoints(Range.START_TO_START, word) <= 0;
-    const [first, last] = before ? [current.anchor, word] : [word, current.anchor];
-    const base = document.createRange();
-    base.setStart(first.startContainer, first.startOffset);
-    base.setEnd(last.endContainer, last.endOffset);
-    focus = { anchor:current.anchor, base, scope:"word" };
-  } else focus = { anchor:word, base:word, scope:"word" };
-  const ask = () => {
-    if (!window.getSelection().isCollapsed) return;
-    pauseBookForQuestion();
-    askAboutFocus(focus);
-  };
-  if (window.matchMedia("(pointer:coarse)").matches) ask();
-  else readerClickTimer = setTimeout(ask, READER_CLICK_WAIT);
+  const range = clickedWord(event, part) || widenRange(part, 0, "sentence");
+  const passage = Number(part.closest("[data-passage]")?.dataset.passage) || null;
+  clearTimeout(readerClickTimer);
+  readerClickTimer = setTimeout(() => {
+    if (!readerAudio || !window.getSelection().isCollapsed) return;
+    if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {});
+  }, READER_CLICK_WAIT);
+}
+function pressReaderText(event) {
+  clearTimeout(readerClickTimer);
+  clearTimeout(readerPress?.timer);
+  readerPress = null;
+  if (!event.isTrusted || event.pointerType !== "touch" || !event.isPrimary) return;
+  const press = readerPress = { x:event.clientX, y:event.clientY, target:event.target, moved:false, long:false };
+  press.timer = setTimeout(() => { press.long = true; selectPressedWord(press); }, READER_LONG_PRESS);
+}
+// A touch lifted before the long press is a tap; one that moved past the
+// slop, or that the browser took for a scroll (pointercancel), is not.
+function trackReaderPress(event) {
+  const press = readerPress;
+  if (!press || event.pointerType !== "touch" || !event.isPrimary) return;
+  if (event.type === "pointerup") clearTimeout(press.timer);
+  else if (event.type === "pointercancel"
+      || Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TOUCH_SLOP) {
+    press.moved = true;
+    clearTimeout(press.timer);
+  }
+}
+// A long press selects the word under the finger (a phone's own long press
+// selects it too); lifting the finger shows the selection's menu.
+function selectPressedWord(press) {
+  if (press.target.closest(READER_SKIP)) return;
+  const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
+  const word = part && clickedWord({ target:press.target, clientX:press.x, clientY:press.y }, part);
+  if (!word) return;
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(word);
 }
 // The word under the pointer, else the nearest one in the clicked sentence.
 function clickedWord(event, part) {
@@ -18798,7 +18807,7 @@ function rangeText(range) {
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const parent = node.parentElement;
     if (!range.intersectsNode(node) || !shown(parent)
-        || parent.closest(".reader-label, .reader-tag, .reader-flag, .reader-margin-play")) continue;
+        || parent.closest(".reader-label, .reader-tag, .reader-flag")) continue;
     let piece = node.data;
     if (node === range.endContainer) piece = piece.slice(0, range.endOffset);
     if (node === range.startContainer) piece = piece.slice(range.startOffset);
@@ -18825,7 +18834,7 @@ function focusAbout(focus) {
 }
 function selectionFocus(picked) {
   const range = picked.range.cloneRange();
-  return { anchor:range, base:range, scope:"word" };
+  return { base:range, scope:"word" };
 }
 // The book shows the card's focus in the selection's gray.
 function renderFocus() {
@@ -18842,14 +18851,6 @@ function setFocusScope(scope) {
 function listenFromFocus() {
   const focus = chatAbout && chatAbout.focus;
   if (focus) listenFromSelection({ range:focusRange(focus), first:chatAbout.about.start });
-}
-function listenFromParagraph(section) {
-  const part = section && section.querySelector(".reader-sentence, .reader-block");
-  const cue = part && readerCues.find((candidate) => candidate.block === Number(part.dataset.block));
-  if (!readerAudio || !cue) return;
-  readerAudio.currentTime = cue.start_sample / readerSampleRate;
-  updateReaderHighlight();
-  setDetached(false);
 }
 
 // A figure as printed in the PDF: one picture of its region of the page
@@ -18995,13 +18996,6 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
       if (passage && readerPayload.figures[passage]) buildFigureCard(part, passage, item.id);
     }
     parts[item.id] = own;
-  }
-  // Listen from here, in each paragraph's margin.
-  for (const section of content.querySelectorAll(".reader-paragraph")) {
-    const play = document.createElement("button");
-    play.type = "button"; play.className = "reader-margin-play"; play.tabIndex = -1;
-    play.title = "Listen from here"; play.setAttribute("aria-label", "Listen from here");
-    section.append(play);
   }
   return parts;
 }
@@ -20321,7 +20315,7 @@ function jumpToPassage(number) {
 // one offers Retry (the same part again) and Remove.
 const CHAT_CONTEXT_TIMEOUT = 10000;
 let chatAbout = null, askSelection = null, changeSelection = null, chipPulseTimer = 0;
-// `focus` is the text clicked or selected in the book (clickReaderText());
+// `focus` is the text selected in the book (Ask about this, Ask Hilde);
 // attaching the same part again keeps it.
 async function attachAbout(about, focus) {
   if (!about) return;
@@ -20607,7 +20601,7 @@ function readerSelection() {
 function pauseBookForQuestion() {
   if (readerAudio && !readerAudio.paused) readerAudio.pause();
 }
-// Text asked about (clicked, or selected): its card, the panel's chat, and
+// Text asked about (selected): its card, the panel's chat, and
 // the box left as it was, for the listener's own question.
 function askAboutFocus(focus) {
   attachAbout(focusAbout(focus), focus);
@@ -20633,8 +20627,8 @@ async function askHilde() {
   refreshPaperModels();
 }
 
-// The menu on a finished selection in the text: a click asks, a drag or a
-// long press selects and offers this instead.
+// The menu on a finished selection in the text (a double-click, a long press,
+// or a drag; a click listens from its word instead): Ask about this, Copy.
 let pointerHeld = false, selectionTimer = 0;
 function hideSelectionMenu() { $("selection-menu").classList.add("hidden"); }
 function queueSelectionMenu() {
@@ -20663,9 +20657,10 @@ function placeSelectionMenu() {
   menu.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
     Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
 }
-// Listen from here: the first word of the selection, else its sentence or passage.
+// Seeks to the first word of the selection (a clicked word, the card's
+// focus), else to its sentence or passage; false when nothing there is narrated.
 function listenFromSelection(picked) {
-  if (!readerAudio || !picked) return;
+  if (!readerAudio || !picked) return false;
   const word = [...$("reader-content").querySelectorAll(".reader-word")]
     .find((element) => shown(element) && picked.range.intersectsNode(element));
   let sample;
@@ -20677,10 +20672,11 @@ function listenFromSelection(picked) {
       : (readerPayload ? readerPayload.block_passages.indexOf(picked.first) : -1);
     sample = readerCues.find((cue) => cue.block === block)?.start_sample;
   }
-  if (sample === undefined) return;
+  if (sample === undefined) return false;
   readerAudio.currentTime = sample / readerSampleRate;
   updateReaderHighlight();
   setDetached(false);
+  return true;
 }
 async function copySelection(picked) {
   try { await navigator.clipboard.writeText(picked.text); }
@@ -24050,10 +24046,11 @@ $("chat-speak").addEventListener("change", (event) => {
 
 // Listen: the player bar, the panel, the selection menu, and the reading position.
 $("reader-content").addEventListener("click", clickReaderText);
-// Shift+click stretches the focus; the browser would stretch a selection.
-$("reader-content").addEventListener("mousedown", (event) => {
-  if (event.shiftKey && chatAbout && chatAbout.focus && !event.target.closest("a, button")) event.preventDefault();
-});
+// A press in the text cancels a click's pending seek; a touch held still
+// long enough selects its word, one that moves is a scroll.
+$("reader-content").addEventListener("pointerdown", pressReaderText);
+for (const type of ["pointermove", "pointerup", "pointercancel"])
+  $("reader-content").addEventListener(type, trackReaderPress, { passive:true });
 $("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection(); });
 $("ask-hilde").addEventListener("click", askHilde);
 $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
@@ -24112,11 +24109,8 @@ $("selection-menu").addEventListener("click", (event) => {
   hideSelectionMenu();
   if (action === "copy") { copySelection(picked); return; }
   window.getSelection().removeAllRanges();
-  if (action === "listen") listenFromSelection(picked);
-  else {
-    pauseBookForQuestion();
-    askAboutSelection(picked);
-  }
+  pauseBookForQuestion();
+  askAboutSelection(picked);
 });
 for (const type of ["wheel", "touchmove"])
   window.addEventListener(type, () => { userScrollAt = performance.now(); }, { passive:true });

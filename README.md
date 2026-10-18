@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   voice reads the same text with no model, and the same document added again
   under another name opens the book you already have.
 - **A reader that follows along.** The current word lights up as it is spoken;
-  click any word to ask Hilde about it. **Original** shows the author's text and its
+  click any word to listen from there, or select words to ask Hilde about them. **Original** shows the author's text and its
   PDF page beneath each adapted passage, and model-written figure
   descriptions are labelled.
 - **Every GPU in the house.** Narration spreads across all local GPUs and, over

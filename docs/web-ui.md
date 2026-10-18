@@ -341,18 +341,18 @@ select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically.
 
-Clicking a word (tapping it on a phone) asks about it: the book pauses and
-the chat opens (on a phone, as a full-screen sheet) with that word on the
-card and the sentence around it attached as context. The card's **Word |
-Sentence | Paragraph** switch widens what you ask about, and the book marks
-it in gray. On a computer, Shift+click another word to stretch it from the
-first word to that one, or drag over any span; on a phone, a long press
-selects a word and its handles stretch it. Selecting text shows a small menu:
-**Ask about this**, **Listen from here** (from the first selected word), and
-**Copy**. Clicking never moves the audio. To listen from somewhere else,
-press the small ▶ in the left margin of a paragraph (it shows when the
-pointer is over it), **Listen from here** on the card (from the start of
-what it asks about), or the selection menu's.
+Clicking a word (tapping it on a phone) plays the book from that word, like
+rewinding to it; nothing opens and nothing is asked. To ask about text, select
+it: double-click a word (on a phone, long-press it; its handles stretch the
+selection), or drag over any span on a computer. Selecting shows a small menu:
+**Ask about this** and **Copy**. Nothing opens until you press **Ask about
+this** (or **Ask Hilde**): then the book pauses and the chat opens (on a phone,
+as a full-screen sheet) with what you selected on the card and the sentence
+around it attached as context, under **Context details**. The card's **Word |
+Sentence | Paragraph** switch widens what you ask about, and the book marks it
+in gray; **Listen from here** on the card plays from the start of it. A
+question you had already typed stays in the box; otherwise the box is empty
+and the button reads **Explain this part**.
 
 Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a
@@ -371,8 +371,8 @@ with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
 **Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
-in its place, with **← Back to the book**) and pauses the book, as clicking a
-word, **Ask about this** on selected words, and **Ask about this figure** do;
+in its place, with **← Back to the book**) and pauses the book, as **Ask
+about this** on selected words and **Ask about this figure** do;
 it waits at that sentence until you press play or **Resume book**; closing the
 chat never starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
@@ -469,7 +469,7 @@ the book first.
 The reader streams the retained MP3's frames, unchanged, inside an exactly
 indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
-away. Safari and Chrome both play this MP4, so **Listen from here** starts at
+away. Safari and Chrome both play this MP4, so clicking a word starts at
 the word you chose; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
 approximate seeking. From the first press of play the whole book downloads in
 the background, with its progress in the player; once it is in, playback moves
