@@ -1377,8 +1377,9 @@ sentence per paragraph. The paragraph being read carries a 2 px
 `--accent-light` rail and a 5% background of it; the word being read a 2 px
 `--accent-light` underline (`text-decoration`, 4 px offset) and white text
 (slightly brighter than `--text`), with no fill in style A and a 12%
-`--accent-light` fill in style B (`:root[data-highlight=B]`); the sentence itself is not
-tinted. The word switches without a fade, since a fade
+`--accent-light` fill in style B (`:root[data-highlight=B]`); the sentence being
+read (`.reader-sentence.active`) gets a 16% `--accent-light` tint, kept while
+paused, since a tap on it pauses and resumes. The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
 An adapted book's Source text comes from its `narration.json`

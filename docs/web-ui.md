@@ -351,7 +351,9 @@ kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
 Text keeps its paragraphs: the paragraph being read is marked by a thin blue
-line at its left and a faint blue tint, and the word being read by a 2 px blue
+line at its left and a faint blue tint, the sentence being read by a stronger
+blue tint (it stays while paused, so it is easy to tap to pause and resume),
+and the word being read by a 2 px blue
 underline and slightly brighter text; with **Highlight style B** (Settings,
 **Reading**; a test for now) the word also gets a faint blue fill. Text you
 select is marked in neutral gray. Sentence-era readers created before paragraph

@@ -17046,8 +17046,10 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
             border-bottom:1px solid var(--line); }
 .page-nav span { font:14px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .source-page { display:block; width:100%; height:auto; background:#fff; border-radius:4px; }
-/* The text: a reading column; the paragraph being read has a rail, the word
-   being read a soft mark; the text keeps its color. */
+/* The text: a reading column; the paragraph being read has a rail, the
+   sentence being read a tint (kept while paused: a tap on it pauses and
+   resumes, so it must be easy to find and hit), the word being read a mark;
+   the text keeps its color. */
 .reader-content { font-size:18px; line-height:1.6; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
@@ -17057,6 +17059,8 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .reader-paragraph > * + * { margin-top:.6em; }
 .reader-sentence, .reader-block, .reader-original { cursor:pointer; }
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
+.reader-sentence.active { background:color-mix(in srgb, var(--accent-light) 16%, transparent);
+                          border-radius:3px; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
 /* Highlight style A (default): a 2 px underline and slightly brighter text;
