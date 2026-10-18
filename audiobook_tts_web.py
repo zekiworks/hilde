@@ -16472,7 +16472,7 @@ button { background:var(--raised); color:var(--text); border:1px solid var(--lin
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .selection-menu button) {
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button) {
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
@@ -16881,29 +16881,39 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .menu button[aria-checked=true]::after { content:" ✓"; color:var(--accent-light); }
 .more-button { min-width:44px; padding:0 12px; font-size:20px; line-height:1; }
 .reading-column .notice { margin-top:4px; }
-/* The view's controls and the player stay on screen above the text while it
-   scrolls; on a phone the player docks at the bottom instead. */
+/* The view's controls stay on screen above the text while it scrolls (on a
+   phone they scroll with it). */
 .listen-bar { position:sticky; top:0; z-index:5; display:grid; gap:8px; padding:8px 0 4px;
               background:var(--bg); }
 .listen-bar .book-controls { margin:0; }
-.player-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 12px;
-              background:var(--surface); border-radius:var(--radius);
-              box-shadow:0 8px 24px rgba(0,0,0,.3); }
+.reader-download { margin:0; font-size:12px; }
+.reader-download:empty { display:none; }
+/* The player: one bar docked at the bottom on every screen, inside the safe
+   area, under the reading column only (the side panel keeps its own height);
+   its controls line up with the text column (68ch of the reading font). The
+   page leaves its height (--dock-h, fitDock()) free beneath the text. */
+.reading-column > .player-dock { font-size:18px; }
+.player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0;
+               padding:0 12px env(safe-area-inset-bottom); background:var(--surface);
+               border-top:1px solid var(--line); box-shadow:0 -8px 24px rgba(0,0,0,.35); }
+body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
+.player-bar { display:flex; align-items:center; gap:12px; max-width:calc(68ch + 34px); margin:0 auto;
+              padding:8px 0; }
+.player-bar > * { font-size:15px; }
 .player-bar button { min-height:40px; padding:0 10px; }
-.player-bar .ask-hilde { margin-left:auto; padding:0 16px; }
-.player-play { display:grid; place-items:center; width:44px; height:44px; padding:0 !important;
+.player-bar .ask-hilde { flex:none; padding:0 16px; }
+.player-play { display:grid; flex:none; place-items:center; width:48px; height:48px; padding:0 !important;
                border-radius:50%; background:var(--accent); border-color:var(--accent);
                color:var(--accent-ink); }
 .player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
-.player-play svg, .player-mute svg { width:18px; height:18px; fill:currentColor; }
+.player-play svg { width:20px; height:20px; fill:currentColor; }
+.player-track { display:flex; flex:1; align-items:center; gap:6px; min-width:0; }
 .player-time { color:var(--dim); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
-               font-variant-numeric:tabular-nums; }
-.player-seek { flex:1 1 160px; min-width:100px; accent-color:var(--accent-light); }
-.player-volume { width:80px; accent-color:var(--accent-light); }
+               font-variant-numeric:tabular-nums; white-space:nowrap; }
+.player-seek { flex:1; min-width:80px; margin:0 6px 0 0; accent-color:var(--accent-light); }
 .player-speed { min-width:64px; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
-.player-mute { display:grid; place-items:center; width:40px; padding:0 !important; }
-.player-status { flex-basis:100%; color:var(--dim); font-size:12px; }
-.player-status:empty { display:none; }
+/* Its speed menu opens upwards. */
+.player-bar .menu { top:auto; bottom:calc(100% + 6px); }
 .reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
 /* Files Hilde wrote for the book, under its title. */
@@ -17097,20 +17107,19 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
                           text-transform:inherit; }
 .reader-tag button.link:hover:not(:disabled) { color:var(--text); }
 .reader-flag { color:var(--accent-light); font-size:.92em; }
-.selection-menu { position:fixed; z-index:40; display:flex; gap:2px; padding:4px;
-                  background:var(--raised); border:1px solid var(--line); border-radius:10px;
-                  box-shadow:0 10px 30px rgba(0,0,0,.5); }
-.selection-menu button { min-height:36px; padding:4px 12px; border:0; background:transparent; box-shadow:none;
-                         white-space:nowrap; }
-.selection-menu button:hover:not(:disabled) { background:var(--hover); }
+/* Ask about this: Hilde's floating button beside a selection in the text. */
+.selection-ask { position:fixed; z-index:40; padding:6px 16px; white-space:nowrap;
+                 box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55),
+                   0 10px 30px rgba(0,0,0,.5); }
 .shortcut-table { border-collapse:collapse; font-size:14px; }
 .shortcut-table th { padding:5px 16px 5px 0; text-align:left; white-space:nowrap; }
 .shortcut-table td { padding:5px 0; color:var(--dim); }
 .shortcut-table kbd { padding:1px 6px; border:1px solid var(--line); border-radius:4px;
                       background:var(--field); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
-/* With the panel open on a wide screen, the text moves left to make room. */
+/* With the panel open on a wide screen, the text and the player move left to make room. */
 @media (min-width:1200px) {
   .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
+  .listen-workspace.panel-open .player-dock { right:var(--panel-w); }
   .panel-back { display:none; }
 }
 /* Narrower, the panel takes the reading view's place, with a way back; it
@@ -17121,25 +17130,35 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
   html.sheet-open { overflow:hidden; }
   .panel-resize, .panel-close { display:none; }
 }
-/* A phone: the text takes the width; the player docks at the bottom, inside
-   the safe area, and the text ends above it. */
+/* A phone: the text takes the width, and the view's controls scroll with it. */
 @media (max-width:767.98px) {
   .reading-column { max-width:none; }
   .reader-content { font-size:17px; }
   .reader-paragraph, .reader-original { padding-left:10px; padding-right:10px; }
   .listen-bar { display:contents; }
   .listen-bar .book-controls { margin-bottom:10px; }
-  .player-bar { position:fixed; z-index:15; right:0; bottom:0; left:0; gap:4px 8px;
-                padding:6px 10px calc(6px + env(safe-area-inset-bottom)); border-radius:14px 14px 0 0;
-                box-shadow:0 -8px 24px rgba(0,0,0,.45); }
-  .player-volume, .player-status { display:none; }
   /* Follow along and More share a row; the switch takes the next. */
   .book-controls .text-switch { order:1; flex-basis:100%; }
-  .player-seek { order:10; flex-basis:100%; height:28px; }
-  body:has(main.reading) { padding-bottom:var(--dock-h, 120px); }
   .figure-card.has-composite.stacks .figure-panels { display:block; }
   .figure-card.has-composite.stacks .figure-composite { display:none; }
-  .menu, .menu.row-menu { position:fixed; right:8px; left:8px; top:auto; bottom:calc(var(--dock-h, 0px) + 8px); }
+  .menu, .menu.row-menu, .player-bar .menu { position:fixed; right:8px; left:8px; top:auto;
+                                             bottom:calc(var(--dock-h, 0px) + 8px); }
+}
+/* A phone's player: a thin full-width row with the seek bar between the
+   elapsed and the total time; under it speed, a large play/pause in the
+   middle, and Ask Hilde. */
+@media (max-width:479.98px) {
+  .player-dock { padding:0 10px env(safe-area-inset-bottom); border-radius:14px 14px 0 0; }
+  .player-bar { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+                grid-template-areas:"track track track" "speed play ask"; gap:0 8px; padding:0 0 8px; }
+  .player-track { grid-area:track; gap:10px; }
+  #player-elapsed { order:-1; }
+  .player-of { display:none; }
+  .player-seek { margin:0; }
+  .player-play { grid-area:play; width:56px; height:56px; }
+  .player-play svg { width:24px; height:24px; }
+  .player-speed-wrap { grid-area:speed; justify-self:start; }
+  .player-bar .ask-hilde { grid-area:ask; justify-self:end; }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
@@ -17227,9 +17246,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 /* Listen on a phone or a touch screen: every control 44px or more. */
 @media (max-width:767.98px), (pointer:coarse) {
   .book-top button, .book-controls button, .player-bar button, .chip-head button, .panel-head button,
-  .menu button, .selection-menu button, .chat-options button, .chat-voice button, .panel-actions button,
+  .menu button, .selection-ask, .chat-options button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
-  .player-mute, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
+  .player-speed, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
   .chip-scope button, .chip-focus button.link { min-height:44px; }
   .player-seek, .book-meta select { min-height:44px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
@@ -17759,6 +17778,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               onchange="openAudiobook(state.player.book, false, this.value)"></select>
             <span id="reader-meta"></span>
           </p>
+          <p id="reader-download" class="note reader-download" aria-live="polite"></p>
           <p id="reader-models" class="book-models note hidden"></p>
           <details id="book-files" class="book-files note hidden">
             <summary id="book-files-summary"></summary>
@@ -17795,26 +17815,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               </div>
             </div>
           </div>
-          <div id="artifact-player" class="player-bar" role="group" aria-label="Player">
-            <button id="player-play" class="player-play" type="button" aria-label="Play"
-              onclick="togglePlayback()"></button>
-            <span id="player-elapsed" class="player-time">0:00</span>
-            <input id="player-seek" class="player-seek" type="range" min="0" max="0" step="0.1" value="0"
-              aria-label="Position in the book">
-            <span id="player-total" class="player-time">0:00</span>
-            <div class="menu-wrap">
-              <button id="player-speed" class="player-speed" type="button" aria-haspopup="menu"
-                aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1×</button>
-              <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
-            </div>
-            <button id="player-mute" class="player-mute" type="button" aria-label="Mute"
-              onclick="toggleMute()"></button>
-            <input id="player-volume" class="player-volume" type="range" min="0" max="1" step="0.05"
-              value="1" aria-label="Volume">
-            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel">Ask Hilde</button>
-            <span id="reader-download" class="player-status" aria-live="polite"></span>
-            <span id="player-key-status" class="visually-hidden" aria-live="polite"></span>
-          </div>
         </div>
         <p id="reader-unavailable" class="notice hidden"></p>
         <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
@@ -17822,6 +17822,26 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </section>
         <button id="back-to-listening" class="back-to-listening hidden" type="button"
           onclick="backToListening()">Back to where you're listening</button>
+        <div id="player-dock" class="player-dock">
+          <div id="artifact-player" class="player-bar" role="group" aria-label="Player">
+            <button id="player-play" class="player-play" type="button" aria-label="Play"
+              onclick="togglePlayback()"></button>
+            <div class="player-track">
+              <input id="player-seek" class="player-seek" type="range" min="0" max="0" step="0.1" value="0"
+                aria-label="Position in the book">
+              <span id="player-elapsed" class="player-time">0:00</span>
+              <span class="player-time player-of" aria-hidden="true">/</span>
+              <span id="player-total" class="player-time">0:00</span>
+            </div>
+            <div class="menu-wrap player-speed-wrap">
+              <button id="player-speed" class="player-speed" type="button" aria-haspopup="menu"
+                aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1×</button>
+              <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
+            </div>
+            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel">Ask Hilde</button>
+            <span id="player-key-status" class="visually-hidden" aria-live="polite"></span>
+          </div>
+        </div>
       </div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
         <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
@@ -17903,10 +17923,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
         </section>
       </aside>
-      <div id="selection-menu" class="selection-menu hidden" role="menu" aria-label="Selected text">
-        <button type="button" role="menuitem" data-action="ask">Ask about this</button>
-        <button type="button" role="menuitem" data-action="copy">Copy</button>
-      </div>
+      <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
     </div>
   </section>
 
@@ -18215,8 +18232,6 @@ const READER_WORD_LEAD_SECONDS = 0.1;
 const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5v11L13 8z"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zm5 0h3v10H9z"/></svg>';
 const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.1 3 7.9 1.6 9.3l4.6 4.6 8.2-8.2-1.4-1.4z"/></svg>';
-const VOLUME_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm9.2-1.6a5 5 0 0 1 0 7.2l-1-1a3.6 3.6 0 0 0 0-5.2z"/></svg>';
-const MUTED_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h3l4-3.5v11L5 10H2zm8.6.2 1-1 1.7 1.7 1.7-1.7 1 1-1.7 1.8 1.7 1.7-1 1-1.7-1.7-1.7 1.7-1-1 1.7-1.7z"/></svg>';
 let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], consumers = [];
 // Jobs this server process finished, newest first: done, failed, or stopped.
 let recent = [];
@@ -18744,7 +18759,7 @@ function clearReader() {
   $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
   if ($("change-voice-dialog").open) $("change-voice-dialog").close();
-  hideSelectionMenu();
+  hideSelectionAsk();
   setDetached(false);
   renderPlayer();
 }
@@ -18851,82 +18866,92 @@ function wrapReaderWords(parts, cues) {
   }
 }
 
-// Clicking the text listens from there: a click (a tap) on a word seeks to
-// it and plays, and opens nothing. A double-click, a long press (touch), or a
-// drag selects instead; the selection's menu offers Ask about this and Copy,
-// and only Ask about this (or Ask Hilde) pauses the book and asks, with the
-// selection as the card's focus and its sentence as context; the card's
-// switch widens it to the sentence or the paragraph.
+// A tap (a click) in the text listens or pauses, and opens nothing: on a
+// word outside the sentence being read it seeks to that word and plays;
+// anywhere in the sentence being read (narrated now, or paused and still
+// marked) it pauses, and the next tap there resumes from the same time.
+// It acts at once on the pointerup of a completed short tap. A press that
+// moved past READER_TAP_SLOP, was held READER_LONG_PRESS or longer, saw the
+// listener scroll the page, or that the browser took over (pointercancel: a
+// scroll, a pinch) does nothing; so do the second tap of a double tap (a
+// mouse press the browser counts as a double-click; a touch within
+// READER_DOUBLE_TAP of the last tap and near it), a Shift+click, and a tap
+// that only clears a selection. The browser keeps its own double-tap zoom:
+// no touch-action, no user-scalable. Selecting (a drag, a long press, the
+// browser's double-click) shows Ask about this beside the selection; only
+// that button (or Ask Hilde) pauses the book and asks, with the selection as
+// the card's focus and its sentence as context; the card's switch widens it
+// to the sentence or the paragraph.
 // A focus: { base, the range selected; scope: "word" | "sentence" | "paragraph" }.
 const READER_WORD = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
 const TEXT_UNIT = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, blockquote, figcaption";
 const READER_SKIP = "a, button, img, .figure-card, .reader-tag, .reader-label";
-// A click waits out a double-click's second click (which selects the word):
-// READER_CLICK_WAIT is 500 ms, the usual double-click time on Windows and
-// macOS. Any press in the text meanwhile, a selection, a long press, or a
-// touch that moved (a scroll) cancels it. A double-click the browser still
-// recognises after the seek began (a longer double-click time set in the
-// system) takes the seek back: the time and play state from before it.
-const READER_CLICK_WAIT = 500, READER_LONG_PRESS = 500, READER_TOUCH_SLOP = 10;
-let readerClickTimer = 0, readerPress = null, readerClickUndo = null;
-function clickReaderText(event) {
-  if (!event.isTrusted || event.button !== 0 || event.shiftKey || !readerAudio) return;
-  if (event.detail > 1) { undoReaderClick(); return; }
-  readerClickUndo = null;
-  if (readerPress && (readerPress.moved || readerPress.long)) return;
-  if (event.target.closest(READER_SKIP)) return;
-  // The click that ends a drag selection selects; its menu asks or copies.
-  if (!window.getSelection().isCollapsed) return;
-  const part = event.target.closest(".reader-sentence, .reader-block, .reader-original");
-  if (!part) return;
-  const range = clickedWord(event, part) || widenRange(part, 0, "sentence");
-  const passage = Number(part.closest("[data-passage]")?.dataset.passage) || null;
-  clearTimeout(readerClickTimer);
-  readerClickTimer = setTimeout(() => {
-    if (!readerAudio || !window.getSelection().isCollapsed) return;
-    const before = { time:readerAudio.currentTime, paused:readerAudio.paused };
-    if (!listenFromSelection({ range, first:passage })) return;
-    readerClickUndo = before;
-    readerAudio.play().catch(() => {});
-  }, READER_CLICK_WAIT);
-}
-// The second click of a double-click: no seek, or the seek taken back. The
-// page stays on the selected word (its menu shows); with the place it went
-// back to off screen, Back to where you're listening offers it.
-function undoReaderClick() {
-  clearTimeout(readerClickTimer);
-  const before = readerClickUndo;
-  readerClickUndo = null;
-  if (!before || !readerAudio) return;
-  if (before.paused) readerAudio.pause();
-  readerAudio.currentTime = before.time;
-  setDetached(true);
-  updateReaderHighlight();
-  if (onScreen(listeningElement())) setDetached(false);
-}
+const READER_TAP_SLOP = 10, READER_LONG_PRESS = 500, READER_DOUBLE_TAP = 350, READER_PRESS_SELECT = 650;
+let readerPress = null, readerLastTap = null;
 function pressReaderText(event) {
-  clearTimeout(readerClickTimer);
-  clearTimeout(readerPress?.timer);
+  const before = readerPress;
+  clearTimeout(before?.timer);
   readerPress = null;
-  if (!event.isTrusted || event.pointerType !== "touch" || !event.isPrimary) return;
-  const press = readerPress = { x:event.clientX, y:event.clientY, target:event.target, moved:false, long:false };
-  press.timer = setTimeout(() => { press.long = true; selectPressedWord(press); }, READER_LONG_PRESS);
+  // A second finger while one is down is a pinch, not a tap.
+  if (before && !event.isPrimary) return;
+  if (!event.isTrusted || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+  const last = readerLastTap;
+  const press = readerPress = {
+    id:event.pointerId, x:event.clientX, y:event.clientY, at:event.timeStamp, target:event.target,
+    shift:event.shiftKey, selected:!!readerSelection(), moved:false, scrolled:false,
+    double:event.pointerType !== "mouse" && !!last && event.timeStamp - last.at < READER_DOUBLE_TAP
+      && Math.hypot(event.clientX - last.x, event.clientY - last.y) < 3 * READER_TAP_SLOP,
+  };
+  if (event.pointerType !== "mouse")
+    press.timer = setTimeout(() => selectPressedWord(press), READER_PRESS_SELECT);
 }
-// A touch lifted before the long press is a tap; one that moved past the
-// slop, or that the browser took for a scroll (pointercancel), is not.
+// The browser's own count of a mouse press: 2 or more is a double-click.
+function pressReaderTextAgain(event) {
+  if (readerPress && event.detail > 1) readerPress.double = true;
+}
+function stopReaderPress(press, why) {
+  if (!press) return;
+  press[why] = true;
+  clearTimeout(press.timer);
+}
 function trackReaderPress(event) {
   const press = readerPress;
-  if (!press || event.pointerType !== "touch" || !event.isPrimary) return;
-  if (event.type === "pointerup") clearTimeout(press.timer);
-  else if (event.type === "pointercancel"
-      || Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TOUCH_SLOP) {
-    press.moved = true;
-    clearTimeout(press.timer);
-  }
+  if (press && event.pointerId === press.id
+      && Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TAP_SLOP)
+    stopReaderPress(press, "moved");
 }
-// A long press selects the word under the finger (a phone's own long press
-// selects it too); lifting the finger shows the selection's menu.
+function cancelReaderPress(event) {
+  if (readerPress && event.pointerId === readerPress.id) { clearTimeout(readerPress.timer); readerPress = null; }
+}
+function tapReaderText(event) {
+  const press = readerPress;
+  if (!press || event.pointerId !== press.id) return;
+  readerPress = null;
+  clearTimeout(press.timer);
+  if (press.moved || press.scrolled || press.double || press.shift || press.selected
+      || event.timeStamp - press.at >= READER_LONG_PRESS
+      || Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TAP_SLOP) return;
+  readerLastTap = { at:event.timeStamp, x:event.clientX, y:event.clientY };
+  if (!readerAudio || readerDownload?.restoring || press.target.closest(READER_SKIP) || readerSelection()) return;
+  const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
+  if (!part) return;
+  if (inSentenceBeingRead(part)) { togglePlayback(); return; }
+  const range = clickedWord({ target:press.target, clientX:event.clientX, clientY:event.clientY }, part)
+    || widenRange(part, 0, "sentence");
+  const passage = Number(part.closest("[data-passage]")?.dataset.passage) || null;
+  if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {});
+}
+// The sentence being read: the one the player marks, narrated now or where
+// it paused; in Source text, the shown element of its passage.
+function inSentenceBeingRead(part) {
+  if (activeReaderBlock < 0) return false;
+  if ((readerBlocks[activeReaderBlock] || []).includes(part)) return true;
+  return textView === "source" && part.classList.contains("reader-original") && part === listeningElement();
+}
+// A long press selects its word. A phone does that itself; where nothing
+// did (Chromium's touch emulation has no long press), this does.
 function selectPressedWord(press) {
+  if (readerPress !== press || press.moved || press.scrolled || !window.getSelection().isCollapsed) return;
   if (press.target.closest(READER_SKIP)) return;
   const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
   const word = part && clickedWord({ target:press.target, clientX:press.x, clientY:press.y }, part);
@@ -19292,20 +19317,26 @@ function renderReaderOriginals(originals) {
 
 // --- Reading position --------------------------------------------------------
 // The place is the sentence being narrated and its passage, never pixels.
-// The page scrolls (never an inner box); the player is pinned above the text,
-// or docked beneath it on a phone.
+// The page scrolls (never an inner box); the view's controls are pinned above
+// the text on a wide screen, and the player is docked beneath it everywhere.
 function passageOfBlock(block) {
   const passages = readerPayload ? readerPayload.block_passages || [] : [];
   for (let index = Math.min(block, passages.length - 1); index >= 0; index--)
     if (passages[index]) return passages[index];
   return null;
 }
-function playerDocked() { return window.matchMedia("(max-width:767.98px)").matches; }
-// The part of the screen the text shows in: beneath the pinned controls and
-// player, or above the docked player on a phone.
+// Narrow screens (a phone): the view's controls scroll with the text, and
+// menus dock at the bottom.
+function narrowLayout() { return window.matchMedia("(max-width:767.98px)").matches; }
+// The top of the player docked at the bottom of every screen.
+function dockTop() {
+  const dock = $("player-dock");
+  return shown(dock) ? dock.getBoundingClientRect().top : window.innerHeight;
+}
+// The part of the screen the text shows in: beneath the pinned controls (at
+// the top of a phone's screen once they scroll away) and above the player.
 function readingViewport() {
-  if (playerDocked()) return { top:0, bottom:$("artifact-player").getBoundingClientRect().top };
-  return { top:Math.max($("listen-bar").getBoundingClientRect().bottom, 0), bottom:window.innerHeight };
+  return { top:narrowLayout() ? 0 : Math.max($("listen-bar").getBoundingClientRect().bottom, 0), bottom:dockTop() };
 }
 function shown(element) { return !!element && element.getClientRects().length > 0; }
 function onScreen(element) {
@@ -19364,9 +19395,9 @@ function motion() {
 function placeListening(element, behavior) {
   if (!element) return;
   const box = element.getBoundingClientRect();
-  // Once the text scrolls, the controls and player are pinned to the top of the screen.
-  const top = playerDocked() ? 0 : $("listen-bar").getBoundingClientRect().height;
-  const bottom = playerDocked() ? $("artifact-player").getBoundingClientRect().top : window.innerHeight;
+  // Once the text scrolls, the controls are pinned to the top of a wide screen.
+  const top = narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height;
+  const bottom = dockTop();
   scrollPageBy(box.top - top - (bottom - top) / 4, behavior);
 }
 function followListening(element) {
@@ -19506,21 +19537,12 @@ function renderPlayer() {
   $("player-speed").setAttribute("aria-label", `Playback speed ${formatSpeed(speed)}`);
   for (const item of $("speed-menu").children)
     item.setAttribute("aria-checked", String(Math.abs(Number(item.dataset.speed) - speed) < 1e-9));
-  const muted = !!audio && (audio.muted || audio.volume === 0);
-  $("player-mute").innerHTML = muted ? MUTED_ICON : VOLUME_ICON;
-  $("player-mute").setAttribute("aria-label", muted ? "Sound on" : "Mute");
-  $("player-volume").value = String(audio ? (audio.muted ? 0 : audio.volume) : 1);
   renderPlayerTime();
   renderResumeBook();
 }
 function togglePlayback() {
   if (!readerAudio) return;
   if (readerAudio.paused) readerAudio.play().catch(() => {}); else readerAudio.pause();
-}
-function toggleMute() {
-  if (!readerAudio) return;
-  if (readerAudio.volume === 0) { readerAudio.volume = 1; readerAudio.muted = false; }
-  else readerAudio.muted = !readerAudio.muted;
 }
 // Speed is this browser's playback preference, kept per book; it never
 // changes the audio.
@@ -19952,11 +19974,9 @@ function fitVisualViewport() {
   document.documentElement.style.setProperty("--vv-top", `${viewport.offsetTop}px`);
   document.documentElement.classList.toggle("keyboard-open", viewport.height < window.innerHeight * 0.75);
 }
-// The docked player's height, which the text leaves free beneath it.
+// The docked player's height, which the page leaves free beneath the text.
 function fitDock() {
-  document.documentElement.style.setProperty(
-    "--dock-h", playerDocked() ? `${$("artifact-player").offsetHeight}px` : "0px",
-  );
+  document.documentElement.style.setProperty("--dock-h", `${$("player-dock").offsetHeight}px`);
 }
 
 // A figure, large: the picture as the PDF lays it out, the paper's caption
@@ -20890,34 +20910,35 @@ async function askHilde() {
   refreshPaperModels();
 }
 
-// The menu on a finished selection in the text (a double-click, a long press,
-// or a drag; a click listens from its word instead): Ask about this, Copy.
+// Ask about this: Hilde's button beside a selection in the text (a drag, a
+// long press, the browser's double-click), shown once the pointer is up;
+// above the selection with a mouse, below it on a touch screen, whose own
+// menu (Copy and the like) goes above. A tap listens from a word instead.
 let pointerHeld = false, selectionTimer = 0;
-function hideSelectionMenu() { $("selection-menu").classList.add("hidden"); }
-function queueSelectionMenu() {
+function hideSelectionAsk() { $("selection-ask").classList.add("hidden"); }
+function queueSelectionAsk() {
   clearTimeout(selectionTimer);
-  selectionTimer = setTimeout(showSelectionMenu, 250);
+  selectionTimer = setTimeout(showSelectionAsk, 250);
 }
-function showSelectionMenu() {
+function showSelectionAsk() {
   const picked = !pointerHeld && state && state.tab === "player" && readerSelection();
-  if (!picked) { hideSelectionMenu(); return; }
-  $("selection-menu").classList.remove("hidden");
-  placeSelectionMenu();
+  if (!picked) { hideSelectionAsk(); return; }
+  $("selection-ask").classList.remove("hidden");
+  placeSelectionAsk();
 }
-function placeSelectionMenu() {
-  const menu = $("selection-menu"), selection = window.getSelection();
-  if (menu.classList.contains("hidden") || !selection.rangeCount) return;
+function placeSelectionAsk() {
+  const button = $("selection-ask"), selection = window.getSelection();
+  if (button.classList.contains("hidden") || !selection.rangeCount) return;
   const box = selection.getRangeAt(0).getBoundingClientRect(), view = readingViewport();
-  const height = menu.offsetHeight, width = menu.offsetWidth;
-  // Below the selection on a touch screen, whose own menu goes above it.
+  const height = button.offsetHeight, width = button.offsetWidth;
   const below = window.matchMedia("(pointer:coarse)").matches;
   let top = below ? box.bottom + 12 : box.top - height - 8;
   if (top < view.top + 4) top = box.bottom + 8;
   if (top + height > view.bottom - 4) top = box.top - height - 8;
-  // A selection scrolled partly away keeps its menu on screen.
+  // A selection scrolled partly away keeps its button on screen.
   top = Math.min(Math.max(top, view.top + 4), view.bottom - height - 4);
-  menu.style.top = `${Math.round(top)}px`;
-  menu.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
+  button.style.top = `${Math.round(top)}px`;
+  button.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
     Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
 }
 // Seeks to the first word of the selection (a clicked word, the card's
@@ -20940,11 +20961,6 @@ function listenFromSelection(picked) {
   updateReaderHighlight();
   setDetached(false);
   return true;
-}
-async function copySelection(picked) {
-  try { await navigator.clipboard.writeText(picked.text); }
-  catch (_) { document.execCommand("copy"); }
-  setStatus("Copied the selected text.");
 }
 
 async function refreshLibrary(restore) {
@@ -21079,7 +21095,7 @@ function openRowMenu(button, label, items) {
   menu.classList.remove("hidden");
   // Under its button on a wide screen; a phone's stylesheet docks it at the bottom.
   menu.style.top = menu.style.left = "";
-  if (!playerDocked()) {
+  if (!narrowLayout()) {
     const box = button.getBoundingClientRect(), width = menu.offsetWidth, height = menu.offsetHeight;
     const below = box.bottom + 4 + height <= window.innerHeight;
     menu.style.top = `${below ? box.bottom + 4 : Math.max(8, box.top - 4 - height)}px`;
@@ -22976,7 +22992,7 @@ function followActive(info, reconnecting) {
 const SERVER_PARTS = [
   "#page-settings", "#page-audiobook", "#page-progress", "#page-voice", "#jobs-indicator",
   "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#chat-pane",
-  "#figure-view .panel-actions", "#selection-menu [data-action=ask]",
+  "#figure-view .panel-actions", "#selection-ask",
 ];
 let serverDown = false;
 function setServerDown(down) {
@@ -23046,7 +23062,7 @@ function render() {
   document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
-  if (!reading) { hideSelectionMenu(); closeReaderMenus(); }
+  if (!reading) { hideSelectionAsk(); closeReaderMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
   renderFailureCards(); renderIndicator();
 }
@@ -24384,13 +24400,13 @@ $("chat-speak").addEventListener("change", (event) => {
   if (!event.target.checked) stopSpeaking();
 });
 
-// Listen: the player bar, the panel, the selection menu, and the reading position.
-$("reader-content").addEventListener("click", clickReaderText);
-// A press in the text cancels a click's pending seek; a touch held still
-// long enough selects its word, one that moves is a scroll.
+// Listen: the player bar, the panel, Ask about this, and the reading position.
+// A tap in the text listens or pauses on its pointerup; see pressReaderText().
 $("reader-content").addEventListener("pointerdown", pressReaderText);
-for (const type of ["pointermove", "pointerup", "pointercancel"])
-  $("reader-content").addEventListener(type, trackReaderPress, { passive:true });
+$("reader-content").addEventListener("mousedown", pressReaderTextAgain);
+$("reader-content").addEventListener("pointermove", trackReaderPress, { passive:true });
+$("reader-content").addEventListener("pointercancel", cancelReaderPress);
+$("reader-content").addEventListener("pointerup", tapReaderText);
 $("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection(); });
 $("ask-hilde").addEventListener("click", askHilde);
 $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
@@ -24409,11 +24425,6 @@ $("player-seek").addEventListener("pointerup", () => { seekDragging = false; });
 $("player-seek").addEventListener("input", (event) => {
   if (readerAudio) readerAudio.currentTime = Number(event.target.value);
 });
-$("player-volume").addEventListener("input", (event) => {
-  if (!readerAudio) return;
-  readerAudio.volume = Number(event.target.value);
-  readerAudio.muted = readerAudio.volume === 0;
-});
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".menu-wrap, #row-menu, .row-more")) closeMenus();
 });
@@ -24425,29 +24436,27 @@ document.addEventListener("keydown", (event) => {
     button?.focus();
   } else if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
     closeMenus(); event.preventDefault();
-  } else if (!$("selection-menu").classList.contains("hidden")) hideSelectionMenu();
+  } else if (!$("selection-ask").classList.contains("hidden")) hideSelectionAsk();
 });
 // A row's menu stays under its button only while nothing scrolls.
 window.addEventListener("scroll", () => {
-  if (!$("row-menu").classList.contains("hidden") && !playerDocked()) closeMenus();
+  if (!$("row-menu").classList.contains("hidden") && !narrowLayout()) closeMenus();
 }, { passive:true });
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
-  if (!event.target.closest("#selection-menu")) hideSelectionMenu();
+  if (!event.target.closest("#selection-ask")) hideSelectionAsk();
   // The page's own scroll bar.
   if (event.target === document.documentElement) userScrollAt = performance.now();
 }, true);
 for (const type of ["pointerup", "pointercancel"])
-  document.addEventListener(type, () => { pointerHeld = false; queueSelectionMenu(); }, true);
-document.addEventListener("selectionchange", queueSelectionMenu);
-// Pressed, the menu keeps the selection it acts on.
-$("selection-menu").addEventListener("pointerdown", (event) => event.preventDefault());
-$("selection-menu").addEventListener("click", (event) => {
-  const action = event.target.closest("[data-action]")?.dataset.action;
+  document.addEventListener(type, () => { pointerHeld = false; queueSelectionAsk(); }, true);
+document.addEventListener("selectionchange", queueSelectionAsk);
+// Pressed, the button keeps the selection it asks about.
+$("selection-ask").addEventListener("pointerdown", (event) => event.preventDefault());
+$("selection-ask").addEventListener("click", () => {
   const picked = readerSelection();
-  if (!action || !picked) return;
-  hideSelectionMenu();
-  if (action === "copy") { copySelection(picked); return; }
+  hideSelectionAsk();
+  if (!picked) return;
   window.getSelection().removeAllRanges();
   pauseBookForQuestion();
   askAboutSelection(picked);
@@ -24458,8 +24467,10 @@ window.addEventListener("keydown", (event) => {
   if (["PageUp", "PageDown", "ArrowUp", "ArrowDown"].includes(event.key)) userScrollAt = performance.now();
 });
 window.addEventListener("scroll", () => {
+  // A scroll the listener makes while pressing the text: not a tap, nor a long press.
+  if (readerPress && performance.now() >= expectScrollUntil) stopReaderPress(readerPress, "scrolled");
   userScrolled();
-  placeSelectionMenu();
+  placeSelectionAsk();
 }, { passive:true });
 $("panel-resize").addEventListener("pointerdown", (event) => {
   event.currentTarget.setPointerCapture(event.pointerId);
@@ -24497,7 +24508,7 @@ window.addEventListener("resize", () => {
   document.documentElement.classList.toggle(
     "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
 });
-new ResizeObserver(fitDock).observe($("artifact-player"));
+new ResizeObserver(fitDock).observe($("player-dock"));
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();

@@ -313,13 +313,19 @@ button at its top right (on a phone too) that goes back to the list in one
 press, as does the **Listen** tab pressed while a book is open (from another
 tab, **Listen** brings back the book you had open). A book read by more than one voice shows a
 voice picker in that line. Above the text, and staying on screen while it
-scrolls, are **Follow along**, the **Narration text | Source text** switch,
-**⋯** (More), and the player: play, the seek bar, the time, the speed (it
-shows, for example, **1.25×**; click it to choose 0.75× to 2×), mute and
-volume, and **Ask Hilde**. On a phone the player sits at the bottom of the
-screen instead and never covers the text. The text runs in a comfortable
+scrolls (on a phone, it scrolls away with the text), are **Follow along**,
+the **Narration text | Source text** switch, and **⋯** (More). The player is
+one bar docked at the bottom of the screen, on a computer and on a phone alike,
+and stays there while you scroll: from left to right a large play/pause
+button, the seek bar, the elapsed and total time, the speed (it shows, for
+example, **1.25×**; click it to choose 0.75× to 2×), and **Ask Hilde**. On a
+phone (under about 420 px wide) the seek bar takes a thin row of its own, the
+elapsed time at its left end and the total at its right, and below it the
+speed, a large play/pause in the middle, and **Ask Hilde**; the bar keeps
+clear of the phone's home indicator. The bar never covers the text: the page
+leaves room for it below the last paragraph. The text runs in a comfortable
 reading column; on a wide screen the panel for the chat, a figure, or a source
-page opens beside it.
+page opens beside it, and the player bar then stays under the text.
 
 **⋯** holds **Download MP3** (the voice being played; the button reads
 **Download started** for a few seconds), **Download source** (the document the
@@ -352,23 +358,26 @@ select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically.
 
-Clicking a word (tapping it on a phone) plays the book from that word, like
-rewinding to it; nothing opens and nothing is asked. The book starts half a
-second after the click, the usual double-click time on Windows and macOS, so
-that a double-click can select the word instead; if your system's double-click
-time is longer and the second click comes after the book has started, the
-book goes back to where it was and stays playing or paused as before. To ask
-about text, select it: double-click a word (on a phone, long-press it; its
-handles stretch the selection), or drag over any span on a computer.
-Selecting shows a small menu: **Ask about this** and **Copy**. Nothing opens
-until you press **Ask about this** (or **Ask Hilde**): then the book pauses
-and the chat opens (on a phone, as a full-screen sheet) with a card headed
-**Selected text**: your words in quotes, and under **Context details** the
-section they are in, all of your selection, and the sentence around it as
-context. The card's **Word | Sentence | Paragraph** switch widens what you
-ask about, and the book marks it in gray; **Listen from here** on the card
-plays from the start of it. A question you had already typed stays in the
-box; otherwise the box is empty and the button reads **Explain this part**.
+A tap on a word (a click on a computer) outside the sentence being read plays
+the book from that word, like rewinding to it; a tap anywhere in the sentence
+being read pauses it, and that sentence stays marked, so the next tap in it
+goes on from exactly where it stopped. Nothing opens and nothing is asked, and
+the book answers at once, without waiting. Only a short, still tap counts:
+scrolling, dragging, selecting, and holding your finger down never start,
+stop, or move the book, nor does the second tap of a double tap (the browser
+may still zoom), nor a tap that only clears a selection. To ask about text,
+select it: on a phone, long-press a word (its handles stretch the selection);
+on a computer, drag over any span. Hilde's **Ask about this** button then
+appears next to the selection (your phone's own Copy menu may appear too).
+Nothing opens until you press **Ask about this** (or **Ask Hilde** in the
+player): then the book pauses and the chat opens (on a phone, as a full-screen
+sheet) with a card headed **Selected text**: your words in quotes, and under
+**Context details** the section they are in, all of your selection, and the
+sentence around it as context. The card's **Word | Sentence | Paragraph**
+switch widens what you ask about, and the book marks it in gray; **Listen from
+here** on the card plays from the start of it. A question you had already
+typed stays in the box; otherwise the box is empty and the button reads
+**Explain this part**.
 
 One question can bring at most 8,000 characters of selected text from at most
 6 paragraphs. A longer selection is never cut short: its card says how long
@@ -495,8 +504,7 @@ indexed MP4, because browsers seek variable-bitrate MP3 through a coarse table
 and then report the requested time while playing audio from up to a minute
 away. Safari and Chrome both play this MP4, so clicking a word starts at
 the word you chose; browsers without MP3-in-MP4 playback fall back to the plain MP3 and its
-approximate seeking. From the first press of play the whole book downloads in
-the background, with its progress in the player; once it is in, playback moves
+the background, with its progress under the book's title; once it is in, playback moves
 to that copy at the next sentence start, and from then on nothing waits on the
 network, seeking included. Each sentence cue takes precedence over a stray word cue,
 so a word alignment error never outlives its sentence. **Follow along** turns
@@ -508,7 +516,8 @@ keyboard shortcuts: Space or K plays or pauses, J and L go back and forward
 focus, M mutes, 0 to 9 jump to that tenth of the book, Home and End go to its
 start and end, < and > slow it down and speed it up (0.25× to 2×), and ?
 opens the **Keyboard shortcuts** list. Typing in a text field, such as
-the chat, never triggers them. The web shell is served with `Cache-Control:
+the chat, never triggers them, and Space on a focused button presses that
+button. The web shell is served with `Cache-Control:
 no-store`, so subsequent ordinary refreshes load
 the current player code. A table in a PDF shows as printed, a picture cut from
 its page, because the cells PDF extraction rebuilds can split words and carry

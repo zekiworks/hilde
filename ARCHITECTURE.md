@@ -1088,12 +1088,15 @@ Each page:
   Listen is shown (`chooseListen()`; from another page the tab opens Listen as
   it was left, with its book). The meta line reads "Read by <voice>" (a
   voice picker instead when more than one voice is ready), duration, source
-  file; then **Notes Hilde wrote** (below), the stale-voice notice (**Make
-  <voice> again**). Pinned above the text (`#listen-bar`, sticky) are
-  **Follow along**, the **Narration text | Source text** switch (each option
-  says what it shows), **⋯ More** (**Download MP3**, **Download source** when
-  `has_source`, **Change voice…** for books with their own text, **Recreate
-  with the latest Hilde…**, **Keyboard shortcuts**), and the player bar.
+  file; under it the in-browser copy's progress (`#reader-download`); then
+  **Notes Hilde wrote** (below), the stale-voice notice (**Make
+  <voice> again**). Pinned above the text on a wide screen (`#listen-bar`,
+  sticky) are **Follow along**, the **Narration text | Source text** switch
+  (each option says what it shows), and **⋯ More** (**Download MP3**,
+  **Download source** when `has_source`, **Change voice…** for books with
+  their own text, **Recreate with the latest Hilde…**, **Keyboard
+  shortcuts**); nothing at the top asks Hilde. The player bar is docked at
+  the bottom (see Reader).
   **Change voice** opens `#change-voice-dialog`: the saved voices the book
   does not have ready, the title "Read '<title>' with <voice>?", and
   `changeVoiceText()`: "The text stays the same; <voice> is added beside the
@@ -1112,9 +1115,13 @@ Each page:
   while focus is in `#artifact-player`, M, 0 to 9, Home and End, < and >
   through `PLAYER_SPEEDS`, ? opening and closing the **Keyboard shortcuts**
   dialog) and announces volume and speed in `#player-key-status`. Text
-  inputs, selects, the volume slider, and tab strips keep their keys (the
-  seek bar takes the player's), Space still presses a focused button, link,
-  summary, or box, and a key with Ctrl, Alt, or Meta is left alone.
+  inputs, selects, contenteditable, a model picker's list, and tab strips
+  keep their keys (the seek bar takes the player's); Space toggles the book
+  anywhere else, except that a focused button, link, summary, or box still
+  gets its native press (Space on the focused play button plays or pauses;
+  on **Ask Hilde** it opens the chat); a key with Ctrl, Alt, or Meta is left
+  alone. The player has no mute button or volume slider: M and ↑/↓ act on
+  the audio directly.
 - On **Create**, a document whose content is already a book shows **You
   already have this one** with **Open**, **Overwrite**, and **Change voice**
   in step 1. For a book with its own text, Change voice makes step 3 hide
@@ -1170,7 +1177,7 @@ be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
 shows `#server-down` and makes `SERVER_PARTS` inert (Settings, Create, the
 progress view, Voices, the jobs indicator, the Library, an open book's
 **More** menu, stale-voice notice, **Ask Hilde**, the chat, **Ask about this
-figure**, and the selection menu's **Ask about this**), so nothing that needs
+figure**, and the floating **Ask about this** on a selection), so nothing that needs
 the server can be pressed or focused; the tabs, the player, the text, its
 views, and the figure and page already shown stay, so a book loaded in this
 browser plays on. The first poll that answers again, or answers before the
@@ -1209,11 +1216,11 @@ least 44 px tall. Focus is always visible, and selection, step state, and
 errors never rely on color alone (check marks, "Selected", ⚠ prefixes, and
 visually hidden step states).
 
-Listen below 768 px: the text takes the full width, the player docks at the
-bottom inside the safe area (`env(safe-area-inset-bottom)`, `viewport-fit=cover`),
-and the page leaves `--dock-h` (the player's height, kept by a
-`ResizeObserver`, `fitDock()`) free beneath the text; the chat, a figure, and
-a source page open as full-screen sheets. Below 1200 px the side panel always
+Listen below 768 px: the text takes the full width, the view's controls
+(`#listen-bar`, `display: contents`) scroll with it, and menus dock above the
+player (`narrowLayout()`); the chat, a figure, and a source page open as
+full-screen sheets. Below 480 px the player bar takes the phone layout (see
+Reader). Below 1200 px the side panel always
 replaces the reading view (`.side-panel` fixed over it, `html.sheet-open`
 stopping the page from scrolling beneath), with **← Back to the book**. Its
 height follows the visual viewport (`fitVisualViewport()` sets `--vv-height`
@@ -1353,8 +1360,9 @@ The **Listen** reader renders narration-ready Markdown, including structurally
 valid pipe tables and embedded PNG/JPEG/WebP/GIF visuals. Raw HTML is disabled.
 The book view gives the page the whole width (`main.reading`) and the text a
 reading column of `68ch` at 18 px with a 1.6 line height; the page scrolls,
-never an inner box. The controls and player stay pinned to the top of the
-screen while the text scrolls. Newly generated audio has
+never an inner box. The view's controls stay pinned to the top of a wide
+screen while the text scrolls, and the player is docked at the bottom of
+every screen (see the player bar below). Newly generated audio has
 exact integer-sample cues for every sentence and force-aligned word. The first
 aligned word in each block becomes its sentence checkpoint, replacing legacy
 length estimates whenever word timing exists.
@@ -1484,14 +1492,15 @@ refuses, fall back to the plain MP3 source.
 Streaming keeps only a little audio ahead, so a slow or busy connection can
 starve the player mid-word. From the first `play` event, `downloadWholeBook()`
 fetches the chosen source (`currentSrc`) in full, showing progress under the
-title, and keeps it as a Blob. `playDownloadedBook()` then moves playback to
+title (`#reader-download`), and keeps it as a Blob. `playDownloadedBook()` then moves playback to
 its object URL at the next sentence cue or pause, restoring the position and
 play state on `loadedmetadata`; the bytes are the same, so cues and exact
 seeking are unchanged, and nothing later waits on the network. A failed
 download leaves playback streaming. Leaving the book aborts the download and
-revokes the URL.
+revokes the URL. (A pause that makes this move, before any sentence cue did,
+sets the same time again on the copy: one `seeking` to the time it paused at.)
 
-A click on a word (and **Listen from here** on the card) seeks to a word starting up to 0.1 s before its aligned
+A tap on a word (and **Listen from here** on the card) seeks to a word starting up to 0.1 s before its aligned
 onset but never inside the previous word or sentence
 (`readerWordSeekSample()`), else to its sentence cue. The upcoming word is
 highlighted within the same lead.
@@ -1509,7 +1518,8 @@ Each reader paragraph carries its passage (`data-passage`, from
 `block_passages`), as does each Source text aside. `listeningElement()` is
 the narrated sentence, or in Source text the shown element of its passage.
 **Follow along** scrolls only when that element is no longer wholly visible
-below the pinned bar (above the docked player on a phone), then brings it a
+between the pinned controls (the top of the screen on a phone) and the docked
+player (`readingViewport()`, `dockTop()`), then brings it a
 quarter of the way down the rest of the screen: the text turns like pages
 instead of sliding at every sentence, so a figure stays in view while its
 description is read; with Follow along off the page never scrolls by itself.
@@ -1525,32 +1535,41 @@ shows at the bottom of the text until it is pressed or the sentence is back
 on screen; opening a figure or a source page, or a ¶ link in an answer, does
 the same.
 
-A click (a tap) in the text listens from there and opens nothing
-(`clickReaderText()`, one listener on `#reader-content`, Narration and Source
-text alike; only a trusted primary-button click without Shift): after
-`READER_CLICK_WAIT` (500 ms, the usual double-click time on Windows and
-macOS, so a double-click's second click can cancel it) it seeks to the word
-under the pointer (`clickedWord()`: its `.reader-word`, else the word at the
-caret point, else the nearest word of the clicked sentence) with
-`listenFromSelection()` and plays, keeping the time and play state from just
-before as `readerClickUndo`. The pending seek is
-cancelled by any press in the text meanwhile (`pressReaderText()` on
-`pointerdown`: a double-click, a drag), by a selection that is not collapsed
-when it fires, by a long press, and by a touch that moved past
-`READER_TOUCH_SLOP` (10 px) or that the browser took for a scroll
-(`pointercancel`; `trackReaderPress()`, `pointerType` `touch`). A click the
-browser counts as a double-click (`event.detail` ≥ 2) after the seek began
-(a system double-click time over 500 ms) takes it back (`undoReaderClick()`:
-the earlier time and play state; the view stays on the selected word, with
-**Back to where you're listening** when that place is off screen); the next
-single click forgets the undo. The browser decides what is a double-click
-from the system's setting; the page only sees `event.detail`. A touch held
-still for `READER_LONG_PRESS` (500 ms) selects its word
-(`selectPressedWord()`; a phone's own long press selects it too, and
-headless Chromium has none). A finished selection (a double-click, a long
-press, a drag, Shift+click extending it) shows a small menu above it (below
-it on a touch screen, whose own menu is above) with exactly **Ask about
-this** and **Copy**; it never seeks or asks. Only **Ask about this** (or
+A tap (a click) in the text listens or pauses and opens nothing, at once,
+with no wait (pointer events on `#reader-content`, Narration and Source text
+alike; never `touchstart`). `pressReaderText()` (`pointerdown`: trusted,
+primary pointer, the left button for a mouse) notes the press;
+`tapReaderText()` acts on its `pointerup` only for a completed short tap:
+moved no more than `READER_TAP_SLOP` (10 px; `trackReaderPress()` on
+`pointermove`), held less than `READER_LONG_PRESS` (500 ms), no scroll by the
+listener meanwhile (the page's own scrolls, inside `expectScrollUntil`, do
+not count), not taken over by the browser (`pointercancel`, a scroll or a
+pinch: `cancelReaderPress()`; a second finger cancels too), without Shift,
+not the second press of a double-click (`mousedown` `detail` ≥ 2,
+`pressReaderTextAgain()`, so the system's double-click time decides) or of a
+double tap (a touch within `READER_DOUBLE_TAP`, 350 ms, of the last tap and
+within 30 px), not a press that began on a selection (it only clears it), and
+no selection left at the `pointerup`. Then, on a part outside the sentence
+being read it seeks to the word under the pointer (`clickedWord()`: its
+`.reader-word`, else the word at the caret point, else the nearest word of
+the tapped sentence) with `listenFromSelection()` and plays; on any part of
+the sentence being read (`inSentenceBeingRead()`: the parts of
+`activeReaderBlock`, which keeps its marker while paused; in Source text,
+the shown element of its passage) it calls `togglePlayback()`: a pause, or
+a resume from the time it shows, never a seek. (Chromium's own pipeline then
+reports a clock 75–105 ms later at the `play` event than the paused time it
+was called at, the same as the Play button.) The first tap of a double tap
+acts like any tap and the second does nothing; the page sets no
+`touch-action` and no `user-scalable`, so the browser keeps its double-tap
+zoom. A touch held still for `READER_PRESS_SELECT` (650 ms) with nothing
+selected yet selects its word (`selectPressedWord()`): a phone's own long
+press selects first and this then does nothing; Chromium's touch emulation
+has no long press, so there this selects. A finished selection in the text
+(a drag, a long press, the browser's double-click, Shift+click extending
+it) shows Hilde's floating **Ask about this** (`#selection-ask`,
+`showSelectionAsk()` 250 ms after `selectionchange` or the `pointerup`)
+above it (below it on a touch screen, whose own Copy menu is above); it
+never seeks or asks. Only **Ask about this** (or
 **Ask Hilde** with text selected) pauses the book
 (`pauseBookForQuestion()`), opens the chat (`askAboutSelection()`) and
 attaches the selection as a focus `{base, scope}`; the box is left as it
@@ -1563,10 +1582,11 @@ within the printed paragraph. `focusAbout()` sends it as a `selection`
 around a focus smaller than a sentence, as context. The book marks the focus
 with the CSS Custom Highlight `reader-focus` in the selection's gray
 (`renderFocus()`, from `renderChatAbout()`); it goes when the card does.
-In the text, seeking is only: a click on a word (which also plays) and **Listen from
-here** on the card (`listenFromFocus()`, the start of the focus, seek only).
-Selecting, the menu, asking, and the scope switch never seek; closing the
-panel never resumes the book.
+In the text, seeking is only: a tap on a word outside the sentence being read
+(which also plays) and **Listen from here** on the card (`listenFromFocus()`,
+the start of the focus, seek only). Scrolling, dragging, selecting, long
+presses, and the scope switch never seek, play, or pause; asking only pauses;
+closing the panel never resumes the book.
 
 Figures: a figure or table passage with pictures (`figures`) shows them on a
 light paper card that is never inverted, at their own aspect ratio, with its
@@ -1582,9 +1602,23 @@ large in the side panel (`openFigure()`): the picture as the PDF lays it out,
 description** (its narration), and **Ask about this figure**. No badge says a
 description was checked.
 
-The player bar is the page's own: play/pause, a seek bar, elapsed and total
-time, a speed button showing the speed ("1.25×") that opens 0.75× to 2×,
-mute and volume, and **Ask Hilde**. The `<audio>` element has no controls.
+The player bar is the page's own, one bar docked at the bottom of every
+screen (`#player-dock`, `position: fixed`, inside
+`env(safe-area-inset-bottom)`); with the side panel open beside the text
+(1200 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
+stays under the reading column. Its controls keep to the text column's
+width (`68ch` of the reading font, centred): from left to right a large
+play/pause (48 px), the seek bar, elapsed and total time, a speed button
+showing the speed ("1.25×") that opens 0.75× to 2× upwards, and **Ask
+Hilde**. Below 480 px (`.player-bar` as a grid) the seek bar takes a
+full-width row between the elapsed time (left end) and the total (right
+end), and under it come the speed, play/pause in the middle (56 × 56 px), and
+**Ask Hilde**; every target is at least 44 × 44 px. There is no mute button
+or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
+bar's height, on a `ResizeObserver`; the page's bottom padding
+(`body:has(main.reading)`) is that height, so the last paragraph ends above
+the bar, and **Back to where you're listening**, toasts, and a phone's
+menus sit above it. The `<audio>` element has no controls.
 This browser keeps each book's place and speed in `localStorage`
 (`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`; saved about
 every second while playing, on pause, seek, and leaving the page), and the
