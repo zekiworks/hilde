@@ -92,16 +92,17 @@ badge saying where the document's text goes:
   browser.
 - **Settings › Providers** also holds the model servers on your network, up
   to 16, for every browser. **Add**, then **Local**, takes a **Name**, its
-  **Address** (`host:port`, for example `192.0.2.10:8000`), and **Models here
-  read images**; **Check and add** finds out whether it is an Ollama or an
+  **Address** (`host:port`, for example `192.0.2.10:8000`); **Check and add** finds out whether it is an Ollama or an
   OpenAI-compatible server and keeps it only if it lists models. The models of
   every server then appear together in each model list (**Text model**, the
   checking model, the figure model, and Ask Hilde) as "<model> · <server
   name>", so the text model can run on one server and the figure model on
   another. Each request goes to the server that offers its model; a model two
-  servers offer runs on the one listed first. Tick **Models here read images**
-  for a server whose models accept images, as Gemma 4 does; figures and
-  equations then go to them as images: from labels alone, Gemma 4 misread
+  servers offer runs on the one listed first. Hilde finds out by itself which
+  models accept images, as Gemma 4 does (from what the server reports, else one
+  small test picture per model; see
+  [Which local models read images](configuration.md#which-local-models-read-images));
+  figures and equations then go to them as images: from labels alone, Gemma 4 misread
   chart values and trends that it read right from the image. If a chosen
   local model is offered by none of the servers when a job starts, the job
   stops with "No local server under Settings › Providers offers <model>."
@@ -120,7 +121,7 @@ badge saying where the document's text goes:
   finds the problem fixed and nothing new wrong. **Checking model** is the
   model that checks; it is the text model unless you choose another. The
   checking model gets the figure as an image when it is a cloud model or a
-  local one marked as seeing images. Checking takes longer: up to three more
+  local one known to read images. Checking takes longer: up to three more
   requests per figure, table, or equation. The job log names every problem a
   check found and whether the correction was kept, and the book records the
   checking model and the counts. A check can be wrong too: on one test paper
@@ -155,8 +156,8 @@ captions, the text read from them, and the author's text about each; the rest
 of the paper stays on your network. The book records the figure model.
 
 Figures reach OpenAI, Claude, and Gemini models as images, a DeepSeek model when DeepSeek's model list says it
-takes images, and a local model too once
-**Models here read images** is ticked for its server under **Settings › Providers**. Otherwise a local model receives the text
+takes images, and a local model too once it is found to read images (or set so by hand under
+**Settings › Providers › Edit**). Otherwise a local model receives the text
 extracted from each figure instead. An equation the PDF lays out as a picture
 goes along with its printed text, so even a model that reads no images knows
 what it says. Its description opens with the number printed beside it,

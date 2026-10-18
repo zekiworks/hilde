@@ -152,8 +152,9 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   on Context Language Models, Gemma 4 without images took a bar chart's token
   shares for accuracy, reversed a trend, read a sum as a product, and put a
   wrong value on a panel in every one of three runs, and got each right in
-  every run with images. OpenAI and Claude models, and a local model whose
-  server is marked as seeing images, receive figures as images; `book.json`
+  every run with images. OpenAI and Claude models, and a local model found to
+  read images (Hilde sends it one small test picture unless its server
+  reports it), receive figures as images; `book.json`
   records, for each local model a book was made with, whether it did
   (`local_vision`).
 - **Cloud providers receive your document.** A document goes to OpenAI,

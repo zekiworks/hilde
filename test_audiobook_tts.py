@@ -24,6 +24,7 @@ from unittest import mock
 import urllib.request
 import urllib.error
 import urllib.parse
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -2802,7 +2803,7 @@ class UnifiedWorkflowTests(unittest.TestCase):
                 },
             }
             with mock.patch.object(web, "LOCAL_ENDPOINTS", [
-                {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False},
+                {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio"},
             ]):
                 values = web.values_of(normalize({"audiobook": {
                     "document": document.name, "server_voice": "alloy", "adapt": True,
@@ -2917,7 +2918,7 @@ class UnifiedWorkflowTests(unittest.TestCase):
             }})
             with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, \
                     mock.patch.object(web, "LOCAL_ENDPOINTS", [
-                        {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False},
+                        {"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio"},
                     ]), \
                     mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
                     mock.patch.object(web, "local_model_names", return_value=("faithful",)), \
@@ -4068,7 +4069,7 @@ class LocalPaperProviderTests(unittest.TestCase):
                 mock.patch.object(web, "read_openai_api_key", return_value=None), \
                 mock.patch.object(web, "read_gemini_key", return_value=None), \
                 mock.patch.object(web, "claude_code_status", return_value=(False, "")):
-            added = [{"name": "Desk", "server": "http://127.0.0.1:8010", "provider": "lm-studio", "vision": False}]
+            added = [{"name": "Desk", "server": "http://127.0.0.1:8010", "provider": "lm-studio"}]
             with mock.patch.object(web, "local_model_names", return_value=["text-model"]):
                 catalog = web.paper_model_catalog(added)
             self.assertEqual(
@@ -4119,8 +4120,9 @@ class LocalPaperProviderTests(unittest.TestCase):
     def test_the_catalog_gives_each_model_its_picker_entry_and_rows_for_what_is_not_connected(self):
         qwen = "http://127.0.0.1:8010"
         servers = [
-            {"name": "Spark2", "server": qwen, "provider": "lm-studio", "vision": True, "from_flag": True},
-            {"name": "Bariton", "server": "http://127.0.0.1:9", "provider": "ollama", "vision": False},
+            {"name": "Spark2", "server": qwen, "provider": "lm-studio", "from_flag": True,
+             "reads_images": {"unsloth/Qwen3.6-35B-A3B-NVFP4": True}},
+            {"name": "Bariton", "server": "http://127.0.0.1:9", "provider": "ollama"},
         ]
         catalog = self.catalog_with(servers, {qwen: ["unsloth/Qwen3.6-35B-A3B-NVFP4"]})
         self.assertEqual(
@@ -4153,8 +4155,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         # Settings › Providers lists each local server: name, address, whether
         # it answers, and whether it was set at startup.
         self.assertEqual(
-            [(e["name"], e["label"], e["images"], e["from_flag"], e["running"]) for e in catalog["endpoints"]],
-            [("Spark2", "127.0.0.1:8010", True, True, True), ("Bariton", "127.0.0.1:9", False, False, False)],
+            [(e["name"], e["label"], e["from_flag"], e["running"]) for e in catalog["endpoints"]],
+            [("Spark2", "127.0.0.1:8010", True, True), ("Bariton", "127.0.0.1:9", False, False)],
         )
         # Without a Gemini key, Google is a row to connect, with no model named.
         with mock.patch.object(web, "read_gemini_key", return_value=None), \
@@ -4172,15 +4174,16 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertEqual([row["label"] for row in bare["rows"]],
                          ["OpenAI", "Google (Gemini)", "Anthropic (Claude)", "DeepSeek", "xAI (Grok)"])
         self.assertEqual(bare["rows"][0]["note"], "Not connected")
-        # A local model without the server's vision mark reads no images.
-        plain = self.catalog_with([{"name": "Spark2", "server": qwen, "provider": "lm-studio", "vision": False}],
-                                  {qwen: ["llama-4"]})
-        self.assertFalse(plain["models"][0]["images"])
+        # A local model not known to read images (not checked: a server not registered) is not offered for them.
+        plain = self.catalog_with([{"name": "Spark2", "server": qwen, "provider": "lm-studio"}], {qwen: ["llama-4"]})
+        self.assertIsNone(plain["models"][0]["images"])
+        self.assertEqual(plain["models"][0]["image_check"], {"state": "unchecked", "images": None, "override": None})
 
     def test_first_use_follows_the_servers_stored_defaults_and_never_falls_back(self):
         one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
-        servers = [{"name": "One", "server": one, "provider": "lm-studio", "vision": True},
-                   {"name": "Two", "server": two, "provider": "ollama", "vision": False}]
+        servers = [{"name": "One", "server": one, "provider": "lm-studio",
+                    "reads_images": {"flash-model": True, "vision-model": True}},
+                   {"name": "Two", "server": two, "provider": "ollama"}]
         defaults = {"text": "lm-studio/flash-model", "image": "lm-studio/vision-model"}
         with mock.patch.dict(web.SERVER_DEFAULT_MODELS, defaults):
             # b: the server's default text and image narration models, reachable.
@@ -4284,7 +4287,7 @@ class LocalPaperProviderTests(unittest.TestCase):
 
         def problem(model, local_server="127.0.0.1:8010", **settings):
             state = normalize({"tab": "audiobook", "audiobook": {"adapt": True, "model": model, **settings}})
-            endpoints = [{"name": "Desk", "server": f"http://{local_server}", "provider": "lm-studio", "vision": False}]
+            endpoints = [{"name": "Desk", "server": f"http://{local_server}", "provider": "lm-studio"}]
             with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]), \
                     mock.patch.object(web, "LOCAL_ENDPOINTS", endpoints if local_server else []):
                 values = web.values_of(state, web.unconfigured_tts_models(), storage)
@@ -4396,7 +4399,7 @@ class LocalPaperProviderTests(unittest.TestCase):
                         source, stage / "prepared.txt", "utf-8", model="lm-studio/local-model",
                         local_servers=[{
                             "server": f"127.0.0.1:{server.server_port}", "provider": "lm-studio",
-                            "vision": local_vision,
+                            "reads_images": {"local-model": local_vision},
                         }],
                         in_flight=1, prompt_path=prompt, scratch_path=stage,
                     )
@@ -4420,7 +4423,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         # them, and the job says how to fix that.
         self.assertEqual(refused.code, 1)
         self.assertTrue(any(
-            event == "log" and "Models here read images" in str(data)
+            event == "log" and "Reads images: no" in str(data)
             for event, data in refused.history
         ))
         # A model that sees images gets the figure as an image.
@@ -4439,7 +4442,7 @@ class LocalPaperProviderTests(unittest.TestCase):
     def test_a_browsers_own_local_servers_from_before_are_no_longer_read(self):
         audiobook = normalize({"audiobook": {
             "local_server": "127.0.0.1:8894", "local_provider": "lm-studio", "local_vision": True,
-            "local_servers": [{"server": "127.0.0.1:8003", "provider": "ollama", "vision": True}],
+            "local_servers": [{"server": "127.0.0.1:8003", "provider": "ollama", "vision": True}],  # an old cookie
         }})["audiobook"]
         self.assertFalse({"local_server", "local_provider", "local_vision", "local_servers"} & set(audiobook))
         with mock.patch.object(web, "LOCAL_ENDPOINTS", []):
@@ -4465,12 +4468,12 @@ class LocalPaperProviderTests(unittest.TestCase):
 
     def test_a_local_server_registered_on_the_server_is_parsed_and_checked(self):
         option = web.local_server_option
-        self.assertEqual(option("lm-studio=http://127.0.0.1:8000,vision"),
-                         {"server": "http://127.0.0.1:8000", "provider": "lm-studio", "vision": True})
+        self.assertEqual(option("lm-studio=http://127.0.0.1:8000"),
+                         {"server": "http://127.0.0.1:8000", "provider": "lm-studio", "reads_images": {}})
         self.assertEqual(option("ollama=127.0.0.1:11434"),
-                         {"server": "http://127.0.0.1:11434", "provider": "ollama", "vision": False})
+                         {"server": "http://127.0.0.1:11434", "provider": "ollama", "reads_images": {}})
         for wrong in ("vllm=127.0.0.1:8000", "127.0.0.1:8000", "lm-studio=", "lm-studio=127.0.0.1:8000,fast",
-                      "lm-studio=http://127.0.0.1:8000/v1", "lm-studio=ftp://127.0.0.1"):
+                      "lm-studio=127.0.0.1:8000,vision", "lm-studio=http://127.0.0.1:8000/v1", "lm-studio=ftp://127.0.0.1"):
             with self.assertRaises(argparse.ArgumentTypeError, msg=wrong):
                 option(wrong)
 
@@ -4479,7 +4482,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         home = Path(temporary.name) / ".hilde"
         gemma = fake_local_server(self, ["gemma"], [])
-        flag = web.local_server_option("lm-studio=http://127.0.0.1:9,vision")
+        flag = web.local_server_option("lm-studio=http://127.0.0.1:9")
         patches = (mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
                    mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
                    mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
@@ -4493,28 +4496,29 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
         self.assertEqual(web.local_endpoints(), [{"name": "127.0.0.1", "server": "http://127.0.0.1:9",
-                                                  "provider": "lm-studio", "vision": True, "from_flag": True}])
-        # Its name changes; its address, images, and presence stay while the flag is given.
-        web.save_local_endpoint("127.0.0.1", "Spark2", "127.0.0.1:9", True)
-        for change in (("Spark2", "Spark2", "127.0.0.1:10", True), ("Spark2", "Spark2", "127.0.0.1:9", False)):
-            with self.assertRaises(ValueError):
-                web.save_local_endpoint(*change)
+                                                  "provider": "lm-studio", "reads_images": {}, "from_flag": True}])
+        # Its name changes; its address and presence stay while the flag is given.
+        web.save_local_endpoint("127.0.0.1", "Spark2", "127.0.0.1:9")
+        with self.assertRaises(ValueError):
+            web.save_local_endpoint("Spark2", "Spark2", "127.0.0.1:10")
         with self.assertRaises(ValueError):
             web.remove_local_endpoint("Spark2")
         # Added from Settings: asked what it is, checked, named uniquely by name and address.
-        web.save_local_endpoint("", "Bariton", gemma, False)
+        web.save_local_endpoint("", "Bariton", gemma)
         for name, address in (("spark2", "127.0.0.1:2"), ("Other", gemma), ("", gemma), ("x" * 33, gemma)):
             with self.assertRaises(ValueError, msg=(name, address)):
-                web.save_local_endpoint("", name, address, False)
+                web.save_local_endpoint("", name, address)
         # A server that does not answer is not added.
         with self.assertRaises(RuntimeError):
-            web.save_local_endpoint("", "Down", "127.0.0.1:1", False)
-        web.save_local_endpoint("Bariton", "Bariton", gemma, True)
+            web.save_local_endpoint("", "Down", "127.0.0.1:1")
+        # A model set by hand stays when the server is saved again at the same address.
+        web.set_model_images("Bariton", "gemma", True)
+        web.save_local_endpoint("Bariton", "Bariton", gemma)
         # Read again at the next start, the flag's server keeps its new name and is not added twice.
         web.LOCAL_ENDPOINTS[:] = []
         web.load_providers([flag])
-        self.assertEqual([(e["name"], e["server"], e["vision"], e["from_flag"]) for e in web.local_endpoints()],
-                         [("Spark2", "http://127.0.0.1:9", True, True), ("Bariton", f"http://{gemma}", True, False)])
+        self.assertEqual([(e["name"], e["server"], e["reads_images"], e["from_flag"]) for e in web.local_endpoints()],
+                         [("Spark2", "http://127.0.0.1:9", {}, True), ("Bariton", f"http://{gemma}", {"gemma": True}, False)])
         self.assertIn("type: openai-compatible", path.read_text(encoding="utf-8"))
         # Started without the flag, it is an ordinary server that may be removed.
         web.load_providers([])
@@ -4528,6 +4532,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         # A file that is not what Hilde writes is refused, naming what is wrong.
         for text in ("local: [{name: A, address: 'h:1', type: vllm}]", "local: [{name: A}]",
                      "local: [{name: A, address: 'h:1', type: ollama, images: 'yes'}]",
+                     "local: [{name: A, address: 'h:1', type: ollama, reads_images: {m: 'yes'}}]",
                      "local: [{name: A, address: 'h:1', type: ollama}, {name: a, address: 'h:2', type: ollama}]",
                      "remote: []"):
             path.write_text(text, encoding="utf-8")
@@ -4563,7 +4568,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         web.load_providers([])
         self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
         # A change to the local servers keeps them.
-        web.save_local_endpoint("", "Bariton", gemma, False)
+        web.save_local_endpoint("", "Bariton", gemma)
         web.use_claude_code(False)
         self.assertEqual(web.read_providers(path)[2], {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
         # Image narration takes only a model that reads images, or "" (not set).
@@ -4594,8 +4599,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         gemma_requests, qwen_requests = [], []
         gemma = fake_local_server(self, ["gemma"], gemma_requests)
         qwen = fake_local_server(self, ["qwen"], qwen_requests)
-        added = [{"name": "Gemma box", "server": gemma, "provider": "lm-studio", "vision": False},
-                 {"name": "Qwen box", "server": qwen, "provider": "lm-studio", "vision": False}]
+        added = [{"name": "Gemma box", "server": gemma, "provider": "lm-studio"},
+                 {"name": "Qwen box", "server": qwen, "provider": "lm-studio"}]
         with mock.patch.object(web, "read_openai_credentials", return_value={}), \
                 mock.patch.object(web, "openai_model_names", return_value=["gpt-a"]), \
                 mock.patch.object(web, "read_anthropic_key", return_value=None), \
@@ -4605,7 +4610,7 @@ class LocalPaperProviderTests(unittest.TestCase):
             catalog = web.paper_model_catalog(added)
             # A server that does not answer is named; the others' models stay.
             unreachable = web.paper_model_catalog([
-                {"name": "Down", "server": "http://127.0.0.1:9", "provider": "lm-studio", "vision": False}, *added,
+                {"name": "Down", "server": "http://127.0.0.1:9", "provider": "lm-studio"}, *added,
             ])
         # Local models first, server by server, each with its server and its
         # server's name; then the cloud's.
@@ -4635,8 +4640,8 @@ class LocalPaperProviderTests(unittest.TestCase):
             run = PaperRun(
                 source, stage / "prepared.txt", "utf-8", "lm-studio/gemma",
                 [
-                    {"server": gemma, "provider": "lm-studio", "vision": True},
-                    {"server": qwen, "provider": "lm-studio", "vision": qwen_sees_images},
+                    {"server": gemma, "provider": "lm-studio", "reads_images": {"gemma": True}},
+                    {"server": qwen, "provider": "lm-studio", "reads_images": {"qwen": qwen_sees_images}},
                 ],
                 in_flight=1, paragraphs_per_worker=1, prompt_path=prompt, scratch_path=stage,
                 interpret_figures=True, figure_model="lm-studio/qwen",
@@ -4651,7 +4656,7 @@ class LocalPaperProviderTests(unittest.TestCase):
             ))
             self.assertFalse(any(isinstance(body["messages"][1]["content"], list) for body in gemma_requests))
             # The figure goes to the figure model's server, as an image only
-            # when that server's models see images.
+            # when that model is known to read images.
             self.assertEqual({body["model"] for body in qwen_requests}, {"qwen"})
             self.assertEqual(
                 any(isinstance(body["messages"][1]["content"], list) for body in qwen_requests),
@@ -4672,8 +4677,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         first_requests, second_requests = [], []
         first = fake_local_server(self, ["model-a"], first_requests)
         second = fake_local_server(self, ["model-b"], second_requests)
-        servers = [{"server": first, "provider": "lm-studio", "vision": False},
-                   {"server": second, "provider": "lm-studio", "vision": False}]
+        servers = [{"server": first, "provider": "lm-studio"},
+                   {"server": second, "provider": "lm-studio"}]
         source = root / "paper.md"
         source.write_text("\n\n".join(
             f"Paragraph {number} says that recurrent models are slow to train." for number in range(1, 7)
@@ -4723,7 +4728,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         manifest = json.loads((stage / "extraction.json").read_text(encoding="utf-8"))
         self.assertTrue(web.same_but_models(manifest, {**manifest, "model": "lm-studio/model-a", "complete": False}))
         self.assertFalse(web.same_but_models(manifest, {**manifest, "in_flight": 2}))
-        moved = {**manifest, "local": {"lm-studio/model-b": {"server": "http://elsewhere:1", "vision": False}}}
+        moved = {**manifest, "local": {"lm-studio/model-b": {"server": "http://elsewhere:1"}}}
         self.assertFalse(web.same_but_models(manifest, moved))
 
     def test_an_earlier_message_whose_context_kept_only_its_section_still_reads(self):
@@ -4739,7 +4744,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         root = Path(temporary.name)
         requests = []
         server = fake_local_server(self, ["gemma"], requests)
-        added = [{"server": server, "provider": "lm-studio", "vision": False}]
+        added = [{"server": server, "provider": "lm-studio"}]
         for selector in ("lm-studio/qwen", "ollama/gemma"):
             with self.assertRaises(RuntimeError) as caught:
                 web.local_route(selector, added)
@@ -8438,7 +8443,7 @@ class FakeChatModel(BaseHTTPRequestHandler):
 
 def local_servers_at(server):
     """A browser's added local servers: one, the fake model server."""
-    return [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio", "vision": False}]
+    return [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio"}]
 
 
 class ChatTests(unittest.TestCase):
@@ -9283,9 +9288,9 @@ class FigureAndContextTests(unittest.TestCase):
         self.assertEqual(web._chat_gemini_contents([entry(attachment)]), [{"role": "user", "parts": [
             {"text": text}, {"inlineData": {"mimeType": "image/png", "data": data}}, {"text": question},
         ]}])
-        # A local model gets the picture only when its server is marked as seeing images.
+        # A local model gets the picture only when it is known to read images.
         server = f"http://127.0.0.1:{self.local_server().server_port}"
-        seeing = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "vision": True}])
+        seeing = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "reads_images": {"fake": True}}])
         self.assertEqual(seeing[0]["image"], {"sent": True, "count": 1})
         self.assertEqual(seeing[0]["badge"], "Local")
         self.assertEqual(web._chat_openai_messages("S", [entry(seeing)])[1], {"role": "user", "content": [
@@ -9293,9 +9298,10 @@ class FigureAndContextTests(unittest.TestCase):
             {"type": "image_url", "image_url": {"url": url}},
             {"type": "text", "text": question},
         ]})
-        blind = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "vision": False}])
+        blind = self.figure("lm-studio/fake", [{"server": server, "provider": "lm-studio", "reads_images": {"fake": False}}])
         self.assertEqual(blind[0]["image"], {
-            "sent": False, "count": 1, "why": "This local model's server is not marked as seeing images.",
+            "sent": False, "count": 1, "why": "This local model is not known to read images: set it under Settings "
+                                              "› Providers › Edit, or wait for its check.",
         })
         self.assertEqual(blind[1], [])
         self.assertEqual(web._chat_openai_messages("S", [entry(blind)])[1], {
@@ -9305,7 +9311,8 @@ class FigureAndContextTests(unittest.TestCase):
 
     def test_the_picture_goes_with_the_turn_that_attached_it_only(self):
         server = self.local_server()
-        servers = [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio", "vision": True}]
+        servers = [{"server": f"http://127.0.0.1:{server.server_port}", "provider": "lm-studio",
+                    "reads_images": {"fake": True}}]
         FakeChatModel.replies = [[({"content": "The encoder."}, "stop")], [({"content": "Yes."}, "stop")]]
         attachment = self.figure("lm-studio/fake", servers)
         for text, attached in (("What is on the left?", attachment), ("Sure?", None)):
@@ -9979,6 +9986,288 @@ class WorkerNodeTests(unittest.TestCase):
                 cli.check_distributed_mode(parser.parse_args(base + extra), parser)
 
 
+def png_first_pixel(data):
+    """The colour of a PNG's first pixel (8-bit RGB, filter 0), as the vision stub reads it."""
+    at, idat = 8, b""
+    while at < len(data):
+        length, kind = struct.unpack(">I4s", data[at:at + 8])
+        if kind == b"IDAT":
+            idat += data[at + 8:at + 8 + length]
+        at += 12 + length
+    return tuple(zlib.decompress(idat)[1:4])
+
+
+COLOUR_NAMES = {(255, 0, 0): "Red", (0, 255, 0): "Green", (0, 0, 255): "Blue"}
+
+
+def image_stub(test, behaviour, models=("m",), ollama=None, lm_studio=None):
+    """A local model server for the image checks, on a free port: each POST
+    to /v1/chat/completions is counted (`requests`) and answered as
+    `behaviour` says: "vision" names the picture's colour, "wrong" another
+    colour, "text" refuses pictures with 400, "error" answers 503, "slow"
+    answers after two seconds. `ollama` maps a model to its /api/show
+    capabilities (None: none said) with "loaded" the /api/ps list; `lm_studio`
+    is /api/v0/models's rows. Returns (address, requests)."""
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def reply(self, status, body):
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path == "/v1/models":
+                return self.reply(200, {"data": [{"id": model} for model in models]})
+            if self.path == "/api/ps" and ollama is not None:
+                return self.reply(200, {"models": [{"name": name} for name in ollama.get("loaded", ())]})
+            if self.path == "/api/v0/models" and lm_studio is not None:
+                return self.reply(200, {"data": lm_studio})
+            self.reply(404, {"error": "not found"})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/show" and ollama is not None:
+                capabilities = ollama.get(body["model"])
+                return self.reply(200, {"details": {}} if capabilities is None else {"capabilities": capabilities})
+            if self.path != "/v1/chat/completions":
+                return self.reply(404, {"error": "not found"})
+            requests.append(body)
+            if behaviour == "text":
+                return self.reply(400, {"error": "image input is not supported by this model"})
+            if behaviour == "error":
+                return self.reply(503, {"error": "busy"})
+            if behaviour == "slow":
+                time.sleep(2)
+            picture = next(part["image_url"]["url"] for part in body["messages"][0]["content"]
+                           if part["type"] == "image_url")
+            colour = COLOUR_NAMES[png_first_pixel(base64.b64decode(picture.partition(",")[2]))]
+            answer = colour if behaviour in ("vision", "slow") else next(
+                name for name in COLOUR_NAMES.values() if name != colour)
+            try:
+                self.reply(200, {"choices": [{"message": {"role": "assistant", "content": f"{answer}."}}]})
+            except OSError:
+                pass  # the slow answer came after the caller gave up
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return f"http://127.0.0.1:{server.server_port}", requests
+
+
+class ImageCheckTests(unittest.TestCase):
+    """Whether a local model reads images, model by model: set by hand, else
+    reported by its server, else one small test picture, found out in the
+    background once and kept in local-models.json. Stub servers only."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / ".hilde"
+        self.checks = web.ImageChecks()
+        self.checks.enabled = True
+        patches = (mock.patch.object(web, "HILDE_HOME", self.home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
+                   mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
+                   mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}),
+                   mock.patch.object(web, "IMAGE_CHECKS", self.checks),
+                   mock.patch("sys.stdout", io.StringIO()))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def register(self, server, provider="lm-studio", name="Box", reads_images=None):
+        web.LOCAL_ENDPOINTS.append({"name": name, "server": server, "provider": provider,
+                                    "reads_images": dict(reads_images or {})})
+
+    def catalog(self):
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None), \
+                mock.patch.object(web, "read_xai_credentials", return_value=None), \
+                mock.patch.object(web, "read_xai_api_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            return web.paper_model_catalog(web.local_endpoints())
+
+    def settle(self):
+        deadline = time.monotonic() + 10
+        while self.checks.pending and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(self.checks.pending)
+
+    def test_the_test_picture_tells_a_vision_model_from_a_text_only_one(self):
+        vision, asked = image_stub(self, "vision")
+        self.assertEqual(web.image_check_probe(vision, "m")[0], True)
+        # One small one-colour PNG with the question, at most 10 tokens, temperature 0.
+        body = asked[0]
+        self.assertEqual((body["model"], body["max_tokens"], body["temperature"]), ("m", 10, 0))
+        picture = base64.b64decode(body["messages"][0]["content"][1]["image_url"]["url"].partition(",")[2])
+        self.assertEqual(png_first_pixel(picture), (255, 0, 0))
+        self.assertLess(len(picture), 1024)
+        self.assertEqual(body["messages"][0]["content"][0]["text"], web.IMAGE_CHECK_QUESTION)
+        # Refused (HTTP 400) or the wrong colour: text only.
+        self.assertEqual(web.image_check_probe(image_stub(self, "text")[0], "m")[0], False)
+        self.assertEqual(web.image_check_probe(image_stub(self, "wrong")[0], "m")[0], False)
+        # A server error, no answer in time, or no server: not known.
+        self.assertIsNone(web.image_check_probe(image_stub(self, "error")[0], "m")[0])
+        self.assertIsNone(web.image_check_probe(image_stub(self, "slow")[0], "m", timeout=0.5)[0])
+        self.assertIsNone(web.image_check_probe("http://127.0.0.1:9", "m", timeout=1)[0])
+
+    def test_ollama_and_lm_studio_report_images_and_a_model_not_loaded_is_not_probed(self):
+        server, asked = image_stub(self, "vision", ollama={"llava": ["completion", "vision"], "qwen": ["completion"],
+                                                           "old": None, "loaded": []})
+        self.assertEqual(web.check_model_images(server, "ollama", "llava")[:2], (True, "reported"))
+        self.assertEqual(web.check_model_images(server, "ollama", "qwen")[:2], (False, "reported"))
+        # No capabilities said and not loaded: no test picture (it would load the model).
+        self.assertEqual(web.check_model_images(server, "ollama", "old")[:2], (None, ""))
+        self.assertEqual(asked, [])
+        server, asked = image_stub(self, "vision", ollama={"old": None, "loaded": ["old"]})
+        self.assertEqual(web.check_model_images(server, "ollama", "old")[:2], (True, "tested"))
+        self.assertEqual(len(asked), 1)
+        server, asked = image_stub(self, "vision", lm_studio=[{"id": "seer", "type": "vlm", "state": "loaded"},
+                                                             {"id": "plain", "type": "llm", "state": "loaded"},
+                                                             {"id": "away", "state": "not-loaded"}])
+        self.assertEqual(web.check_model_images(server, "lm-studio", "seer")[:2], (True, "reported"))
+        self.assertEqual(web.check_model_images(server, "lm-studio", "plain")[:2], (False, "reported"))
+        self.assertEqual(web.check_model_images(server, "lm-studio", "away")[:2], (None, ""))
+        self.assertEqual(asked, [])
+
+    def test_a_model_is_checked_once_in_the_background_and_again_on_request_or_after_a_week(self):
+        server, asked = image_stub(self, "vision", models=("seer", "plain"))
+        self.register(server)
+        catalog = self.catalog()
+        # The list does not wait: not known yet, being checked.
+        self.assertEqual([(m["images"], m["image_check"]["state"]) for m in catalog["models"]],
+                         [(None, "checking"), (None, "checking")])
+        self.settle()
+        self.assertEqual(len(asked), 2)
+        catalog = self.catalog()
+        self.assertEqual([(m["selector"], m["images"], m["image_check"]) for m in catalog["models"]],
+                         [("lm-studio/plain", True, {"state": "tested", "images": True, "override": None}),
+                          ("lm-studio/seer", True, {"state": "tested", "images": True, "override": None})])
+        self.settle()
+        self.assertEqual(len(asked), 2)
+        # Kept owner-only in local-models.json, with when.
+        path = self.home / web.LOCAL_MODELS_FILE
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        saved = json.loads(path.read_text(encoding="utf-8"))["servers"][server]["images"]
+        self.assertEqual({model: (entry["images"], entry["how"]) for model, entry in saved.items()},
+                         {"seer": (True, "tested"), "plain": (True, "tested")})
+        self.assertLessEqual(abs(saved["seer"]["at"] - time.time()), 60)
+        # The route sends figures to it as pictures now.
+        with mock.patch.object(web, "local_model_names", return_value=("plain", "seer")):
+            self.assertTrue(web.local_route("lm-studio/seer", web.local_endpoints())["vision"])
+        # Older than a week: checked again.
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["servers"][server]["images"]["seer"]["at"] -= 8 * 24 * 3600
+        path.write_text(json.dumps(data), encoding="utf-8")
+        self.catalog()
+        self.settle()
+        self.assertEqual([body["model"] for body in asked], ["plain", "seer", "seer"])
+        # Check again: every model of the server, once more.
+        web.forget_image_checks(server)
+        self.assertEqual([m["image_check"]["state"] for m in self.catalog()["models"]], ["checking", "checking"])
+        self.settle()
+        self.assertEqual(len(asked), 5)
+        # A model that leaves the list and comes back is checked again.
+        with mock.patch.object(web, "local_model_names", return_value=("seer",)):
+            self.catalog()
+        self.settle()
+        self.catalog()
+        self.settle()
+        self.assertEqual([body["model"] for body in asked][5:], ["plain"])
+
+    def test_nothing_is_checked_before_the_server_starts_or_for_a_server_not_registered(self):
+        server, asked = image_stub(self, "vision", models=("seer",))
+        self.checks.enabled = False
+        self.register(server)
+        self.assertEqual(self.catalog()["models"][0]["image_check"]["state"], "unchecked")
+        self.checks.enabled = True
+        web.LOCAL_ENDPOINTS[:] = []
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")):
+            web.paper_model_catalog([{"name": "Box", "server": server, "provider": "lm-studio", "reads_images": {}}])
+        self.settle()
+        self.assertEqual(asked, [])
+
+    def test_a_choice_by_hand_wins_over_what_was_found_out(self):
+        server, asked = image_stub(self, "text", models=("plain", "seer"))
+        self.register(server, reads_images={"seer": True})
+        self.catalog()
+        self.settle()
+        models = {m["selector"]: m for m in self.catalog()["models"]}
+        self.assertEqual((models["lm-studio/seer"]["images"], models["lm-studio/seer"]["image_check"]),
+                         (True, {"state": "tested", "images": False, "override": True}))
+        self.assertIs(models["lm-studio/plain"]["images"], False)
+        web.set_model_images("Box", "plain", True)
+        web.set_model_images("Box", "seer", None)
+        saved = yaml.safe_load((self.home / "providers.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(saved["local"][0]["reads_images"], {"plain": True})
+        models = {m["selector"]: m for m in self.catalog()["models"]}
+        self.assertEqual([models[key]["images"] for key in ("lm-studio/plain", "lm-studio/seer")], [True, False])
+        with mock.patch.object(web, "local_model_names", return_value=("plain", "seer")):
+            self.assertEqual([web.local_route(key, web.local_endpoints())["vision"]
+                              for key in ("lm-studio/plain", "lm-studio/seer")], [True, False])
+        with self.assertRaises(ValueError):
+            web.set_model_images("Box", "plain", "maybe")
+
+    def test_a_servers_old_images_flag_is_read_and_dropped(self):
+        path = self.home / "providers.yaml"
+        self.home.mkdir(parents=True)
+        path.write_text("local:\n- {name: A, address: 'h:1', type: ollama, images: true}\n"
+                        "- {name: B, address: 'h:2', type: openai-compatible, images: false}\n", encoding="utf-8")
+        web.load_providers([])
+        self.assertEqual([(entry["name"], entry["reads_images"]) for entry in web.LOCAL_ENDPOINTS],
+                         [("A", {}), ("B", {})])
+        self.assertNotIn("vision", web.LOCAL_ENDPOINTS[0])
+        web.use_claude_code(True)
+        self.assertEqual([sorted(item) for item in yaml.safe_load(path.read_text(encoding="utf-8"))["local"]],
+                         [["address", "name", "type"]] * 2)
+        # An earlier local-models.json (no images found out) still reads.
+        (self.home / web.LOCAL_MODELS_FILE).write_text(json.dumps(
+            {"schema": 1, "servers": {"http://h:1": {"provider": "ollama", "models": ["a"]}}}), encoding="utf-8")
+        self.assertEqual(web.read_remembered_models(),
+                         {"http://h:1": {"provider": "ollama", "models": ["a"], "images": {}}})
+        # --local-server takes no ",vision" any more.
+        with self.assertRaises(argparse.ArgumentTypeError):
+            web.local_server_option("lm-studio=http://127.0.0.1:8000,vision")
+
+    def test_check_again_and_a_choice_by_hand_only_from_a_browser_that_may_manage(self):
+        server, asked = image_stub(self, "vision", models=("seer",))
+        self.register(server)
+        http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        http.daemon_threads = True
+        http.verbose = False
+        http.manage_from_network = False
+        threading.Thread(target=http.serve_forever, daemon=True).start()
+        self.addCleanup(http.server_close)
+        self.addCleanup(http.shutdown)
+        origin = f"http://127.0.0.1:{http.server_port}"
+        catalog = {"models": [], "defaults": {}}
+        with mock.patch.object(web, "paper_model_catalog", return_value=catalog):
+            with mock.patch.object(web, "is_loopback_address", return_value=False):
+                self.assertEqual(WorkerNodeTests.request(origin, "/api/providers/local/images",
+                                                         {"name": "Box", "model": "seer", "images": "no"}),
+                                 (403, {"error": web.PROVIDERS_LOCAL_ONLY}))
+            self.assertEqual(WorkerNodeTests.request(origin, "/api/providers/local/images",
+                                                     {"name": "Box", "model": "seer", "images": "no"})[0], 200)
+            self.assertEqual(web.LOCAL_ENDPOINTS[0]["reads_images"], {"seer": False})
+            self.assertEqual(WorkerNodeTests.request(origin, "/api/providers/local/images",
+                                                     {"name": "Box", "model": "seer", "images": "sometimes"})[0], 400)
+            self.assertEqual(WorkerNodeTests.request(origin, "/api/providers/local/images",
+                                                     {"name": "Box", "check": True})[0], 200)
+
+
 class RememberedLocalModelsTests(unittest.TestCase):
     """A local server's models stay in every picker while it is down: the
     last list it gave is remembered in HILDE_HOME and listed disabled."""
@@ -9992,8 +10281,10 @@ class RememberedLocalModelsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name) / ".hilde"
         self.endpoints = [
-            {"name": "Spark2", "server": self.SPARK, "provider": "lm-studio", "vision": False},
-            {"name": "Bariton", "server": self.BARITON, "provider": "lm-studio", "vision": True},
+            {"name": "Spark2", "server": self.SPARK, "provider": "lm-studio"},
+            # Bariton's models set by hand to read images (Settings › Providers › Edit).
+            {"name": "Bariton", "server": self.BARITON, "provider": "lm-studio",
+             "reads_images": {name: True for name in self.BARITON_MODELS}},
         ]
         patches = (mock.patch.object(web, "HILDE_HOME", self.home),
                    mock.patch.object(web, "LOCAL_ENDPOINTS", [dict(entry) for entry in self.endpoints]),
@@ -10039,8 +10330,8 @@ class RememberedLocalModelsTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.home.stat().st_mode), 0o700)
         saved = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(saved, {"schema": 1, "servers": {
-            self.SPARK: {"provider": "lm-studio", "models": [self.QWEN]},
-            self.BARITON: {"provider": "lm-studio", "models": self.BARITON_MODELS}}})
+            self.SPARK: {"provider": "lm-studio", "models": [self.QWEN], "images": {}},
+            self.BARITON: {"provider": "lm-studio", "models": self.BARITON_MODELS, "images": {}}}})
         # The same list again is not written again.
         inode = path.stat().st_ino
         self.catalog(up)
@@ -10117,9 +10408,9 @@ class RememberedLocalModelsTests(unittest.TestCase):
         self.assertNotIn(self.BARITON, json.loads(path.read_text(encoding="utf-8"))["servers"])
         # A renamed server keeps its models; one moved to another address forgets them.
         with mock.patch.object(web, "local_server_type", return_value="lm-studio"):
-            web.save_local_endpoint("Spark2", "Spark 2", "127.0.0.1:8010", False)
+            web.save_local_endpoint("Spark2", "Spark 2", "127.0.0.1:8010")
             self.assertIn(self.SPARK, json.loads(path.read_text(encoding="utf-8"))["servers"])
-            web.save_local_endpoint("Spark 2", "Spark 2", "127.0.0.1:8011", False)
+            web.save_local_endpoint("Spark 2", "Spark 2", "127.0.0.1:8011")
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["servers"], {})
 
     def test_an_unreadable_file_remembers_nothing(self):

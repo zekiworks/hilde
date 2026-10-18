@@ -86,10 +86,14 @@ a greyed row keeps a model of a local server that does not answer):
 
 - The default first (marked **Default**), then the models this browser used
   recently, then the rest, each by a short name such as "Model 35B" with a
-  **reads images** tag where it applies (a local model when its server is
-  marked "Models here read images", a DeepSeek model when DeepSeek's model
+  **reads images** tag where it applies (a local model once it is found to
+  read images, see [Which local models read images](configuration.md#which-local-models-read-images),
+  a DeepSeek model when DeepSeek's model
   list says it takes images, every other cloud model); the full model code
-  shows on hover. The figure option disables models that can't read images.
+  shows on hover. The figure option disables models that can't read images,
+  and local models not checked yet ("not checked for images yet", "checking
+  whether it reads images…"); when no model of that kind is known to read
+  images, a muted line at the top of the list says so.
 - Local: the models each local server under **Settings › Providers** lists,
   as "<model> · <server name>" with the server's address underneath. An
   Ollama model that is installed but not loaded is tagged **loads on first
@@ -456,7 +460,7 @@ paragraph of the paper that names it by number ("Figure 2", "Fig. 2",
 "Figures 1 and 2"; never one only printed near it), and "Hilde's description".
 Its picture, laid out as in the PDF, goes too when the chosen model takes
 pictures: ChatGPT and the Anthropic, OpenAI, and Gemini keys do, a DeepSeek model when DeepSeek's model list says
-it takes images, a local model only when its server is marked as seeing images; otherwise the details say the
+it takes images, a local model only when it is known to read images; otherwise the details say the
 picture is not sent. The picture goes with that question only. Past questions
 show the same card, collapsed and without its buttons.
 
@@ -682,7 +686,7 @@ next audiobook" or "Applies now". The groups:
   designs voices with a local voice-design model; other machines only
   narrate.
 - <a id="providers"></a>**Providers**: one row per local model server (its
-  name, a **Local** badge, its address, "reads images" when set, "set at
+  name, a **Local** badge, its address, "set at
   startup" for one given with `--local-server`, and whether it is reachable)
   and per cloud connection, such as "OpenAI · Subscription — Signed in as
   <e-mail>", "OpenAI · API key — Key saved", or "Anthropic · Subscription —
@@ -690,10 +694,16 @@ next audiobook" or "Applies now". The groups:
   on the page first ("Remove 'Workstation'?", "Sign out of OpenAI
   (Subscription)?", "Remove the Google API key?"). A server set at startup can
   only be renamed. **Add** at the end opens the provider dialog: **Local** or
-  **Cloud** (fixed when editing). Local takes **Name**, **Address**, and
-  **Models here read images**, then **Check and add** (or **Save**), which
-  asks the address what it is (Ollama or OpenAI-compatible) and keeps it only
-  if it lists models. Cloud takes the provider (OpenAI, Anthropic, Google,
+  **Cloud** (fixed when editing). Local takes **Name** and **Address**, then
+  **Check and add** (or **Save**), which asks the address what it is (Ollama
+  or OpenAI-compatible) and keeps it only if it lists models. Edit of a local
+  server also lists its models (live, or as last listed while it is down),
+  each with what was found out about images ("reads images (tested)", "reads
+  images (reported by the server)", "text only (tested)", "not checked yet",
+  "checking…") and **Reads images: auto / yes / no**; **Check again** checks
+  all of its models anew. Hilde sends each local model one small test picture
+  by itself unless its server reports it; see
+  [Which local models read images](configuration.md#which-local-models-read-images). Cloud takes the provider (OpenAI, Anthropic, Google,
   DeepSeek, or xAI) and an **API key** (a password field, never shown again;
   afterwards "Key saved") with **Save key**, or **Subscription**, offered only
   for OpenAI (ChatGPT sign-in), Anthropic (Claude Code on the server: turns it

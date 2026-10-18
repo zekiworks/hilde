@@ -5397,8 +5397,8 @@ def local_model_response(server, provider, model, system_prompt, text, images, o
             failure = _stream_failure(response, "The local model server")
             if images and response.status == 400:
                 raise RuntimeError(
-                    f"{failure}. If this model reads text only, clear \"Models here read "
-                    "images\" for its server under Settings › Providers."
+                    f"{failure}. If this model reads text only, set Reads images: no for it under "
+                    "Settings › Providers › Edit."
                 )
             raise failure
         answer, _, _, reason = _chat_completion_stream(response, "The local model server")
@@ -6648,7 +6648,8 @@ def local_loaded_names(local_server, provider):
 PROVIDERS_FILE = "providers.yaml"
 PROVIDERS_HEADER = """\
 # Hilde's model providers, for every browser: the local model servers (name,
-# address, type, and whether their models read images), claude_code: false
+# address, type, and reads_images: the models set by hand to read images or
+# not; the others are found out automatically), claude_code: false
 # when Hilde does not use this server's Claude Code, and the default models
 # (defaults: text and image, each PROVIDER/MODEL). Hilde writes this file when
 # they change under Settings > Providers or Settings > Models and connection in
@@ -6658,7 +6659,8 @@ PROVIDERS_HEADER = """\
 """
 # A local server's type as providers.yaml names it, and as model selectors do.
 LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
-LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "images")
+# `images` is a server's flag from earlier versions: read, never written.
+LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "reads_images", "images")
 PROVIDERS_LOCAL_ONLY = (
     "Providers are added, changed, and removed in a browser on the server's own machine, "
     "or from any device when Hilde starts with --manage-from-network."
@@ -6685,8 +6687,11 @@ def local_models_path():
 
 def read_remembered_models():
     """local-models.json: each local server's last model list by its
-    address, as {address: {"provider", "models"}}. A file that is absent or
-    not what Hilde writes remembers nothing."""
+    address, and what Hilde found out about each model's images, as
+    {address: {"provider", "models", "images": {model: {"images", "how",
+    "at"}}}} ("how" "tested" or "reported", "at" seconds since the epoch). A
+    file that is absent or not what Hilde writes remembers nothing; an entry
+    without "images" (an earlier file) has none found out yet."""
     try:
         data = json.loads(local_models_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -6694,12 +6699,20 @@ def read_remembered_models():
     servers = data.get("servers") if isinstance(data, dict) and data.get("schema") == 1 else None
     if not isinstance(servers, dict):
         return {}
-    return {
-        address: {"provider": entry["provider"], "models": list(entry["models"])}
-        for address, entry in servers.items()
-        if isinstance(entry, dict) and entry.get("provider") in LOCAL_MODEL_PROVIDERS
-        and isinstance(entry.get("models"), list) and all(isinstance(name, str) and name for name in entry["models"])
-    }
+    remembered = {}
+    for address, entry in servers.items():
+        if not (isinstance(entry, dict) and entry.get("provider") in LOCAL_MODEL_PROVIDERS
+                and isinstance(entry.get("models"), list)
+                and all(isinstance(name, str) and name for name in entry["models"])):
+            continue
+        found = entry.get("images") if isinstance(entry.get("images"), dict) else {}
+        remembered[address] = {"provider": entry["provider"], "models": list(entry["models"]), "images": {
+            model: {"images": result["images"], "how": result["how"], "at": float(result["at"])}
+            for model, result in found.items()
+            if model in entry["models"] and isinstance(result, dict) and isinstance(result.get("images"), bool)
+            and result.get("how") in IMAGE_CHECK_HOWS and isinstance(result.get("at"), (int, float))
+        }}
+    return remembered
 
 
 def write_remembered_models(servers):
@@ -6710,15 +6723,19 @@ def write_remembered_models(servers):
 def remember_local_models(server, provider, names):
     """Keep what a local server listed, written only when it changed. A
     server no longer under Settings › Providers (removed while it was being
-    asked) is not kept."""
-    entry = {"provider": provider, "models": list(names)}
+    asked) is not kept. What was found out about a model's images goes with
+    the model when it leaves the list, so a model that comes back is checked
+    again."""
     with LOCAL_ENDPOINTS_LOCK:
         if not any(saved["server"] == server and saved["provider"] == provider for saved in LOCAL_ENDPOINTS):
             return
         servers = read_remembered_models()
-        if servers.get(server) == entry:
+        old = servers.get(server) or {}
+        if old.get("provider") == provider and old.get("models") == list(names):
             return
-        servers[server] = entry
+        found = old.get("images", {}) if old.get("provider") == provider else {}
+        servers[server] = {"provider": provider, "models": list(names),
+                           "images": {model: result for model, result in found.items() if model in names}}
         write_remembered_models(servers)
 
 
@@ -6729,6 +6746,255 @@ def forget_local_models(keep):
     kept = {address: entry for address, entry in servers.items() if address in keep}
     if kept != servers:
         write_remembered_models(kept)
+
+
+# Whether a local model reads images, model by model: the owner's choice in
+# the provider dialog (providers.yaml's reads_images), else what the server
+# reports (Ollama's /api/show capabilities, LM Studio's /api/v0/models type),
+# else one small test request (image_check_probe()). Found out in the
+# background (IMAGE_CHECKS) and kept in local-models.json; cloud providers
+# are never probed (their lists say, and a request costs money).
+IMAGE_CHECK_HOWS = ("tested", "reported")
+IMAGE_CHECK_MAX_AGE = 7 * 24 * 3600
+IMAGE_CHECK_TIMEOUT = 60
+# A model whose check found nothing (not loaded, a timeout) is asked again on
+# a later model list, but not sooner than this.
+IMAGE_CHECK_RETRY = 30
+IMAGE_CHECK_COLOUR = ("red", (255, 0, 0))
+IMAGE_CHECK_QUESTION = "What colour is this image? Answer with one word."
+
+
+def solid_png(rgb, size=32):
+    """A small PNG of one colour: the test image a model is asked about."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + bytes(rgb) * size for _ in range(size))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def _image_check_post(server, path, payload, timeout):
+    """POST JSON to a local server: (status, body text); raises OSError when
+    it can't be reached or does not answer in time."""
+    request = urllib.request.Request(f"{normalize_local_server(server)}{path}", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(1024 * 1024).decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(64 * 1024).decode("utf-8", "replace")
+
+
+def _image_check_answer(body):
+    """The text of a chat answer: a JSON completion, or the deltas of a
+    stream sent anyway; reasoning counts, as a thinking model may answer there."""
+    def parts(message):
+        return [str(message.get(key) or "") for key in ("content", "reasoning_content", "reasoning")
+                if isinstance(message, dict)]
+    try:
+        data = json.loads(body)
+        return " ".join(part for choice in data.get("choices") or () for part in parts(choice.get("message")))
+    except (ValueError, AttributeError, TypeError):
+        pass
+    text = []
+    for line in body.splitlines():
+        if line.startswith("data:") and line[5:].strip() not in ("", "[DONE]"):
+            try:
+                event = json.loads(line[5:])
+            except ValueError:
+                continue
+            for choice in event.get("choices") or () if isinstance(event, dict) else ():
+                text += parts(choice.get("delta") if isinstance(choice, dict) else None)
+    return "".join(text)
+
+
+def image_check_probe(server, model, timeout=None):
+    """Ask a local model what colour a small one-colour picture is: True when
+    the server takes it (HTTP 200) and the answer names the colour; False
+    when it refuses the picture (HTTP 400/422, or an error about images) or
+    names another colour; None when nothing is known (no answer in time, the
+    server unreachable, a server error). Returns (result, what happened)."""
+    name, rgb = IMAGE_CHECK_COLOUR
+    picture = base64.b64encode(solid_png(rgb)).decode("ascii")
+    payload = {"model": model, "max_tokens": 10, "temperature": 0, "stream": False, "messages": [{
+        "role": "user", "content": [{"type": "text", "text": IMAGE_CHECK_QUESTION},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{picture}"}}]}]}
+    try:
+        status, body = _image_check_post(server, "/v1/chat/completions", payload,
+                                         IMAGE_CHECK_TIMEOUT if timeout is None else timeout)
+    except (OSError, ValueError) as exc:
+        return None, f"no answer ({exc})"
+    mentions = re.search(r"image|vision|multimodal|multi-modal", body, re.IGNORECASE)
+    if status in (400, 422) or (status != 200 and status < 500 and mentions):
+        return False, f"HTTP {status}: the picture was refused"
+    if status != 200:
+        return None, f"HTTP {status}"
+    answer = " ".join(_image_check_answer(body).split())
+    if name in answer.lower():
+        return True, f"answered {answer[:40]!r}"
+    return False, f"answered {answer[:40]!r}, not {name}"
+
+
+def image_check_reported(server, provider, model):
+    """What a local server itself says of a model, without loading it:
+    (True/False, "reported") from Ollama's /api/show capabilities or LM
+    Studio's /api/v0/models type; else (None, loaded) with loaded False when
+    the server says the model is not loaded now (no test request then), True
+    or None otherwise."""
+    if provider == "ollama":
+        try:
+            status, body = _image_check_post(server, "/api/show", {"model": model}, LOCAL_SERVER_TIMEOUT)
+            capabilities = json.loads(body).get("capabilities") if status == 200 else None
+        except (OSError, ValueError, AttributeError):
+            capabilities = None
+        if isinstance(capabilities, list):
+            return "vision" in capabilities, "reported"
+        loaded = local_loaded_names(server, provider)
+        return None, None if loaded is None else model in loaded
+    try:
+        rows = local_server_json(server, "/api/v0/models", "LM Studio").get("data") or ()
+    except (RuntimeError, AttributeError):
+        return None, None
+    row = next((row for row in rows if isinstance(row, dict) and str(row.get("id")) == model), None)
+    if row and row.get("type") in ("vlm", "llm"):
+        return row["type"] == "vlm", "reported"
+    return None, (row.get("state") == "loaded") if row and "state" in row else None
+
+
+def check_model_images(server, provider, model):
+    """Find out whether a local model reads images (image_check_reported(),
+    else image_check_probe() unless the model is not loaded): (True/False,
+    "reported"/"tested", what happened), or (None, "", why not)."""
+    result, how = image_check_reported(server, provider, model)
+    if how == "reported":
+        return result, "reported", "reported by the server"
+    if how is False:
+        return None, "", "not loaded; checked once it is"
+    result, said = image_check_probe(server, model)
+    return result, "tested" if result is not None else "", said
+
+
+def record_image_check(server, provider, model, images, how):
+    """Keep what was found out about a model while its server is still under
+    Settings › Providers and still lists it."""
+    with LOCAL_ENDPOINTS_LOCK:
+        if not any(saved["server"] == server and saved["provider"] == provider for saved in LOCAL_ENDPOINTS):
+            return
+        servers = read_remembered_models()
+        entry = servers.get(server)
+        if not entry or entry["provider"] != provider or model not in entry["models"]:
+            return
+        entry["images"][model] = {"images": images, "how": how, "at": time.time()}
+        write_remembered_models(servers)
+
+
+def forget_image_checks(server):
+    """Check again: drop what was found out about a server's models."""
+    with LOCAL_ENDPOINTS_LOCK:
+        servers = read_remembered_models()
+        if server in servers and servers[server]["images"]:
+            servers[server]["images"] = {}
+            write_remembered_models(servers)
+    IMAGE_CHECKS.forget(server)
+
+
+class ImageChecks:
+    """The background image checks: one worker per local server at a time,
+    which checks its queued models one after the other, so at most one test
+    request per server is under way. Off until the server starts (main()),
+    so nothing is asked of a server by importing this module."""
+
+    def __init__(self):
+        self.enabled = False
+        self.lock = threading.Lock()
+        self.queues = {}            # server -> [(provider, model)]
+        self.workers = {}           # server -> Thread
+        self.pending = set()        # (server, model) queued or being checked
+        self.tried = {}             # (server, model) -> when a check found nothing
+
+    def checking(self, server, model):
+        with self.lock:
+            return (server, model) in self.pending
+
+    def want(self, server, provider, model):
+        """Queue a model's check unless it is queued, or found nothing lately."""
+        with self.lock:
+            key = (server, model)
+            if not self.enabled or key in self.pending or time.monotonic() - self.tried.get(key, -1e9) < IMAGE_CHECK_RETRY:
+                return
+            self.pending.add(key)
+            self.queues.setdefault(server, []).append((provider, model))
+            if server not in self.workers:
+                self.workers[server] = threading.Thread(target=self.work, args=(server,), daemon=True,
+                                                        name=f"image-checks {local_server_label(server)}")
+                self.workers[server].start()
+
+    def forget(self, server):
+        with self.lock:
+            self.tried = {key: at for key, at in self.tried.items() if key[0] != server}
+
+    def work(self, server):
+        while True:
+            with self.lock:
+                queue = self.queues.get(server)
+                if not queue:
+                    self.queues.pop(server, None)
+                    self.workers.pop(server, None)
+                    return
+                provider, model = queue.pop(0)
+            try:
+                images, how, said = check_model_images(server, provider, model)
+            except Exception as exc:  # a check never stops the others
+                images, how, said = None, "", f"failed: {exc}"
+            if images is not None:
+                record_image_check(server, provider, model, images, how)
+            state = "unknown" if images is None else f"{'reads images' if images else 'text only'} ({how})"
+            print(f"Image check {local_server_label(server)} {model}: {state}; {said}", flush=True)
+            with self.lock:
+                self.pending.discard((server, model))
+                if images is None:
+                    self.tried[(server, model)] = time.monotonic()
+                else:
+                    self.tried.pop((server, model), None)
+
+
+IMAGE_CHECKS = ImageChecks()
+
+
+def local_model_images(entry, model, remembered=None):
+    """Whether a local server's model reads images, and how that is known:
+    ({True, False, None}, "override" | "tested" | "reported" | "checking" |
+    "unchecked"), plus what was found out ({"images", "how", "at"} or None).
+    Only a server under Settings › Providers has found-out results."""
+    found = None
+    if remembered is not None:
+        saved = remembered.get(entry["server"])
+        if saved and saved["provider"] == entry["provider"]:
+            found = saved["images"].get(model)
+    override = (entry.get("reads_images") or {}).get(model)
+    if isinstance(override, bool):
+        return override, "override", found
+    if found:
+        return found["images"], found["how"], found
+    return None, "checking" if IMAGE_CHECKS.checking(entry["server"], model) else "unchecked", None
+
+
+def image_check_view(entry, model, found):
+    """How the provider dialog describes a model's images: what was found
+    out ("state": "tested" or "reported", with "images"), or "checking" /
+    "unchecked", and the owner's choice ("override": True, False, or None)."""
+    override = (entry.get("reads_images") or {}).get(model)
+    state = found["how"] if found else "checking" if IMAGE_CHECKS.checking(entry["server"], model) else "unchecked"
+    return {"state": state, "images": found["images"] if found else None,
+            "override": override if isinstance(override, bool) else None}
+
+
+def registered_remembered(server):
+    """local-models.json's entries when `server` is under Settings ›
+    Providers, else None (nothing is read for a server not registered)."""
+    with LOCAL_ENDPOINTS_LOCK:
+        registered = any(saved["server"] == server for saved in LOCAL_ENDPOINTS)
+    return read_remembered_models() if registered else None
 
 
 def local_endpoint_name(value):
@@ -6757,9 +7023,12 @@ def local_endpoint_conflict(endpoints, name, server, skip=None):
 
 def read_providers(path):
     """providers.yaml's local servers, as {"name", "server", "provider",
-    "vision"} in the file's order, whether Claude Code is used, and the
-    default models ({"text", "image"}, each a selector or ""). An absent file
-    has no local server, uses Claude Code, and sets no default."""
+    "reads_images"} in the file's order (reads_images: the owner's choice per
+    model, {model: true|false}; a model left out is decided automatically),
+    whether Claude Code is used, and the default models ({"text", "image"},
+    each a selector or ""). An absent file has no local server, uses Claude
+    Code, and sets no default. A server's `images: true|false` from earlier
+    versions is read and dropped: each model's images are found out now."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -6776,7 +7045,7 @@ def read_providers(path):
     endpoints = []
     for item in data.get("local") or []:
         if not isinstance(item, dict):
-            raise ValueError("each local server needs name, address, type, and images")
+            raise ValueError("each local server needs name, address, and type")
         unknown = sorted(set(item) - set(LOCAL_ENDPOINT_KEYS))
         if unknown:
             raise ValueError(f"unknown local server setting: {unknown[0]}")
@@ -6788,11 +7057,15 @@ def read_providers(path):
             raise ValueError(f"{name}: type is {' or '.join(LOCAL_ENDPOINT_TYPES)}")
         if not isinstance(item.get("images", False), bool):
             raise ValueError(f"{name}: images is true or false")
+        overrides = item.get("reads_images") or {}
+        if not isinstance(overrides, dict) or not all(
+                isinstance(model, str) and model and isinstance(value, bool) for model, value in overrides.items()):
+            raise ValueError(f"{name}: reads_images maps a model to true or false")
         conflict = local_endpoint_conflict(endpoints, name, server)
         if conflict:
             raise ValueError(conflict)
         endpoints.append({"name": name, "server": server, "provider": LOCAL_ENDPOINT_TYPES[item["type"]],
-                          "vision": item.get("images", False)})
+                          "reads_images": dict(overrides)})
     claude_code = data.get("claude_code", True)
     if not isinstance(claude_code, bool):
         raise ValueError("claude_code is true or false")
@@ -6816,7 +7089,7 @@ def write_providers(endpoints, claude_code, defaults):
     types = {provider: name for name, provider in LOCAL_ENDPOINT_TYPES.items()}
     data = {"local": [
         {"name": entry["name"], "address": entry["server"], "type": types[entry["provider"]],
-         "images": entry["vision"]}
+         **({"reads_images": dict(entry["reads_images"])} if entry.get("reads_images") else {})}
         for entry in endpoints
     ]}
     if not claude_code:
@@ -6867,7 +7140,7 @@ def load_providers(flags):
 
 def local_endpoints():
     """The local model servers every browser uses, in the order added, each
-    {"name", "server", "provider", "vision", "from_flag"}."""
+    {"name", "server", "provider", "reads_images", "from_flag"}."""
     with LOCAL_ENDPOINTS_LOCK:
         return [{**entry, "from_flag": entry["server"] in STARTUP_LOCAL_SERVERS} for entry in LOCAL_ENDPOINTS]
 
@@ -6885,16 +7158,16 @@ def local_server_type(server):
     return provider
 
 
-def save_local_endpoint(original, name, address, images):
+def save_local_endpoint(original, name, address):
     """Add a local server (`original` empty) or change the one named
     `original`. A new address is asked what it is and must list models; a
-    server set at startup changes only its name. Raises ValueError for the
+    server set at startup changes only its name. The models set by hand to
+    read images or not stay while the address does. Raises ValueError for the
     user to fix, RuntimeError when the server does not answer."""
     name = local_endpoint_name(name)
     server = normalize_local_server(address)
     if not server:
         raise ValueError("Enter the local server's address: host and port, such as 192.0.2.10:8000.")
-    images = images is True
     with LOCAL_ENDPOINTS_LOCK:
         current = next((entry for entry in LOCAL_ENDPOINTS
                         if original and entry["name"].casefold() == str(original).casefold()), None)
@@ -6902,9 +7175,7 @@ def save_local_endpoint(original, name, address, images):
             raise ValueError(f"No local server is named '{original}'.")
         if current is None and len(LOCAL_ENDPOINTS) >= LOCAL_ENDPOINTS_MAX:
             raise ValueError(f"Add at most {LOCAL_ENDPOINTS_MAX} local servers; remove one first.")
-        if current is not None and current["server"] in STARTUP_LOCAL_SERVERS and (
-            server != current["server"] or images != current["vision"]
-        ):
+        if current is not None and current["server"] in STARTUP_LOCAL_SERVERS and server != current["server"]:
             raise ValueError("This server is set at startup (--local-server): only its name changes here.")
         conflict = local_endpoint_conflict(LOCAL_ENDPOINTS, name, server, current)
         if conflict:
@@ -6913,7 +7184,8 @@ def save_local_endpoint(original, name, address, images):
     if provider is None:
         provider = local_server_type(server)
     with LOCAL_ENDPOINTS_LOCK:
-        entry = {"name": name, "server": server, "provider": provider, "vision": images}
+        kept = (current.get("reads_images") or {}) if current is not None and current["server"] == server else {}
+        entry = {"name": name, "server": server, "provider": provider, "reads_images": dict(kept)}
         endpoints = list(LOCAL_ENDPOINTS)
         index = next((at for at, saved in enumerate(endpoints)
                       if original and saved["name"].casefold() == str(original).casefold()), None)
@@ -6955,6 +7227,35 @@ def use_claude_code(on):
         CLAUDE_CODE_USED["on"] = on
 
 
+def set_model_images(name, model, value):
+    """The owner's choice for one model of the local server of this name:
+    True (reads images), False (text only), or None (found out
+    automatically). Kept in providers.yaml's reads_images."""
+    if value not in (True, False, None) or not isinstance(model, str) or not model:
+        raise ValueError("Choose auto, yes, or no for a model.")
+    with LOCAL_ENDPOINTS_LOCK:
+        current = next((entry for entry in LOCAL_ENDPOINTS
+                        if entry["name"].casefold() == str(name).casefold()), None)
+        if current is None:
+            raise ValueError(f"No local server is named '{name}'.")
+        overrides = {key: kept for key, kept in (current.get("reads_images") or {}).items() if key != model}
+        if value is not None:
+            overrides[model] = value
+        endpoints = [{**entry, "reads_images": overrides} if entry is current else entry for entry in LOCAL_ENDPOINTS]
+        write_providers(endpoints, CLAUDE_CODE_USED["on"], SERVER_DEFAULT_MODELS)
+        LOCAL_ENDPOINTS[:] = endpoints
+
+
+def local_endpoint_named(name):
+    """The local server of this name, or ValueError."""
+    with LOCAL_ENDPOINTS_LOCK:
+        current = next((entry for entry in LOCAL_ENDPOINTS
+                        if entry["name"].casefold() == str(name).casefold()), None)
+    if current is None:
+        raise ValueError(f"No local server is named '{name}'.")
+    return current
+
+
 def save_default_models(changes, models):
     """Set the server's default models (Settings › Models and connection):
     `changes` maps "text" and/or "image" to a selector, or to "" to unset one
@@ -6975,8 +7276,9 @@ def save_default_models(changes, models):
         if model is None:
             name = model_name({"provider": selector.partition("/")[0], "selector": selector})
             raise ValueError(f"{name} is not available now: choose a model the list offers.")
-        if field == "image" and not model["images"]:
-            raise ValueError(f"{model['name']} can't read images: choose a model tagged reads images.")
+        if field == "image" and model["images"] is not True:
+            known = "isn't known to read images yet" if model["images"] is None else "can't read images"
+            raise ValueError(f"{model['name']} {known}: choose a model tagged reads images.")
         checked[field] = selector
     with LOCAL_ENDPOINTS_LOCK:
         defaults = {**SERVER_DEFAULT_MODELS, **checked}
@@ -6985,28 +7287,30 @@ def save_default_models(changes, models):
 
 
 def local_server_option(value):
-    """--local-server PROVIDER=URL[,vision]: one local model server for
-    every browser, as {"server", "provider", "vision"}. PROVIDER is lm-studio
+    """--local-server PROVIDER=URL: one local model server for every
+    browser, as {"server", "provider", "reads_images"}. PROVIDER is lm-studio
     for any OpenAI-compatible server, or ollama for an Ollama server, whose
-    extras (installed and loaded models, thinking off) Hilde then uses;
-    ",vision" says its models see images."""
-    provider, equals, rest = str(value).partition("=")
-    address, comma, flag = rest.partition(",")
+    extras (installed and loaded models, thinking off) Hilde then uses.
+    Whether each model reads images is found out automatically."""
+    provider, equals, address = str(value).partition("=")
     provider = provider.strip()
     if not equals or provider not in LOCAL_MODEL_PROVIDERS:
         raise argparse.ArgumentTypeError(
-            f"use PROVIDER=URL[,vision] with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
-            "such as lm-studio=http://127.0.0.1:8000,vision"
+            f"use PROVIDER=URL with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
+            "such as lm-studio=http://127.0.0.1:8000"
         )
-    if comma and flag.strip() != "vision":
-        raise argparse.ArgumentTypeError("the only option after the address is ,vision")
+    if "," in address:
+        raise argparse.ArgumentTypeError(
+            "give only PROVIDER=URL: whether each model reads images is found out automatically "
+            "(Settings › Providers › Edit can set it by hand)"
+        )
     try:
         server = normalize_local_server(address)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
     if not server:
         raise argparse.ArgumentTypeError("give the server's address after PROVIDER=")
-    return {"server": server, "provider": provider, "vision": bool(comma)}
+    return {"server": server, "provider": provider, "reads_images": {}}
 
 
 def model_selector(value):
@@ -7032,7 +7336,9 @@ def local_server_label(server):
 
 def local_route(selector, local_servers):
     """The local server a local selector's requests go to: the first of its
-    provider that offers the model, as {"name", "server", "provider", "vision"}."""
+    provider that offers the model, as {"name", "server", "provider",
+    "vision"}; "vision" is whether this model reads images (the owner's
+    choice, else what was found out; not known yet counts as text only)."""
     provider, _, model = selector.partition("/")
     for entry in local_servers:
         if entry["provider"] != provider:
@@ -7040,8 +7346,10 @@ def local_route(selector, local_servers):
         try:
             if model in local_model_names(entry["server"], provider):
                 server = normalize_local_server(entry["server"])
+                images, _, _ = local_model_images({**entry, "server": server}, model,
+                                                  registered_remembered(server))
                 return {"name": entry.get("name") or local_server_label(server), "server": server,
-                        "provider": provider, "vision": entry.get("vision") is True}
+                        "provider": provider, "vision": images is True}
         except RuntimeError:
             continue
     raise RuntimeError(f"No local server under Settings › Providers offers {model}.")
@@ -7051,7 +7359,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
     """List the local servers' models (local_endpoints()), server by server,
     then those of this server's providers, each as the shared model picker
     shows it: {selector, provider, name (short), kind ("local" or "cloud"),
-    badge, images, running}, a local one with its server and the server's
+    badge, images (True, False, or None: not known yet), image_check, running},
+    a local one with its server and the server's
     name ("endpoint"); the picker's other rows (catalog_rows()): the models
     a local server that does not answer listed when it last did, disabled,
     and each provider not connected; the server's default models
@@ -7064,8 +7373,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
         label = local_server_label(entry["server"])
         endpoint = entry.get("name") or label
         status = {"name": endpoint, "label": label, "server": entry["server"], "provider": entry["provider"],
-                  "images": entry.get("vision") is True, "from_flag": entry.get("from_flag") is True,
-                  "running": True, "error": ""}
+                  "from_flag": entry.get("from_flag") is True, "running": True, "error": "",
+                  "reads_images": dict(entry.get("reads_images") or {})}
         local_status.append(status)
         try:
             names = local_model_names(entry["server"], entry["provider"])
@@ -7075,25 +7384,32 @@ def paper_model_catalog(local_servers=(), refresh=False):
             continue
         # Remembered while it answers, so its models stay listed while it does not.
         remember_local_models(entry["server"], entry["provider"], names)
+        remembered = registered_remembered(entry["server"])
         # Installed and listed is selectable: Ollama loads a model on its
         # first request. "loaded" is True or False where the server says
         # (local_loaded_names()), else None.
         loaded = local_loaded_names(entry["server"], entry["provider"])
         # A model two servers offer runs on the first (local_route()).
         listed = {model["selector"] for model in local_models}
-        local_models += [
-            {
+        for name in names:
+            if f"{entry['provider']}/{name}" in listed:
+                continue
+            # Whether it reads images: a model not found out yet (or found
+            # out over IMAGE_CHECK_MAX_AGE ago) is checked in the background;
+            # this list never waits for it.
+            found = local_model_images(entry, name, remembered)[2]
+            if remembered is not None and (found is None or time.time() - found["at"] > IMAGE_CHECK_MAX_AGE):
+                IMAGE_CHECKS.want(entry["server"], entry["provider"], name)
+            images, _, found = local_model_images(entry, name, remembered)
+            local_models.append({
                 "provider": entry["provider"],
                 "selector": f"{entry['provider']}/{name}",
                 "server": entry["server"],
                 "endpoint": endpoint,
-                # A local model sees images when its server is marked so.
-                "images": entry.get("vision") is True,
+                "images": images,
+                "image_check": image_check_view(entry, name, found),
                 "loaded": None if loaded is None else name in loaded,
-            }
-            for name in names
-            if f"{entry['provider']}/{name}" not in listed
-        ]
+            })
     local_error = "; ".join(local_errors)
     openai_error = anthropic_error = openai_api_error = gemini_error = deepseek_error = ""
     openai_connected = read_openai_credentials() is not None
@@ -7365,9 +7681,13 @@ def offline_local_rows(local_status, listed, defaults):
         selectors = [selector for selector in dict.fromkeys(f"{status['provider']}/{name}" for name in names)
                      if selector not in shown]
         shown.update(selectors)
-        rows += [offline_row(selector, OFFLINE_SERVER_UNREACHABLE, status["name"], server=status["server"],
-                             address=status["label"], images=status["images"], note=status["error"])
-                 for selector in selectors]
+        local = {"server": status["server"], "provider": status["provider"], "reads_images": status["reads_images"]}
+        for selector in selectors:
+            name = selector.partition("/")[2]
+            images, _, found = local_model_images(local, name, remembered)
+            rows.append(offline_row(selector, OFFLINE_SERVER_UNREACHABLE, status["name"], server=status["server"],
+                                    address=status["label"], images=images, note=status["error"],
+                                    image_check=image_check_view(local, name, found)))
         if not selectors:
             rows.append({"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
                          "server": status["server"], "provider": status["provider"], "note": status["error"]})
@@ -10309,7 +10629,7 @@ CHAT_CONTEXT_MAX_PASSAGES = 6
 # A picture sent with a message, as counted toward the model's window.
 CHAT_IMAGE_TOKENS = 1_600
 # Cloud providers whose chat requests carry pictures; a local model's do when
-# its server is marked as seeing images, a DeepSeek or xAI model's when its
+# it is known to read images (local_model_images()), a DeepSeek or xAI model's when its
 # list says so. Claude Code cannot chat.
 CHAT_IMAGE_PROVIDERS = frozenset({
     OPENAI_MODEL_PROVIDER, OPENAI_API_MODEL_PROVIDER, ANTHROPIC_MODEL_PROVIDER, GEMINI_MODEL_PROVIDER,
@@ -10774,7 +11094,8 @@ def chat_sees_images(selector, local_servers):
             sees = local_route(selector, local_servers)["vision"]
         except RuntimeError as exc:
             return False, str(exc)
-        return (True, "") if sees else (False, "This local model's server is not marked as seeing images.")
+        return (True, "") if sees else (False, "This local model is not known to read images: "
+                                                "set it under Settings › Providers › Edit, or wait for its check.")
     if provider in CHAT_IMAGE_PROVIDERS:
         return True, ""
     if provider == DEEPSEEK_MODEL_PROVIDER:
@@ -11262,7 +11583,7 @@ def _chat_openai_messages(system, entries, reasoning=False):
             if all(kind == "text" for kind, _ in parts):
                 content = "\n\n".join(value for _, value in parts)
             else:
-                # Pictures go only to a server marked as seeing images (chat_sees_images()).
+                # Pictures go only to a model known to read images (chat_sees_images()).
                 content = [
                     {"type": "text", "text": value} if kind == "text" else
                     {"type": "image_url", "image_url": {"url": f"data:{value['mime']};base64,{value['data']}"}}
@@ -13637,7 +13958,7 @@ class PaperRun(Run):
     def sees_images(self, model):
         """Whether a model gets figures as images: a DeepSeek or xAI model when
         its list says it reads them, another cloud model always, a local one when
-        the user says its server's models see them."""
+        it is known to read them (local_model_images())."""
         provider, _, name = model.partition("/")
         if provider == DEEPSEEK_MODEL_PROVIDER:
             info = deepseek_model_info(name)
@@ -15325,7 +15646,7 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/providers/local/save":
             try:
                 save_local_endpoint(str(body.get("original") or ""), body.get("name"),
-                                    str(body.get("address") or ""), body.get("images"))
+                                    str(body.get("address") or ""))
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
             except RuntimeError as exc:
@@ -15334,6 +15655,21 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/providers/local/remove":
             try:
                 remove_local_endpoint(str(body.get("name") or ""))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return self.reply_paper_catalog()
+        # The provider dialog's models: one model's images set by hand
+        # ("auto", "yes", "no"), or Check again for all of a server's models.
+        if route == "/api/providers/local/images":
+            try:
+                entry = local_endpoint_named(str(body.get("name") or ""))
+                if body.get("check") is True:
+                    forget_image_checks(entry["server"])
+                else:
+                    choice = {"auto": None, "yes": True, "no": False}
+                    if body.get("images") not in choice:
+                        raise ValueError("Choose auto, yes, or no for a model.")
+                    set_model_images(entry["name"], body.get("model"), choice[body["images"]])
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
             return self.reply_paper_catalog()
@@ -17205,6 +17541,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   border-top:1px solid var(--line); }
 .connect-method p { margin:6px 0; }
 #provider-dialog { width:min(620px,92vw); }
+/* The provider dialog's models: name, what was found out about images, and the choice by hand. */
+.provider-models { margin:14px 0 6px; padding-top:12px; border-top:1px solid var(--line); }
+.provider-models h3 { margin:0; font-size:15px; }
+.provider-models > .note { margin:6px 0 10px; }
+.provider-model-rows { display:grid; gap:8px; max-height:40vh; overflow:auto; }
+.provider-model { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; align-items:center; }
+.provider-model-name { overflow-wrap:anywhere; }
+.provider-model .note { grid-column:1; font-size:13px; }
+.provider-model select { grid-column:2; grid-row:1 / span 2; min-height:36px; }
+@media (max-width:640px) { .provider-model select { min-height:44px; } }
 /* One click selects the whole sign-in code. */
 #paper-openai-code { user-select:all; -webkit-user-select:all; font-size:1.1em; }
 @media (max-width:640px) {
@@ -18038,13 +18384,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div class="row"><label for="provider-local-address">Address:</label><div class="line">
       <input id="provider-local-address" type="text" autocomplete="off" spellcheck="false" placeholder="host:port">
     </div></div>
-    <div class="row"><span></span><div class="line">
-      <div class="field">
-        <label class="check"><input id="provider-local-images" type="checkbox"> Models here read images</label>
-        <span class="note">Figures go to its models as pictures. Leave this off for text-only models:
-          they read the text extracted from each figure instead.</span>
-      </div>
-    </div></div>
+    <section id="provider-local-models" class="provider-models hidden" aria-labelledby="provider-local-models-title">
+      <div class="line"><h3 id="provider-local-models-title">Models and images</h3><span class="grow"></span>
+        <button id="provider-local-check" class="link" type="button" onclick="checkLocalImages()">Check
+          again</button></div>
+      <p class="note">Hilde finds out by itself whether each model reads images: from what the server
+        reports, else by sending the model one small test picture. Figures go as pictures only to a model
+        that reads them. Set a model by hand when the check is wrong.</p>
+      <div id="provider-local-model-rows" class="provider-model-rows"></div>
+    </section>
     <p id="provider-local-startup" class="note hidden">Set at startup (--local-server): only its name
       changes here.</p>
     <p id="provider-local-status" class="note" role="status"></p>
@@ -21885,7 +22233,8 @@ function pickerChoice(name) {
     if (picker.same && (name !== "figure" || !perOptionModels || first.how === "same")) {
       const text = pickerChoice("book");
       const problem = picker.images && paperCatalog.loaded && text.model && !text.model.images
-        ? `The text model can't read images: choose one tagged "reads images".` : "";
+        ? `The text model ${text.model.images === null ? "isn't known to read images yet"
+          : "can't read images"}: choose one tagged "reads images".` : "";
       return { same:true, model:text.model, how:"same", unreachable:null, problem };
     }
     selector = first.selector; how = first.how;
@@ -21894,7 +22243,8 @@ function pickerChoice(name) {
   if (paperCatalog.loaded && model && model.selector && !model.listed)
     return { same:false, model:null, how, unreachable:model, problem:`⚠ ${model.short} is unreachable` };
   const problem = picker.images && paperCatalog.loaded && model && !model.images
-    ? `This model can't read images: choose one tagged "reads images".` : "";
+    ? `This model ${model.images === null ? "isn't known to read images yet" : "can't read images"}: choose one `
+      + `tagged "reads images".` : "";
   return { same:false, model, how, unreachable:null, problem };
 }
 // A Settings default: the server's model, named with its badge even while
@@ -21938,7 +22288,8 @@ function pickerBlock(name) {
   // Following the text model: the text option says what is wrong with it.
   if (!model) return same ? "" : "no model chosen";
   if (!problem) return "";
-  return `${same ? "the text model" : model.short} can't read images`;
+  return `${same ? "the text model" : model.short} ${model.images === null ? "isn't known to read images yet"
+    : "can't read images"}`;
 }
 // Why Create can't start for want of a model, and its one-click fixes, or
 // null: { name, text, useText } — useText names the model "Use the text
@@ -22248,7 +22599,7 @@ function renderPickerList(name, typed = false) {
   const imagesOnly = !!(picker.server && picker.images);
   const models = (paperCatalog.models || []).filter((model) => model.kind === kind && !(imagesOnly && !model.images));
   const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind
-    && !(imagesOnly && row.row === "offline" && row.images === false));
+    && !(imagesOnly && row.row === "offline" && row.images !== true));
   const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
   search.classList.toggle("hidden", !searching);
   if (!searching) search.value = "";
@@ -22267,15 +22618,23 @@ function renderPickerList(name, typed = false) {
                                                selected:value === kind }));
   } else {
     const matches = (...texts) => !query || texts.some((text) => String(text || "").toLowerCase().includes(query));
+    // Figures go only to a model known to read images: say so when none of this kind is.
+    if (picker.images && !(paperCatalog.models || []).some((model) => model.kind === kind && model.images === true))
+      nodes.push(pickerHeading(name, "no-images", "No model here is known to read images yet: models are "
+        + "checked automatically, or set one under Settings › Providers › Edit."));
     const { same, model:chosen } = pickerChoice(name);
     // A local model by its name and its server's ("<model> · <server name>").
     const option = (model, tags = []) => {
       const cannot = !!picker.images && !model.images;
+      // A local model not known yet to read images is not offered for figures.
+      const why = !cannot ? "" : model.images === false ? " · can't read images"
+        : model.image_check && model.image_check.state === "checking" ? " · checking whether it reads images…"
+        : " · not checked for images yet";
       return pickerOption(name, index++, { key:model.selector, value:model.selector,
         text:model.endpoint ? `${model.name} · ${model.endpoint}` : model.name,
         tags:[...tags, ...(model.images ? ["reads images"] : []),
               ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
-        sub:`${modelSource(model)}${cannot ? " · can't read images" : ""}`, badge:model.badge,
+        sub:`${modelSource(model)}${why}`, badge:model.badge,
         selected:!same && !!chosen && chosen.selector === model.selector, disabled:cannot });
     };
     const text = picker.same ? pickerChoice("book").model : null;
@@ -23472,6 +23831,7 @@ function applyPaperCatalog(catalog) {
   // rows (renderProviders()), come from the catalog.
   render();
   renderChatControls();
+  if ($("provider-dialog").open) renderLocalModels();
 }
 let paperCatalogLoading = false;
 async function refreshPaperModels(refresh) {
@@ -23621,7 +23981,7 @@ function renderProviders() {
   $("providers-add").classList.toggle("hidden", !manage);
   const rows = (paperCatalog.endpoints || []).map((endpoint) => providerRow({
     key:`local:${endpoint.name}`, title:endpoint.name, kind:"Local",
-    tags:[{ text:endpoint.label }, ...(endpoint.images ? [{ text:"reads images" }] : []),
+    tags:[{ text:endpoint.label },
           ...(endpoint.from_flag ? [{ text:"set at startup" }] : []),
           endpoint.running ? { text:"reachable", state:"reachable" }
             : { text:"unreachable", state:"unreachable", title:endpoint.error }],
@@ -23692,10 +24052,10 @@ function openProvidersPanel() {
 }
 // The provider dialog: Add (radio Local / Cloud), Edit of a row (its kind
 // fixed), and Connect / Add local in a model picker (preselected). Local:
-// name, address, and whether its models read images; a server set at
-// startup changes only its name. Cloud: the provider, its API key (a
-// password field, emptied whenever it shows and once the key is saved), and
-// Subscription where the provider has one.
+// name and address (a server set at startup changes only its name) and, for
+// Edit, its models with whether each reads images (renderLocalModels()).
+// Cloud: the provider, its API key (a password field, emptied whenever it
+// shows and once the key is saved), and Subscription where the provider has one.
 let providerEditing = "", providerSubscription = false;
 function openProviderDialog({ kind = "local", provider = "", endpoint = null, edit = false, subscription = false } = {}) {
   if (!caps.manage_providers) { openProvidersPanel(); return; }
@@ -23708,9 +24068,8 @@ function openProviderDialog({ kind = "local", provider = "", endpoint = null, ed
   const fixed = !!(endpoint && endpoint.from_flag);
   $("provider-local-name").value = endpoint ? endpoint.name : "";
   $("provider-local-address").value = endpoint ? endpoint.label : "";
-  $("provider-local-images").checked = !!(endpoint && endpoint.images);
+  renderLocalModels();
   $("provider-local-address").disabled = fixed;
-  $("provider-local-images").disabled = fixed;
   $("provider-local-startup").classList.toggle("hidden", !fixed);
   $("provider-local-status").textContent = "";
   $("provider-local-save").textContent = endpoint ? "Save" : "Check and add";
@@ -23718,6 +24077,73 @@ function openProviderDialog({ kind = "local", provider = "", endpoint = null, ed
   providerSubscription = subscription;
   if (!$("provider-dialog").open) $("provider-dialog").showModal();
   showProviderKind();
+}
+// A model's images as found out ("reads images (tested)", "text only
+// (reported by the server)", "checking…", "not checked yet").
+function imageCheckText(check) {
+  if (!check || check.state === "unchecked") return "not checked yet";
+  if (check.state === "checking") return "checking…";
+  return `${check.images ? "reads images" : "text only"} (${check.state === "tested" ? "tested" : "reported by the server"})`;
+}
+// Edit of a local server: each model it lists (or listed, while it is
+// down), what was found out about its images, and Reads images: auto / yes
+// / no. Drawn again only when that changed, so an open select stays; while
+// a check is under way the catalog is asked again every few seconds.
+let localModelsSignature = "", localModelsTimer = null;
+function renderLocalModels() {
+  const endpoint = (paperCatalog.endpoints || []).find((item) => item.name === providerEditing);
+  $("provider-local-models").classList.toggle("hidden", !endpoint);
+  clearTimeout(localModelsTimer);
+  if (!endpoint) { localModelsSignature = ""; return; }
+  const models = [...(paperCatalog.models || []), ...(paperCatalog.rows || []).filter((row) => row.row === "offline")]
+    .filter((model) => model.server === endpoint.server && model.image_check);
+  const signature = JSON.stringify([endpoint.name, models.map((model) => [model.selector, model.image_check])]);
+  if (signature !== localModelsSignature) {
+    localModelsSignature = signature;
+    const rows = models.map((model) => {
+      const id = model.selector.slice(model.provider.length + 1), check = model.image_check;
+      const row = document.createElement("div");
+      row.className = "provider-model"; row.dataset.model = id;
+      const name = document.createElement("span");
+      name.className = "provider-model-name"; name.textContent = model.name; name.title = model.selector;
+      const state = document.createElement("span");
+      state.className = "note provider-model-state"; state.textContent = imageCheckText(check);
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", `Reads images: ${model.name}`);
+      for (const [value, label] of [["auto", "Reads images: auto"], ["yes", "Reads images: yes"], ["no", "Reads images: no"]])
+        select.add(new Option(label, value));
+      select.value = check.override === true ? "yes" : check.override === false ? "no" : "auto";
+      select.addEventListener("change", () => setLocalModelImages(endpoint.name, id, select.value));
+      row.append(name, select, state);
+      return row;
+    });
+    if (!rows.length) {
+      const none = document.createElement("p");
+      none.className = "note";
+      none.textContent = endpoint.running ? "This server lists no model." : "This server has not listed its models yet.";
+      rows.push(none);
+    }
+    $("provider-local-model-rows").replaceChildren(...rows);
+  }
+  if ($("provider-dialog").open && models.some((model) => model.image_check.state === "checking"))
+    localModelsTimer = setTimeout(() => refreshPaperModels(), 3000);
+}
+async function setLocalModelImages(name, model, images) {
+  try {
+    applyPaperCatalog(await jsonRequest("/api/providers/local/images", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ name, model, images }),
+    }));
+  } catch (error) { $("provider-local-status").textContent = error.message; }
+}
+// Check again: what was found out about this server's models is dropped,
+// and each is checked anew in the background.
+async function checkLocalImages() {
+  try {
+    applyPaperCatalog(await jsonRequest("/api/providers/local/images", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name:providerEditing, check:true }),
+    }));
+  } catch (error) { $("provider-local-status").textContent = error.message; }
 }
 function stopSignInPolls() {
   for (const signIn of Object.values(SIGN_INS)) clearTimeout(signIn.timer);
@@ -23788,8 +24214,7 @@ async function saveLocalProvider() {
   try {
     applyPaperCatalog(await jsonRequest("/api/providers/local/save", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ original, name, address:$("provider-local-address").value,
-                            images:$("provider-local-images").checked }),
+      body:JSON.stringify({ original, name, address:$("provider-local-address").value }),
     }));
     closeProviderDialog();
     setStatus(original ? `Saved '${name}'.` : `Added '${name}'.`);
@@ -24812,7 +25237,7 @@ def build_parser():
     )
     parser.add_argument(
         "--local-server",
-        metavar="PROVIDER=URL[,vision]",
+        metavar="PROVIDER=URL",
         type=local_server_option,
         action="append",
         default=[],
@@ -24820,8 +25245,8 @@ def build_parser():
             "A local model server for every browser, added once to Settings › Providers "
             "(~/.hilde/providers.yaml), where it shows as set at startup; repeat for more. "
             "PROVIDER is lm-studio for any OpenAI-compatible server, or ollama for an Ollama "
-            "server; ,vision says its models see images. "
-            "For example lm-studio=http://127.0.0.1:8000,vision."
+            "server; whether each model reads images is found out automatically. "
+            "For example lm-studio=http://127.0.0.1:8000."
         ),
     )
     models = parser.add_argument_group("voice model configuration")
@@ -24961,6 +25386,9 @@ def main():
         ])
     except (OSError, ValueError) as exc:
         parser.error(f"{providers_path()}: {exc}")
+    # Whether each local model reads images is found out in the background
+    # from now on (one small test picture per model, see IMAGE_CHECKS).
+    IMAGE_CHECKS.enabled = True
     server.chat_speaker = (
         ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
     )

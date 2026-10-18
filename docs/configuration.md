@@ -32,7 +32,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines and sets the default models. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
-| `--local-server PROVIDER=URL[,vision]` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
+| `--local-server PROVIDER=URL` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server. Whether each of its models reads images is [found out automatically](#which-local-models-read-images). At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -311,13 +311,16 @@ local:
 - name: Workstation               # 1–32 characters, unique
   address: http://192.0.2.10:8000 # unique
   type: openai-compatible         # or ollama (detected when added)
-  images: true                    # "Models here read images"
+  reads_images:                   # only models set by hand (Edit): the others are found out
+    my-vision-model: true
 claude_code: false                # only after Claude Code was removed
 defaults:                         # only the defaults set
   text: lm-studio/my-big-model    # Default text narration
   image: lm-studio/my-vision-model  # Default image narration; left out: not set, figures follow the text model
 ```
 
+A server's `images: true|false` from earlier versions is still read and
+then dropped: each model's images are found out instead.
 `claude_code: false` means Hilde no longer uses this server's Claude Code;
 **Subscription** for Anthropic turns it on again. A default is written as the
 model picker shows a model in its details: `lm-studio/<model>` or
@@ -334,8 +337,42 @@ server no longer in `providers.yaml` at startup is dropped too. A server that
 has never answered has no models to show yet. The file looks like this:
 
 ```json
-{"schema": 1, "servers": {"http://192.0.2.10:8000": {"provider": "lm-studio", "models": ["model-a", "model-b"]}}}
+{"schema": 1, "servers": {"http://192.0.2.10:8000": {"provider": "lm-studio", "models": ["model-a", "model-b"],
+  "images": {"model-a": {"images": true, "how": "tested", "at": 1792000000.0}}}}}
 ```
+
+### Which local models read images
+
+Hilde finds out by itself whether each model of a local server reads images,
+model by model, in this order:
+
+1. **By hand**: **Reads images: yes** or **no** for the model under
+   **Settings › Providers › Edit** (kept in `providers.yaml` as
+   `reads_images`); **auto** leaves it to the next steps.
+2. **What the server reports**: Ollama's `/api/show` capabilities (`vision`),
+   or LM Studio's `/api/v0/models` type (`vlm` reads images, `llm` does not).
+3. **A test picture**: otherwise Hilde sends the model, automatically, one
+   small request to `/v1/chat/completions`: a 32×32 PNG of one colour with
+   "What colour is this image? Answer with one word." (at most 10 tokens,
+   temperature 0, waiting up to 60 seconds). The model reads images when the
+   server takes the request and the answer names the colour; it is text only
+   when the server refuses the picture (HTTP 400 or 422, or an error about
+   images) or names another colour. No answer in time, a server that can't be
+   reached, or a server error decide nothing: the model is checked again on a
+   later model list. A model the server says is not loaded (Ollama's
+   `/api/ps`) is never sent a picture, so no model is loaded for a check; it
+   is checked once it is loaded.
+
+Cloud providers are never sent a test picture (each request costs money):
+their model lists say which models read images. Checks run in the
+background, one model at a time per server, and never hold up the model list:
+a model being checked shows "checking…" until the list is fetched again. Each
+result is kept in `local-models.json` with its time and checked again only
+when the model newly appears on the server, on **Check again** in the
+provider dialog, or after seven days. The server prints one line per check,
+such as `Image check 192.0.2.10:8000 model-a: reads images (tested); answered
+'Red.'`. Figures go as pictures only to a model that reads images; a model not
+checked yet is not offered for figures.
 
 Local servers that browsers once added for themselves (earlier versions kept
 up to eight per browser) are no longer used and are not migrated: they were
