@@ -6821,7 +6821,7 @@ def write_providers(endpoints, claude_code, defaults):
     ]}
     if not claude_code:
         data["claude_code"] = False
-    # Only the defaults set; image narration left out is the same as text narration.
+    # Only the defaults set; one left out is unset (an unset image default: figures follow the text model).
     if any(defaults.values()):
         data["defaults"] = {field: selector for field, selector in defaults.items() if selector}
     _write_private_text(providers_path(), PROVIDERS_HEADER + yaml.safe_dump(data, sort_keys=False))
@@ -6958,7 +6958,7 @@ def use_claude_code(on):
 def save_default_models(changes, models):
     """Set the server's default models (Settings › Models and connection):
     `changes` maps "text" and/or "image" to a selector, or to "" to unset one
-    (image narration unset is the same as text narration). A model is taken
+    (unset, figures in Create follow the text model). A model is taken
     only while the catalog lists it (`models`, paper_model_catalog()'s), and
     for image narration only one that reads images. Kept in providers.yaml.
     Raises ValueError for the user to fix."""
@@ -21898,18 +21898,12 @@ function pickerChoice(name) {
   return { same:false, model, how, unreachable:null, problem };
 }
 // A Settings default: the server's model, named with its badge even while
-// unreachable (then red, with alternatives); unset, text narration is "Not
-// set" ("unset") and image narration follows the text narration default
-// ("same").
+// unreachable (then red, with alternatives); unset, either row is "Not set"
+// ("unset"). An unset image default still sends figures to the text model in
+// Create (first_use_models(): "same"); Settings does not say so on the row.
 function defaultChoice(name) {
   const value = pickerValue(name);
-  if (!value) {
-    if (PICKERS[name].server !== "image") return { same:false, model:null, how:"unset", unreachable:null, problem:"" };
-    const text = defaultChoice("default-text").model;
-    const problem = paperCatalog.loaded && text && text.listed && !text.images
-      ? `The text narration model can't read images: figures need one tagged "reads images".` : "";
-    return { same:true, model:text, how:"same", unreachable:null, problem };
-  }
+  if (!value) return { same:false, model:null, how:"unset", unreachable:null, problem:"" };
   const model = textModel(value);
   if (paperCatalog.loaded && !model.listed)
     return { same:false, model, how:"default", unreachable:model, problem:`⚠ ${model.short} is unreachable` };
@@ -22083,11 +22077,9 @@ function renderPicker(name) {
   // Runs on switched, no model of that kind chosen yet.
   const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
   const shown = switched || connect ? null : model;
-  // A Settings default unset reads "Not set", or for image narration "Same
-  // as text narration", until Runs on is switched.
-  const sameText = picker.server ? "Same as text narration" : "Same as the text model";
-  const text = shown ? (same ? `${sameText} (${shown.short})` : shown.short)
-    : picker.server && !pickerKinds[name] ? (same ? sameText : "Not set")
+  // A Settings default unset reads "Not set" until Runs on is switched.
+  const text = shown ? (same ? `Same as the text model (${shown.short})` : shown.short)
+    : picker.server && !pickerKinds[name] ? "Not set"
     : none ? "No model available" : connect ? "Connect a provider" : "Choose a model";
   const kindBox = $(`${name}-kind`);
   kindBox.classList.toggle("kind-local", kind === "local");
@@ -22296,13 +22288,6 @@ function renderPickerList(name, typed = false) {
         tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
         title:text.selector, selected:same, disabled:cannot }));
     }
-    // Image narration: "Same as text narration" (its value unset) first, in both lists.
-    if (picker.server === "image" && matches("Same as text narration")) {
-      const text = defaultChoice("default-text").model;
-      nodes.push(pickerOption(name, index++, { key:"same", value:"", text:"Same as text narration",
-        tags:text && text.images ? ["reads images"] : [], sub:text ? text.short : "Not set",
-        title:text ? text.selector : "", selected:same }));
-    }
     const shown = models.filter((model) => matches(model.name, model.endpoint, model.selector, modelSource(model)));
     // Default: what this picker starts with when nothing is chosen (none in Settings).
     const first = picker.server || (picker.same && name !== "figure") ? null
@@ -22442,7 +22427,7 @@ function setPickerModel(name, selector) {
   if (chatAbout) attachAbout(chatAbout.about);
 }
 // Settings › Models and connection: the server-wide default ("" unsets it:
-// "Not set", or for image narration the same as text narration), saved for
+// "Not set"), saved for
 // every browser; the answer is the refreshed catalog.
 async function saveDefaultModel(name, selector) {
   delete pickerKinds[name];
@@ -22452,7 +22437,7 @@ async function saveDefaultModel(name, selector) {
       body:JSON.stringify({ [PICKERS[name].server]:selector }),
     }));
     const model = textModel(selector);
-    setStatus(`${PICKERS[name].label}: ${model ? model.short : name === "default-image" ? "Same as text narration" : "Not set"}.`);
+    setStatus(`${PICKERS[name].label}: ${model ? model.short : "Not set"}.`);
   } catch (error) { render(); setStatus(error.message, true); }
 }
 // Narration and voice design in Settings: the picker's look, read-only
@@ -25009,7 +24994,7 @@ def main():
         defaults = dict(SERVER_DEFAULT_MODELS)
     print(f"Default text narration (Settings › Models and connection): {defaults['text'] or 'not set'}",
           flush=True)
-    print(f"Default image narration: {defaults['image'] or 'same as text narration'}", flush=True)
+    print(f"Default image narration: {defaults['image'] or 'not set'}", flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)
     print(model_summary(tts_models["clone"], "clone"), flush=True)
     print(

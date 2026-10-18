@@ -92,11 +92,14 @@ two server-wide defaults are set with the same model picker as Create
 - **Default text narration**: the model that prepares and adapts the text
   for listening. Create and Ask Hilde start with it.
 - **Default image narration**: the model that reads figures from their
-  pictures. It offers only models that read images, and **Same as text
-  narration** (the default), which sends figures to the text narration model.
+  pictures. It offers only models that read images. With none set, figures
+  in Create follow the text model.
 
 Each row shows the chosen model's name and its Local or Cloud badge; an unset
-text row reads "Not set". Only a browser on the server's own machine sets
+row reads "Not set". Neither row has an entry that unsets a default once it
+is set: send `POST /api/models/defaults` with `{"text": ""}` or
+`{"image": ""}` from a browser that may set them, or stop the server and
+remove the line from `providers.yaml`. Only a browser on the server's own machine sets
 them, or any browser when Hilde starts with `--manage-from-network`; other
 devices see the rows read-only under "Read-only from this device. Set the
 default models from a browser on the Hilde server, or start Hilde with
@@ -312,7 +315,7 @@ local:
 claude_code: false                # only after Claude Code was removed
 defaults:                         # only the defaults set
   text: lm-studio/my-big-model    # Default text narration
-  image: lm-studio/my-vision-model  # Default image narration; left out: same as text narration
+  image: lm-studio/my-vision-model  # Default image narration; left out: not set, figures follow the text model
 ```
 
 `claude_code: false` means Hilde no longer uses this server's Claude Code;

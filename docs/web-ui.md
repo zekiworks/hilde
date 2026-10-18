@@ -717,9 +717,9 @@ next audiobook" or "Applies now". The groups:
   that reads figures) are the server's defaults for every browser, set with
   the same picker as Create; see
   [Default models](configuration.md#default-models). Image narration lists
-  only models that read images, and **Same as text narration** (the
-  default). Each row shows the chosen model's name and badge, "Not set" for an
-  unset text row, and, when its server is down, the red "⚠ <name> is
+  only models that read images. Each row shows the chosen model's name and
+  badge, "Not set" when unset (with no image default, figures in Create
+  follow the text model), and, when its server is down, the red "⚠ <name> is
   unreachable" with one-click alternatives that set another default. Their
   lists end with **Add local** and **Connect**, which open the provider
   dialog; with Cloud chosen and no provider connected, a Model box opens that

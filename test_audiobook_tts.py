@@ -4566,7 +4566,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         web.save_local_endpoint("", "Bariton", gemma, False)
         web.use_claude_code(False)
         self.assertEqual(web.read_providers(path)[2], {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
-        # Image narration takes only a model that reads images, or "" (same as text narration).
+        # Image narration takes only a model that reads images, or "" (not set).
         with self.assertRaisesRegex(ValueError, "Plain can't read images"):
             web.save_default_models({"image": "lm-studio/plain"}, models)
         # A model the catalog does not list now is not taken; neither is a selector of no provider.
