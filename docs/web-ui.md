@@ -94,8 +94,8 @@ a greyed row keeps a model of a local server that does not answer):
   marked "server unreachable"; they can be chosen again once it answers and
   the list is fetched again (opening Ask Hilde, or reloading the page). A
   server that has never answered is one greyed row, "<server name> — server
-  unreachable". A preferred model (`--preferred-text-model`,
-  `--preferred-figure-model`) that no server lists is a greyed row by its
+  unreachable". A default model (**Settings › Models and connection**) that
+  no server lists is a greyed row by its
   name, "not listed by any reachable server", with no server named. **Add
   local** is at the bottom. Create step 3, Ask Hilde, and Settings show the
   same list; a local model is never mixed up with a cloud provider of the
@@ -111,20 +111,21 @@ a greyed row keeps a model of a local server that does not answer):
   returns to its box.
 
 Each picker, for text and for figures separately, preselects: the model this
-browser used last, if it is reachable; on first use, the server owner's first
-preferred model (`--preferred-text-model`, `--preferred-figure-model`, see
-[Choose your default local models](configuration.md#choose-your-default-local-models)),
-if it is reachable, said as "Preferred on this server"; with none set, the
-only model there is, with its badge ("The only model available"); otherwise
-nothing ("Choose a model"), its list opens once, and **Create audiobook**
-waits. When the last used or preferred model does not answer, nothing is
-selected: the model row says in red "⚠ <name> is unreachable", **Create
-audiobook** names that reason, and under it one-click alternatives follow,
-the owner's other preferred models first, then the other reachable models,
+browser used last, if it is reachable; on first use, the server's default
+(**Default text narration**, and for figures **Default image narration**,
+under **Settings › Models and connection**, see
+[Default models](configuration.md#default-models)), if it is reachable, said
+as "Default on this server"; with none set, the only model there is, with its
+badge ("The only model available"); otherwise nothing ("Choose a model"), its
+list opens once, and **Create audiobook** waits. When the last used or default
+model does not answer, nothing is selected: the model row says in red "⚠
+<name> is unreachable", **Create audiobook** names that reason, and under it
+one-click alternatives follow, the other reachable models, local ones first,
 each with its name, Local or Cloud badge, and size when known; nothing is used
 until you click one. Ask Hilde does the same and never answers with another
-model by itself. Figures without a preferred figure model follow the text
-model. When one model serves all options and it can't read images,
+model by itself. With a default image narration model set, Create shows the
+per-option pickers and the figure model starts with it; otherwise figures
+follow the text model. When one model serves all options and it can't read images,
 the figure option says so, and blocks Create only while it is ticked. With no
 model at all the picker reads **No model available**, with **Add local** and
 **Connect a provider**. **Create audiobook** stays disabled only while an
@@ -247,8 +248,8 @@ A model that stops answering during a book (still refused after the retries)
 pauses the job instead: the card reads **Paused**, with a red "⚠ <model>
 became unreachable at part N", the parts kept and which model wrote them,
 **Retry** (the same model, after the model list is asked again), and
-**Continue with another model…**, which lists the other models (the owner's
-preferred ones first) and sends only the remaining parts to the one you
+**Continue with another model…**, which lists the other reachable models
+(local ones first) and sends only the remaining parts to the one you
 click; the parts already written stay. Hilde never switches models inside a
 job by itself. The finished card, the job's log ("Written by: parts 1–12:
 …"), and the book's details on **Listen** ("Text written by …") say which
@@ -688,22 +689,30 @@ takes effect: "Applies to the next audiobook" or "Applies now". The groups:
   with --manage-from-network."
 - **Models and connection** only assigns models to their jobs; adding servers
   and connecting providers is under **Providers**, so this section has no
-  **Add local**, **Connect a provider**, or **Providers…** link. It shows the
-  narration and voice-design models by readable name (such as
-  `Qwen3-TTS 1.7B (Base)`; the model ID is in the
+  **Add local**, **Connect a provider**, or **Providers…** link. **Default
+  TTS** (the narration model) and **Voice design** show their models by
+  readable name (such as `Qwen3-TTS 1.7B (Base)`; the model ID is in the
   tooltip), with **Local** or **Speech server**. Voice design adds the device
   its last design ran on, by name and ID, or "Device chosen on first use"
   before the first; with several GPUs, each design takes the one with the
   most free memory. Hilde sets these when it starts; to change them, restart
-  Hilde with different settings. **Default text model** is this browser's own
-  choice, the same picker and choice as Create's text model, which a book can
-  change; it works from any device. Its lists still end with **Add local** and
-  **Connect**, which open the provider dialog; with Cloud chosen and no
-  provider connected, its Model box opens that list instead of reading
-  **Connect a provider**. Settings has no separate default figure model: a
-  book's figure model is chosen in Create. Under it, "Preferred on this server:
-  <name> · Local, on <host:port>" names the owner's first preferred text model
-  and where it runs. **Connection**
+  Hilde with different settings. **Default text narration** (the model that
+  prepares and adapts the text) and **Default image narration** (the model
+  that reads figures) are the server's defaults for every browser, set with
+  the same picker as Create; see
+  [Default models](configuration.md#default-models). Image narration lists
+  only models that read images, and **Same as text narration** (the
+  default). Each row shows the chosen model's name and badge, "Not set" for an
+  unset text row, and, when its server is down, the red "⚠ <name> is
+  unreachable" with one-click alternatives that set another default. Their
+  lists end with **Add local** and **Connect**, which open the provider
+  dialog; with Cloud chosen and no provider connected, a Model box opens that
+  list instead of reading **Connect a provider**. On other devices, unless
+  Hilde started with `--manage-from-network`, both rows are read-only, in the
+  look of the speech models' rows, under "Read-only from this device. Set the
+  default models from a browser on the Hilde server, or start Hilde with
+  --manage-from-network." A browser's own model is chosen in Create or Ask
+  Hilde and remembered there. **Connection to Hilde**
   says "local (this computer)" on this computer, "HTTPS" over HTTPS, or, over
   plain HTTP from another device, that browsers may warn about or block
   downloads such as audiobook exports, with a link to

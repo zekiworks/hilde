@@ -287,12 +287,13 @@ STARTUP_LOCAL_SERVERS = set()
 # Whether Hilde uses this server's Claude Code (Anthropic's subscription):
 # on until it is removed under Settings › Providers; kept in providers.yaml.
 CLAUDE_CODE_USED = {"on": True}
-# The owner's preferred models, by field ("text", "figure"), in order of
-# preference (--preferred-text-model, --preferred-figure-model): the first is
-# a browser's first-use model when it is reachable, and the others come first
-# among the alternatives offered when it is not. Never a fallback chain. Set
-# once at startup.
-SERVER_PREFERRED_MODELS = {"text": (), "figure": ()}
+# The server's default models, set under Settings › Models and connection by a
+# browser that may manage (Handler.may_manage()) and kept in providers.yaml's
+# `defaults:`: "text" (text narration: what prepares and adapts the text) and
+# "image" (image narration: what reads figures; "" is the same as text
+# narration), each a selector or "". The default is a browser's first-use
+# model while it is reachable; never a fallback. Guarded by LOCAL_ENDPOINTS_LOCK.
+SERVER_DEFAULT_MODELS = {"text": "", "image": ""}
 # Local servers otherwise sample at the model's default, often 1.0, and the
 # same paper then reads differently on every run. Adapting the Attention paper
 # twice with Mistral Small 4, 0.2 kept 48 of 92 prose batches word for word
@@ -6647,17 +6648,23 @@ def local_loaded_names(local_server, provider):
 PROVIDERS_FILE = "providers.yaml"
 PROVIDERS_HEADER = """\
 # Hilde's model providers, for every browser: the local model servers (name,
-# address, type, and whether their models read images), and claude_code: false
-# when Hilde does not use this server's Claude Code. Hilde writes this file
-# when they change under Settings > Providers in a browser on the server's
-# machine; --local-server adds its server here at startup. Stop the server
-# before editing it by hand. Cloud sign-ins and API keys have their own files.
+# address, type, and whether their models read images), claude_code: false
+# when Hilde does not use this server's Claude Code, and the default models
+# (defaults: text and image, each PROVIDER/MODEL). Hilde writes this file when
+# they change under Settings > Providers or Settings > Models and connection in
+# a browser on the server's machine; --local-server adds its server here at
+# startup. Stop the server before editing it by hand. Cloud sign-ins and API
+# keys have their own files.
 """
 # A local server's type as providers.yaml names it, and as model selectors do.
 LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
 LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "images")
 PROVIDERS_LOCAL_ONLY = (
     "Providers are added, changed, and removed in a browser on the server's own machine, "
+    "or from any device when Hilde starts with --manage-from-network."
+)
+DEFAULTS_LOCAL_ONLY = (
+    "Default models are set in a browser on the server's own machine, "
     "or from any device when Hilde starts with --manage-from-network."
 )
 # Each local server's models as it last listed them, by its address, so its
@@ -6750,19 +6757,20 @@ def local_endpoint_conflict(endpoints, name, server, skip=None):
 
 def read_providers(path):
     """providers.yaml's local servers, as {"name", "server", "provider",
-    "vision"} in the file's order, and whether Claude Code is used. An absent
-    file has no local server and uses Claude Code."""
+    "vision"} in the file's order, whether Claude Code is used, and the
+    default models ({"text", "image"}, each a selector or ""). An absent file
+    has no local server, uses Claude Code, and sets no default."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return [], True
+        return [], True, {field: "" for field in SERVER_DEFAULT_MODELS}
     try:
         data = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"not valid YAML: {exc}") from None
     if not isinstance(data, dict) or not isinstance(data.get("local") or [], list):
         raise ValueError("expected a 'local:' list")
-    unknown = sorted(set(data) - {"local", "claude_code"})
+    unknown = sorted(set(data) - {"local", "claude_code", "defaults"})
     if unknown:
         raise ValueError(f"unknown setting: {unknown[0]}")
     endpoints = []
@@ -6788,10 +6796,22 @@ def read_providers(path):
     claude_code = data.get("claude_code", True)
     if not isinstance(claude_code, bool):
         raise ValueError("claude_code is true or false")
-    return endpoints, claude_code
+    saved = data.get("defaults") or {}
+    if not isinstance(saved, dict):
+        raise ValueError("defaults: expected text and image")
+    unknown = sorted(set(saved) - set(SERVER_DEFAULT_MODELS))
+    if unknown:
+        raise ValueError(f"unknown default: {unknown[0]}")
+    defaults = {}
+    for field in SERVER_DEFAULT_MODELS:
+        try:
+            defaults[field] = model_selector(saved[field]) if field in saved else ""
+        except ValueError as exc:
+            raise ValueError(f"defaults: {field}: {exc}") from None
+    return endpoints, claude_code, defaults
 
 
-def write_providers(endpoints, claude_code):
+def write_providers(endpoints, claude_code, defaults):
     """Replace providers.yaml, readable only by this user, in its private folder."""
     types = {provider: name for name, provider in LOCAL_ENDPOINT_TYPES.items()}
     data = {"local": [
@@ -6801,6 +6821,9 @@ def write_providers(endpoints, claude_code):
     ]}
     if not claude_code:
         data["claude_code"] = False
+    # Only the defaults set; image narration left out is the same as text narration.
+    if any(defaults.values()):
+        data["defaults"] = {field: selector for field, selector in defaults.items() if selector}
     _write_private_text(providers_path(), PROVIDERS_HEADER + yaml.safe_dump(data, sort_keys=False))
 
 
@@ -6818,11 +6841,12 @@ def default_endpoint_name(server, endpoints):
 
 
 def load_providers(flags):
-    """Read providers.yaml into LOCAL_ENDPOINTS and CLAUDE_CODE_USED, adding
-    each --local-server server it lacks (named by default_endpoint_name()) and
-    saving the file then; those addresses are this run's "set at startup".
-    Models remembered for an address no longer there are forgotten."""
-    endpoints, claude_code = read_providers(providers_path())
+    """Read providers.yaml into LOCAL_ENDPOINTS, CLAUDE_CODE_USED, and
+    SERVER_DEFAULT_MODELS, adding each --local-server server it lacks (named
+    by default_endpoint_name()) and saving the file then; those addresses are
+    this run's "set at startup". Models remembered for an address no longer
+    there are forgotten."""
+    endpoints, claude_code, defaults = read_providers(providers_path())
     added = False
     for flag in flags:
         if any(entry["server"] == flag["server"] for entry in endpoints):
@@ -6830,12 +6854,13 @@ def load_providers(flags):
         endpoints.append({"name": default_endpoint_name(flag["server"], endpoints), **flag})
         added = True
     if added:
-        write_providers(endpoints, claude_code)
+        write_providers(endpoints, claude_code, defaults)
     with LOCAL_ENDPOINTS_LOCK:
         LOCAL_ENDPOINTS[:] = endpoints
         STARTUP_LOCAL_SERVERS.clear()
         STARTUP_LOCAL_SERVERS.update(flag["server"] for flag in flags)
         CLAUDE_CODE_USED["on"] = claude_code
+        SERVER_DEFAULT_MODELS.update(defaults)
         # Models remembered for a server no longer in the file go with it.
         forget_local_models({entry["server"] for entry in endpoints})
 
@@ -6900,7 +6925,7 @@ def save_local_endpoint(original, name, address, images):
             endpoints.append(entry)
         else:
             endpoints[index] = entry
-        write_providers(endpoints, CLAUDE_CODE_USED["on"])
+        write_providers(endpoints, CLAUDE_CODE_USED["on"], SERVER_DEFAULT_MODELS)
         LOCAL_ENDPOINTS[:] = endpoints
         # A server moved to another address is another server: the old one's models go.
         forget_local_models({saved["server"] for saved in endpoints})
@@ -6918,7 +6943,7 @@ def remove_local_endpoint(name):
             raise ValueError("This server is set at startup (--local-server); it stays while Hilde "
                              "starts with it.")
         endpoints = [entry for entry in LOCAL_ENDPOINTS if entry is not current]
-        write_providers(endpoints, CLAUDE_CODE_USED["on"])
+        write_providers(endpoints, CLAUDE_CODE_USED["on"], SERVER_DEFAULT_MODELS)
         LOCAL_ENDPOINTS[:] = endpoints
         forget_local_models({entry["server"] for entry in endpoints})
 
@@ -6926,8 +6951,37 @@ def remove_local_endpoint(name):
 def use_claude_code(on):
     """Whether Hilde uses this server's Claude Code, kept in providers.yaml."""
     with LOCAL_ENDPOINTS_LOCK:
-        write_providers(LOCAL_ENDPOINTS, on)
+        write_providers(LOCAL_ENDPOINTS, on, SERVER_DEFAULT_MODELS)
         CLAUDE_CODE_USED["on"] = on
+
+
+def save_default_models(changes, models):
+    """Set the server's default models (Settings › Models and connection):
+    `changes` maps "text" and/or "image" to a selector, or to "" to unset one
+    (image narration unset is the same as text narration). A model is taken
+    only while the catalog lists it (`models`, paper_model_catalog()'s), and
+    for image narration only one that reads images. Kept in providers.yaml.
+    Raises ValueError for the user to fix."""
+    if not isinstance(changes, dict) or not changes or set(changes) - set(SERVER_DEFAULT_MODELS):
+        raise ValueError("Give the default text narration model, the default image narration model, or both.")
+    listed = {model["selector"]: model for model in models}
+    checked = {}
+    for field, value in changes.items():
+        if value == "":
+            checked[field] = ""
+            continue
+        selector = model_selector(value)
+        model = listed.get(selector)
+        if model is None:
+            name = model_name({"provider": selector.partition("/")[0], "selector": selector})
+            raise ValueError(f"{name} is not available now: choose a model the list offers.")
+        if field == "image" and not model["images"]:
+            raise ValueError(f"{model['name']} can't read images: choose a model tagged reads images.")
+        checked[field] = selector
+    with LOCAL_ENDPOINTS_LOCK:
+        defaults = {**SERVER_DEFAULT_MODELS, **checked}
+        write_providers(LOCAL_ENDPOINTS, CLAUDE_CODE_USED["on"], defaults)
+        SERVER_DEFAULT_MODELS.update(defaults)
 
 
 def local_server_option(value):
@@ -6955,17 +7009,16 @@ def local_server_option(value):
     return {"server": server, "provider": provider, "vision": bool(comma)}
 
 
-def preferred_model_option(value):
-    """--preferred-text-model / --preferred-figure-model SELECTOR: one of the
-    owner's preferred models, PROVIDER/MODEL as the model picker names it: a
-    local model (ollama/… or lm-studio/…, as its server lists it) or an API
-    model (such as openai/<model>). Hilde checks only the form here; whether
-    the model is reachable is said on the page."""
-    selector = str(value).strip()
+def model_selector(value):
+    """A model as PROVIDER/MODEL, as the model picker names it: a local model
+    (ollama/… or lm-studio/…, as its server lists it) or an API model (such as
+    openai/<model>). Checks only the form; whether the model is reachable is
+    the catalog's to say. Raises ValueError."""
+    selector = value.strip() if isinstance(value, str) else ""
     provider, slash, name = selector.partition("/")
     known = (*LOCAL_MODEL_PROVIDERS, *CHAT_PROVIDER_NAMES)
     if not slash or not name.strip() or provider not in known:
-        raise argparse.ArgumentTypeError(
+        raise ValueError(
             f"use PROVIDER/MODEL with PROVIDER one of {', '.join(known)}, as the model picker "
             "shows it in a model's details, such as lm-studio/my-model"
         )
@@ -7001,8 +7054,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
     badge, images, running}, a local one with its server and the server's
     name ("endpoint"); the picker's other rows (catalog_rows()): the models
     a local server that does not answer listed when it last did, disabled,
-    and each provider not connected; the owner's
-    preferred models and what a choice left open starts with
+    and each provider not connected; the server's default models
+    (default_model_entries()) and what a choice left open starts with
     (first_use_models()); and each local server as Settings › Providers lists
     it ("endpoints"): name, address, whether it answered, and whether it was
     set at startup ("from_flag"), which the page offers no Delete for."""
@@ -7155,18 +7208,21 @@ def paper_model_catalog(local_servers=(), refresh=False):
         "xai": (*reach((xai_connected, xai_error), (xai_api_connected, xai_api_error)), "Not connected"),
     }
     models = local_models + cloud_models
-    preferred = preferred_models(models)
+    with LOCAL_ENDPOINTS_LOCK:
+        stored = dict(SERVER_DEFAULT_MODELS)
+    defaults = default_model_entries(models, stored)
     return {
         "models": models,
         # The xAI row says in red why the sign-in can't be used; a refused
         # one offers an API key instead.
         "rows": [{**row, **({"problem": True, "refused": True} if xai_refused else {"problem": True})}
                  if row.get("provider") == "xai" and (xai_refused or xai_error == XAI_SIGN_IN_AGAIN) else row
-                 for row in catalog_rows(local_status, connections, {model["selector"] for model in local_models})],
-        # The owner's preferred models by field, reachable or not, and what a
-        # browser that has chosen nothing yet starts with (first_use_models()).
-        "preferred": preferred,
-        "first_use": first_use_models(models, preferred),
+                 for row in catalog_rows(local_status, connections, {model["selector"] for model in local_models},
+                                         stored)],
+        # The server's default models ("text", "image"), reachable or not, and
+        # what a browser that has chosen nothing yet starts with.
+        "defaults": defaults,
+        "first_use": first_use_models(models, defaults),
         "local_error": local_error,
         "endpoints": local_status,
         "openai_error": openai_error,
@@ -7215,49 +7271,48 @@ def model_size_text(name):
     return f"{size:g}B" if size >= 1 else f"{size * 1000:g}M"
 
 
-def preferred_models(models):
-    """The owner's preferred models (SERVER_PREFERRED_MODELS) by field, in
-    the owner's order, each as {selector, name, badge, kind, size, images,
-    reachable}: reachable while the catalog lists it (its server answers and
-    lists it, or its provider is connected and lists it)."""
+def default_model_entries(models, stored):
+    """The server's default models (`stored`, SERVER_DEFAULT_MODELS) by
+    field ("text", "image"), each None when unset, else {selector, name,
+    badge, kind, size, images, reachable}: reachable while the catalog lists
+    it (its server answers and lists it, or its provider is connected and
+    lists it)."""
     listed = {model["selector"]: model for model in models}
-    preferred = {}
-    for field, selectors in SERVER_PREFERRED_MODELS.items():
-        entries = []
-        for selector in selectors:
-            model = listed.get(selector)
-            provider = selector.partition("/")[0]
-            entries.append({
-                "selector": selector,
-                "name": model["name"] if model else model_name({"provider": provider, "selector": selector}),
-                "badge": model["badge"] if model else model_badge(selector),
-                "kind": "local" if provider in LOCAL_MODEL_PROVIDERS else "cloud",
-                "size": model["size"] if model else model_size_text(selector.partition("/")[2]),
-                "images": model["images"] if model else None,
-                "reachable": model is not None,
-            })
-        preferred[field] = entries
-    return preferred
+    entries = {}
+    for field, selector in stored.items():
+        if not selector:
+            entries[field] = None
+            continue
+        model = listed.get(selector)
+        provider = selector.partition("/")[0]
+        entries[field] = {
+            "selector": selector,
+            "name": model["name"] if model else model_name({"provider": provider, "selector": selector}),
+            "badge": model["badge"] if model else model_badge(selector),
+            "kind": "local" if provider in LOCAL_MODEL_PROVIDERS else "cloud",
+            "size": model["size"] if model else model_size_text(selector.partition("/")[2]),
+            "images": model["images"] if model else None,
+            "reachable": model is not None,
+        }
+    return entries
 
 
-def first_use_models(models, preferred):
+def first_use_models(models, defaults):
     """What a browser that has chosen nothing for a field starts with, as
-    {selector, how} per field. Text: the owner's first preferred text model
-    ("preferred", with "unreachable" True while the catalog does not list
-    it: then nothing is used until someone chooses); with none configured,
-    the only model there is ("only"); else nothing ("none"). Figures: the
-    owner's first preferred figure model the same way, else the text model
+    {selector, how, unreachable} per field. Text: the server's default text
+    narration model ("default", with "unreachable" True while the catalog
+    does not list it: then nothing is used until someone chooses); with none
+    set, the only model there is ("only"); else nothing ("none"). Figures:
+    the default image narration model the same way, else the text model
     ("same"). Never a fallback to another model."""
-    def first(field):
-        if preferred[field]:
-            entry = preferred[field][0]
-            return {"selector": entry["selector"], "how": "preferred", "unreachable": not entry["reachable"]}
-        return None
-    text = first("text") or (
+    def default(field):
+        entry = defaults[field]
+        return entry and {"selector": entry["selector"], "how": "default", "unreachable": not entry["reachable"]}
+    text = default("text") or (
         {"selector": models[0]["selector"], "how": "only", "unreachable": False} if len(models) == 1
         else {"selector": "", "how": "none", "unreachable": False}
     )
-    figure = first("figure") or {"selector": "", "how": "same", "unreachable": False}
+    figure = default("image") or {"selector": "", "how": "same", "unreachable": False}
     return {"text": text, "figure": figure}
 
 
@@ -7274,13 +7329,14 @@ CONNECT_PROVIDER_LABELS = {
 }
 
 
-def catalog_rows(local_status, connections, listed):
+def catalog_rows(local_status, connections, listed, defaults):
     """The model picker's rows that are not models it can use now, none with
     an invented model name: the Local rows of offline_local_rows(), then
     each provider with no way in that is connected and lists its models,
     with Connect (Cloud). `connections` maps a provider to (usable, error,
-    what it lacks); `listed` is the selectors of the local models listed."""
-    rows = offline_local_rows(local_status, listed)
+    what it lacks); `listed` is the selectors of the local models listed;
+    `defaults` the server's default models (SERVER_DEFAULT_MODELS)."""
+    rows = offline_local_rows(local_status, listed, defaults)
     for provider, (usable, error, missing) in connections.items():
         if usable:
             continue
@@ -7289,17 +7345,16 @@ def catalog_rows(local_status, connections, listed):
     return rows
 
 
-def offline_local_rows(local_status, listed):
+def offline_local_rows(local_status, listed, defaults):
     """The Local rows of the picker that can't be chosen now, each disabled,
     none with an invented model or server: for each local server that does
     not answer, the models it listed when it last answered
     (read_remembered_models()), by the same selector, its name, and the
     Local badge, "server unreachable"; one that never listed a model is one
-    "not-running" row by its name. Then each preferred local model
-    (SERVER_PREFERRED_MODELS) that no server lists or remembers, named from
-    its selector, "not listed by any reachable server", with no server. A
-    model a server that answers lists is that server's (`listed`), and every
-    model is one row."""
+    "not-running" row by its name. Then each local default model (`defaults`)
+    that no server lists or remembers, named from its selector, "not listed
+    by any reachable server", with no server. A model a server that answers
+    lists is that server's (`listed`), and every model is one row."""
     rows, shown = [], set(listed)
     remembered = read_remembered_models() if any(not status["running"] for status in local_status) else {}
     for status in local_status:
@@ -7316,7 +7371,7 @@ def offline_local_rows(local_status, listed):
         if not selectors:
             rows.append({"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
                          "server": status["server"], "provider": status["provider"], "note": status["error"]})
-    for selector in dict.fromkeys(selector for field in SERVER_PREFERRED_MODELS.values() for selector in field):
+    for selector in dict.fromkeys(selector for selector in defaults.values() if selector):
         if selector.partition("/")[0] in LOCAL_MODEL_PROVIDERS and selector not in shown:
             shown.add(selector)
             rows.append(offline_row(selector, OFFLINE_NOT_LISTED, images=None))
@@ -7332,12 +7387,6 @@ def offline_row(selector, state, endpoint="", **where):
             "name": model_name({"provider": provider, "selector": selector}),
             "badge": model_badge(selector, endpoint), "size": model_size_text(model), "state": state,
             "disabled": True, **({"endpoint": endpoint} if endpoint else {}), **where}
-    for provider, (usable, error, missing) in connections.items():
-        if usable:
-            continue
-        rows.append({"kind": "cloud", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
-                     "provider": provider, "action": "connect", "note": error or missing})
-    return rows
 
 
 # How a model name's words read in a picker, spelled as their makers spell
@@ -14563,7 +14612,7 @@ class AudiobookRun(Run):
                 catalog = paper_model_catalog(self.values["local_servers"])
                 first = catalog["first_use"]["text"]
                 if first["unreachable"]:
-                    name = catalog["preferred"]["text"][0]["name"]
+                    name = catalog["defaults"]["text"]["name"]
                     raise RuntimeError(f"No model was chosen, and {name} is unreachable. Choose a model.")
                 model = first["selector"]
                 if not model:
@@ -15253,6 +15302,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.save_draft(
                 str(body.get("draft", "")), str(body.get("name", "")).strip()
             )
+        # Settings › Models and connection: the server's default models, set
+        # only by a browser that may manage (may_manage()); others read them.
+        if route == "/api/models/defaults":
+            if not self.may_manage():
+                return self.fail(HTTPStatus.FORBIDDEN, DEFAULTS_LOCAL_ONLY)
+            try:
+                models = paper_model_catalog(local_endpoints())["models"]
+            except (RuntimeError, ValueError) as exc:
+                return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+            try:
+                save_default_models(body, models)
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return self.reply_paper_catalog()
         # Settings › Providers: only a browser that may manage (may_manage())
         # adds, changes, signs in to, or removes a provider; others read.
         if (route.startswith("/api/providers/") or re.fullmatch(
@@ -17171,8 +17234,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .player-seek, .book-meta select { min-height:44px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
-  /* Typing on a phone: the book line and the model picker step aside, so the box and Send stay in view. */
-  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick { display:none; }
+  /* Typing on a phone: the book line, the model picker, and the no-model notice step aside, so the box and
+     Send stay in view; a send without a usable model says why in the hint above the box. */
+  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
@@ -17315,16 +17379,19 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="settings-models">
       <legend>Models and connection</legend>
-      <div class="row"><span class="row-label">Narration</span><div id="model-narration" class="model-pick"></div></div>
+      <div class="row"><span class="row-label">Default TTS</span><div id="model-narration" class="model-pick"></div></div>
       <div class="row"><span class="row-label">Voice design</span><div id="model-design" class="model-pick"></div></div>
       <p class="note group-note">Hilde sets these when it starts. To change them, restart Hilde with
         different settings.</p>
-      <div class="row"><span class="row-label">Default text model</span><div class="setting">
-        <div class="model-pick" data-picker="settings"></div>
-        <span id="settings-preferred" class="note"></span>
-        <span class="applies">Applies to the next audiobook in this browser: the text model Create
-          preselects</span></div></div>
-      <div class="row"><span class="row-label">Connection</span>
+      <p id="defaults-read-only" class="note server-only group-note hidden">Read-only from this device. Set the
+        default models from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
+      <div class="row"><span class="row-label">Default text narration</span>
+        <div class="model-pick" data-picker="default-text"></div></div>
+      <div class="row"><span class="row-label">Default image narration</span>
+        <div class="model-pick" data-picker="default-image"></div></div>
+      <p class="applies group-note">Applies to every browser on this server: what Create and Ask Hilde start
+        with until a browser chooses its own model</p>
+      <div class="row"><span class="row-label">Connection to Hilde</span>
         <div class="setting"><span id="connection-note"></span>
           <span id="certificate-note" class="note hidden">Hilde's own certificate: install it once on
             each device you browse from, and its browser stops warning.</span>
@@ -18159,7 +18226,7 @@ let machine = { name:"", devices:[] };
 // The text-model catalog, for each choice's short name and Local/Cloud badge.
 // Until it has loaded, the default model's place is unknown, so nothing that
 // would send text to it starts.
-let paperCatalog = { models:[], preferred:{ text:[], figure:[] }, first_use:null, loaded:false };
+let paperCatalog = { models:[], defaults:{ text:null, image:null }, first_use:null, loaded:false };
 let running = false, runKind = null;
 let currentJobId = "", followedRunKey = "";
 let syncTimer = null, syncSeq = 0, stream = null;
@@ -19876,8 +19943,8 @@ function setPanelWidth(width, save) {
 }
 // A phone's keyboard shrinks only the visual viewport; the panel follows
 // it, and while the keyboard takes a quarter of the screen or more the chat
-// leaves out the book and section lines, so the message box and Send stay in
-// sight beneath the model and its badge.
+// leaves out the book and section lines, the model picker, and the no-model
+// notice, so the message box and Send stay in sight.
 function fitVisualViewport() {
   const viewport = window.visualViewport;
   if (!viewport) return;
@@ -21490,7 +21557,7 @@ const CLOUD_BADGES = {
 // A model selector as its short name, its badge, and whether the catalog
 // lists it (reachable now) and it reads images; null for none ("" once the
 // catalog is in). A selector the catalog does not list is named as the
-// owner's preferred list names it, else as its offline row does (a model of
+// server's default models name it, else as its offline row does (a model of
 // a server that does not answer), else as an earlier catalog named it
 // (knownModelNames), else by the end of its model code.
 const knownModelNames = new Map();
@@ -21500,15 +21567,15 @@ function textModel(selector, catalog = paperCatalog) {
   const model = (catalog.models || []).find((item) => item.selector === selector);
   if (model) return { selector, short:model.name, badge:model.badge, listed:true, images:model.images,
                       size:model.size || "" };
-  const preferred = Object.values(catalog.preferred || {}).flat().find((item) => item.selector === selector);
+  const known = Object.values(catalog.defaults || {}).find((item) => item && item.selector === selector);
   const offline = (catalog.rows || []).find((row) => row.row === "offline" && row.selector === selector);
   const [provider, ...rest] = selector.split("/");
   const local = ["ollama", "lm-studio"].includes(provider);
   const badge = offline ? offline.badge : local ? "Local" : `Cloud: ${CLOUD_BADGES[provider] || `${provider} · API key`}`;
-  const short = preferred ? preferred.name : offline ? offline.name
+  const short = known ? known.name : offline ? offline.name
     : knownModelNames.get(selector) || rest.join("/").split("/").pop();
   return { selector, short, badge, listed:false, images:!local,
-           size:preferred ? preferred.size : offline ? offline.size : "" };
+           size:known ? known.size : offline ? offline.size : "" };
 }
 // Local (green, a chip) and Cloud (purple, a cloud): never colour alone.
 const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" '
@@ -21631,12 +21698,12 @@ function renderCreate() {
   // One model for the book; per-option pickers only on request.
   $("book-model").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
   // Per-option pickers: as this browser left them, else shown when an
-  // option has its own model (the owner's preferred figure model counts).
+  // option has its own model (the server's default image narration model counts).
   if (perOptionModels === null && paperCatalog.loaded) {
     const kept = stored("perOptionModels");
     perOptionModels = typeof kept === "boolean" ? kept
       : !!(state.audiobook.figure_model || state.audiobook.verify_model
-           || (paperCatalog.first_use && paperCatalog.first_use.figure.how === "preferred"));
+           || (paperCatalog.first_use && paperCatalog.first_use.figure.how === "default"));
   }
   $("per-option-toggle").textContent = perOptionModels ? "Use one model for all options" : "Use different models per option";
   $("figure-model-pick").classList.toggle("hidden", !perOptionModels);
@@ -21676,7 +21743,7 @@ function renderCreate() {
 }
 // The shared model picker, one per model choice: the book's model at the top
 // of Create step 3, the figure and checking models (per option, on request),
-// Ask Hilde, and Settings' text model. Two boxes, each a dropdown with its
+// Ask Hilde, and Settings' two server-wide defaults. Two boxes, each a dropdown with its
 // label outside: "Runs on", Local or Cloud, and "Model", only models of that
 // kind; a small Change opens the model list. Switching Runs on sends
 // nothing: it opens the list of that kind, and closing it unchosen goes back.
@@ -21690,7 +21757,7 @@ function renderCreate() {
 // (Settings › Providers). Arrow keys,
 // Home and End move, Enter chooses, Escape closes it and returns to its box.
 // What a picker has chosen follows pickerChoice(): this browser's last used
-// model for it (its cookie field), else on first use the owner's preferred
+// model for it (its cookie field), else on first use the server's default
 // model, the only model there is, or nothing; never another model by itself.
 const PICKER_SEARCH_FROM = 10;
 const PICKERS = {
@@ -21701,9 +21768,15 @@ const PICKERS = {
   verify:{ field:["audiobook", "verify_model"], label:"Checking model", title:"Check and correct descriptions",
            why:"Where the descriptions go to be checked", same:true, short:"Checking", flag:"paper-verify" },
   chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go" },
-  // Settings assigns only (assign): no Add local / Connect a provider beside
-  // it, and box 2 always opens the list; adding lives in Settings › Providers.
-  settings:{ field:["audiobook", "model"], label:"Text model", why:"Where the document's text goes", assign:true },
+  // Settings' server-wide defaults (`server`: the catalog's defaults field),
+  // set by a browser that may manage (caps.manage_providers) and read-only
+  // elsewhere. They assign only (assign): no Add local / Connect a provider
+  // beside them, and box 2 always opens the list; adding lives in Settings ›
+  // Providers. Image narration lists only models that read images.
+  "default-text":{ server:"text", label:"Default text narration", assign:true,
+                   why:"The model that prepares the text, for every browser on this server" },
+  "default-image":{ server:"image", label:"Default image narration", assign:true, images:true,
+                    why:"The model that reads figures, for every browser on this server" },
 };
 const MODEL_KINDS = {
   local:{ label:"Local", detail:"Open models on your own machines", all:"All local models" },
@@ -21737,7 +21810,9 @@ function noteRecentModel(selector) {
 }
 function modelKind(selector) { return ["ollama", "lm-studio"].includes(selector.split("/")[0]) ? "local" : "cloud"; }
 function pickerValue(name) {
-  const [group, key] = PICKERS[name].field;
+  const picker = PICKERS[name];
+  if (picker.server) return ((paperCatalog.defaults || {})[picker.server] || {}).selector || "";
+  const [group, key] = picker.field;
   return state[group][key] || "";
 }
 // What a browser that has chosen nothing starts with for a field ("text" or
@@ -21748,17 +21823,19 @@ function firstUse(field) {
 }
 // What a picker has chosen, separately for text and figures:
 // a. this browser's last used model for it (its value), if reachable;
-// b. first use: the owner's first preferred model, if reachable;
-// c. first use with none configured: the only model there is;
+// b. first use: the server's default model, if reachable;
+// c. first use with no default set: the only model there is;
 // d. otherwise nothing.
-// Checking, and figures with one model for all options or no preferred
-// figure model, follow the text model ("Same as the text model"). A model
+// Checking, and figures with one model for all options or no default image
+// narration model, follow the text model ("Same as the text model"). A model
 // from a or b that does not answer selects nothing: `unreachable` is it
 // (textModel()), and the picker offers alternatives (pickerAlternatives()).
-// Returns { same, model, how ("chosen", "preferred", "only", "none",
+// Returns { same, model, how ("chosen", "default", "only", "none",
 // "same"), unreachable, problem }, `problem` saying why it can't be used.
+// Settings' defaults follow defaultChoice().
 function pickerChoice(name) {
   const picker = PICKERS[name], value = pickerValue(name);
+  if (picker.server) return defaultChoice(name);
   let selector = value, how = "chosen";
   if (!value) {
     const first = firstUse(name === "figure" ? "figure" : "text");
@@ -21777,17 +21854,31 @@ function pickerChoice(name) {
     ? `This model can't read images: choose one tagged "reads images".` : "";
   return { same:false, model, how, unreachable:null, problem };
 }
+// A Settings default: the server's model, named with its badge even while
+// unreachable (then red, with alternatives); unset, text narration is "Not
+// set" ("unset") and image narration follows the text narration default
+// ("same").
+function defaultChoice(name) {
+  const value = pickerValue(name);
+  if (!value) {
+    if (PICKERS[name].server !== "image") return { same:false, model:null, how:"unset", unreachable:null, problem:"" };
+    const text = defaultChoice("default-text").model;
+    const problem = paperCatalog.loaded && text && text.listed && !text.images
+      ? `The text narration model can't read images: figures need one tagged "reads images".` : "";
+    return { same:true, model:text, how:"same", unreachable:null, problem };
+  }
+  const model = textModel(value);
+  if (paperCatalog.loaded && !model.listed)
+    return { same:false, model, how:"default", unreachable:model, problem:`⚠ ${model.short} is unreachable` };
+  return { same:false, model, how:"default", unreachable:null, problem:"" };
+}
 // One-click alternatives for a picker whose model is unreachable, or for
-// going on with another model: the owner's other preferred models for its
-// field first, then the other reachable models; for figures only models
-// that read images.
+// going on with another model: the other reachable models, local ones first;
+// for figures and image narration only models that read images.
 function pickerAlternatives(name, missing) {
-  const models = paperCatalog.models || [];
-  const usable = (model) => !!model && model.selector !== missing && (!PICKERS[name].images || model.images);
-  const field = name === "figure" ? "figure" : "text";
-  const preferred = ((paperCatalog.preferred || {})[field] || [])
-    .map((item) => models.find((model) => model.selector === item.selector)).filter(usable);
-  return [...preferred, ...models.filter((model) => usable(model) && !preferred.includes(model))];
+  const usable = (paperCatalog.models || [])
+    .filter((model) => model.selector !== missing && (!PICKERS[name].images || model.images));
+  return [...usable.filter((model) => model.kind === "local"), ...usable.filter((model) => model.kind !== "local")];
 }
 // Local or Cloud: a Runs on switch not yet followed by a choice, else the
 // chosen model's; Local before any choice.
@@ -21846,7 +21937,7 @@ function fixCreateBlock(fix) {
   if (fix === "text") {
     const [group, key] = PICKERS[block.name].field;
     // The figure option names the text model itself: left open, it would
-    // start with the owner's preferred figure model.
+    // start with the server's default image narration model.
     state[group][key] = block.name === "figure" && firstUse("figure").how !== "same"
       ? pickerChoice("book").model.selector : "";
     queueSync();
@@ -21859,7 +21950,10 @@ function fixCreateBlock(fix) {
 }
 function mountPicker(host) {
   const name = host.dataset.picker, picker = PICKERS[name];
-  host.innerHTML = `<div class="picker-boxes">
+  // Read-only (a Settings default where this browser may not set it): the
+  // static box of the speech models' rows in place of the two boxes.
+  host.innerHTML = `${picker.server ? `<span id="${name}-static" class="picker-box static hidden"
+      title="${picker.why}"></span>` : ""}<div class="picker-boxes">
       <div class="picker-field">
         <span id="${name}-kind-label" class="picker-label">Runs on</span>
         <button id="${name}-kind" class="picker-box picker-kind" type="button" aria-haspopup="listbox"
@@ -21940,12 +22034,17 @@ function mountPicker(host) {
 function needsProvider(name) { return !PICKERS[name].assign && pickerKind(name) === "cloud" && noCloudModel(); }
 function renderPicker(name) {
   if (!state) return;
+  const picker = PICKERS[name];
   const { same, model, problem, unreachable, how } = pickerChoice(name);
   const none = noModelAvailable(), kind = pickerKind(name), connect = !none && needsProvider(name);
   // Runs on switched, no model of that kind chosen yet.
   const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
   const shown = switched || connect ? null : model;
-  const text = shown ? (same ? `Same as the text model (${shown.short})` : shown.short)
+  // A Settings default unset reads "Not set", or for image narration "Same
+  // as text narration", until Runs on is switched.
+  const sameText = picker.server ? "Same as text narration" : "Same as the text model";
+  const text = shown ? (same ? `${sameText} (${shown.short})` : shown.short)
+    : picker.server && !pickerKinds[name] ? (same ? sameText : "Not set")
     : none ? "No model available" : connect ? "Connect a provider" : "Choose a model";
   const kindBox = $(`${name}-kind`);
   kindBox.classList.toggle("kind-local", kind === "local");
@@ -21953,27 +22052,42 @@ function renderPicker(name) {
   $(`${name}-kind-value`).replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
   const label = $(`${name}-model-name`);
   label.textContent = text;
-  $(`${name}-picker`).title = shown && shown.selector ? `${shown.selector} · ${PICKERS[name].why}` : PICKERS[name].why;
+  const title = shown && shown.selector ? `${shown.selector} · ${picker.why}` : picker.why;
+  $(`${name}-picker`).title = title;
   $(`${name}-picker`).setAttribute("aria-haspopup", connect ? "dialog" : "listbox");
   $(`${name}-picker`).classList.toggle("connect", connect);
   const badge = badgeElement(shown ? shown.badge : "");
   badge.id = `${name}-badge`;
   $(`${name}-badge`).replaceWith(badge);
+  // Settings' defaults say only what is wrong (unreachable, can't read images).
   const why = connect ? "No cloud provider is connected yet."
-    // Settings names the preferred model on its own line (renderPreferredNote()).
-    : problem || (model ? (name === "settings" ? "" : firstUseStatus(how))
+    : problem || (picker.server ? "" : model ? firstUseStatus(how)
       : none ? "" : paperCatalog.error || (how === "none" ? "Choose a model." : ""));
   $(`${name}-model-reason`).textContent = why;
   $(`${name}-model-reason`).classList.toggle("hidden", !why);
   $(`${name}-model-reason`).classList.toggle("unreachable", !!unreachable && !connect);
-  renderAlternatives(name, unreachable && !connect ? pickerAlternatives(name, unreachable.selector) : []);
+  // A Settings default this browser may not set: the read-only box, with
+  // the same name, badge, and red line, and no alternatives.
+  const readOnly = !!picker.server && !caps.manage_providers;
+  if (picker.server) {
+    kindBox.closest(".picker-boxes").classList.toggle("hidden", readOnly);
+    const fixed = $(`${name}-static`);
+    fixed.classList.toggle("hidden", !readOnly);
+    if (readOnly) {
+      const value = document.createElement("span");
+      value.className = "picker-name"; value.textContent = text;
+      fixed.replaceChildren(value, ...(shown && shown.badge ? [badgeElement(shown.badge)] : []));
+      fixed.title = title;
+    }
+  }
+  renderAlternatives(name, unreachable && !connect && !readOnly ? pickerAlternatives(name, unreachable.selector) : []);
   $(`${name}-picker-none`)?.classList.toggle("hidden", !none);
   if (openPicker && openPicker.name === name) renderPickerList(name);
 }
-// Why a first-use choice is what it is: the owner's preferred model, or the
+// Why a first-use choice is what it is: the server's default model, or the
 // only model there is (shown with its badge in the box).
 function firstUseStatus(how) {
-  return how === "preferred" ? "Preferred on this server" : how === "only" ? "The only model available" : "";
+  return how === "default" ? "Default on this server" : how === "only" ? "The only model available" : "";
 }
 const ALTERNATIVES_SHOWN = 4;
 // Under an unreachable model: one button per alternative (name, Local or Cloud
@@ -22011,21 +22125,10 @@ function renderAlternatives(name, models, host = $(`${name}-alternatives`), limi
   }
   host.replaceChildren(...nodes);
 }
-// Settings › Default text model: the owner's first preferred text model
-// (--preferred-text-model) and where it runs, under this browser's own choice.
-function renderPreferredNote() {
-  const first = ((paperCatalog.preferred || {}).text || [])[0];
-  let text = "";
-  if (paperCatalog.loaded && !first) text = "No preferred text model is set on this server.";
-  else if (first) {
-    text = `Preferred on this server: ${first.name} · ${first.badge}${first.reachable ? "" : " · unreachable"}`;
-  }
-  $("settings-preferred").textContent = text;
-  $("settings-preferred").title = first ? first.selector : "";
-}
 function renderPickers() {
   for (const name of Object.keys(PICKERS)) renderPicker(name);
-  renderPreferredNote();
+  // Settings' defaults: read-only, with the note, where this browser may not set them.
+  if (state) $("defaults-read-only").classList.toggle("hidden", !!caps.manage_providers);
   // A list whose box left the screen (another tab, an option turned off) closes.
   if (openPicker && !pickerBox(openPicker).getClientRects().length) closePicker(false);
   // Nothing chosen and nothing to start with: the book's list opens, once.
@@ -22106,14 +22209,17 @@ function pickerHeading(name, id, text) {
 function renderPickerList(name, typed = false) {
   const picker = PICKERS[name], mode = openPicker.mode, kind = pickerKind(name);
   const list = $(`${name}-picker-list`), search = $(`${name}-picker-search`);
-  const models = (paperCatalog.models || []).filter((model) => model.kind === kind);
-  const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind);
+  // Image narration's list holds only models that read images.
+  const imagesOnly = !!(picker.server && picker.images);
+  const models = (paperCatalog.models || []).filter((model) => model.kind === kind && !(imagesOnly && !model.images));
+  const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind
+    && !(imagesOnly && row.row === "offline" && row.images === false));
   const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
   search.classList.toggle("hidden", !searching);
   if (!searching) search.value = "";
   const query = search.value.trim().toLowerCase();
   const signature = JSON.stringify([mode, kind, models, rows, pickerValue(name), pickerValue("book"),
-    paperCatalog.first_use, perOptionModels, query]);
+    paperCatalog.first_use, paperCatalog.defaults, perOptionModels, query]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${MODEL_KINDS[kind].label} models`);
@@ -22140,19 +22246,28 @@ function renderPickerList(name, typed = false) {
     const text = picker.same ? pickerChoice("book").model : null;
     if (text && text.selector && modelKind(text.selector) === kind && matches("Same as the text model", text.short)) {
       const cannot = !!(picker.images && !text.images);
-      // Left open, figures would start with the owner's preferred figure
-      // model: "Same" then names the text model itself.
+      // Left open, figures would start with the server's default image
+      // narration model: "Same" then names the text model itself.
       const value = name === "figure" && perOptionModels && firstUse("figure").how !== "same" ? text.selector : "";
       nodes.push(pickerOption(name, index++, { key:"same", value, text:"Same as the text model",
         tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
         title:text.selector, selected:same, disabled:cannot }));
     }
+    // Image narration: "Same as text narration" (its value unset) first, in both lists.
+    if (picker.server === "image" && matches("Same as text narration")) {
+      const text = defaultChoice("default-text").model;
+      nodes.push(pickerOption(name, index++, { key:"same", value:"", text:"Same as text narration",
+        tags:text && text.images ? ["reads images"] : [], sub:text ? text.short : "Not set",
+        title:text ? text.selector : "", selected:same }));
+    }
     const shown = models.filter((model) => matches(model.name, model.endpoint, model.selector, modelSource(model)));
-    // Default: what this picker starts with when nothing is chosen.
-    const first = picker.same && name !== "figure" ? null : firstUse(name === "figure" ? "figure" : "text");
-    const fallback = first && !first.unreachable && ["preferred", "only"].includes(first.how)
+    // Default: what this picker starts with when nothing is chosen (none in Settings).
+    const first = picker.server || (picker.same && name !== "figure") ? null
+      : firstUse(name === "figure" ? "figure" : "text");
+    const fallback = first && !first.unreachable && ["default", "only"].includes(first.how)
       ? shown.find((model) => model.selector === first.selector) : null;
-    const recent = recentModels().map((selector) => shown.find((model) => model.selector === selector))
+    // This browser's recent models; not in Settings, whose defaults are the server's.
+    const recent = picker.server ? [] : recentModels().map((selector) => shown.find((model) => model.selector === selector))
       .filter((model) => model && model !== fallback);
     if (fallback) nodes.push(option(fallback, ["Default"]));
     if (recent.length) nodes.push(pickerHeading(name, "recent", "Recently used"), ...recent.map((model) => option(model)));
@@ -22267,8 +22382,10 @@ function choosePickerOption(name, option) {
   setPickerModel(name, option.dataset.value);
 }
 // A model the user chose for a picker (from its list, or one of the
-// alternatives under an unreachable model): this browser's choice from now.
+// alternatives under an unreachable model): this browser's choice from now;
+// for a Settings default, the server's (saveDefaultModel()).
 function setPickerModel(name, selector) {
+  if (PICKERS[name].server) { saveDefaultModel(name, selector); return; }
   const [group, key] = PICKERS[name].field;
   state[group][key] = selector;
   noteRecentModel(selector);
@@ -22280,6 +22397,20 @@ function setPickerModel(name, selector) {
   renderChatControls();
   // The same part again: whether the figure's picture goes depends on the model.
   if (chatAbout) attachAbout(chatAbout.about);
+}
+// Settings › Models and connection: the server-wide default ("" unsets it:
+// "Not set", or for image narration the same as text narration), saved for
+// every browser; the answer is the refreshed catalog.
+async function saveDefaultModel(name, selector) {
+  delete pickerKinds[name];
+  try {
+    applyPaperCatalog(await jsonRequest("/api/models/defaults", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ [PICKERS[name].server]:selector }),
+    }));
+    const model = textModel(selector);
+    setStatus(`${PICKERS[name].label}: ${model ? model.short : name === "default-image" ? "Same as text narration" : "Not set"}.`);
+  } catch (error) { render(); setStatus(error.message, true); }
 }
 // Narration and voice design in Settings: the picker's look, read-only
 // (server startup configuration): a readable name with the model ID in its
@@ -24607,7 +24738,8 @@ class HildeServer(ThreadingHTTPServer):
 
 
 
-def main():
+def build_parser():
+    """The server's command-line options."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1",
@@ -24619,7 +24751,8 @@ def main():
     parser.add_argument(
         "--manage-from-network", action="store_true",
         help=(
-            "Let browsers on other devices add, change, and remove providers and machines too "
+            "Let browsers on other devices add, change, and remove providers and machines, and set "
+            "the default models, too "
             "(default: only a browser on this machine). Hilde has no sign-in: anyone who reaches "
             "the server can then add keys, sign it out, or add SSH machines that run as this user."
         ),
@@ -24666,30 +24799,6 @@ def main():
             "PROVIDER is lm-studio for any OpenAI-compatible server, or ollama for an Ollama "
             "server; ,vision says its models see images. "
             "For example lm-studio=http://127.0.0.1:8000,vision."
-        ),
-    )
-    parser.add_argument(
-        "--preferred-text-model",
-        metavar="SELECTOR",
-        type=preferred_model_option,
-        action="append",
-        default=[],
-        help=(
-            "One of your preferred text models, local (lm-studio/MODEL, ollama/MODEL) or an API "
-            "model (PROVIDER/MODEL); repeat for more, in order of preference. A browser that has "
-            "chosen no model starts with the first while it is reachable; the others come first "
-            "among the alternatives offered when it is not. Hilde never switches to one by itself."
-        ),
-    )
-    parser.add_argument(
-        "--preferred-figure-model",
-        metavar="SELECTOR",
-        type=preferred_model_option,
-        action="append",
-        default=[],
-        help=(
-            "One of your preferred models for reading figures from their pictures, as "
-            "--preferred-text-model; repeat for more. Without one, figures go to the text model."
         ),
     )
     models = parser.add_argument_group("voice model configuration")
@@ -24741,6 +24850,11 @@ def main():
             "no audiobook is being made."
         ),
     )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     if not SCRIPT.is_file():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
@@ -24824,10 +24938,6 @@ def main():
         ])
     except (OSError, ValueError) as exc:
         parser.error(f"{providers_path()}: {exc}")
-    SERVER_PREFERRED_MODELS.update(
-        text=tuple(dict.fromkeys(args.preferred_text_model)),
-        figure=tuple(dict.fromkeys(args.preferred_figure_model)),
-    )
     server.chat_speaker = (
         ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
     )
@@ -24857,8 +24967,11 @@ def main():
           + (", ".join(f"{entry['name']} = {local_server_label(entry['server'])} ({entry['provider']}"
                        f"{', set at startup' if entry['from_flag'] else ''})"
                        for entry in local_endpoints()) or "none"), flush=True)
-    print("Preferred text models: " + (", ".join(SERVER_PREFERRED_MODELS["text"]) or "none"), flush=True)
-    print("Preferred figure models: " + (", ".join(SERVER_PREFERRED_MODELS["figure"]) or "none"), flush=True)
+    with LOCAL_ENDPOINTS_LOCK:
+        defaults = dict(SERVER_DEFAULT_MODELS)
+    print(f"Default text narration (Settings › Models and connection): {defaults['text'] or 'not set'}",
+          flush=True)
+    print(f"Default image narration: {defaults['image'] or 'same as text narration'}", flush=True)
     print(model_summary(tts_models["design"], "design"), flush=True)
     print(model_summary(tts_models["clone"], "clone"), flush=True)
     print(

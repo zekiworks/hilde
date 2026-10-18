@@ -4082,7 +4082,7 @@ class LocalPaperProviderTests(unittest.TestCase):
                 [model["badge"] for model in catalog["models"]], ["Local · Desk", "Cloud: OpenAI · Subscription"],
             )
             self.assertEqual(catalog["models"][0]["endpoint"], "Desk")
-            # Two models, none preferred: nothing is chosen.
+            # Two models, no default set: nothing is chosen.
             self.assertEqual(catalog["first_use"]["text"]["how"], "none")
             # The local server does not answer: the one API model is the only
             # model there is, offered with its badge (rule c).
@@ -4177,42 +4177,75 @@ class LocalPaperProviderTests(unittest.TestCase):
                                   {qwen: ["llama-4"]})
         self.assertFalse(plain["models"][0]["images"])
 
-    def test_first_use_follows_the_owners_preferred_models_and_never_falls_back(self):
+    def test_first_use_follows_the_servers_stored_defaults_and_never_falls_back(self):
         one, two = "http://127.0.0.1:8010", "http://127.0.0.1:8011"
         servers = [{"name": "One", "server": one, "provider": "lm-studio", "vision": True},
                    {"name": "Two", "server": two, "provider": "ollama", "vision": False}]
-        preferred = {"text": ("lm-studio/flash-model", "ollama/mid-model:35b"),
-                     "figure": ("lm-studio/vision-model", "ollama/mid-model:35b")}
-        with mock.patch.dict(web.SERVER_PREFERRED_MODELS, preferred):
-            # b: the first preferred model, reachable.
+        defaults = {"text": "lm-studio/flash-model", "image": "lm-studio/vision-model"}
+        with mock.patch.dict(web.SERVER_DEFAULT_MODELS, defaults):
+            # b: the server's default text and image narration models, reachable.
             catalog = self.catalog_with(servers, {one: ["flash-model", "vision-model"], two: ["mid-model:35b"]})
             self.assertEqual(catalog["first_use"]["text"],
-                             {"selector": "lm-studio/flash-model", "how": "preferred", "unreachable": False})
-            self.assertEqual(catalog["first_use"]["figure"]["selector"], "lm-studio/vision-model")
-            self.assertEqual([entry["reachable"] for entry in catalog["preferred"]["text"]], [True, True])
-            # Its server does not answer: nothing is chosen, though the second
-            # preferred model answers; the page names the first as unreachable.
+                             {"selector": "lm-studio/flash-model", "how": "default", "unreachable": False})
+            self.assertEqual(catalog["first_use"]["figure"],
+                             {"selector": "lm-studio/vision-model", "how": "default", "unreachable": False})
+            self.assertEqual(
+                [(field, entry["selector"], entry["name"], entry["badge"], entry["images"], entry["reachable"])
+                 for field, entry in catalog["defaults"].items()],
+                [("text", "lm-studio/flash-model", "Flash Model", "Local · One", True, True),
+                 ("image", "lm-studio/vision-model", "Vision Model", "Local · One", True, True)],
+            )
+            # Its server does not answer: nothing is chosen, though another
+            # model answers; the page names the default as unreachable.
             catalog = self.catalog_with(servers, {two: ["mid-model:35b"]})
             self.assertEqual(catalog["first_use"]["text"],
-                             {"selector": "lm-studio/flash-model", "how": "preferred", "unreachable": True})
-            self.assertEqual(
-                [(entry["name"], entry["badge"], entry["size"], entry["reachable"])
-                 for entry in catalog["preferred"]["text"]],
-                [("Flash Model", "Local", "", False), ("Mid Model 35B", "Local · Two", "35B", True)],
-            )
-        # Figures with no preferred figure model follow the text model.
-        self.assertEqual(catalog["first_use"]["figure"]["how"], "preferred")
-        catalog = self.catalog_with(servers, {one: ["a", "b"]})
+                             {"selector": "lm-studio/flash-model", "how": "default", "unreachable": True})
+            self.assertEqual(catalog["first_use"]["figure"]["unreachable"], True)
+            entry = catalog["defaults"]["text"]
+            self.assertEqual((entry["name"], entry["badge"], entry["reachable"]), ("Flash Model", "Local", False))
+        # No image default: figures follow the text narration model ("same").
+        with mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "lm-studio/flash-model", "image": ""}):
+            catalog = self.catalog_with(servers, {one: ["flash-model"], two: ["mid-model:35b"]})
+        self.assertIsNone(catalog["defaults"]["image"])
+        self.assertEqual(catalog["first_use"]["figure"], {"selector": "", "how": "same", "unreachable": False})
+        with mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}):
+            # c: none set and exactly one model connected: that one.
+            with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                    mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                    mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                    mock.patch.object(web, "read_gemini_key", return_value=None), \
+                    mock.patch.object(web, "read_deepseek_key", return_value=None), \
+                    mock.patch.object(web, "read_xai_credentials", return_value=None), \
+                    mock.patch.object(web, "read_xai_api_key", return_value=None), \
+                    mock.patch.object(web, "claude_code_status", return_value=(False, "")), \
+                    mock.patch.object(web, "local_model_names", return_value=["flash-model"]), \
+                    mock.patch.object(web, "local_loaded_names", return_value=None):
+                only = web.paper_model_catalog(servers[:1])
+            self.assertEqual(only["first_use"]["text"],
+                             {"selector": "lm-studio/flash-model", "how": "only", "unreachable": False})
+            # d: none set and several models: nothing.
+            catalog = self.catalog_with(servers, {one: ["a", "b"]})
+        self.assertEqual(catalog["defaults"], {"text": None, "image": None})
+        self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual(catalog["first_use"]["figure"]["how"], "same")
-        # d: several models, none preferred.
-        self.assertEqual(catalog["first_use"]["text"]["how"], "none")
 
-    def test_preferred_model_option_takes_local_and_api_models(self):
+    def test_a_model_selector_takes_local_and_api_models(self):
         for selector in ("lm-studio/my-model", "ollama/my-model:7b", "openai/gpt-new", "gemini/gemini-10-pro"):
-            self.assertEqual(web.preferred_model_option(f" {selector} "), selector)
-        for bad in ("qwen", "lm-studio/", "nowhere/model"):
-            with self.assertRaises(web.argparse.ArgumentTypeError):
-                web.preferred_model_option(bad)
+            self.assertEqual(web.model_selector(f" {selector} "), selector)
+        for bad in ("qwen", "lm-studio/", "nowhere/model", 7):
+            with self.assertRaises(ValueError):
+                web.model_selector(bad)
+
+    def test_the_preferred_model_flags_are_gone(self):
+        # Parsing only: main() itself would open the library and bind a port.
+        parser = web.build_parser()
+        self.assertEqual(parser.parse_args(["--port", "1"]).port, 1)
+        for flag in ("--preferred-text-model", "--preferred-figure-model"):
+            with self.subTest(flag), mock.patch("sys.stderr", io.StringIO()) as stderr, \
+                    self.assertRaises(SystemExit) as stopped:
+                parser.parse_args([flag, "lm-studio/a"])
+            self.assertEqual(stopped.exception.code, 2)
+            self.assertIn(f"unrecognized arguments: {flag}", stderr.getvalue())
 
     def test_ollama_and_lm_studio_say_what_is_loaded(self):
         def answers(routes):
@@ -4449,7 +4482,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         flag = web.local_server_option("lm-studio=http://127.0.0.1:9,vision")
         patches = (mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
                    mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
-                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}))
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
+                   mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}))
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -4496,6 +4530,59 @@ class LocalPaperProviderTests(unittest.TestCase):
                      "local: [{name: A, address: 'h:1', type: ollama, images: 'yes'}]",
                      "local: [{name: A, address: 'h:1', type: ollama}, {name: a, address: 'h:2', type: ollama}]",
                      "remote: []"):
+            path.write_text(text, encoding="utf-8")
+            with self.assertRaises(ValueError, msg=text):
+                web.read_providers(path)
+
+    def test_the_default_models_are_kept_server_wide_in_providers_yaml(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / ".hilde"
+        gemma = fake_local_server(self, ["gemma"], [])
+        patches = (mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
+                   mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
+                   mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        path = home / "providers.yaml"
+        # What the catalog lists now: a text-only local model, and a cloud model that reads images.
+        models = [{"selector": "lm-studio/plain", "name": "Plain", "images": False},
+                  {"selector": "openai-codex/gpt-a", "name": "GPT A", "images": True}]
+        web.load_providers([])
+        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
+        self.assertEqual(web.read_providers(path)[2], {"text": "", "image": ""})
+        web.save_default_models({"text": "lm-studio/plain", "image": "openai-codex/gpt-a"}, models)
+        # Owner-only, in providers.yaml's defaults block; read again at the next start.
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+        self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["defaults"],
+                         {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
+        web.SERVER_DEFAULT_MODELS.update(text="", image="")
+        web.load_providers([])
+        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
+        # A change to the local servers keeps them.
+        web.save_local_endpoint("", "Bariton", gemma, False)
+        web.use_claude_code(False)
+        self.assertEqual(web.read_providers(path)[2], {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
+        # Image narration takes only a model that reads images, or "" (same as text narration).
+        with self.assertRaisesRegex(ValueError, "Plain can't read images"):
+            web.save_default_models({"image": "lm-studio/plain"}, models)
+        # A model the catalog does not list now is not taken; neither is a selector of no provider.
+        for changes in ({"text": "lm-studio/gone"}, {"image": "ollama/gone"}, {"text": "nowhere/x"}, {"other": ""}):
+            with self.assertRaises(ValueError, msg=changes):
+                web.save_default_models(changes, models)
+        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "lm-studio/plain", "image": "openai-codex/gpt-a"})
+        # One changes alone; unset, a field leaves the file, and so does the block.
+        web.save_default_models({"image": ""}, models)
+        self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["defaults"], {"text": "lm-studio/plain"})
+        web.save_default_models({"text": ""}, models)
+        self.assertNotIn("defaults", yaml.safe_load(path.read_text(encoding="utf-8")))
+        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
+        # A defaults block that is not what Hilde writes is refused.
+        for text in ("defaults: [lm-studio/a]", "defaults: {figure: lm-studio/a}", "defaults: {text: nowhere/a}",
+                     "defaults: {text: 7}"):
             path.write_text(text, encoding="utf-8")
             with self.assertRaises(ValueError, msg=text):
                 web.read_providers(path)
@@ -4643,7 +4730,7 @@ class LocalPaperProviderTests(unittest.TestCase):
         # Such an entry is in older conversations; every later turn sends it again.
         entry = {"role": "user", "text": "A question.", "context": {"section": "3.2.1 Attention"}}
         self.assertEqual(web._chat_user_parts(entry), [("text", "A question.")])
-        # A card made before any model is chosen (the preferred one unreachable) is text only, no badge.
+        # A card made before any model is chosen (the default one unreachable) is text only, no badge.
         self.assertEqual(web.chat_sees_images("", []), (False, "No model is chosen yet."))
 
     def test_a_local_model_no_added_server_offers_stops_the_job(self):
@@ -4877,7 +4964,7 @@ class OpenAISignInTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai-codex/gpt-a", "openai-codex/gpt-b"],
         )
-        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        # Listed, but with several models and no default set, nothing is chosen without the user.
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
 
         source = self.root / "paper.pdf"
@@ -5159,7 +5246,7 @@ class AnthropicProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["anthropic/claude-new", "anthropic/claude-old"],
         )
-        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        # Listed, but with several models and no default set, nothing is chosen without the user.
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual(run.code, 0)
         self.assertIn(
@@ -5313,7 +5400,7 @@ class OpenAIAPIProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["openai/gpt-new", "openai/chatgpt-4o-latest", "openai/o4-mini", "openai/gpt-old"],
         )
-        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        # Listed, but with several models and no default set, nothing is chosen without the user.
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual((catalog["openai_api_connected"], catalog["openai_connected"]), (True, False))
         self.assertEqual(run.code, 0)
@@ -5438,7 +5525,7 @@ class GeminiProviderTests(unittest.TestCase):
             [model["selector"] for model in catalog["models"]],
             ["gemini/gemini-10-pro", "gemini/gemini-3.8-flash", "gemini/gemini-2.5-pro"],
         )
-        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        # Listed, but with several models and no default set, nothing is chosen without the user.
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertTrue(catalog["gemini_connected"])
         self.assertEqual(run.code, 0)
@@ -6008,7 +6095,7 @@ class ClaudeCodeProviderTests(unittest.TestCase):
             (state / "limit").touch()
             limited = run(root / "limited")
 
-        # Listed, but with several models and none preferred, nothing is chosen without the user.
+        # Listed, but with several models and no default set, nothing is chosen without the user.
         self.assertEqual(catalog["first_use"]["text"], {"selector": "", "how": "none", "unreachable": False})
         self.assertEqual(
             [model["selector"] for model in catalog["models"]],
@@ -9668,6 +9755,42 @@ class WorkerNodeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(server.worker_nodes, [])
 
+    def test_only_a_browser_that_may_manage_sets_the_default_models(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / ".hilde"
+        server, origin = self.serve()
+        catalog = {"models": [{"selector": "lm-studio/plain", "name": "Plain", "images": False},
+                              {"selector": "lm-studio/seer", "name": "Seer", "images": True}],
+                   "defaults": {"text": None, "image": None}}
+        body = {"text": "lm-studio/plain", "image": "lm-studio/seer"}
+        with mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []), \
+                mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}), \
+                mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}), \
+                mock.patch.object(web, "paper_model_catalog", return_value=catalog):
+            # Another device, without --manage-from-network: 403, nothing saved.
+            with mock.patch.object(web, "is_loopback_address", return_value=False):
+                self.assertEqual(self.request(origin, "/api/models/defaults", body),
+                                 (403, {"error": web.DEFAULTS_LOCAL_ONLY}))
+                self.assertFalse((home / "providers.yaml").exists())
+                self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
+                # The browser is told it can't set them.
+                self.assertFalse(self.request(origin, "/api/state")[1]["capabilities"]["manage_providers"])
+            # A browser on the server's machine sets both; the answer is the catalog.
+            status, answer = self.request(origin, "/api/models/defaults", body)
+            self.assertEqual((status, sorted(answer)), (200, ["defaults", "models"]))
+            self.assertEqual(web.SERVER_DEFAULT_MODELS, body)
+            self.assertEqual(yaml.safe_load((home / "providers.yaml").read_text(encoding="utf-8"))["defaults"], body)
+            # Image narration refuses a model that can't read images.
+            self.assertEqual(self.request(origin, "/api/models/defaults", {"image": "lm-studio/plain"}),
+                             (400, {"error": "Plain can't read images: choose a model tagged reads images."}))
+            # With --manage-from-network another device may set them too.
+            server.manage_from_network = True
+            with mock.patch.object(web, "is_loopback_address", return_value=False):
+                status, _ = self.request(origin, "/api/models/defaults", {"image": ""})
+            self.assertEqual(status, 200)
+            self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "lm-studio/plain", "image": ""})
+
     @staticmethod
     def probed(python="", model="", problem=""):
         return {
@@ -9876,7 +9999,7 @@ class RememberedLocalModelsTests(unittest.TestCase):
                    mock.patch.object(web, "LOCAL_ENDPOINTS", [dict(entry) for entry in self.endpoints]),
                    mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
                    mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
-                   mock.patch.dict(web.SERVER_PREFERRED_MODELS, {"text": (), "figure": ()}))
+                   mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}))
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
@@ -9956,10 +10079,9 @@ class RememberedLocalModelsTests(unittest.TestCase):
         catalog = self.catalog({self.SPARK: [self.QWEN]})
         self.assertEqual([row["selector"] for row in self.offline(catalog)], ["lm-studio/deepseek-v4.1-flash"])
 
-    def test_a_server_never_listed_is_one_heading_and_a_preferred_model_no_server_lists_has_no_endpoint(self):
-        preferred = {"text": ("lm-studio/deepseek-v4.1-flash", f"lm-studio/{self.QWEN}", "deepseek/deepseek-chat"),
-                     "figure": (f"lm-studio/{self.QWEN}", "lm-studio/deepseek-v4.1-flash")}
-        with mock.patch.dict(web.SERVER_PREFERRED_MODELS, preferred):
+    def test_a_server_never_listed_is_one_heading_and_a_default_model_no_server_lists_has_no_endpoint(self):
+        defaults = {"text": "lm-studio/deepseek-v4.1-flash", "image": f"lm-studio/{self.QWEN}"}
+        with mock.patch.dict(web.SERVER_DEFAULT_MODELS, defaults):
             catalog = self.catalog({self.SPARK: [self.QWEN]})
             # Bariton never answered: no model of it is known, and none is invented.
             self.assertEqual([(row["row"], row.get("label")) for row in catalog["rows"] if row["kind"] == "local"],

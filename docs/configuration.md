@@ -29,11 +29,10 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--tls-cert`, `--tls-key` | Serve over HTTPS with your own certificate and key (PEM, chain included), such as one for your domain or from Tailscale, instead of Hilde's. |
 | `--open` | Opens the page in a browser. |
 | `--verbose` | Logs every request to stderr. |
-| `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
+| `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines and sets the default models. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
 | `--local-server PROVIDER=URL[,vision]` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server; `,vision` says its models read images. At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
-| `--preferred-text-model SELECTOR`, `--preferred-figure-model SELECTOR` | None. Your preferred models (repeatable, in order of preference), local or API; see [Choose your default local models](#choose-your-default-local-models). |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -45,7 +44,9 @@ paths; edit those for yours. Extra arguments pass through to the server.
 
 By default only a browser on the server's own machine may add, change, or
 remove providers (**Settings › Providers**) and narration machines
-(**Settings › Machines and devices**); other devices see them read-only.
+(**Settings › Machines and devices**), and set the
+[default models](#default-models) (**Settings › Models and connection**);
+other devices see them read-only.
 `--manage-from-network` lets every browser do so, and the server says at
 startup "Providers and machines can be changed from any device that reaches
 this server." Hilde has no sign-in: with the flag, anyone who reaches the
@@ -82,43 +83,51 @@ without a login. `systemctl --user restart hilde` restarts it and
 made; started again with the same document and voice, it continues where it
 stopped.
 
-## Choose your default local models
+## Default models
 
-Hilde uses no model nobody chose. Tell it which models you prefer with
-`--preferred-text-model` and `--preferred-figure-model`, each repeatable, in
-order of preference. A selector is written as the model picker shows it in a
-model's details: `lm-studio/<model>` or `ollama/<model>` for a model on a
-registered local server (as that server lists it), or `PROVIDER/<model>` for an
-API model (such as `openai/<model>`).
+Hilde uses no model nobody chose. Under **Settings › Models and connection**
+two server-wide defaults are set with the same model picker as Create
+(**Runs on** Local or Cloud, then **Model**):
 
-```bash
-python audiobook_tts_web.py \
-  --local-server lm-studio=http://192.0.2.10:8000,vision \
-  --preferred-text-model lm-studio/my-big-model \
-  --preferred-text-model lm-studio/my-small-model \
-  --preferred-figure-model lm-studio/my-vision-model
-```
+- **Default text narration**: the model that prepares and adapts the text
+  for listening. Create and Ask Hilde start with it.
+- **Default image narration**: the model that reads figures from their
+  pictures. It offers only models that read images, and **Same as text
+  narration** (the default), which sends figures to the text narration model.
+
+Each row shows the chosen model's name and its Local or Cloud badge; an unset
+text row reads "Not set". Only a browser on the server's own machine sets
+them, or any browser when Hilde starts with `--manage-from-network`; other
+devices see the rows read-only under "Read-only from this device. Set the
+default models from a browser on the Hilde server, or start Hilde with
+--manage-from-network." Hilde keeps them for the whole server in
+`~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)).
+A browser's own choice is made in Create or Ask Hilde and remembered there;
+Settings has no per-browser default.
 
 For text and for figures separately, a browser uses:
 
 1. the model it used last, if it is reachable;
-2. on first use, your first preferred model, if it is reachable;
-3. on first use with no preferred model set, the only model there is, if
-   exactly one is connected (shown with its Local or API badge);
+2. on first use, the server's default, if it is reachable (said as "Default
+   on this server");
+3. with no default set, the only model there is, if exactly one is connected
+   (shown with its Local or Cloud badge);
 4. otherwise nothing: the picker asks for a model.
 
-Figures without a preferred figure model use the text model. When the model
-from 1 or 2 does not answer, nothing is selected: the model row says
-"⚠ <name> is unreachable", Create waits, and one-click alternatives follow,
-your other preferred models first, then the other reachable models. The list
-is never a fallback chain. A local server is "available" when it answers its
-OpenAI-compatible `/v1/models`, "server unreachable" when it does not; its
-models stay in every picker then, greyed (see [Local model servers](#local-model-servers)). A preferred model no
-server lists is a greyed row "not listed by any reachable server". If a
-model stops answering during a book, the job pauses with the parts finished so
-far kept; **Retry** asks the same model again, and **Continue with another
-model…** sends only the remaining parts to the model you click. The book
-records which model wrote which parts.
+When the model from 1 or 2 does not answer, nothing is selected: the model
+row says "⚠ <name> is unreachable", Create waits, and one-click alternatives
+follow: the other reachable models, local ones first. Nothing falls back to
+another model by itself. In Settings an unreachable default keeps its name and
+badge with the same red line, and a browser that may set the defaults gets the
+same alternatives, one click setting a new default. A local server is
+"available" when it answers its OpenAI-compatible `/v1/models`, "server
+unreachable" when it does not; its models stay in every picker then, greyed
+(see [Local model servers](#local-model-servers)). A default model no server
+lists is a greyed row "not listed by any reachable server". If a model stops
+answering during a book, the job pauses with the parts finished so far kept;
+**Retry** asks the same model again, and **Continue with another model…**
+sends only the remaining parts to the model you click. The book records which
+model wrote which parts.
 
 ## Web search for Chat
 
@@ -289,8 +298,10 @@ user can still use the sign-in.
 
 Local model servers are kept for the whole server in `~/.hilde/providers.yaml`,
 written by **Settings › Providers** (owner-only: the file 0600, its folder
-0700). Stop the server before editing it by hand; an invalid file stops
-startup with an error naming it. At most 16 servers:
+0700, replaced atomically). The [default models](#default-models) set under
+**Settings › Models and connection** are kept in the same file. Stop the
+server before editing it by hand; an invalid file stops startup with an error
+naming it. At most 16 servers:
 
 ```yaml
 local:
@@ -299,10 +310,16 @@ local:
   type: openai-compatible         # or ollama (detected when added)
   images: true                    # "Models here read images"
 claude_code: false                # only after Claude Code was removed
+defaults:                         # only the defaults set
+  text: lm-studio/my-big-model    # Default text narration
+  image: lm-studio/my-vision-model  # Default image narration; left out: same as text narration
 ```
 
 `claude_code: false` means Hilde no longer uses this server's Claude Code;
-**Subscription** for Anthropic turns it on again.
+**Subscription** for Anthropic turns it on again. A default is written as the
+model picker shows a model in its details: `lm-studio/<model>` or
+`ollama/<model>` for a model on a local server (as that server lists it), or
+`PROVIDER/<model>` for a cloud model (such as `openai/<model>`).
 
 Each server's model list, as it last answered, is remembered beside it in
 `~/.hilde/local-models.json` (owner-only, replaced atomically, and written
