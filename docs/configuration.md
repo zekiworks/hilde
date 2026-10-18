@@ -112,7 +112,9 @@ from 1 or 2 does not answer, nothing is selected: the model row says
 "⚠ <name> is unreachable", Create waits, and one-click alternatives follow,
 your other preferred models first, then the other reachable models. The list
 is never a fallback chain. A local server is "available" when it answers its
-OpenAI-compatible `/v1/models`, "server unreachable" when it does not. If a
+OpenAI-compatible `/v1/models`, "server unreachable" when it does not; its
+models stay in every picker then, greyed (see [Local model servers](#local-model-servers)). A preferred model no
+server lists is a greyed row "not listed by any reachable server". If a
 model stops answering during a book, the job pauses with the parts finished so
 far kept; **Retry** asks the same model again, and **Continue with another
 model…** sends only the remaining parts to the model you click. The book
@@ -301,6 +303,19 @@ claude_code: false                # only after Claude Code was removed
 
 `claude_code: false` means Hilde no longer uses this server's Claude Code;
 **Subscription** for Anthropic turns it on again.
+
+Each server's model list, as it last answered, is remembered beside it in
+`~/.hilde/local-models.json` (owner-only, replaced atomically, and written
+only when a list changes), so that while the server does not answer its
+models stay in every picker, greyed and marked "server unreachable", instead
+of disappearing. Hilde keeps this file itself; removing a server under
+**Settings › Providers**, or changing its address, drops its models, and a
+server no longer in `providers.yaml` at startup is dropped too. A server that
+has never answered has no models to show yet. The file looks like this:
+
+```json
+{"schema": 1, "servers": {"http://192.0.2.10:8000": {"provider": "lm-studio", "models": ["model-a", "model-b"]}}}
+```
 
 Local servers that browsers once added for themselves (earlier versions kept
 up to eight per browser) are no longer used and are not migrated: they were

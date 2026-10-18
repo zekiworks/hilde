@@ -6660,10 +6660,68 @@ PROVIDERS_LOCAL_ONLY = (
     "Providers are added, changed, and removed in a browser on the server's own machine, "
     "or from any device when Hilde starts with --manage-from-network."
 )
+# Each local server's models as it last listed them, by its address, so its
+# models stay in the pickers (disabled) while it does not answer.
+LOCAL_MODELS_FILE = "local-models.json"
+# Why a model row of the picker can't be chosen now (offline_local_rows()).
+OFFLINE_SERVER_UNREACHABLE = "server unreachable"
+OFFLINE_NOT_LISTED = "not listed by any reachable server"
 
 
 def providers_path():
     return HILDE_HOME / PROVIDERS_FILE
+
+
+def local_models_path():
+    return HILDE_HOME / LOCAL_MODELS_FILE
+
+
+def read_remembered_models():
+    """local-models.json: each local server's last model list by its
+    address, as {address: {"provider", "models"}}. A file that is absent or
+    not what Hilde writes remembers nothing."""
+    try:
+        data = json.loads(local_models_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    servers = data.get("servers") if isinstance(data, dict) and data.get("schema") == 1 else None
+    if not isinstance(servers, dict):
+        return {}
+    return {
+        address: {"provider": entry["provider"], "models": list(entry["models"])}
+        for address, entry in servers.items()
+        if isinstance(entry, dict) and entry.get("provider") in LOCAL_MODEL_PROVIDERS
+        and isinstance(entry.get("models"), list) and all(isinstance(name, str) and name for name in entry["models"])
+    }
+
+
+def write_remembered_models(servers):
+    """Replace local-models.json, readable only by this user, in its private folder."""
+    _write_private_json(local_models_path(), {"schema": 1, "servers": servers})
+
+
+def remember_local_models(server, provider, names):
+    """Keep what a local server listed, written only when it changed. A
+    server no longer under Settings › Providers (removed while it was being
+    asked) is not kept."""
+    entry = {"provider": provider, "models": list(names)}
+    with LOCAL_ENDPOINTS_LOCK:
+        if not any(saved["server"] == server and saved["provider"] == provider for saved in LOCAL_ENDPOINTS):
+            return
+        servers = read_remembered_models()
+        if servers.get(server) == entry:
+            return
+        servers[server] = entry
+        write_remembered_models(servers)
+
+
+def forget_local_models(keep):
+    """Drop the remembered models of every address not in `keep`; the caller
+    holds LOCAL_ENDPOINTS_LOCK. Written only when something is dropped."""
+    servers = read_remembered_models()
+    kept = {address: entry for address, entry in servers.items() if address in keep}
+    if kept != servers:
+        write_remembered_models(kept)
 
 
 def local_endpoint_name(value):
@@ -6762,7 +6820,8 @@ def default_endpoint_name(server, endpoints):
 def load_providers(flags):
     """Read providers.yaml into LOCAL_ENDPOINTS and CLAUDE_CODE_USED, adding
     each --local-server server it lacks (named by default_endpoint_name()) and
-    saving the file then; those addresses are this run's "set at startup"."""
+    saving the file then; those addresses are this run's "set at startup".
+    Models remembered for an address no longer there are forgotten."""
     endpoints, claude_code = read_providers(providers_path())
     added = False
     for flag in flags:
@@ -6777,6 +6836,8 @@ def load_providers(flags):
         STARTUP_LOCAL_SERVERS.clear()
         STARTUP_LOCAL_SERVERS.update(flag["server"] for flag in flags)
         CLAUDE_CODE_USED["on"] = claude_code
+        # Models remembered for a server no longer in the file go with it.
+        forget_local_models({entry["server"] for entry in endpoints})
 
 
 def local_endpoints():
@@ -6841,10 +6902,13 @@ def save_local_endpoint(original, name, address, images):
             endpoints[index] = entry
         write_providers(endpoints, CLAUDE_CODE_USED["on"])
         LOCAL_ENDPOINTS[:] = endpoints
+        # A server moved to another address is another server: the old one's models go.
+        forget_local_models({saved["server"] for saved in endpoints})
 
 
 def remove_local_endpoint(name):
-    """Remove the local server of this name; one set at startup stays."""
+    """Remove the local server of this name, and the models remembered for
+    it; one set at startup stays."""
     with LOCAL_ENDPOINTS_LOCK:
         current = next((entry for entry in LOCAL_ENDPOINTS
                         if entry["name"].casefold() == str(name).casefold()), None)
@@ -6856,6 +6920,7 @@ def remove_local_endpoint(name):
         endpoints = [entry for entry in LOCAL_ENDPOINTS if entry is not current]
         write_providers(endpoints, CLAUDE_CODE_USED["on"])
         LOCAL_ENDPOINTS[:] = endpoints
+        forget_local_models({entry["server"] for entry in endpoints})
 
 
 def use_claude_code(on):
@@ -6934,8 +6999,9 @@ def paper_model_catalog(local_servers=(), refresh=False):
     then those of this server's providers, each as the shared model picker
     shows it: {selector, provider, name (short), kind ("local" or "cloud"),
     badge, images, running}, a local one with its server and the server's
-    name ("endpoint"); the picker's other rows (catalog_rows()): a local
-    server that does not answer, and each provider not connected; the owner's
+    name ("endpoint"); the picker's other rows (catalog_rows()): the models
+    a local server that does not answer listed when it last did, disabled,
+    and each provider not connected; the owner's
     preferred models and what a choice left open starts with
     (first_use_models()); and each local server as Settings › Providers lists
     it ("endpoints"): name, address, whether it answered, and whether it was
@@ -6954,6 +7020,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
             local_errors.append(f"{endpoint}: {exc}")
             status.update(running=False, error=str(exc))
             continue
+        # Remembered while it answers, so its models stay listed while it does not.
+        remember_local_models(entry["server"], entry["provider"], names)
         # Installed and listed is selectable: Ollama loads a model on its
         # first request. "loaded" is True or False where the server says
         # (local_loaded_names()), else None.
@@ -7094,7 +7162,7 @@ def paper_model_catalog(local_servers=(), refresh=False):
         # one offers an API key instead.
         "rows": [{**row, **({"problem": True, "refused": True} if xai_refused else {"problem": True})}
                  if row.get("provider") == "xai" and (xai_refused or xai_error == XAI_SIGN_IN_AGAIN) else row
-                 for row in catalog_rows(local_status, connections)],
+                 for row in catalog_rows(local_status, connections, {model["selector"] for model in local_models})],
         # The owner's preferred models by field, reachable or not, and what a
         # browser that has chosen nothing yet starts with (first_use_models()).
         "preferred": preferred,
@@ -7206,17 +7274,64 @@ CONNECT_PROVIDER_LABELS = {
 }
 
 
-def catalog_rows(local_status, connections):
-    """The model picker's rows that are not models, none with an invented
-    model name: each local server that does not answer, "not running"
-    (Local), by its name, and each provider with no way in that is connected
-    and lists its models, with Connect (Cloud). `connections` maps a
-    provider to (usable, error, what it lacks)."""
-    rows = [
-        {"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
-         "server": status["server"], "provider": status["provider"], "note": status["error"]}
-        for status in local_status if not status["running"]
-    ]
+def catalog_rows(local_status, connections, listed):
+    """The model picker's rows that are not models it can use now, none with
+    an invented model name: the Local rows of offline_local_rows(), then
+    each provider with no way in that is connected and lists its models,
+    with Connect (Cloud). `connections` maps a provider to (usable, error,
+    what it lacks); `listed` is the selectors of the local models listed."""
+    rows = offline_local_rows(local_status, listed)
+    for provider, (usable, error, missing) in connections.items():
+        if usable:
+            continue
+        rows.append({"kind": "cloud", "row": "provider", "label": CONNECT_PROVIDER_LABELS[provider],
+                     "provider": provider, "action": "connect", "note": error or missing})
+    return rows
+
+
+def offline_local_rows(local_status, listed):
+    """The Local rows of the picker that can't be chosen now, each disabled,
+    none with an invented model or server: for each local server that does
+    not answer, the models it listed when it last answered
+    (read_remembered_models()), by the same selector, its name, and the
+    Local badge, "server unreachable"; one that never listed a model is one
+    "not-running" row by its name. Then each preferred local model
+    (SERVER_PREFERRED_MODELS) that no server lists or remembers, named from
+    its selector, "not listed by any reachable server", with no server. A
+    model a server that answers lists is that server's (`listed`), and every
+    model is one row."""
+    rows, shown = [], set(listed)
+    remembered = read_remembered_models() if any(not status["running"] for status in local_status) else {}
+    for status in local_status:
+        if status["running"]:
+            continue
+        entry = remembered.get(status["server"])
+        names = entry["models"] if entry and entry["provider"] == status["provider"] else []
+        selectors = [selector for selector in dict.fromkeys(f"{status['provider']}/{name}" for name in names)
+                     if selector not in shown]
+        shown.update(selectors)
+        rows += [offline_row(selector, OFFLINE_SERVER_UNREACHABLE, status["name"], server=status["server"],
+                             address=status["label"], images=status["images"], note=status["error"])
+                 for selector in selectors]
+        if not selectors:
+            rows.append({"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
+                         "server": status["server"], "provider": status["provider"], "note": status["error"]})
+    for selector in dict.fromkeys(selector for field in SERVER_PREFERRED_MODELS.values() for selector in field):
+        if selector.partition("/")[0] in LOCAL_MODEL_PROVIDERS and selector not in shown:
+            shown.add(selector)
+            rows.append(offline_row(selector, OFFLINE_NOT_LISTED, images=None))
+    return rows
+
+
+def offline_row(selector, state, endpoint="", **where):
+    """A local model the picker lists but can't choose now, as a model of
+    the catalog names it: selector, short name, badge, size; its server's
+    name ("endpoint") only when a server listed it."""
+    provider, _, model = selector.partition("/")
+    return {"kind": "local", "row": "offline", "selector": selector, "provider": provider,
+            "name": model_name({"provider": provider, "selector": selector}),
+            "badge": model_badge(selector, endpoint), "size": model_size_text(model), "state": state,
+            "disabled": True, **({"endpoint": endpoint} if endpoint else {}), **where}
     for provider, (usable, error, missing) in connections.items():
         if usable:
             continue
@@ -16450,6 +16565,7 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-option[aria-disabled=true] { cursor:default; background:none; }
 .picker-option[aria-disabled=true] .picker-option-name,
 .picker-option[aria-disabled=true] .picker-sub, .picker-option.offer .picker-option-name { color:var(--off); }
+.picker-option[aria-disabled=true] .badge, .picker-option[aria-disabled=true] .tag { opacity:.55; }
 .picker-option.link-row .picker-option-name { color:var(--accent-light); text-decoration:underline;
                                                text-underline-offset:3px; }
 .picker-option .kind-icon { margin-right:6px; }
@@ -21294,7 +21410,8 @@ const CLOUD_BADGES = {
 // A model selector as its short name, its badge, and whether the catalog
 // lists it (reachable now) and it reads images; null for none ("" once the
 // catalog is in). A selector the catalog does not list is named as the
-// owner's preferred list names it, else as an earlier catalog named it
+// owner's preferred list names it, else as its offline row does (a model of
+// a server that does not answer), else as an earlier catalog named it
 // (knownModelNames), else by the end of its model code.
 const knownModelNames = new Map();
 function textModel(selector, catalog = paperCatalog) {
@@ -21304,11 +21421,14 @@ function textModel(selector, catalog = paperCatalog) {
   if (model) return { selector, short:model.name, badge:model.badge, listed:true, images:model.images,
                       size:model.size || "" };
   const preferred = Object.values(catalog.preferred || {}).flat().find((item) => item.selector === selector);
+  const offline = (catalog.rows || []).find((row) => row.row === "offline" && row.selector === selector);
   const [provider, ...rest] = selector.split("/");
   const local = ["ollama", "lm-studio"].includes(provider);
-  const badge = local ? "Local" : `Cloud: ${CLOUD_BADGES[provider] || `${provider} · API key`}`;
-  const short = preferred ? preferred.name : knownModelNames.get(selector) || rest.join("/").split("/").pop();
-  return { selector, short, badge, listed:false, images:!local, size:preferred ? preferred.size : "" };
+  const badge = offline ? offline.badge : local ? "Local" : `Cloud: ${CLOUD_BADGES[provider] || `${provider} · API key`}`;
+  const short = preferred ? preferred.name : offline ? offline.name
+    : knownModelNames.get(selector) || rest.join("/").split("/").pop();
+  return { selector, short, badge, listed:false, images:!local,
+           size:preferred ? preferred.size : offline ? offline.size : "" };
 }
 // Local (green, a chip) and Cloud (purple, a cloud): never colour alone.
 const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="4" y="4" width="8" '
@@ -21960,7 +22080,16 @@ function renderPickerList(name, typed = false) {
     if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all", MODEL_KINDS[kind].all));
     nodes.push(...rest.map((model) => option(model)));
     for (const row of rows) {
-      if (!matches(row.label, row.address, row.note)) continue;
+      if (!matches(row.label, row.name, row.endpoint, row.selector, row.address, row.note)) continue;
+      // A model of a local server that does not answer (or no server lists):
+      // listed as when it answers, greyed, and never chosen.
+      if (row.row === "offline") {
+        nodes.push(pickerOption(name, index++, { key:row.selector,
+          text:row.endpoint ? `${row.name} · ${row.endpoint}` : row.name,
+          tags:row.images ? ["reads images"] : [], sub:row.address ? `${row.address} · ${row.state}` : row.state,
+          title:row.note ? `${row.selector} · ${row.note}` : row.selector, badge:row.badge, disabled:true }));
+        continue;
+      }
       nodes.push(row.row === "not-running"
         ? pickerOption(name, index++, { key:`down:${row.server}`, text:`${row.label} — server unreachable`,
             sub:row.address, title:row.note, disabled:true })

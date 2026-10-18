@@ -9832,6 +9832,158 @@ class WorkerNodeTests(unittest.TestCase):
                 cli.check_distributed_mode(parser.parse_args(base + extra), parser)
 
 
+class RememberedLocalModelsTests(unittest.TestCase):
+    """A local server's models stay in every picker while it is down: the
+    last list it gave is remembered in HILDE_HOME and listed disabled."""
+    SPARK = "http://127.0.0.1:8010"
+    BARITON = "http://127.0.0.1:9"
+    QWEN = "unsloth/Qwen3.6-35B-A3B-NVFP4"
+    BARITON_MODELS = ["deepseek-v4.1-flash", "google/gemma-4-31b-it"]
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / ".hilde"
+        self.endpoints = [
+            {"name": "Spark2", "server": self.SPARK, "provider": "lm-studio", "vision": False},
+            {"name": "Bariton", "server": self.BARITON, "provider": "lm-studio", "vision": True},
+        ]
+        patches = (mock.patch.object(web, "HILDE_HOME", self.home),
+                   mock.patch.object(web, "LOCAL_ENDPOINTS", [dict(entry) for entry in self.endpoints]),
+                   mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": True}),
+                   mock.patch.dict(web.SERVER_PREFERRED_MODELS, {"text": (), "figure": ()}))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def catalog(self, names_by_server, servers=None):
+        """paper_model_catalog() with no cloud provider connected, each local
+        server answering with its names or not at all."""
+        def local_names(server, provider):
+            if server not in names_by_server:
+                raise RuntimeError("Cannot reach it")
+            return tuple(names_by_server[server])
+        with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                mock.patch.object(web, "read_gemini_key", return_value=None), \
+                mock.patch.object(web, "read_deepseek_key", return_value=None), \
+                mock.patch.object(web, "read_xai_credentials", return_value=None), \
+                mock.patch.object(web, "read_xai_api_key", return_value=None), \
+                mock.patch.object(web, "claude_code_status", return_value=(False, "")), \
+                mock.patch.object(web, "local_model_names", side_effect=local_names), \
+                mock.patch.object(web, "local_loaded_names", return_value=None):
+            return web.paper_model_catalog(web.local_endpoints() if servers is None else servers)
+
+    @staticmethod
+    def offline(catalog):
+        return [row for row in catalog["rows"] if row["row"] == "offline"]
+
+    def test_a_listed_server_is_remembered_and_its_models_stay_disabled_while_it_is_down(self):
+        up = {self.SPARK: [self.QWEN], self.BARITON: self.BARITON_MODELS}
+        catalog = self.catalog(up)
+        self.assertEqual([model["selector"] for model in catalog["models"]],
+                         [f"lm-studio/{self.QWEN}", "lm-studio/deepseek-v4.1-flash", "lm-studio/google/gemma-4-31b-it"])
+        self.assertEqual(self.offline(catalog), [])
+        # Each server's last list, owner-only beside providers.yaml.
+        path = self.home / web.LOCAL_MODELS_FILE
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.home.stat().st_mode), 0o700)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"schema": 1, "servers": {
+            self.SPARK: {"provider": "lm-studio", "models": [self.QWEN]},
+            self.BARITON: {"provider": "lm-studio", "models": self.BARITON_MODELS}}})
+        # The same list again is not written again.
+        inode = path.stat().st_ino
+        self.catalog(up)
+        self.assertEqual(path.stat().st_ino, inode)
+
+        # Bariton goes down: its models stay, disabled, by the same selector,
+        # its name, and the Local badge; no server heading stands in for them.
+        catalog = self.catalog({self.SPARK: [self.QWEN]})
+        self.assertEqual([model["selector"] for model in catalog["models"]], [f"lm-studio/{self.QWEN}"])
+        self.assertEqual(
+            [(row["kind"], row["selector"], row["name"], row["endpoint"], row["badge"], row["state"], row["disabled"],
+              row["server"], row["address"], row["images"]) for row in self.offline(catalog)],
+            [("local", "lm-studio/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "Bariton", "Local · Bariton",
+              "server unreachable", True, self.BARITON, "127.0.0.1:9", True),
+             ("local", "lm-studio/google/gemma-4-31b-it", "Gemma 4 31B", "Bariton", "Local · Bariton",
+              "server unreachable", True, self.BARITON, "127.0.0.1:9", True)],
+        )
+        self.assertEqual(self.offline(catalog)[0]["note"], "Cannot reach it")
+        self.assertEqual(self.offline(catalog)[1]["size"], "31B")
+        self.assertFalse(any(row["row"] == "not-running" for row in catalog["rows"]))
+        # The local DeepSeek model is not the DeepSeek API, which stays a cloud row of its own.
+        self.assertIn(("provider", "cloud", "deepseek"),
+                      [(row["row"], row["kind"], row.get("provider")) for row in catalog["rows"]])
+        # Being down does not forget what it listed.
+        self.assertIn(self.BARITON, json.loads(path.read_text(encoding="utf-8"))["servers"])
+        # A remembered model another reachable server lists is a live model there, listed once.
+        catalog = self.catalog({self.SPARK: [self.QWEN, "deepseek-v4.1-flash"]})
+        self.assertEqual([row["selector"] for row in self.offline(catalog)], ["lm-studio/google/gemma-4-31b-it"])
+
+        # Back up: selectable again, nothing offline.
+        catalog = self.catalog(up)
+        self.assertEqual(len(catalog["models"]), 3)
+        self.assertEqual(self.offline(catalog), [])
+        # A server that changed its list is remembered with the new one.
+        self.catalog({self.SPARK: [self.QWEN], self.BARITON: ["deepseek-v4.1-flash"]})
+        catalog = self.catalog({self.SPARK: [self.QWEN]})
+        self.assertEqual([row["selector"] for row in self.offline(catalog)], ["lm-studio/deepseek-v4.1-flash"])
+
+    def test_a_server_never_listed_is_one_heading_and_a_preferred_model_no_server_lists_has_no_endpoint(self):
+        preferred = {"text": ("lm-studio/deepseek-v4.1-flash", f"lm-studio/{self.QWEN}", "deepseek/deepseek-chat"),
+                     "figure": (f"lm-studio/{self.QWEN}", "lm-studio/deepseek-v4.1-flash")}
+        with mock.patch.dict(web.SERVER_PREFERRED_MODELS, preferred):
+            catalog = self.catalog({self.SPARK: [self.QWEN]})
+            # Bariton never answered: no model of it is known, and none is invented.
+            self.assertEqual([(row["row"], row.get("label")) for row in catalog["rows"] if row["kind"] == "local"],
+                             [("not-running", "Bariton"), ("offline", None)])
+            row = self.offline(catalog)[0]
+            self.assertEqual(
+                (row["selector"], row["name"], row["badge"], row["state"], row["disabled"], row["kind"]),
+                ("lm-studio/deepseek-v4.1-flash", "DeepSeek V4.1 Flash", "Local", "not listed by any reachable server",
+                 True, "local"),
+            )
+            # No endpoint is guessed for it.
+            for key in ("endpoint", "server", "address"):
+                self.assertNotIn(key, row)
+            self.assertTrue(catalog["first_use"]["text"]["unreachable"])
+            # Once Bariton listed it, it is that server's model while Bariton is down.
+            self.catalog({self.SPARK: [self.QWEN], self.BARITON: self.BARITON_MODELS})
+            catalog = self.catalog({self.SPARK: [self.QWEN]})
+            self.assertEqual([(row["selector"], row.get("endpoint"), row["state"]) for row in self.offline(catalog)],
+                             [("lm-studio/deepseek-v4.1-flash", "Bariton", "server unreachable"),
+                              ("lm-studio/google/gemma-4-31b-it", "Bariton", "server unreachable")])
+            self.assertFalse(any(row["row"] == "not-running" for row in catalog["rows"]))
+
+    def test_removing_or_moving_a_server_forgets_its_models(self):
+        path = self.home / web.LOCAL_MODELS_FILE
+        self.catalog({self.SPARK: [self.QWEN], self.BARITON: self.BARITON_MODELS})
+        stale = web.local_endpoints()
+        web.remove_local_endpoint("Bariton")
+        self.assertNotIn(self.BARITON, json.loads(path.read_text(encoding="utf-8"))["servers"])
+        self.assertEqual(self.offline(self.catalog({self.SPARK: [self.QWEN]})), [])
+        # A list asked of the removed server meanwhile (a job's own copy of
+        # the servers) does not bring it back.
+        self.catalog({self.SPARK: [self.QWEN], self.BARITON: self.BARITON_MODELS}, servers=stale)
+        self.assertNotIn(self.BARITON, json.loads(path.read_text(encoding="utf-8"))["servers"])
+        # A renamed server keeps its models; one moved to another address forgets them.
+        with mock.patch.object(web, "local_server_type", return_value="lm-studio"):
+            web.save_local_endpoint("Spark2", "Spark 2", "127.0.0.1:8010", False)
+            self.assertIn(self.SPARK, json.loads(path.read_text(encoding="utf-8"))["servers"])
+            web.save_local_endpoint("Spark 2", "Spark 2", "127.0.0.1:8011", False)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["servers"], {})
+
+    def test_an_unreadable_file_remembers_nothing(self):
+        self.home.mkdir(parents=True)
+        (self.home / web.LOCAL_MODELS_FILE).write_text("not json", encoding="utf-8")
+        catalog = self.catalog({self.SPARK: [self.QWEN]})
+        self.assertEqual(self.offline(catalog), [])
+        self.assertEqual([row["label"] for row in catalog["rows"] if row["row"] == "not-running"], ["Bariton"])
+
+
 _TEST_HOME = None
 
 

@@ -77,7 +77,8 @@ of that kind, and closing it without a choice keeps the model you had.
 Choosing Cloud while no provider is connected opens no empty list: the Model
 box reads **Connect a provider** (in Settings, which only assigns models, it
 opens the list with its **Connect** rows instead). Any connected cloud model takes three
-clicks: Runs on, Cloud, the model. Each list, from the live model lists only:
+clicks: Runs on, Cloud, the model. Each list, from the live model lists (only
+a greyed row keeps a model of a local server that does not answer):
 
 - The default first (marked **Default**), then the models this browser used
   recently, then the rest, each by a short name such as "Model 35B" with a
@@ -88,8 +89,17 @@ clicks: Runs on, Cloud, the model. Each list, from the live model lists only:
 - Local: the models each local server under **Settings › Providers** lists,
   as "<model> · <server name>" with the server's address underneath. An
   Ollama model that is installed but not loaded is tagged **loads on first
-  use** and can be chosen; a server that does not answer is disabled,
-  "<server name> — server unreachable"; **Add local** is at the bottom.
+  use** and can be chosen. While a server does not answer, the models it
+  listed when it last answered stay in the list, greyed and not selectable,
+  marked "server unreachable"; they can be chosen again once it answers and
+  the list is fetched again (opening Ask Hilde, or reloading the page). A
+  server that has never answered is one greyed row, "<server name> — server
+  unreachable". A preferred model (`--preferred-text-model`,
+  `--preferred-figure-model`) that no server lists is a greyed row by its
+  name, "not listed by any reachable server", with no server named. **Add
+  local** is at the bottom. Create step 3, Ask Hilde, and Settings show the
+  same list; a local model is never mixed up with a cloud provider of the
+  same name (a local DeepSeek model is Local, the DeepSeek API is Cloud).
 - Cloud: the connected providers' models; a provider not connected is a
   greyed row with **Connect** (Anthropic's covers Claude Code too).
 - **Connect** opens the provider dialog of **Settings › Providers** on Cloud
