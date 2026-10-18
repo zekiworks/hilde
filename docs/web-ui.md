@@ -10,12 +10,13 @@ Ask to understand." (smaller on a phone). Below it are three tabs: **Create**,
 **Voices**, and **Listen**. **Listen** opens the **Library**, the list of your
 audiobooks, or the book you had open.
 
-At the right end of the same row, across from **Create**, is the **Settings**
-button, a blue gear and the word Settings. It opens the settings in place of
-the page and, while they are open, shows the same blue dot as a selected tab
-(no tab is selected then); **Settings** again, **Close settings**, or any tab
-closes them. On a phone whose row is too narrow for the word (a 390 px phone
-and narrower), the button shows the gear alone. See [Settings](#settings).
+At the right end of the same row, across from **Create**, is **Settings**, a
+tab like the others with a blue gear before the word. It opens the settings in
+place of the page and, while they are open, looks like the selected tab, with
+its blue top edge and dot (no other tab is selected then); **Settings** again,
+**Close settings**, or any tab closes them. On a phone whose row is too narrow
+for the word (a 390 px phone and narrower), it shows the gear alone. See
+[Settings](#settings).
 
 At the right of the header, while anything is being made, or after an
 audiobook stopped or failed, a small indicator counts every job on this
@@ -631,7 +632,7 @@ voice folder's `description.txt` to make one searchable.
 
 ## Settings
 
-**Settings**, the gear button at the right end of the tab row, replaces the
+**Settings**, the gear tab at the right end of the tab row, replaces the
 page until you choose **Settings** again, **Close settings**, or a tab. Each
 group of settings ends with one note on when it takes effect: "Applies to the
 next audiobook" or "Applies now". The groups:

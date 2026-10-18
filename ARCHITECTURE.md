@@ -783,11 +783,12 @@ are flat); an answer being read aloud (`.chat-speaking`) is white on
 Buttons are raised: a 1 px top highlight (inset white 10%) and a 2 px shadow
 below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
 shadow and brightens, fading back in 100 ms; with `prefers-reduced-motion`
-only the 1 px move remains. Links, tabs, switch segments (`role=radio`), and
-menu items stay flat. A steady 6 px `--accent-light` LED dot marks what is on:
-the selected folder tab and the open Settings button (`::before`), every `label.check` whose box is ticked
-(`::after`: Follow along, Create step 3's options, Settings' boxes), and the
-chosen highlight style. The player's time is monospace with tabular figures.
+only the 1 px move remains. Links, tabs (the Settings tab too), switch segments
+(`role=radio`), and menu items stay flat. A steady 6 px `--accent-light` LED dot
+marks what is on: the selected folder tab and the open Settings tab
+(`::before`), every `label.check` whose box is ticked (`::after`: Follow along,
+Create step 3's options, Settings' boxes), and the chosen highlight style. The
+player's time is monospace with tabular figures.
 
 Each view shows at most one primary (blue)
 button: Create's step **Continue** or **Create audiobook**, **New voice** on
@@ -799,16 +800,21 @@ Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
 folder tabs on a baseline (Arrow, Home, and End keys move between them).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
 an `--accent-light` top edge and opens into the page below. After the tablist,
-outside it, at the row's right end, sits the **Settings** button
-(`#settings-button`, `margin-left: auto`: its right edge as far in from the
-row's right edge as Create's left edge from the left, the row's padding
-mirrored; a raised secondary button: an inline SVG gear, `fill: currentColor`
-in `--accent-light`, and the label `.settings-label`). `.tabs` is an
-inline-size container: below 380 px (measured: the three tabs, the row's gap,
-and the open button with its label need 368 px; a 390 px phone's row has
-358 px) the label is visually hidden, leaving the gear, named "Settings", at
-least 44 × 44 px; below 300 px the tabs' side padding shrinks so the gear keeps
-clear of Listen and the row never scrolls. Two more views have no tab:
+outside it, at the row's right end, sits **Settings** (`#settings-button`,
+`margin-left: auto`: its right edge as far in from the row's right edge as
+Create's left edge from the left, the row's padding mirrored). It is a button
+(`aria-pressed`), not one of the tablist's tabs, but it shares the folder tabs'
+rules (`.tab-list [role=tab], .tabs .settings-button`): the same shape, padding,
+height, type, fill, borders, and bevel as a tab that is not selected, and, open
+(`aria-pressed="true"`), exactly the selected tab's look (flush, the
+`--accent-light` top edge, heavier text, open into the page below, the LED
+dot). Before its label `.settings-label` is an inline SVG gear,
+`fill: currentColor` in `--accent-light`. `.tabs` is an inline-size container:
+below 380 px (measured: the three tabs, the row's gap, and the open Settings tab
+with its label need 368 px; a 390 px phone's row has 358 px) the label is
+visually hidden, leaving the gear, named "Settings", at least 44 × 44 px; below
+300 px the tabs' side padding (Settings' too) shrinks so the gear keeps clear of
+Listen and the row never scrolls. Two more views are not in the tablist:
 
 - The **progress view** (`#page-progress`, tab `progress` in state) opens from
   the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from
@@ -823,7 +829,7 @@ clear of Listen and the row never scrolls. Two more views have no tab:
   Settings button (`toggleSettings()`) in place of the current page, never
   above it, and closes with the button again, **Close settings**, or any tab
   (`setTab()`, `chooseListen()` call `setSettings(false)`). While it is open
-  the button has `aria-pressed="true"` and a tab's LED dot, and no tab is
+  the button has `aria-pressed="true"` and the selected tab's look, and no tab is
   `aria-selected` (the tabs' pages are hidden). See [Settings and
   devices](#settings-and-devices).
 

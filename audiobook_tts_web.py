@@ -16471,7 +16471,7 @@ button { background:var(--raised); color:var(--text); border:1px solid var(--lin
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button) {
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button) {
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
@@ -16488,50 +16488,48 @@ button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
 label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
 /* A small steady LED (no glow) on what is on: a checked switch, the selected
-   tab, the chosen highlight style. */
+   tab (or the open Settings), the chosen highlight style. */
 label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before,
-#highlight-style [aria-checked=true] span::before {
+.tabs .settings-button[aria-pressed=true]::before, #highlight-style [aria-checked=true] span::before {
   content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
-.tab-list [role=tab][aria-selected=true]::before, #highlight-style [aria-checked=true] span::before {
+.tab-list [role=tab][aria-selected=true]::before, .tabs .settings-button[aria-pressed=true]::before,
+#highlight-style [aria-checked=true] span::before {
   display:inline-block; margin-right:8px; vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
-   raised; the active tab is pressed flush and opens into the page below. */
+   raised; the active tab is pressed flush and opens into the page below.
+   Settings (its own page, not one of the tablist's) is drawn as a tab too, at the
+   row's right end, and open, it is the selected tab. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
         border-bottom:1px solid var(--line); container-type:inline-size; }
 .tab-list { display:flex; align-items:flex-end; gap:4px; }
-.tab-list [role=tab] { margin-bottom:-1px; min-height:0;
-                       padding:10px clamp(14px,3vw,22px) 7px;
-                       border-radius:9px 9px 0 0; color:var(--dim);
-                       background:linear-gradient(#383838,#292929);
-                       box-shadow:inset 0 1px 0 rgba(255,255,255,.12),
-                                  0 -3px 6px -2px rgba(0,0,0,.6);
-                       transition:color .12s,background .12s; }
-.tab-list [role=tab]:hover:not([aria-selected=true]) {
+.tab-list [role=tab], .tabs .settings-button {
+  margin-bottom:-1px; min-height:0; padding:10px clamp(14px,3vw,22px) 7px;
+  border-radius:9px 9px 0 0; color:var(--dim); background:linear-gradient(#383838,#292929);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 -3px 6px -2px rgba(0,0,0,.6);
+  transition:color .12s,background .12s; }
+.tab-list [role=tab]:hover:not([aria-selected=true]), .tabs .settings-button:hover:not([aria-pressed=true]) {
   color:var(--text); background:linear-gradient(#444,#303030);
 }
-.tab-list [role=tab][aria-selected=true] { padding-top:7px; color:var(--text);
-                                           font-weight:650; background:var(--bg);
-                                           border-bottom-color:var(--bg);
-                                          box-shadow:inset 0 3px 0 var(--accent-light); }
-/* Settings: a raised button at the right end of the tab row, its right edge as far in as Create's left edge (the
-   row's padding, mirrored), set apart from the tabs (its own page, not a tab), the gear in the accent. Open, it
-   shows a selected tab's LED dot. */
-.settings-button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; margin:0 0 4px auto; }
-.settings-button .gear { flex:0 0 auto; color:var(--accent-light); fill:currentColor; }
-.settings-button[aria-pressed=true]::before { content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%;
-                                              background:var(--accent-light); }
+.tab-list [role=tab][aria-selected=true], .tabs .settings-button[aria-pressed=true] {
+  padding-top:7px; color:var(--text); font-weight:650; background:var(--bg); border-bottom-color:var(--bg);
+  box-shadow:inset 0 3px 0 var(--accent-light); }
+/* Settings' place: the right end of the row, its right edge as far in as Create's left edge (the row's padding,
+   mirrored); the blue gear before the word. */
+.tabs .settings-button { display:inline-flex; align-items:center; flex:0 0 auto; margin-left:auto; }
+.settings-button .gear { flex:0 0 auto; margin-right:8px; color:var(--accent-light); fill:currentColor; }
 /* A row too narrow for the tabs and "Settings" with room between them (measured: the three tabs, the row's gap and
-   the open button with its label need 368px; a 390px phone's row has 358px): the gear alone, still named Settings,
-   at least 44 x 44. */
+   the open Settings tab with its label need 368px; a 390px phone's row has 358px): the gear alone, still named
+   Settings, at least 44 x 44. */
 @container (max-width:379.98px) {
   .settings-label { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
                     clip:rect(0 0 0 0); white-space:nowrap; border:0; }
-  .settings-button { min-width:44px; padding-left:12px; padding-right:12px; }
+  .settings-button { min-width:44px; justify-content:center; }
+  .settings-button .gear { margin-right:0; }
 }
 /* Narrower still (a 320px phone): the tabs a little tighter, so the gear keeps clear of Listen and the row never
    scrolls. */
 @container (max-width:299.98px) {
-  .tab-list [role=tab] { padding-left:11px; padding-right:11px; }
+  .tab-list [role=tab], .tabs .settings-button { padding-left:11px; padding-right:11px; }
 }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
@@ -17258,7 +17256,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
-  button, .tab-list [role=tab], button.link, .job-row button, .header-actions button,
+  button, .tab-list [role=tab], .tabs .settings-button, button.link, .job-row button, .header-actions button,
   button.description-toggle, button.row-more, .toast button, .note-item a, .note-item button.link,
   input[type=text], input[type=search], input[type=number], select, label.check {
     min-height:44px;
