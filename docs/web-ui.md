@@ -352,17 +352,29 @@ grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically.
 
 Clicking a word (tapping it on a phone) plays the book from that word, like
-rewinding to it; nothing opens and nothing is asked. To ask about text, select
-it: double-click a word (on a phone, long-press it; its handles stretch the
-selection), or drag over any span on a computer. Selecting shows a small menu:
-**Ask about this** and **Copy**. Nothing opens until you press **Ask about
-this** (or **Ask Hilde**): then the book pauses and the chat opens (on a phone,
-as a full-screen sheet) with what you selected on the card and the sentence
-around it attached as context, under **Context details**. The card's **Word |
-Sentence | Paragraph** switch widens what you ask about, and the book marks it
-in gray; **Listen from here** on the card plays from the start of it. A
-question you had already typed stays in the box; otherwise the box is empty
-and the button reads **Explain this part**.
+rewinding to it; nothing opens and nothing is asked. The book starts half a
+second after the click, the usual double-click time on Windows and macOS, so
+that a double-click can select the word instead; if your system's double-click
+time is longer and the second click comes after the book has started, the
+book goes back to where it was and stays playing or paused as before. To ask
+about text, select it: double-click a word (on a phone, long-press it; its
+handles stretch the selection), or drag over any span on a computer.
+Selecting shows a small menu: **Ask about this** and **Copy**. Nothing opens
+until you press **Ask about this** (or **Ask Hilde**): then the book pauses
+and the chat opens (on a phone, as a full-screen sheet) with a card headed
+**Selected text**: your words in quotes, and under **Context details** the
+section they are in, all of your selection, and the sentence around it as
+context. The card's **Word | Sentence | Paragraph** switch widens what you
+ask about, and the book marks it in gray; **Listen from here** on the card
+plays from the start of it. A question you had already typed stays in the
+box; otherwise the box is empty and the button reads **Explain this part**.
+
+One question can bring at most 8,000 characters of selected text from at most
+6 paragraphs. A longer selection is never cut short: its card says how long
+it is and what fits (for example "This selection is 8,001 characters over 9
+paragraphs; Hilde can attach at most 8,000 characters from 6 paragraphs.
+Select less."), shows the whole selection under its details, and attaches
+nothing until you select less (then **Change**) or remove it with **×**.
 
 Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a
@@ -412,9 +424,10 @@ close the chat and open it again; an answer keeps arriving meanwhile. When a
 conversation grows long, its oldest messages and reads leave what Hilde
 remembers, and the chat says so.
 
-Ask Hilde attaches the part being read (or the words you clicked or selected)
-as a card above the message box: the section heading as in the book, below it
-your words in quotes or the part's first words, **Change** to attach what
+Ask Hilde attaches the part being read (or the words you selected) as a card
+above the message box: headed **Selected text** for a selection, else the
+section heading as in the book, below it your words in quotes or the part's
+first words, **Change** to attach what
 you have selected, or else what is playing now, and **×** to remove it. It
 stays as attached while you write, even if you play the book again. Its
 collapsed **Context details** list exactly what goes with

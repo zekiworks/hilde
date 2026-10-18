@@ -8801,6 +8801,30 @@ class ChatTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "figure or table"):
             web.chat_about({"kind": "figure", "passage": 2}, passages)
 
+    def test_a_selection_beyond_the_bounds_is_refused_whole_never_cut(self):
+        passages = [{"text": f"Paragraph {n}."} for n in range(1, 11)]
+        word = "abcdefghi "
+        with self.assertRaises(web.ChatSelectionTooLarge) as caught:
+            web.chat_about({"kind": "selection", "start": 2, "end": 10, "quote": word * 800 + "j"}, passages)
+        self.assertEqual(
+            str(caught.exception),
+            "This selection is 8,001 characters over 9 paragraphs; Hilde can attach at most 8,000 characters "
+            "from 6 paragraphs. Select less.",
+        )
+        with self.assertRaisesRegex(web.ChatSelectionTooLarge, "is 8,001 characters over 1 paragraph;"):
+            web.chat_about({"kind": "selection", "start": 3, "end": 3, "quote": "x" * 8001}, passages)
+        with self.assertRaisesRegex(web.ChatSelectionTooLarge, "is 5 characters over 7 paragraphs;"):
+            web.chat_about({"kind": "selection", "start": 1, "end": 7, "quote": "a b c"}, passages)
+        # At the bounds the whole selection is kept.
+        about = web.chat_about({"kind": "selection", "start": 5, "end": 10, "quote": "y" * 8000}, passages)
+        self.assertEqual((about["start"], about["end"], len(about["quote"])), (5, 10, 8000))
+        # Paragraph runs and malformed numbers keep the plain bounds error.
+        with self.assertRaisesRegex(ValueError, "paragraph numbers, at most 6") as plain:
+            web.chat_about({"kind": "passages", "start": 1, "end": 7}, passages)
+        self.assertNotIsInstance(plain.exception, web.ChatSelectionTooLarge)
+        with self.assertRaisesRegex(ValueError, "paragraph numbers"):
+            web.chat_about({"kind": "selection", "start": 9, "end": 11, "quote": "z"}, passages)
+
     def test_a_local_model_is_asked_on_the_server_that_offers_it(self):
         book, _ = self.book(chat_narration("Storms.", "Dams."))
 

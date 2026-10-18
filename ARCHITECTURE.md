@@ -1511,15 +1511,23 @@ the same.
 A click (a tap) in the text listens from there and opens nothing
 (`clickReaderText()`, one listener on `#reader-content`, Narration and Source
 text alike; only a trusted primary-button click without Shift): after
-`READER_CLICK_WAIT` (300 ms, so a double-click's second click can cancel it)
-it seeks to the word under the pointer (`clickedWord()`: its `.reader-word`,
-else the word at the caret point, else the nearest word of the clicked
-sentence) with `listenFromSelection()` and plays. The pending seek is
+`READER_CLICK_WAIT` (500 ms, the usual double-click time on Windows and
+macOS, so a double-click's second click can cancel it) it seeks to the word
+under the pointer (`clickedWord()`: its `.reader-word`, else the word at the
+caret point, else the nearest word of the clicked sentence) with
+`listenFromSelection()` and plays, keeping the time and play state from just
+before as `readerClickUndo`. The pending seek is
 cancelled by any press in the text meanwhile (`pressReaderText()` on
 `pointerdown`: a double-click, a drag), by a selection that is not collapsed
 when it fires, by a long press, and by a touch that moved past
 `READER_TOUCH_SLOP` (10 px) or that the browser took for a scroll
-(`pointercancel`; `trackReaderPress()`, `pointerType` `touch`). A touch held
+(`pointercancel`; `trackReaderPress()`, `pointerType` `touch`). A click the
+browser counts as a double-click (`event.detail` ≥ 2) after the seek began
+(a system double-click time over 500 ms) takes it back (`undoReaderClick()`:
+the earlier time and play state; the view stays on the selected word, with
+**Back to where you're listening** when that place is off screen); the next
+single click forgets the undo. The browser decides what is a double-click
+from the system's setting; the page only sees `event.detail`. A touch held
 still for `READER_LONG_PRESS` (500 ms) selects its word
 (`selectPressedWord()`; a phone's own long press selects it too, and
 headless Chromium has none). A finished selection (a double-click, a long
@@ -1615,8 +1623,10 @@ the line, **Stop** replaces **Send** while Hilde answers.
 The context card (`attachAbout()`) is the `about` of the question, frozen when
 attached: playback moving on never changes it. The page asks
 `POST /api/chat/context` for its manifest and draws the card only from it
-(`chipElement()`), one per attached part: `chipHead()` titles it with the
-section heading as in the book, with a small **Change** (attaches the text
+(`chipElement()`), one per attached part: `chipHead()` titles it
+**Selected text** for a selection (its section is then the first line of
+Context details, `.chip-in-section`), else with the section heading as in
+the book, with a small **Change** (attaches the text
 selected in the book instead, or else the part playing) and **×** (removes
 it); with a focus (text selected in the book), `focusControls()`
 puts the **Word | Sentence | Paragraph** switch and **Listen from here** under
@@ -1628,7 +1638,8 @@ narration", "From the paper", "Hilde's description", "Picture"), then each
 piece with its ¶ number and
 page or place (the card's own section not repeated), plus whether the
 figure's picture goes ("Not sent: the figure's picture." and why, when it
-does not). Past questions show the same card, collapsed, without controls.
+does not). Past questions show the same card (the same `chipElement()`, so
+a past selection is headed **Selected text** too), collapsed, without controls.
 Attaching the same `about` again (Retry, another model) keeps its focus.
 Choosing another model asks for the
 manifest again, since the picture depends on the model. A newly attached
@@ -1639,6 +1650,20 @@ including fetching the model list when none is loaded, is cut at
 `CHAT_CONTEXT_TIMEOUT` (10 s) by an `AbortController`, and a timed-out or
 failed request leaves a **Couldn't attach: Retry · Remove** card (Retry asks
 for the same `about` again).
+
+A selection is sent whole (`selectionAbout()`: the quote as `rangeText()`
+reads it, labels left out, and its first to last paragraph); nothing on the
+page shortens it, and a `sentence` longer than `CHAT_TEXT_MAX` (8,000, the
+server's `CHAT_MESSAGE_MAX_CHARS`) is left out rather than cut. `chat_about()`
+refuses a selection over `CHAT_MESSAGE_MAX_CHARS` characters or
+`CHAT_CONTEXT_MAX_PASSAGES` paragraphs with `ChatSelectionTooLarge`, HTTP
+413, whose message (`chat_selection_limit()`) says how long it is and what
+fits: "This selection is 8,001 characters over 9 paragraphs; Hilde can attach
+at most 8,000 characters from 6 paragraphs. Select less." The page shows it
+on `limitChip()` (headed **Selected text**, the quote's preview, the message,
+and the whole selection under its own details; **Change** and **×**, no
+Retry and no scope switch); Enter with the box empty then only says so, and a
+typed question goes without it ("Sent without the selected text.").
 
 Enter and **Send** both call `sendChat()`, which never returns without a
 word in the hint line: an empty box with no card ("Type a question first."),

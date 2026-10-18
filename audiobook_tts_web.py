@@ -10645,13 +10645,28 @@ def chat_read(passages, start, end=None):
     return "\n\n".join(pieces), label
 
 
+class ChatSelectionTooLarge(ValueError):
+    """A selection longer than one message can attach: it is never cut;
+    the listener is told how long it is and what fits."""
+
+
+def chat_selection_limit(chars, span):
+    """What a selection beyond the bounds is told, plainly."""
+    return (
+        f"This selection is {chars:,} characters over {span} paragraph{'s' if span != 1 else ''}; "
+        f"Hilde can attach at most {CHAT_MESSAGE_MAX_CHARS:,} characters from {CHAT_CONTEXT_MAX_PASSAGES} "
+        "paragraphs. Select less."
+    )
+
+
 def chat_about(about, passages):
     """The part of the book a message is about, checked against its
     passages: a run of paragraphs {"kind": "passages", "start", "end"}, words
     selected in them {"kind": "selection", "start", "end", "quote"}, or a
     figure or table {"kind": "figure", "passage"}. A selection narrower than
     its sentence (a clicked word) may bring that sentence as "sentence", its
-    context. ValueError says what is wrong."""
+    context. ValueError says what is wrong; ChatSelectionTooLarge, a
+    selection over more characters or paragraphs than one message brings."""
     kind = about.get("kind") if isinstance(about, dict) else None
     if kind == "figure":
         number = about.get("passage")
@@ -10663,18 +10678,21 @@ def chat_about(about, passages):
         return {"kind": kind, "passage": number}
     if kind in ("passages", "selection"):
         start, end = about.get("start"), about.get("end")
-        if not (
-            type(start) is int and type(end) is int
-            and 1 <= start <= end < start + CHAT_CONTEXT_MAX_PASSAGES and end <= len(passages)
-        ):
-            raise ValueError(
-                f"about.start and about.end are the book's paragraph numbers, at most {CHAT_CONTEXT_MAX_PASSAGES}."
-            )
+        bounds = (
+            f"about.start and about.end are the book's paragraph numbers, at most {CHAT_CONTEXT_MAX_PASSAGES}."
+        )
+        if not (type(start) is int and type(end) is int and 1 <= start <= end <= len(passages)):
+            raise ValueError(bounds)
+        span = end - start + 1
         if kind == "passages":
+            if span > CHAT_CONTEXT_MAX_PASSAGES:
+                raise ValueError(bounds)
             return {"kind": kind, "start": start, "end": end}
         quote = " ".join(str(about.get("quote") or "").split())
-        if not quote or len(quote) > CHAT_MESSAGE_MAX_CHARS:
+        if not quote:
             raise ValueError(f"about.quote is the selected text, at most {CHAT_MESSAGE_MAX_CHARS:,} characters.")
+        if len(quote) > CHAT_MESSAGE_MAX_CHARS or span > CHAT_CONTEXT_MAX_PASSAGES:
+            raise ChatSelectionTooLarge(chat_selection_limit(len(quote), span))
         selection = {"kind": kind, "start": start, "end": end, "quote": quote}
         sentence = " ".join(str(about.get("sentence") or "").split())
         if len(sentence) > CHAT_MESSAGE_MAX_CHARS:
@@ -15762,6 +15780,8 @@ class Handler(BaseHTTPRequestHandler):
             return None, (HTTPStatus.NOT_FOUND, "no such audiobook")
         try:
             about = chat_about(about, passages)
+        except ChatSelectionTooLarge as exc:
+            return None, (HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
         except ValueError as exc:
             return None, (HTTPStatus.BAD_REQUEST, str(exc))
         return chat_attachment(
@@ -18276,7 +18296,7 @@ function collect() {
 async function jsonRequest(path, options) {
   const response = await fetch(path, options);
   const answer = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(answer.error || response.statusText);
+  if (!response.ok) throw Object.assign(new Error(answer.error || response.statusText), { status:response.status });
   return answer;
 }
 
@@ -18774,13 +18794,18 @@ function wrapReaderWords(parts, cues) {
 const READER_WORD = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
 const TEXT_UNIT = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, blockquote, figcaption";
 const READER_SKIP = "a, button, img, .figure-card, .reader-tag, .reader-label";
-// A click waits out a double-click's second click (which selects the word);
-// any press in the text meanwhile, a selection, a long press, or a touch
-// that moved (a scroll) cancels it.
-const READER_CLICK_WAIT = 300, READER_LONG_PRESS = 500, READER_TOUCH_SLOP = 10;
-let readerClickTimer = 0, readerPress = null;
+// A click waits out a double-click's second click (which selects the word):
+// READER_CLICK_WAIT is 500 ms, the usual double-click time on Windows and
+// macOS. Any press in the text meanwhile, a selection, a long press, or a
+// touch that moved (a scroll) cancels it. A double-click the browser still
+// recognises after the seek began (a longer double-click time set in the
+// system) takes the seek back: the time and play state from before it.
+const READER_CLICK_WAIT = 500, READER_LONG_PRESS = 500, READER_TOUCH_SLOP = 10;
+let readerClickTimer = 0, readerPress = null, readerClickUndo = null;
 function clickReaderText(event) {
-  if (!event.isTrusted || event.button !== 0 || event.detail > 1 || event.shiftKey || !readerAudio) return;
+  if (!event.isTrusted || event.button !== 0 || event.shiftKey || !readerAudio) return;
+  if (event.detail > 1) { undoReaderClick(); return; }
+  readerClickUndo = null;
   if (readerPress && (readerPress.moved || readerPress.long)) return;
   if (event.target.closest(READER_SKIP)) return;
   // The click that ends a drag selection selects; its menu asks or copies.
@@ -18792,8 +18817,25 @@ function clickReaderText(event) {
   clearTimeout(readerClickTimer);
   readerClickTimer = setTimeout(() => {
     if (!readerAudio || !window.getSelection().isCollapsed) return;
-    if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {});
+    const before = { time:readerAudio.currentTime, paused:readerAudio.paused };
+    if (!listenFromSelection({ range, first:passage })) return;
+    readerClickUndo = before;
+    readerAudio.play().catch(() => {});
   }, READER_CLICK_WAIT);
+}
+// The second click of a double-click: no seek, or the seek taken back. The
+// page stays on the selected word (its menu shows); with the place it went
+// back to off screen, Back to where you're listening offers it.
+function undoReaderClick() {
+  clearTimeout(readerClickTimer);
+  const before = readerClickUndo;
+  readerClickUndo = null;
+  if (!before || !readerAudio) return;
+  if (before.paused) readerAudio.pause();
+  readerAudio.currentTime = before.time;
+  setDetached(true);
+  updateReaderHighlight();
+  if (onScreen(listeningElement())) setDetached(false);
 }
 function pressReaderText(event) {
   clearTimeout(readerClickTimer);
@@ -18923,7 +18965,7 @@ function rangeText(range) {
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const parent = node.parentElement;
     if (!range.intersectsNode(node) || !shown(parent)
-        || parent.closest(".reader-label, .reader-tag, .reader-flag")) continue;
+        || parent.closest(".reader-label, .reader-tag, .reader-flag, .source-label")) continue;
     let piece = node.data;
     if (node === range.endContainer) piece = piece.slice(0, range.endOffset);
     if (node === range.startContainer) piece = piece.slice(range.startOffset);
@@ -18944,7 +18986,8 @@ function focusAbout(focus) {
                                  last:passages.length ? Math.max(...passages) : null });
   if (focus.scope === "word" && about.kind === "selection") {
     const sentence = rangeText(focusRange(focus, "sentence"));
-    if (sentence && sentence !== text) about.sentence = sentence.slice(0, 8000);
+    // The sentence goes whole or not at all (Context details lists what goes).
+    if (sentence && sentence !== text && sentence.length <= CHAT_TEXT_MAX) about.sentence = sentence;
   }
   return about;
 }
@@ -20304,7 +20347,8 @@ async function sendChat(event) {
   chatQueued = false;
   const failed = chatAbout && chatAbout.error ? chatAbout : null;
   if (failed && !typed) {
-    chatHint(`Couldn't attach ${aboutName(failed.about)}. Press Retry, or type a question.`, true);
+    chatHint(failed.tooLarge ? "This selection is too long to attach. Select less, or type a question."
+      : `Couldn't attach ${aboutName(failed.about)}. Press Retry, or type a question.`, true);
     renderChatControls();
     return;
   }
@@ -20430,6 +20474,9 @@ function jumpToPassage(number) {
 // failed after 10 seconds (the wait for the model list included); a failed
 // one offers Retry (the same part again) and Remove.
 const CHAT_CONTEXT_TIMEOUT = 10000;
+// The most characters a message or a selection's quote holds (the server's
+// CHAT_MESSAGE_MAX_CHARS, as the compose box's maxlength).
+const CHAT_TEXT_MAX = 8000;
 let chatAbout = null, askSelection = null, changeSelection = null, chipPulseTimer = 0;
 // `focus` is the text selected in the book (Ask about this, Ask Hilde);
 // attaching the same part again keeps it.
@@ -20457,6 +20504,7 @@ async function attachAbout(about, focus) {
     current.manifest = manifest;
   } catch (error) {
     current.error = controller.signal.aborted ? "It took longer than 10 seconds." : error.message;
+    current.tooLarge = !controller.signal.aborted && error.status === 413;
   } finally {
     clearTimeout(timer);
   }
@@ -20485,7 +20533,7 @@ function renderChatAbout() {
   const box = $("chat-about");
   box.replaceChildren();
   if (chatAbout && chatAbout.manifest) box.append(chipElement(chatAbout.manifest, true));
-  else if (chatAbout && chatAbout.error) box.append(failedChip(chatAbout.error));
+  else if (chatAbout && chatAbout.error) box.append(chatAbout.tooLarge ? limitChip(chatAbout) : failedChip(chatAbout.error));
   else if (chatAbout) {
     const chip = document.createElement("div");
     chip.className = "chip chip-preparing";
@@ -20526,6 +20574,25 @@ function focusControls(focus) {
   row.append(scopes, listen);
   return row;
 }
+// A selection longer than one message can attach (the server's HTTP 413):
+// it is never cut. The card says how long it is and what fits, and holds
+// the whole selection under its own details.
+function limitChip(current) {
+  const chip = document.createElement("div");
+  chip.className = "chip chip-limit";
+  const problem = document.createElement("p");
+  problem.className = "problem";
+  problem.textContent = current.error;
+  const whole = document.createElement("details");
+  whole.className = "chip-details chip-whole";
+  const summary = document.createElement("summary");
+  summary.textContent = `The whole selection (${current.about.quote.length.toLocaleString("en-US")} characters)`;
+  const text = document.createElement("p");
+  text.textContent = current.about.quote;
+  whole.append(summary, text);
+  chip.append(chipHead("Selected text", true), chipPreview(chatQuote(current.about.quote)), problem, whole);
+  return chip;
+}
 function failedChip(message) {
   const chip = document.createElement("div");
   chip.className = "chip chip-failed";
@@ -20558,8 +20625,8 @@ function cutText(text, most) {
   return flat.length > most ? `${flat.slice(0, most - 1).trimEnd()}…` : flat;
 }
 function chatQuote(quote) { return `“${cutText(quote, 80)}”`; }
-// The card's title, the section heading as in the book, with small Change
-// and × controls on the draft's card.
+// The card's title ("Selected text" for a selection, else the section
+// heading as in the book), with small Change and × controls on the draft's card.
 function chipHead(title, editable) {
   const head = document.createElement("div");
   head.className = "chip-head";
@@ -20596,13 +20663,23 @@ function chipPreview(text) {
 }
 // Context details: everything the manifest lists, which is exactly what
 // goes with the question, grouped by what it is ("Hilde's narration" once,
-// then each of its paragraphs), without the card's section again.
-function chipDetails(manifest) {
+// then each of its paragraphs), without the card's section again. A card
+// titled "Selected text" names its section here, first.
+function chipDetails(manifest, withSection) {
   const details = document.createElement("details");
   details.className = "chip-details";
   const summary = document.createElement("summary");
   summary.textContent = "Context details";
   details.append(summary);
+  if (withSection) {
+    const line = document.createElement("p");
+    line.className = "chip-in-section";
+    const label = document.createElement("span");
+    label.className = "chip-where";
+    label.textContent = "Section";
+    line.append(label, ` ${manifest.section || "Before the first heading"}`);
+    details.append(line);
+  }
   const groups = new Map();
   const group = (title) => {
     if (!groups.has(title)) {
@@ -20649,17 +20726,19 @@ function chipDetails(manifest) {
   }
   return details;
 }
-// One card for what a question is about: the section heading, a short
-// preview of the selected text (else of the part), and the collapsed
-// Context details. Past questions show the same card, without controls.
+// One card for what a question is about: "Selected text" for a selection
+// (else the section heading), a short preview of the selected text (else of
+// the part), and the collapsed Context details. Past questions show the same
+// card, without controls.
 function chipElement(manifest, editable = false) {
   const chip = document.createElement("div");
   chip.className = "chip";
   const about = manifest.about || {};
+  const selected = about.kind === "selection";
   chip.append(
-    chipHead(manifest.section || "Before the first heading", editable),
-    chipPreview(about.kind === "selection" ? chatQuote(about.quote) : cutText(manifest.preview, 80)),
-    chipDetails(manifest),
+    chipHead(selected ? "Selected text" : manifest.section || "Before the first heading", editable),
+    chipPreview(selected ? chatQuote(about.quote) : cutText(manifest.preview, 80)),
+    chipDetails(manifest, selected),
   );
   return chip;
 }
@@ -20675,11 +20754,12 @@ function playingAbout() {
   if (readerPayload && readerPayload.figures[passage]) return { kind:"figure", passage };
   return { kind:"passages", start:passage, end:passage };
 }
+// The whole selection, never cut: one beyond what a message can attach is
+// refused by the server (HTTP 413) and its card says so (limitChip()).
 function selectionAbout(picked) {
   const start = picked.first || picked.last || passageOfBlock(activeReaderBlock);
   if (!start) return playingAbout();
-  const end = Math.min(Math.max(start, picked.last || start), start + 5);
-  return { kind:"selection", start, end, quote:picked.text.slice(0, 8000) };
+  return { kind:"selection", start, end:Math.max(start, picked.last || start), quote:picked.text };
 }
 // The passages the selection takes words from, in order. A selection that
 // ends at the very start of the next paragraph (as a triple click leaves
