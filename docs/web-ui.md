@@ -10,7 +10,7 @@ Ask to understand." (smaller on a phone). Below it are three tabs: **Create**,
 **Voices**, and **Listen**. **Listen** opens the **Library**, the list of your
 audiobooks, or the book you had open.
 
-Right after **Listen**, a little apart from the tabs, is the **Settings**
+At the right end of the same row, across from **Create**, is the **Settings**
 button, a blue gear and the word Settings. It opens the settings in place of
 the page and, while they are open, shows the same blue dot as a selected tab
 (no tab is selected then); **Settings** again, **Close settings**, or any tab
@@ -631,10 +631,10 @@ voice folder's `description.txt` to make one searchable.
 
 ## Settings
 
-**Settings**, the gear button after the tabs, replaces the page until you
-choose **Settings** again, **Close settings**, or a tab. Each group of
-settings ends with one note on when it takes effect: "Applies to the next
-audiobook" or "Applies now". The groups:
+**Settings**, the gear button at the right end of the tab row, replaces the
+page until you choose **Settings** again, **Close settings**, or a tab. Each
+group of settings ends with one note on when it takes effect: "Applies to the
+next audiobook" or "Applies now". The groups:
 
 - **Reading**: **Highlight style**, A (the word being read underlined) or B
   (underlined, with a faint fill behind it), applies now and is remembered by

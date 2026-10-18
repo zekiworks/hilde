@@ -798,15 +798,17 @@ sit in a row's **⋯** menu, always behind a confirmation dialog.
 Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
 folder tabs on a baseline (Arrow, Home, and End keys move between them).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
-an `--accent-light` top edge and opens into the page below. Right after the
-tablist, outside it and set apart by a 12 px margin, sits the **Settings**
-button (`#settings-button`, a raised secondary button: an inline SVG gear,
-`fill: currentColor` in `--accent-light`, and the label `.settings-label`).
-`.tabs` is an inline-size container: below 380 px (measured: the three tabs and
-the open button with its label need 378 px; a 390 px phone's row has 358 px)
-the label is visually hidden, leaving the gear, named "Settings", at least
-44 × 44 px; below 300 px the tabs' side padding and the gap shrink so the row
-never scrolls. Two more views have no tab:
+an `--accent-light` top edge and opens into the page below. After the tablist,
+outside it, at the row's right end, sits the **Settings** button
+(`#settings-button`, `margin-left: auto`: its right edge as far in from the
+row's right edge as Create's left edge from the left, the row's padding
+mirrored; a raised secondary button: an inline SVG gear, `fill: currentColor`
+in `--accent-light`, and the label `.settings-label`). `.tabs` is an
+inline-size container: below 380 px (measured: the three tabs, the row's gap,
+and the open button with its label need 368 px; a 390 px phone's row has
+358 px) the label is visually hidden, leaving the gear, named "Settings", at
+least 44 × 44 px; below 300 px the tabs' side padding shrinks so the gear keeps
+clear of Listen and the row never scrolls. Two more views have no tab:
 
 - The **progress view** (`#page-progress`, tab `progress` in state) opens from
   the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from

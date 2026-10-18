@@ -16513,23 +16513,25 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
                                            font-weight:650; background:var(--bg);
                                            border-bottom-color:var(--bg);
                                           box-shadow:inset 0 3px 0 var(--accent-light); }
-/* Settings: a raised button after the tabs, set apart from them (its own page, not a tab), the gear in the
-   accent. Open, it shows a selected tab's LED dot. */
-.settings-button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; margin:0 0 4px 12px; }
+/* Settings: a raised button at the right end of the tab row, its right edge as far in as Create's left edge (the
+   row's padding, mirrored), set apart from the tabs (its own page, not a tab), the gear in the accent. Open, it
+   shows a selected tab's LED dot. */
+.settings-button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; margin:0 0 4px auto; }
 .settings-button .gear { flex:0 0 auto; color:var(--accent-light); fill:currentColor; }
 .settings-button[aria-pressed=true]::before { content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%;
                                               background:var(--accent-light); }
-/* A row too narrow for the tabs and "Settings" (measured: the three tabs plus the open button with its label
-   need 378px; a 390px phone's row has 358px): the gear alone, still named Settings, at least 44 x 44. */
+/* A row too narrow for the tabs and "Settings" with room between them (measured: the three tabs, the row's gap and
+   the open button with its label need 368px; a 390px phone's row has 358px): the gear alone, still named Settings,
+   at least 44 x 44. */
 @container (max-width:379.98px) {
   .settings-label { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
                     clip:rect(0 0 0 0); white-space:nowrap; border:0; }
   .settings-button { min-width:44px; padding-left:12px; padding-right:12px; }
 }
-/* Narrower still (a 320px phone): the tabs a little tighter and the gap smaller, so the row never scrolls. */
+/* Narrower still (a 320px phone): the tabs a little tighter, so the gear keeps clear of Listen and the row never
+   scrolls. */
 @container (max-width:299.98px) {
   .tab-list [role=tab] { padding-left:11px; padding-right:11px; }
-  .settings-button { margin-left:6px; }
 }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
