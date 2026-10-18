@@ -762,7 +762,7 @@ The page resets ETA at every step: one series of progress reports with the same 
 The browser app is **Hilde**. The header holds the Hilde logo
 (`assets/hilde-dark.png`), the name, and the tagline "Listen to your
 documents. Follow the text. Ask to understand." (shown on phones too, smaller);
-at its right are the jobs indicator and **Settings**. A small **by Zeki
+at its right is the jobs indicator. A small **by Zeki
 Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
@@ -785,7 +785,7 @@ below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
 shadow and brightens, fading back in 100 ms; with `prefers-reduced-motion`
 only the 1 px move remains. Links, tabs, switch segments (`role=radio`), and
 menu items stay flat. A steady 6 px `--accent-light` LED dot marks what is on:
-the selected folder tab (`::before`), every `label.check` whose box is ticked
+the selected folder tab and the open Settings button (`::before`), every `label.check` whose box is ticked
 (`::after`: Follow along, Create step 3's options, Settings' boxes), and the
 chosen highlight style. The player's time is monospace with tabular figures.
 
@@ -798,7 +798,15 @@ sit in a row's **⋯** menu, always behind a confirmation dialog.
 Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
 folder tabs on a baseline (Arrow, Home, and End keys move between them).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
-an `--accent-light` top edge and opens into the page below. Two more views have no tab:
+an `--accent-light` top edge and opens into the page below. Right after the
+tablist, outside it and set apart by a 12 px margin, sits the **Settings**
+button (`#settings-button`, a raised secondary button: an inline SVG gear,
+`fill: currentColor` in `--accent-light`, and the label `.settings-label`).
+`.tabs` is an inline-size container: below 380 px (measured: the three tabs and
+the open button with its label need 378 px; a 390 px phone's row has 358 px)
+the label is visually hidden, leaving the gear, named "Settings", at least
+44 × 44 px; below 300 px the tabs' side padding and the gap shrink so the row
+never scrolls. Two more views have no tab:
 
 - The **progress view** (`#page-progress`, tab `progress` in state) opens from
   the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from
@@ -810,9 +818,11 @@ an `--accent-light` top edge and opens into the page below. Two more views have 
   `progressAvailable()` is the same condition, and `render()` returns an open
   progress view to Create without it.
 - **Settings** (`#page-settings`, `settingsOpen`, page-local) opens from the
-  header button (`toggleSettings()`) in place of the current page, never above
-  it, and closes with **Close settings** or any tab (`setTab()`,
-  `chooseListen()` call `setSettings(false)`). See [Settings and
+  Settings button (`toggleSettings()`) in place of the current page, never
+  above it, and closes with the button again, **Close settings**, or any tab
+  (`setTab()`, `chooseListen()` call `setSettings(false)`). While it is open
+  the button has `aria-pressed="true"` and a tab's LED dot, and no tab is
+  `aria-selected` (the tabs' pages are hidden). See [Settings and
   devices](#settings-and-devices).
 
 Each page:

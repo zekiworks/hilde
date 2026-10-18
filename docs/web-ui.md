@@ -10,14 +10,17 @@ Ask to understand." (smaller on a phone). Below it are three tabs: **Create**,
 **Voices**, and **Listen**. **Listen** opens the **Library**, the list of your
 audiobooks, or the book you had open.
 
-At the right of the header:
+Right after **Listen**, a little apart from the tabs, is the **Settings**
+button, a blue gear and the word Settings. It opens the settings in place of
+the page and, while they are open, shows the same blue dot as a selected tab
+(no tab is selected then); **Settings** again, **Close settings**, or any tab
+closes them. On a phone whose row is too narrow for the word (a 390 px phone
+and narrower), the button shows the gear alone. See [Settings](#settings).
 
-- **Settings** opens the settings in place of the page; **Close settings**, or
-  any tab, closes them again. See [Settings](#settings).
-- While anything is being made, or after an audiobook stopped or failed, a
-  small indicator counts every job on this server, from any browser, for
-  example `1 running · 2 queued` (or `1 failed`, `1 stopped`). It opens the
-  [progress view](#following-an-audiobook-being-made).
+At the right of the header, while anything is being made, or after an
+audiobook stopped or failed, a small indicator counts every job on this
+server, from any browser, for example `1 running · 2 queued` (or `1 failed`,
+`1 stopped`). It opens the [progress view](#following-an-audiobook-being-made).
 
 ## Create an audiobook
 
@@ -628,9 +631,10 @@ voice folder's `description.txt` to make one searchable.
 
 ## Settings
 
-**Settings**, in the header, replaces the page until you choose **Close
-settings** or a tab. Each group of settings ends with one note on when it
-takes effect: "Applies to the next audiobook" or "Applies now". The groups:
+**Settings**, the gear button after the tabs, replaces the page until you
+choose **Settings** again, **Close settings**, or a tab. Each group of
+settings ends with one note on when it takes effect: "Applies to the next
+audiobook" or "Applies now". The groups:
 
 - **Reading**: **Highlight style**, A (the word being read underlined) or B
   (underlined, with a faint fill behind it), applies now and is remembered by

@@ -16442,7 +16442,6 @@ body.server-down [inert] { opacity:.5; }
 .header-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end;
                   gap:8px; margin-left:auto; }
 .header-actions button { min-height:0; padding:6px 12px; font-size:13px; }
-.settings-button[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent-light); }
 /* The jobs indicator: a small lamp, lit (no glow) while something runs. */
 .jobs-indicator { display:inline-flex; align-items:center; gap:8px;
                   font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -16498,7 +16497,7 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
-        border-bottom:1px solid var(--line); }
+        border-bottom:1px solid var(--line); container-type:inline-size; }
 .tab-list { display:flex; align-items:flex-end; gap:4px; }
 .tab-list [role=tab] { margin-bottom:-1px; min-height:0;
                        padding:10px clamp(14px,3vw,22px) 7px;
@@ -16514,6 +16513,24 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
                                            font-weight:650; background:var(--bg);
                                            border-bottom-color:var(--bg);
                                           box-shadow:inset 0 3px 0 var(--accent-light); }
+/* Settings: a raised button after the tabs, set apart from them (its own page, not a tab), the gear in the
+   accent. Open, it shows a selected tab's LED dot. */
+.settings-button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; margin:0 0 4px 12px; }
+.settings-button .gear { flex:0 0 auto; color:var(--accent-light); fill:currentColor; }
+.settings-button[aria-pressed=true]::before { content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%;
+                                              background:var(--accent-light); }
+/* A row too narrow for the tabs and "Settings" (measured: the three tabs plus the open button with its label
+   need 378px; a 390px phone's row has 358px): the gear alone, still named Settings, at least 44 x 44. */
+@container (max-width:379.98px) {
+  .settings-label { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
+                    clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+  .settings-button { min-width:44px; padding-left:12px; padding-right:12px; }
+}
+/* Narrower still (a 320px phone): the tabs a little tighter and the gap smaller, so the row never scrolls. */
+@container (max-width:299.98px) {
+  .tab-list [role=tab] { padding-left:11px; padding-right:11px; }
+  .settings-button { margin-left:6px; }
+}
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
 .page { padding-top:24px; }
@@ -17275,8 +17292,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <div class="header-actions">
       <button id="jobs-indicator" class="jobs-indicator hidden" type="button" aria-controls="page-progress"
         onclick="openProgress()"></button>
-      <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
-        aria-pressed="false" onclick="toggleSettings()">Settings</button>
     </div>
   </header>
 
@@ -17289,6 +17304,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="tab-player" type="button" role="tab" aria-controls="page-player"
         onclick="chooseListen()">Listen</button>
     </div>
+    <!-- Settings: a page of its own, not a tab; after the tabs, apart, the gear in the accent. -->
+    <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
+      aria-pressed="false" onclick="toggleSettings()"><svg class="gear" viewBox="0 0 24 24" width="18" height="18"
+      aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M9.6 4.4 10.2 1.7 13.8 1.7 14.4 4.4 15.7 4.9
+      18.1 3.4 20.6 5.9 19.1 8.3 19.6 9.6 22.3 10.2 22.3 13.8 19.6 14.4 19.1 15.7 20.6 18.1 18.1 20.6 15.7 19.1 14.4
+      19.6 13.8 22.3 10.2 22.3 9.6 19.6 8.3 19.1 5.9 20.6 3.4 18.1 4.9 15.7 4.4 14.4 1.7 13.8 1.7 10.2 4.4 9.6 4.9 8.3
+      3.4 5.9 5.9 3.4 8.3 4.9ZM12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"/></svg><span
+      class="settings-label">Settings</span></button>
   </nav>
   <p id="status" class="notice" role="status" aria-live="polite"></p>
   <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
