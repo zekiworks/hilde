@@ -461,7 +461,9 @@ conversation grows long, its oldest messages and reads leave what Hilde
 remembers, and the chat says so.
 
 Ask Hilde attaches the part being read (or the words you selected) as a card
-above the message box: headed **Selected text** (in teal, Ask Hilde's colour) for a selection, else the
+above the message box, in teal, Ask Hilde's colour (as are the cards of past
+questions, and the card while it is prepared or when it couldn't be attached):
+headed **Selected text** for a selection, else the
 section heading as in the book, below it your words in quotes or the part's
 first words, **Change** to attach what
 you have selected, or else what is playing now, and **×** to remove it. It

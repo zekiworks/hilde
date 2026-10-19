@@ -810,17 +810,19 @@ dots, the reading highlight); `--accent-soft` mixes 16% of it; teal `--ask`
 (#2bb3a3; its light-mode value #127a6e is recorded beside it for Phase 3) only
 Ask Hilde: the player's **Ask Hilde** field (a 15% tint over `--field`, a 1 px
 border, the icon), the chat panel's header while the chat is shown (a 3 px top
-edge and the **Ask Hilde** tab's text and underline), and the **Selected text**
-card (`.chip-selection`, which sets `--accent-light` to `--ask`, so its left
-rule, attached outline, switch underline, and details mark are teal, and its
-title); green `--local`
+edge and the **Ask Hilde** tab's text and underline), and every Ask Hilde card
+(`.chip`: a selection, a passage, a figure, Preparing, Couldn't attach, a
+selection too long to attach, and the collapsed cards of past questions; the
+card sets `--accent-light` to `--ask`, so its left rule, attached outline,
+scope-switch underline, details mark, and focus outlines are teal, and so is
+its title; `#chat-about`'s attach glow is 16% `--ask`); green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items, red `--bad` (#e5534b) errors and destructive actions, always
 with an icon and text. Contrast of `--ask`, dark: the field's off-white label
 12.4:1 and muted placeholder 5.7:1 on its tint (10.8:1 and 4.9:1 on the hover
 tint), its border 6.0:1 on the bar and icon 5.5:1 on the tint, the tab text
-5.2:1 on `--raised`, the card's title 7.0:1 on `--field`; light (#127a6e on
+5.2:1 on `--raised`, a card's title 7.0:1 on `--field` (6.0:1 on `--surface`, a past question's card); light (#127a6e on
 white): border, icon, and title 5.2:1, icon 4.2:1 on its 15% tint, dark text
 14:1 on that tint. Selected text (`::selection`) is a neutral gray fill
 (#5c5c5c). No orange is left; no glow stays lit (the LED dots

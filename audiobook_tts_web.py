@@ -17742,13 +17742,13 @@ button.panel-play:hover:not(:disabled) { background:var(--accent); filter:bright
 .chat-hint { margin:0; padding:8px 14px 0; border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
 .chat-about { padding:8px 14px 0; border-top:1px solid var(--line); }
 .chat-hint:not(.hidden) + .chat-about, .chat-about + .chat-compose { border-top:0; }
-/* A part just attached: a short glow (none with reduced motion) and an outline. */
+/* A part just attached: a short teal glow (none with reduced motion) and an outline. */
 @keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
+.chat-about { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); }
 .chat-about.attached { animation:chip-pulse 1.6s ease-out; }
 .chat-about.attached .chip { outline:2px solid var(--accent-light); outline-offset:0; }
-.chat-about.attached:has(.chip-selection) { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); }
 @media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
-.chip-failed-title { font-weight:600; }
+.chip-failed-title { font-weight:600; color:var(--ask); }
 .chip-failed .chip-head { flex-wrap:wrap; }
 /* The box grows with its text (or a long hint) where the browser can size a field to its content. */
 .chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; field-sizing:content; }
@@ -17756,17 +17756,16 @@ button.panel-play:hover:not(:disabled) { background:var(--accent); filter:bright
 /* The card of what a question is about: the section heading, a preview of
    the selected text, and the collapsed Context details. Open, it scrolls
    within a share of the visible viewport, so an on-screen keyboard leaves
-   the message box and Send in sight. */
+   the message box and Send in sight. Every card is Ask Hilde's (a selection,
+   a passage, a figure; Preparing, Couldn't attach, too long; past questions'
+   cards): its accents (left rule, the attached outline, the switch underline,
+   the details mark, focus outlines) and its title are teal. */
 .chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
         border:1px solid var(--line); border-left:3px solid var(--accent-light); border-radius:8px;
-        background:var(--field); font-size:13px; }
-/* The Selected text card is Ask Hilde's: its accents (left rule, the attached outline, the switch and details
-   marks) and its title in teal. */
-.chip-selection { --accent-light:var(--ask); }
+        background:var(--field); font-size:13px; --accent-light:var(--ask); }
 .chip-head { display:flex; align-items:center; gap:4px; }
 .chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
-                white-space:nowrap; }
-.chip-selection .chip-section { color:var(--ask); }
+                white-space:nowrap; color:var(--ask); }
 .chip-head button { min-height:24px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
 .chip-preview { color:var(--dim); overflow-wrap:anywhere; }
@@ -21463,7 +21462,7 @@ function focusControls(focus) {
 // the whole selection under its own details.
 function limitChip(current) {
   const chip = document.createElement("div");
-  chip.className = "chip chip-limit chip-selection";
+  chip.className = "chip chip-limit";
   const problem = document.createElement("p");
   problem.className = "problem";
   problem.textContent = current.error;
@@ -21616,10 +21615,9 @@ function chipDetails(manifest, withSection) {
 // card, without controls.
 function chipElement(manifest, editable = false) {
   const chip = document.createElement("div");
+  chip.className = "chip";
   const about = manifest.about || {};
   const selected = about.kind === "selection";
-  // The Selected text card wears Ask Hilde's teal.
-  chip.className = selected ? "chip chip-selection" : "chip";
   chip.append(
     chipHead(selected ? "Selected text" : manifest.section || "Before the first heading", editable),
     chipPreview(selected ? chatQuote(about.quote) : cutText(manifest.preview, 80)),
