@@ -751,9 +751,13 @@ submitting address: `queue_audiobook()` sets `values["submitted"]` from
 `client_address` and `/api/run`'s `choice`, outside the job's identity); a
 `paused` line not yet followed by `retried`, `continued`, or `done` makes the
 start a Retry (same model) or a continue (another model; its role's `how` is
-"continued", and the pause message becomes `PaperRun.continued_after`); with
-no pause, a text model that differs from the stage's `extraction.json` gives
-`models_changed`. `PaperRun.note` (the run's `note`) adds `batch` (with
+"continued", and the pause message becomes `PaperRun.continued_after`).
+`prepare_document()` adds, through `AudiobookRun.note_paper()`,
+`models_changed` when `same_but_models()` keeps an earlier attempt's batches
+(at least one checkpoint exists) and the manifest's text model differs (with `browser` and a server-log line;
+not after a Retry or continue, which said it already), or `restarted` when it
+discards them (`reason`, and `fields`: the identity keys that differ; no log
+line). `PaperRun.note` (the run's `note`) adds `batch` (with
 `attempts`, model requests counted per worker thread in `batch_state`, and
 `seconds`) and `request_failed` (each failed request asked again); `pump()`
 adds `paused` (with `total`, `PaperRun.total_parts`, and `error`,
@@ -765,7 +769,7 @@ one line per pause, Retry, continue, and change of model:
 `<UTC> job <first 8 of the id>… paused: <model> unreachable at part N
 (<error>)`, `… retried with <model> for parts N–T (browser <address>)`,
 `… continued with <model> for parts N–T (browser <address>)`, `… model changed
-from A to B (browser <address>)`.
+from A to B (browser <address>)` (only when the earlier parts are kept).
 
 ## Runs, events, and ETA
 

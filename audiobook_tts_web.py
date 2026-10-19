@@ -14692,7 +14692,19 @@ class PaperRun(Run):
                     "interpret_figures"] or manifest.get("verification") != identity["verification"]:
                 self.publish("log", "The model changed: the parts already written stay as their model wrote "
                                     "them; the remaining parts go to the model chosen now.\n")
+            # The parts kept were begun with another text model (said once, by
+            # the job: AudiobookRun.note_paper()); an earlier attempt that
+            # wrote no part leaves nothing to keep, and nothing is said.
+            if manifest.get("model") != identity["model"] and any((scratch / "paragraph-checkpoints").glob("*.json")):
+                self.note("models_changed", **{"from": manifest.get("model"), "to": identity["model"]})
         else:
+            # An earlier attempt's parts that this one can't keep (its settings
+            # differ): the job's history says which settings, and nothing else
+            # is said of a change of model.
+            if isinstance(manifest, dict) and any((scratch / "paragraph-checkpoints").glob("*.json")):
+                self.note("restarted", reason="earlier attempt's parts discarded: settings changed",
+                          fields=sorted(key for key in (set(manifest) | set(identity)) - {"complete"}
+                                        if manifest.get(key) != identity.get(key)))
             for directory_name in (
                 "images",
                 "pdf-pages",
@@ -14834,12 +14846,29 @@ class AudiobookRun(Run):
         # The job's model history, in its stage (HISTORY_FILE): it outlives
         # a restart and goes on with a resumed job, and goes to the book.
         self.history_path = self.stage / HISTORY_FILE
+        # This start's browser, and whether it is a Retry or a continue after a pause (note_start()).
+        self.browser = ""
+        self.resuming = False
 
     def note(self, event, **fields):
         """Add one event to the job's model history, with the time in UTC."""
         entry = {"at": utc_timestamp(), "job": self.job_id, "event": event, **fields}
         append_history_lines(self.history_path, [entry])
         return entry
+
+    def note_paper(self, event, **fields):
+        """PaperRun's events in the job's history. `models_changed` (the
+        parts kept were begun with another text model) gets the browser and a
+        line on the server's log, unless this start already said it as a
+        Retry or a continue; `restarted` (the earlier parts discarded) gets
+        no log line."""
+        if event == "models_changed":
+            if self.resuming:
+                return None
+            fields["browser"] = self.browser
+            history_log(self.job_id, f"model changed from {selector_name(fields['from'])} to "
+                                     f"{selector_name(fields['to'])} (browser {self.browser or 'unknown'})")
+        return self.note(event, **fields)
 
     def note_quietly(self, event, **fields):
         """note(), for a job that is ending anyway: a history that can't be
@@ -14854,8 +14883,8 @@ class AudiobookRun(Run):
         "checking"}, None for an option that is off), how each was chosen,
         and the browser that sent it. A start after a pause is a Retry (the
         same model) or a continue with another model, said on the server's
-        log too; so is a start whose text model differs from the one the kept
-        parts were begun with. Returns why the parts written now continue
+        log too (a change of model without a pause is said by note_paper(),
+        only when the earlier parts stay). Returns why the parts written now continue
         ("<model> became unreachable at part N"), or ""."""
         submitted = self.values.get("submitted") or {}
         browser = submitted.get("browser") or ""
@@ -14878,15 +14907,14 @@ class AudiobookRun(Run):
                   voice=self.values.get("narrator"), text_model=models.get("text"),
                   figure_model=models.get("figure"), interpret_figures=bool(self.values.get("interpret_figures")),
                   checking_model=models.get("checking"), how=how, browser=browser)
+        self.browser = browser
         if not pause:
-            manifest = read_json_file(self.stage / "extraction" / "extraction.json")
-            if isinstance(manifest, dict) and models.get("text") and manifest.get("model") not in (None, models["text"]):
-                self.note("models_changed", **{"from": manifest["model"], "to": models["text"]}, browser=browser)
-                history_log(self.job_id, f"model changed from {selector_name(manifest['model'])} to "
-                                         f"{selector_name(models['text'])} (browser {browser or 'unknown'})")
+            # A change of model without a pause is said by the run once it
+            # knows whether the earlier parts stay (note_paper()).
             return ""
         model = models.get(role) or pause.get("model")
         parts = parts_span(pause.get("part") or 1, pause.get("total"))
+        self.resuming = True
         if model == pause.get("model"):
             self.note("retried", model=model, picker=pause.get("picker"), parts=parts, browser=browser)
             history_log(self.job_id, f"retried with {selector_name(model)} for parts {parts} "
@@ -15223,7 +15251,7 @@ class AudiobookRun(Run):
             )
             self.paper_run.publish = self.publish
             self.paper_run.stop_requested = self.stop_requested
-            self.paper_run.note = self.note
+            self.paper_run.note = self.note_paper
             self.paper_run.continued_after = continued_after
             narration_input = self.paper_run.prepare_document(extraction_dir)
             self.seconds.update(self.paper_run.seconds)

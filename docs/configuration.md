@@ -274,12 +274,18 @@ such as `2026-10-19T13:31:02Z`), `job`, and `event`:
 - `paused`: the model became unreachable (`model`, `picker`, `part`, `total`,
   `message` as the page says it, `error`, and the parts `kept`);
 - `retried` (the same model again: `model`, `parts` left, `browser`),
-  `continued` (`from` and `to` model, `picker`, `parts` left, `browser`), and
-  `models_changed` (a resumed job's text model differs from the one its kept
-  parts were begun with);
+  `continued` (`from` and `to` model, `picker`, `parts` left, `browser`),
+  `models_changed` (a resumed job keeps parts an earlier attempt wrote, and
+  its text model differs from the one they were begun with: `from`, `to`,
+  `browser`; an earlier attempt that wrote no part keeps nothing and says
+  nothing), and `restarted` (an earlier attempt's parts can't be kept
+  because its settings differ, so they are written again: `reason` "earlier
+  attempt's parts discarded: settings changed" and the `fields` that differ,
+  such as `prompt_version`, `in_flight`, or `local`; no log line);
 - `stopped`, `failed` (`error`), and `done` (`book`, `voice`, `part_models`).
 
-The server's log has one line per pause, Retry, continue, and change of model,
+The server's log has one line per pause, Retry, continue, and change of model
+(only a change whose earlier parts are kept),
 such as `2026-10-19T13:31:02Z job 1ee9a0c4… paused: DeepSeek V4.1 Flash
 unreachable at part 25 (…)` and `… continued with GPT-6 Astra for parts 25–140
 (browser 192.0.2.18)`. The book's `part_models` ranges also say `why`, `after`

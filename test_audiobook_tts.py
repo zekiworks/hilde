@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import ssl
 import stat
@@ -2992,6 +2993,98 @@ class UnifiedWorkflowTests(unittest.TestCase):
         # A later job of the same book appends.
         web.append_book_history(book, [{"at": "2026-10-19T14:00:00Z", "job": "x", "event": "start"}])
         self.assertEqual(len(history.read_text(encoding="utf-8").splitlines()), len(lines) + 1)
+
+    def test_a_change_of_model_is_said_only_when_the_earlier_parts_are_kept(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        storage = web.SharedStorage(root / "library")
+        storage.ensure()
+        document = storage.documents / "paper.md"
+        document.write_text("Paragraph one says attention maps a query to an output.\n\n"
+                            "Paragraph two says the output is a weighted sum of the values.", encoding="utf-8")
+
+        class SpeechHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                # Narration always fails: each run ends after its text, and the stage stays.
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_error(500, "speech server is down")
+
+            def log_message(self, format, *args):
+                pass
+
+        def answer(run, request_path, system_prompt, attachments, model=None):
+            source = re.findall(r"<SOURCE_PARAGRAPH[^>]*>\n(.*?)\n</SOURCE_PARAGRAPH>",
+                                request_path.read_text(encoding="utf-8"), flags=re.DOTALL)
+            return f"<NARRATION>{chr(10).join(source)}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        printed = io.StringIO()
+        with ThreadingHTTPServer(("127.0.0.1", 0), SpeechHandler) as server:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            models = {"design": {"source": "missing"}, "clone": {
+                "source": "server", "server": f"http://127.0.0.1:{server.server_port}/v1", "server_model": "tts-1"}}
+            endpoints = [{"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio"}]
+
+            def job(model):
+                with mock.patch.object(web, "LOCAL_ENDPOINTS", endpoints):
+                    values = web.values_of(normalize({"audiobook": {
+                        "document": document.name, "server_voice": "alloy", "adapt": True, "model": model,
+                    }}), models, storage)
+                values["submitted"] = {"browser": "192.0.2.9", "choice": {"book": "chosen"}}
+                input_version, voice_version = web.audiobook_versions(values)
+                run = web.AudiobookRun(values, storage, input_version, voice_version,
+                                       web.audiobook_job_id(input_version, voice_version))
+                run.pump()
+                return run
+
+            try:
+                with mock.patch.object(web, "HILDE_HOME", root / ".hilde"), \
+                        mock.patch.object(web, "local_model_names", return_value=("model-a", "model-b")), \
+                        mock.patch.object(web.PaperRun, "request_model", answer), \
+                        mock.patch("sys.stdout", printed):
+                    first = job("lm-studio/model-a")
+                    # The settings change between attempts (here the instructions): the parts written go.
+                    manifest = first.stage / "extraction" / "extraction.json"
+                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    manifest.write_text(json.dumps({**data, "prompt_version": "earlier instructions"}), encoding="utf-8")
+                    job("lm-studio/model-b")
+                    # The same settings, another model: the parts written stay.
+                    kept = job("lm-studio/model-a")
+                    # An earlier attempt with another model that wrote no part: nothing kept, nothing said.
+                    shutil.rmtree(kept.stage / "extraction" / "paragraph-checkpoints")
+                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    manifest.write_text(json.dumps({**data, "model": "lm-studio/model-b", "complete": False}),
+                                        encoding="utf-8")
+                    job("lm-studio/model-a")
+            finally:
+                server.shutdown()
+
+        lines = web.read_history_lines(kept.history_path)
+        self.assertEqual([line["event"] for line in lines if line["event"] != "batch"], [
+            "start", "failed",
+            "start", "restarted", "failed",
+            "start", "models_changed", "failed",
+            "start", "failed",
+        ])
+        restarted = next(line for line in lines if line["event"] == "restarted")
+        self.assertEqual((restarted["reason"], restarted["fields"]),
+                         ("earlier attempt's parts discarded: settings changed",
+                          # "local" names each local model's server: another model, another entry.
+                          ["local", "model", "prompt_version"]))
+        changed = next(line for line in lines if line["event"] == "models_changed")
+        self.assertEqual((changed["from"], changed["to"], changed["browser"]),
+                         ("lm-studio/model-b", "lm-studio/model-a", "192.0.2.9"))
+        # The discarded attempt wrote its parts again; the kept one wrote none.
+        runs = [[]]
+        for line in lines[1:]:
+            if line["event"] == "start":
+                runs.append([])
+            runs[-1].append(line["event"])
+        self.assertEqual([run.count("batch") for run in runs], [2, 2, 0, 2])
+        log = printed.getvalue()
+        self.assertEqual(len(re.findall(r"model changed", log)), 1, log)
+        self.assertRegex(log, rf"(?m)^\S+Z job {kept.job_id[:8]}… model changed from Model B to Model A "
+                              r"\(browser 192\.0\.2\.9\)$")
 
     def test_part_models_say_why_and_read_as_one_line(self):
         temporary = tempfile.TemporaryDirectory()
