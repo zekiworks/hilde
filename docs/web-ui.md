@@ -430,7 +430,8 @@ about this figure**.
 **Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
 in its place, with **← Back to the book**) and pauses the book, as **Ask
 about this** on selected words and **Ask about this figure** do;
-it waits at that sentence until you press play or **Resume book**; closing the
+it waits at that sentence until you press play (in the player bar, or **Play
+book** at the bottom of the chat); closing the
 chat never starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
@@ -504,14 +505,22 @@ reading** stops at the word; **🔈 Resume reading** goes on from there, and
 **Start over** reads from the beginning. Listening to another answer keeps
 this one's place too. **Read answers aloud**, in the chat's header, reads each
 answer as soon as it is finished. One sound plays at a time: reading an
-answer pauses the book, and when it ends the book stays paused and **▶ Resume
-book** appears under the answer; starting the book, or a voice preview, stops
-the others. The first answer after a while takes a few seconds longer while the
-narration model loads; it stays loaded for five minutes after the last answer
-read, then frees its GPU. Code, web addresses, and Markdown are not read; a
-citation such as ¶12 is read as "paragraph 12". Reading aloud needs the
-server's own narration model (`--voice-clone-model`); without it, neither
-shows.
+answer pauses the book, and when it ends the book stays paused; starting the
+book, or a voice preview, stops the others. The first answer after a while
+takes a few seconds longer while the narration model loads; it stays loaded for
+five minutes after the last answer read, then frees its GPU. Code, web
+addresses, and Markdown are not read; a citation such as ¶12 is read as
+"paragraph 12". Reading aloud needs the server's own narration model
+(`--voice-clone-model`); without it, neither shows.
+
+At the bottom of the chat, under the conversation and above the question box,
+one Play/Pause button stays in place while the conversation scrolls (on a phone
+too, at the bottom of the full-screen chat). It plays or pauses whatever plays
+now and says which: **Pause book** while the book plays, **Pause answer** while
+an answer is read aloud, **Play answer** for an answer paused partway, and
+**Play book** otherwise, so once an answer ends it starts the book again where
+it stopped. While you type on a phone it steps aside, so the box and **Send**
+stay in view.
 
 Notes Hilde writes are listed under the book's title in **Notes Hilde
 wrote**. Each shows its file name, the book, the section you asked about when

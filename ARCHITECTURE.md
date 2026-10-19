@@ -2012,10 +2012,26 @@ server for that clip, which it kept, and seeks to the time. A tap starts it:
 **Read aloud**, or **Send** with Read answers aloud on, which plays a silent
 clip so a phone allows the answer that finishes later to play (the silent
 clip pauses nothing). An answer starting to play pauses the book
-(`pauseOtherSounds()`); when it ends or is paused the book does not restart:
-**▶ Resume book** shows under that answer until the book plays again.
+(`pauseOtherSounds()`); when it ends or is paused the book does not restart.
 Closing the panel and another book stop it. With Read answers aloud on, the
 last answer of a finished turn is read.
+
+The chat pane's Play/Pause (`#panel-play`, in `.panel-play-row` between
+`#chat-log` and the hint, chip, and question box) is outside the
+conversation's scroll, so it stays at the bottom of the panel and of the phone
+sheet while the conversation scrolls and covers neither the conversation nor
+the box. `panelSource()` says what it is for: the answer while one is read
+(`chatSpeaking`, also while starting) or paused partway (`panelAnswer`, the
+answer read last, with its `chatPlace`), else the book; `panelAnswer` is
+cleared when the book plays, and an answer that ends (`stopSpeaking(true)`)
+clears its place, so the control is the book's again. `renderPanelPlay()`
+(from `renderPlayer()`, `pauseOtherSounds()`, `setVoiceButton()`, and
+`stopSpeaking()`) draws a blue round play or pause icon and the label, also its
+`aria-label`: "Pause book", "Play book", "Pause answer", or "Play answer";
+`togglePanelPlay()` pauses or plays that source (`stopSpeaking()` keeps the
+answer's place; `speakAnswer()` goes on from it). It is at least 44 × 44 px;
+with a phone's keyboard open (`.keyboard-open`) it is hidden so the box and
+Send stay in view. It replaces the former per-answer **▶ Resume book**.
 
 ## HTTP routes
 

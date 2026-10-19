@@ -17713,11 +17713,19 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 button.chat-listen { min-height:36px; padding:0 14px; border-style:dashed; border-radius:999px;
                      font-size:14px; }
 button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent-light); }
-.chat-restart, .chat-resume-book { font-size:14px; }
+.chat-restart { font-size:14px; }
 /* The block being read, in the book's spoken-word colors. */
 .chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent);
                                  box-shadow:0 0 0 3px var(--accent); border-radius:3px; }
 .chat-notice { font-style:italic; }
+/* The panel's Play/Pause: under the conversation, above the box, never scrolling with either; a round blue
+   play/pause like the player's and what it is for ("Pause answer"), at least 44 x 44. */
+.panel-play-row { display:flex; flex:none; padding:8px 14px; border-top:1px solid var(--line); }
+button.panel-play { display:inline-flex; align-items:center; gap:10px; min-width:44px; min-height:44px;
+                    padding:0 16px 0 6px; border-radius:999px; font-size:14px; font-weight:600; }
+.panel-play-icon { display:grid; place-items:center; width:32px; height:32px; border-radius:50%;
+                   background:var(--accent); color:var(--accent-ink); }
+.panel-play-icon svg { width:14px; height:14px; fill:currentColor; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
 .chat-hint { margin:0; padding:8px 14px 0; border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
@@ -17987,9 +17995,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .player-seek, .book-meta select { min-height:44px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
-  /* Typing on a phone: the book line, the model picker, and the no-model notice step aside, so the box and
-     Send stay in view; a send without a usable model says why in the hint above the box. */
-  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem { display:none; }
+  /* Typing on a phone: the book line, the model picker, the no-model notice, and the panel's Play/Pause step
+     aside, so the box and Send stay in view; a send without a usable model says why in the hint above the box. */
+  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem,
+  .keyboard-open .panel-play-row { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
@@ -18628,6 +18637,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             </div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <!-- Play/Pause for what plays now (the book or an answer read aloud), outside the conversation's scroll,
+               so it stays at the bottom while the conversation scrolls; renderPanelPlay() draws it. -->
+          <div class="panel-play-row">
+            <button id="panel-play" class="panel-play" type="button" onclick="togglePanelPlay()"></button>
+          </div>
           <p id="chat-hint" class="chat-hint hidden" role="status" aria-live="polite"></p>
           <div id="chat-about" class="chat-about hidden" aria-live="polite"></div>
           <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
@@ -19491,7 +19505,7 @@ function clearReader() {
   readerAudio = null; readerCues = []; readerWordCues = [];
   readerSampleRate = 0; readerBlocks = []; readerWordElements = [];
   activeReaderBlock = -1; activeReaderWord = -1;
-  readerPayload = null; readerRestored = false; bookPausedForSpeech = false;
+  readerPayload = null; readerRestored = false; panelAnswer = null;
   $("reader-models").classList.add("hidden");
   if (readerDownload) {
     readerDownload.controller.abort();
@@ -20287,7 +20301,7 @@ function renderPlayer() {
   for (const item of $("speed-menu").children)
     item.setAttribute("aria-checked", String(Math.abs(Number(item.dataset.speed) - speed) < 1e-9));
   renderPlayerTime();
-  renderResumeBook();
+  renderPanelPlay();
 }
 function togglePlayback() {
   if (!readerAudio) return;
@@ -20383,7 +20397,6 @@ function bindReaderAudio(audio) {
   audio.addEventListener("seeked", saveBookPlace);
   audio.addEventListener("play", () => {
     pauseOtherSounds(audio);
-    bookPausedForSpeech = false;
     renderPlayer();
     if (!readerFrame) readerFrame = requestAnimationFrame(followReaderAudio);
     downloadWholeBook(audio);
@@ -20886,11 +20899,7 @@ function chatEntryElement(entry) {
     restart.type = "button";
     restart.className = "link chat-restart hidden";
     restart.textContent = "Start over";
-    const resume = document.createElement("button");
-    resume.type = "button";
-    resume.className = "chat-resume-book hidden";
-    resume.textContent = "▶ Resume book";
-    controls.append(listen, restart, resume);
+    controls.append(listen, restart);
     node.append(controls);
     setVoiceButton(node, "listen");
   }
@@ -21003,12 +21012,12 @@ function setVoiceButton(node, mode) {
   button.textContent = VOICE_LABELS[mode];
   button.dataset.mode = mode;
   node.querySelector(".chat-restart").classList.toggle("hidden", mode === "listen" || mode === "starting");
+  renderPanelPlay();
 }
 
 // One sound at a time: whatever starts playing (the book, a voice preview or
 // draft, an answer read aloud) pauses every other. An answer read aloud
-// keeps its place; the book it paused waits for Resume book.
-let bookPausedForSpeech = false, spokenNode = null;
+// keeps its place.
 function oneSoundAtATime(media) {
   media.addEventListener("play", () => pauseOtherSounds(media));
 }
@@ -21017,25 +21026,38 @@ function pauseOtherSounds(playing) {
   if (playing === chatVoice && chatVoice.src === SILENT_WAV) return;
   for (const media of [readerAudio, previewAudio, chatVoice]) {
     if (!media || media === playing || media.paused) continue;
-    if (media === readerAudio && playing === chatVoice) bookPausedForSpeech = true;
     if (media === chatVoice && chatSpeaking) stopSpeaking();
     else media.pause();
   }
-  if (playing === chatVoice && chatSpeaking) spokenNode = chatSpeaking.node;
-  renderResumeBook();
+  // The book playing again: the panel's Play/Pause is the book's.
+  if (playing === readerAudio) panelAnswer = null;
+  renderPanelPlay();
 }
-// Resume book shows under the answer that paused the book, once it stops.
-function renderResumeBook() {
-  for (const button of $("chat-log").querySelectorAll(".chat-resume-book")) {
-    const node = button.closest(".chat-assistant");
-    button.classList.toggle("hidden", !(bookPausedForSpeech && readerAudio && readerAudio.paused
-      && node === spokenNode && !(chatSpeaking && chatSpeaking.node === node)));
+// The Ask Hilde panel's Play/Pause, fixed at its bottom: it plays or pauses
+// what plays now, else what played last: an answer read aloud (while it is
+// read, or paused partway), else the book. An answer that ends gives it back
+// to the book, which waits (paused) for Play book.
+let panelAnswer = null;  // the answer read aloud last, until it ends or the book plays
+function panelSource() {
+  return chatSpeaking || (panelAnswer && panelAnswer.isConnected && panelAnswer.chatPlace) ? "answer" : "book";
+}
+function renderPanelPlay() {
+  const button = $("panel-play"), source = panelSource();
+  const playing = source === "answer" ? !!chatSpeaking : !!readerAudio && !readerAudio.paused;
+  const label = `${playing ? "Pause" : "Play"} ${source}`;
+  if (button.getAttribute("aria-label") === label && button.firstChild) return;
+  button.innerHTML = `<span class="panel-play-icon">${playing ? PAUSE_ICON : PLAY_ICON}</span>`;
+  button.append(label);
+  button.setAttribute("aria-label", label);
+  button.dataset.mode = playing ? "pause" : "play";
+}
+function togglePanelPlay() {
+  if (panelSource() === "answer") {
+    if (chatSpeaking) stopSpeaking();
+    else speakAnswer(panelAnswer.querySelector(".chat-listen"));
+  } else if (readerAudio) {
+    if (readerAudio.paused) readerAudio.play().catch(() => {}); else readerAudio.pause();
   }
-}
-function resumeBook() {
-  bookPausedForSpeech = false;
-  if (readerAudio) readerAudio.play().catch(() => {});
-  renderResumeBook();
 }
 function unlockChatVoice() {
   if (chatSpeaking) return;
@@ -21068,7 +21090,7 @@ function markChatBlock(node, block) {
 function stopSpeaking(finished = false) {
   const speaking = chatSpeaking;
   chatSpeaking = null;
-  if (!speaking) { chatVoice.pause(); renderResumeBook(); return; }
+  if (!speaking) { chatVoice.pause(); renderPanelPlay(); return; }
   if (!finished && speaking.number) {
     speaking.node.chatPlace = { number:speaking.number, time:chatVoice.currentTime };
   }
@@ -21078,7 +21100,7 @@ function stopSpeaking(finished = false) {
   setVoiceButton(speaking.node, speaking.node.chatPlace ? "resume" : "listen");
   if (speaking.url) URL.revokeObjectURL(speaking.url);
   speaking.next?.then((url) => URL.revokeObjectURL(url), () => {});
-  renderResumeBook();
+  renderPanelPlay();
 }
 async function speakAnswer(button, { restart = false } = {}) {
   const node = button.closest(".chat-assistant");
@@ -21090,6 +21112,7 @@ async function speakAnswer(button, { restart = false } = {}) {
   if (restart) node.chatPlace = null;
   const place = node.chatPlace || { number:1, time:0 };
   const speaking = chatSpeaking = { node, button, number:0, next:null, url:"" };
+  panelAnswer = node;
   setVoiceButton(node, "starting");
   try {
     const reading = await jsonRequest("/api/chat/speak", {
@@ -25232,7 +25255,6 @@ $("chat-log").addEventListener("click", (event) => {
     speakAnswer(restart.closest(".chat-assistant").querySelector(".chat-listen"), { restart:true });
     return;
   }
-  if (event.target.closest(".chat-resume-book")) { resumeBook(); return; }
   const cite = event.target.closest(".chat-cite");
   if (!cite) return;
   event.preventDefault();
