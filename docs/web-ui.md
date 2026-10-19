@@ -332,12 +332,15 @@ scrolls (on a phone, it scrolls away with the text), are **Follow along**,
 the **Narration text | Source text** switch, and **⋯** (More). The player is
 one bar docked at the bottom of the screen, on a computer and on a phone alike,
 and stays there while you scroll: from left to right a large play/pause
-button, the seek bar, the elapsed and total time, the speed (it shows, for
-example, **1.25×**; click it to choose 0.75× to 2×), and **Ask Hilde**. On a
-phone (under about 420 px wide) the seek bar takes a thin row of its own, the
-elapsed time at its left end and the total at its right, and below it the
-speed, a large play/pause in the middle, and **Ask Hilde**; the bar keeps
-clear of the phone's home indicator. The bar never covers the text: the page
+button, **Ask Hilde**, the seek bar, the elapsed and total time, and the speed
+(it shows, for example, **1.25×**; click it to choose 0.75× to 2×). **Ask
+Hilde** looks like a short field with a blue border: a blue chat icon, **Ask
+Hilde**, and "Ask about what you're hearing…" (shorter, "Ask about this…",
+where there is less room). On a phone, or any window too narrow for one row
+(under about 620 px), the seek bar takes a thin row of its own, the elapsed time
+at its left end and the total at its right, and below it a large play/pause on
+the left, **Ask Hilde** filling the middle, and the speed on the right; the bar
+keeps clear of the phone's home indicator. The bar never covers the text: the page
 leaves room for it below the last paragraph. The text runs in a comfortable
 reading column; on a wide screen the panel for the chat, a figure, or a source
 page opens beside it, and the player bar then stays under the text.

@@ -16797,7 +16797,7 @@ button { background:var(--raised); color:var(--text); border:1px solid var(--lin
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button) {
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button, .ask-hilde) {
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
@@ -17264,9 +17264,11 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 /* The player: one bar docked at the bottom on every screen, inside the safe
    area, under the reading column only (the side panel keeps its own height);
    its controls line up with the text column (68ch of the reading font). The
-   page leaves its height (--dock-h, fitDock()) free beneath the text. */
+   page leaves its height (--dock-h, fitDock()) free beneath the text. Left to
+   right: Play, the Ask Hilde field, the seek bar (the rest), the time, speed,
+   12px apart. */
 .reading-column > .player-dock { font-size:18px; }
-.player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0;
+.player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0; container:dock / inline-size;
                padding:0 12px env(safe-area-inset-bottom); background:var(--surface);
                border-top:1px solid var(--line); box-shadow:0 -8px 24px rgba(0,0,0,.35); }
 body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
@@ -17274,12 +17276,25 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
               padding:8px 0; }
 .player-bar > * { font-size:15px; }
 .player-bar button { min-height:40px; padding:0 10px; }
-.player-bar .ask-hilde { flex:none; padding:0 16px; }
 .player-play { display:grid; flex:none; place-items:center; width:48px; height:48px; padding:0 !important;
                border-radius:50%; background:var(--accent); border-color:var(--accent);
                color:var(--accent-ink); }
 .player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
 .player-play svg { width:20px; height:20px; fill:currentColor; }
+/* Ask Hilde reads as a field, short and easy to see: a dark surface, a 1px blue border, a blue icon, the bold
+   label and a muted placeholder; 340px (at most 360px), never stretched. Text is never cut: where the long
+   placeholder would be, the short one shows, and where that would be too, none (fitAsk()). */
+.player-bar .ask-hilde { display:flex; flex:0 1 340px; align-items:center; gap:8px; max-width:360px; height:44px;
+                         padding:0 14px; border:1px solid var(--accent-light); border-radius:999px;
+                         background:var(--field); box-shadow:none; color:var(--text); text-align:left; }
+.player-bar .ask-hilde:hover:not(:disabled) { background:color-mix(in srgb, var(--accent-light) 8%, var(--field)); }
+.ask-icon { flex:none; width:18px; height:18px; fill:var(--accent-light); }
+.ask-text { display:flex; flex:1 1 auto; align-items:baseline; gap:8px; min-width:0; }
+.ask-label { flex:none; font-weight:650; white-space:nowrap; }
+.ask-hint { flex:1 1 0; width:0; min-width:0; overflow:hidden; color:var(--dim); font-size:13px; font-weight:400;
+            white-space:nowrap; }
+.ask-hint-short, .ask-hilde.short .ask-hint-long, .ask-hilde.bare .ask-hint { display:none; }
+.ask-hilde.short .ask-hint-short { display:block; }
 .player-track { display:flex; flex:1; align-items:center; gap:6px; min-width:0; }
 .player-time { color:var(--dim); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
                font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -17287,6 +17302,24 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .player-speed { min-width:64px; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
 /* Its speed menu opens upwards. */
 .player-bar .menu { top:auto; bottom:calc(100% + 6px); }
+/* A bar too narrow for one row (a phone, a narrow window): the thin seek bar on top, the elapsed time at its left
+   end and the total at its right end; under it a large Play on the left, the Ask Hilde field filling the space
+   left (its label over the placeholder), and a small speed button on the right. */
+@container dock (max-width:599.98px) {
+  .player-bar { display:grid; grid-template-columns:auto minmax(0,1fr) auto;
+                grid-template-areas:"track track track" "play ask speed"; gap:2px 12px; padding:0 0 8px; }
+  .player-track { grid-area:track; gap:12px; }
+  #player-elapsed { order:-1; }
+  .player-of { display:none; }
+  .player-seek { margin:0; }
+  .player-play { grid-area:play; width:56px; height:56px; }
+  .player-play svg { width:24px; height:24px; }
+  .player-bar .ask-hilde { grid-area:ask; max-width:none; height:56px; padding:0 16px; }
+  .ask-text { flex-direction:column; align-items:stretch; gap:1px; }
+  .ask-hint { flex:none; width:auto; }
+  .player-speed-wrap { grid-area:speed; }
+  .player-bar .player-speed { min-width:44px; padding:0 8px; }
+}
 .reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
 /* Files Hilde wrote for the book, under its title. */
@@ -17521,21 +17554,9 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
   .menu, .menu.row-menu, .player-bar .menu { position:fixed; right:8px; left:8px; top:auto;
                                              bottom:calc(var(--dock-h, 0px) + 8px); }
 }
-/* A phone's player: a thin full-width row with the seek bar between the
-   elapsed and the total time; under it speed, a large play/pause in the
-   middle, and Ask Hilde. */
+/* A phone's player dock: rounded at the top (its two rows: @container dock). */
 @media (max-width:479.98px) {
   .player-dock { padding:0 10px env(safe-area-inset-bottom); border-radius:14px 14px 0 0; }
-  .player-bar { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
-                grid-template-areas:"track track track" "speed play ask"; gap:0 8px; padding:0 0 8px; }
-  .player-track { grid-area:track; gap:10px; }
-  #player-elapsed { order:-1; }
-  .player-of { display:none; }
-  .player-seek { margin:0; }
-  .player-play { grid-area:play; width:56px; height:56px; }
-  .player-play svg { width:24px; height:24px; }
-  .player-speed-wrap { grid-area:speed; justify-self:start; }
-  .player-bar .ask-hilde { grid-area:ask; justify-self:end; }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
@@ -18218,6 +18239,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <div id="artifact-player" class="player-bar" role="group" aria-label="Player">
             <button id="player-play" class="player-play" type="button" aria-label="Play"
               onclick="togglePlayback()"></button>
+            <!-- Ask Hilde reads as a field: its name is the label; the placeholder (long, or short where the long
+                 one would be cut, fitAsk()) is only shown. -->
+            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel"><svg class="ask-icon"
+              viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill-rule="evenodd"
+              d="M6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1
+              4 13.5v-8A2.5 2.5 0 0 1 6.5 3zM12 5.6l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg><span
+              class="ask-text"><span class="ask-label">Ask Hilde</span><span class="ask-hint ask-hint-long"
+              aria-hidden="true">Ask about what you're hearing…</span><span class="ask-hint ask-hint-short"
+              aria-hidden="true">Ask about this…</span></span></button>
             <div class="player-track">
               <input id="player-seek" class="player-seek" type="range" min="0" max="0" step="0.1" value="0"
                 aria-label="Position in the book">
@@ -18230,7 +18260,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1×</button>
               <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
             </div>
-            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel">Ask Hilde</button>
             <span id="player-key-status" class="visually-hidden" aria-live="polite"></span>
           </div>
         </div>
@@ -20371,6 +20400,15 @@ function fitVisualViewport() {
 // The docked player's height, which the page leaves free beneath the text.
 function fitDock() {
   document.documentElement.style.setProperty("--dock-h", `${$("player-dock").offsetHeight}px`);
+}
+// Ask Hilde's placeholder: the long one, else the short one where the long one would be cut, else none, so its
+// text is never cut. It runs whenever the field's size changes (and once the fonts are in).
+function fitAsk() {
+  const ask = $("ask-hilde"), cut = (hint) => hint.scrollWidth > hint.clientWidth;
+  ask.classList.remove("short", "bare");
+  if (!cut(ask.querySelector(".ask-hint-long"))) return;
+  ask.classList.add("short");
+  if (cut(ask.querySelector(".ask-hint-short"))) ask.classList.replace("short", "bare");
 }
 
 // A figure, large: the picture as the PDF lays it out, the paper's caption
@@ -24956,6 +24994,8 @@ window.addEventListener("resize", () => {
     "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
+new ResizeObserver(fitAsk).observe($("ask-hilde"));
+document.fonts.ready.then(fitAsk);
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();

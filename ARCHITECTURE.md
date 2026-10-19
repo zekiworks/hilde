@@ -1263,8 +1263,8 @@ visually hidden step states).
 Listen below 768 px: the text takes the full width, the view's controls
 (`#listen-bar`, `display: contents`) scroll with it, and menus dock above the
 player (`narrowLayout()`); the chat, a figure, and a source page open as
-full-screen sheets. Below 480 px the player bar takes the phone layout (see
-Reader). Below 1200 px the side panel always
+full-screen sheets. Below 600 px of dock width the player bar takes the phone
+layout (see Reader). Below 1200 px the side panel always
 replaces the reading view (`.side-panel` fixed over it, `html.sheet-open`
 stopping the page from scrolling beneath), with **← Back to the book**. Its
 height follows the visual viewport (`fitVisualViewport()` sets `--vv-height`
@@ -1652,13 +1652,21 @@ screen (`#player-dock`, `position: fixed`, inside
 `env(safe-area-inset-bottom)`); with the side panel open beside the text
 (1200 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
 stays under the reading column. Its controls keep to the text column's
-width (`68ch` of the reading font, centred): from left to right a large
-play/pause (48 px), the seek bar, elapsed and total time, a speed button
-showing the speed ("1.25×") that opens 0.75× to 2× upwards, and **Ask
-Hilde**. Below 480 px (`.player-bar` as a grid) the seek bar takes a
-full-width row between the elapsed time (left end) and the total (right
-end), and under it come the speed, play/pause in the middle (56 × 56 px), and
-**Ask Hilde**; every target is at least 44 × 44 px. There is no mute button
+width (`68ch` of the reading font, centred), 12 px apart: from left to right a
+large play/pause (48 px), **Ask Hilde**, the seek bar (it takes the rest), elapsed
+and total time, and a speed button showing the speed ("1.25×") that opens 0.75×
+to 2× upwards. **Ask Hilde** is the same button, drawn as a field so it is easy
+to see: 340 px (`flex: 0 1 340px`, at most 360 px, never stretched), the dark
+`--field` surface, a 1 px `--accent-light` border, a blue chat icon, the bold
+label and a muted placeholder (`aria-hidden`, so its name stays "Ask Hilde"):
+"Ask about what you're hearing…", or "Ask about this…" where that would be cut,
+or none (`fitAsk()`, on a `ResizeObserver` of the button), so its text is never
+cut. When the dock (`container: dock`) is narrower than 600 px, `.player-bar`
+becomes a grid: the seek bar takes a full-width row between the elapsed time
+(left end) and the total (right end), and under it come play/pause on the left
+(56 × 56 px), **Ask Hilde** filling the space left (56 px tall, the label over
+the placeholder), and the speed on the right (at least 44 × 44 px); every target
+is at least 44 × 44 px. There is no mute button
 or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
 bar's height, on a `ResizeObserver`; the page's bottom padding
 (`body:has(main.reading)`) is that height, so the last paragraph ends above
