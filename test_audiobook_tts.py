@@ -2858,6 +2858,173 @@ class UnifiedWorkflowTests(unittest.TestCase):
         self.assertEqual(set(voice["seconds"]), {"narrating", "aligning"})
         self.assertGreater(voice["duration"], 0)
 
+    def test_a_jobs_model_history_survives_a_restart_and_goes_with_the_book(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        storage = web.SharedStorage(root / "library")
+        storage.ensure()
+        document = storage.documents / "paper.md"
+        document.write_text("Paragraph one says attention maps a query to an output.\n\n"
+                            "Paragraph two says the output is a weighted sum of the values.\n\n"
+                            "Paragraph three says recurrent models read tokens one at a time.", encoding="utf-8")
+        buffer = io.BytesIO()
+        sf.write(buffer, np.linspace(-0.2, 0.2, 1200, dtype=np.float32), 24000, format="WAV", subtype="PCM_16")
+        speech = buffer.getvalue()
+
+        class SpeechHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(speech)))
+                self.end_headers()
+                self.wfile.write(speech)
+
+            def log_message(self, format, *args):
+                pass
+
+        def answer(run, request_path, system_prompt, attachments, model=None):
+            # Model A's server goes away before paragraph two; Model B answers.
+            text = request_path.read_text(encoding="utf-8")
+            if (model or run.model) == "lm-studio/model-a" and "Paragraph two" in text:
+                raise web.ModelConnectionError("Model request failed: connection refused")
+            source = re.findall(r"<SOURCE_PARAGRAPH[^>]*>\n(.*?)\n</SOURCE_PARAGRAPH>", text, flags=re.DOTALL)
+            return f"<NARRATION>{chr(10).join(source)}</NARRATION><SUMMARY>Summary.</SUMMARY>"
+
+        printed = io.StringIO()
+        with ThreadingHTTPServer(("127.0.0.1", 0), SpeechHandler) as server:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            models = {"design": {"source": "missing"}, "clone": {
+                "source": "server", "server": f"http://127.0.0.1:{server.server_port}/v1", "server_model": "tts-1"}}
+            endpoints = [{"name": "Test", "server": "http://127.0.0.1:9", "provider": "lm-studio"}]
+
+            def job(model, browser):
+                with mock.patch.object(web, "LOCAL_ENDPOINTS", endpoints):
+                    values = web.values_of(normalize({"audiobook": {
+                        "document": document.name, "server_voice": "alloy", "adapt": True, "model": model,
+                        "in_flight": "1",
+                    }}), models, storage)
+                values["submitted"] = {"browser": browser, "choice": {"text": "chosen"}}
+                input_version, voice_version = web.audiobook_versions(values)
+                # A new run object each time, as after a restart: only the stage remembers.
+                run = web.AudiobookRun(values, storage, input_version, voice_version,
+                                       web.audiobook_job_id(input_version, voice_version))
+                run.pump()
+                return run
+
+            try:
+                with mock.patch.object(web, "HILDE_HOME", root / ".hilde"), \
+                        mock.patch.object(web, "ForcedWordAligner", FakeWordAligner), \
+                        mock.patch.object(web, "MODEL_RETRIES", 1), \
+                        mock.patch.object(web, "local_model_names", return_value=("model-a", "model-b")), \
+                        mock.patch.object(web.PaperRun, "request_model", answer), \
+                        mock.patch("sys.stdout", printed):
+                    paused = job("lm-studio/model-a", "192.0.2.7")
+                    stage_lines = [json.loads(line) for line in
+                                   (paused.stage / "history.jsonl").read_text(encoding="utf-8").splitlines()]
+                    retried = job("lm-studio/model-a", "192.0.2.7")
+                    done = job("lm-studio/model-b", "192.0.2.8")
+            finally:
+                server.shutdown()
+
+        self.assertEqual([run.code for run in (paused, retried, done)], [1, 1, 0])
+        job_id = done.job_id
+        # The first run's lines were in the stage, which outlives the run object.
+        self.assertEqual([line["event"] for line in stage_lines], ["start", "batch", "request_failed", "paused"])
+        book = storage.audiobooks / done.result["book"]
+        history = book / "history.jsonl"
+        self.assertFalse(done.stage.exists())
+        self.assertEqual(stat.S_IMODE(history.stat().st_mode), 0o600)
+        lines = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([line["event"] for line in lines], [
+            "start", "batch", "request_failed", "paused",
+            "start", "retried", "request_failed", "paused",
+            "start", "continued", "batch", "batch", "done",
+        ])
+        for line in lines:
+            self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            self.assertEqual(line["job"], job_id)
+        start, batch, failed, pause = lines[:4]
+        self.assertEqual({key: start[key] for key in ("mode", "text_model", "figure_model", "interpret_figures",
+                                                        "checking_model", "browser")},
+                         {"mode": "create", "text_model": "lm-studio/model-a", "figure_model": None,
+                          "interpret_figures": False, "checking_model": None, "browser": "192.0.2.7"})
+        self.assertEqual(start["how"], {"text": "browser's choice"})
+        self.assertEqual({key: batch[key] for key in ("first", "last", "model", "why", "attempts")},
+                         {"first": 1, "last": 1, "model": "lm-studio/model-a", "why": "text", "attempts": 1})
+        self.assertIsInstance(batch["seconds"], float)
+        self.assertEqual((failed["model"], failed["part"], failed["attempt"]), ("lm-studio/model-a", 2, 1))
+        self.assertIn("connection refused", failed["error"])
+        self.assertEqual((pause["model"], pause["part"], pause["total"], pause["message"]),
+                         ("lm-studio/model-a", 2, 3, "Model A became unreachable at part 2"))
+        self.assertIn("connection refused", pause["error"])
+        retry = lines[5]
+        self.assertEqual((retry["model"], retry["parts"], retry["browser"]), ("lm-studio/model-a", "2–3", "192.0.2.7"))
+        go_on = lines[9]
+        self.assertEqual({key: go_on[key] for key in ("from", "to", "picker", "parts", "browser")},
+                         {"from": "lm-studio/model-a", "to": "lm-studio/model-b", "picker": "book",
+                          "parts": "2–3", "browser": "192.0.2.8"})
+        self.assertEqual(lines[8]["how"], {"text": "continued"})
+        self.assertEqual([(line["first"], line["model"], line["why"]) for line in lines[10:12]],
+                         [(2, "lm-studio/model-b", "continued"), (3, "lm-studio/model-b", "continued")])
+        self.assertEqual(lines[-1]["book"], book.name)
+        # The book's ranges say why and when.
+        record = json.loads((book / "book.json").read_text(encoding="utf-8"))
+        ranges = record["part_models"]
+        self.assertEqual([{key: item.get(key) for key in ("first", "last", "model", "why", "after")} for item in ranges],
+                         [{"first": 1, "last": 1, "model": "lm-studio/model-a", "why": "text", "after": None},
+                          {"first": 2, "last": 3, "model": "lm-studio/model-b", "why": "continued",
+                           "after": "Model A became unreachable at part 2"}])
+        for item in ranges:
+            self.assertRegex(item["first_at"], r"Z$")
+            self.assertLessEqual(item["first_at"], item["last_at"])
+        self.assertEqual(web.part_models_summary(ranges), "Text written by Model A (1 part) and Model B "
+                                                          "(2 parts: continued after Model A became unreachable at part 2).")
+        # One line on the server's log per pause, Retry, and continue.
+        log = printed.getvalue()
+        short = job_id[:8]
+        self.assertRegex(log, rf"(?m)^\d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\dZ job {short}… paused: Model A unreachable "
+                              r"at part 2 \(.*connection refused.*\)$")
+        self.assertRegex(log, rf"(?m)^\S+Z job {short}… retried with Model A for parts 2–3 \(browser 192\.0\.2\.7\)$")
+        self.assertRegex(log, rf"(?m)^\S+Z job {short}… continued with Model B for parts 2–3 "
+                              r"\(browser 192\.0\.2\.8\)$")
+        # A later job of the same book appends.
+        web.append_book_history(book, [{"at": "2026-10-19T14:00:00Z", "job": "x", "event": "start"}])
+        self.assertEqual(len(history.read_text(encoding="utf-8").splitlines()), len(lines) + 1)
+
+    def test_part_models_say_why_and_read_as_one_line(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        folder = Path(temporary.name)
+        deepseek, astra = "lm-studio/deepseek-v4.1-flash", "openai-codex/gpt-6-astra"
+        for first, last, model, why, at in ((1, 1, deepseek, "text", "2026-10-19T13:00:00Z"),
+                                            (2, 2, deepseek, "text", "2026-10-19T13:01:00Z"),
+                                            (3, 3, None, None, None),
+                                            (4, 4, astra, "figure", "2026-10-19T13:02:00Z"),
+                                            (5, 9, deepseek, "text", "2026-10-19T13:03:00Z")):
+            checkpoint = {"end": last, "narration": "x", "summary": "x", "model": model}
+            if why:
+                checkpoint.update(why=why, at=at)
+            (folder / f"{first:06d}-{last:06d}.json").write_text(json.dumps(checkpoint), encoding="utf-8")
+        ranges = web.batch_models(folder)
+        self.assertEqual(ranges, [
+            {"first": 1, "last": 3, "model": deepseek, "why": "text",
+             "first_at": "2026-10-19T13:00:00Z", "last_at": "2026-10-19T13:01:00Z"},
+            {"first": 4, "last": 4, "model": astra, "why": "figure",
+             "first_at": "2026-10-19T13:02:00Z", "last_at": "2026-10-19T13:02:00Z"},
+            {"first": 5, "last": 9, "model": deepseek, "why": "text",
+             "first_at": "2026-10-19T13:03:00Z", "last_at": "2026-10-19T13:03:00Z"},
+        ])
+        self.assertEqual(web.part_models_summary(ranges),
+                         "Text written by DeepSeek V4.1 Flash (8 parts) and GPT-6 Astra (1 part: figures, tables and "
+                         "equations).")
+        # A book made before ranges said why: by model, with counts.
+        self.assertEqual(web.part_models_summary([{"first": 1, "last": 12, "model": "lm-studio/alpha-model-7b"},
+                                                  {"first": 13, "last": 40, "model": "lm-studio/delta-model-70b"}]),
+                         "Text written by Alpha Model 7B (12 parts) and Delta Model 70B (28 parts).")
+        self.assertEqual(web.part_models_summary([]), "")
+
     def test_a_new_voice_reads_the_books_own_text_and_a_remake_leaves_old_voices_stale(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -4708,7 +4875,9 @@ class LocalPaperProviderTests(unittest.TestCase):
             paused = run_with("lm-studio/model-a")
         self.assertEqual(paused.code, 1)
         # The finished parts stay, each naming the model that wrote it.
-        self.assertEqual(web.batch_models(checkpoints), [{"first": 1, "last": 3, "model": "lm-studio/model-a"}])
+        plain = lambda ranges: [{key: item.get(key) for key in ("first", "last", "model", "why")} for item in ranges]
+        self.assertEqual(plain(web.batch_models(checkpoints)),
+                         [{"first": 1, "last": 3, "model": "lm-studio/model-a", "why": "text"}])
         self.assertEqual(str(web.ModelUnreachable("lm-studio/model-a", 4)), "Model A became unreachable at part 4")
         self.assertEqual(str(web.ModelUnreachable("lm-studio/model-a")), "Model A is unreachable")
         # Continue with another model: only the remaining parts go to it.
@@ -4718,12 +4887,15 @@ class LocalPaperProviderTests(unittest.TestCase):
         asked = {int(number) for body in second_requests
                  for number in re.findall(r"Paragraph (\d) says", str(body["messages"][1]["content"]))}
         self.assertEqual(asked, {4, 5, 6})
-        self.assertEqual(resumed.part_models, [
-            {"first": 1, "last": 3, "model": "lm-studio/model-a"},
-            {"first": 4, "last": 6, "model": "lm-studio/model-b"},
+        # The parts the other model wrote say they continued; told nothing more, after a change of model.
+        self.assertEqual(plain(resumed.part_models), [
+            {"first": 1, "last": 3, "model": "lm-studio/model-a", "why": "text"},
+            {"first": 4, "last": 6, "model": "lm-studio/model-b", "why": "continued"},
         ])
+        self.assertEqual(resumed.part_models[1]["after"], "the model was changed")
         self.assertEqual(web.part_models_text(resumed.part_models),
-                         "parts 1–3: Model A (lm-studio/model-a); parts 4–6: Model B (lm-studio/model-b)")
+                         "parts 1–3: Model A (lm-studio/model-a); parts 4–6: Model B (lm-studio/model-b, continued "
+                         "after the model was changed)")
         # Any other change to the identity still starts the adaptation again.
         manifest = json.loads((stage / "extraction.json").read_text(encoding="utf-8"))
         self.assertTrue(web.same_but_models(manifest, {**manifest, "model": "lm-studio/model-a", "complete": False}))
@@ -10042,6 +10214,15 @@ def image_stub(test, behaviour, models=("m",), ollama=None, lm_studio=None):
                 return self.reply(503, {"error": "busy"})
             if behaviour == "slow":
                 time.sleep(2)
+            if behaviour == "think":
+                # A thinking model cut off by max_tokens while still reasoning (SGLang separates it).
+                return self.reply(200, {"choices": [{"message": {
+                    "role": "assistant", "content": "", "reasoning_content": "1. **Analyze the Request:** The"},
+                    "finish_reason": "length"}]})
+            if behaviour == "think-red":
+                return self.reply(200, {"choices": [{"message": {
+                    "role": "assistant", "content": "Red.", "reasoning_content": "The picture is a blue square? No."},
+                    "finish_reason": "stop"}]})
             picture = next(part["image_url"]["url"] for part in body["messages"][0]["content"]
                            if part["type"] == "image_url")
             colour = COLOUR_NAMES[png_first_pixel(base64.b64decode(picture.partition(",")[2]))]
@@ -10108,9 +10289,9 @@ class ImageCheckTests(unittest.TestCase):
     def test_the_test_picture_tells_a_vision_model_from_a_text_only_one(self):
         vision, asked = image_stub(self, "vision")
         self.assertEqual(web.image_check_probe(vision, "m")[0], True)
-        # One small one-colour PNG with the question, at most 10 tokens, temperature 0.
+        # One small one-colour PNG with the question, at most 64 tokens, temperature 0.
         body = asked[0]
-        self.assertEqual((body["model"], body["max_tokens"], body["temperature"]), ("m", 10, 0))
+        self.assertEqual((body["model"], body["max_tokens"], body["temperature"]), ("m", 64, 0))
         picture = base64.b64decode(body["messages"][0]["content"][1]["image_url"]["url"].partition(",")[2])
         self.assertEqual(png_first_pixel(picture), (255, 0, 0))
         self.assertLess(len(picture), 1024)
@@ -10122,6 +10303,10 @@ class ImageCheckTests(unittest.TestCase):
         self.assertIsNone(web.image_check_probe(image_stub(self, "error")[0], "m")[0])
         self.assertIsNone(web.image_check_probe(image_stub(self, "slow")[0], "m", timeout=0.5)[0])
         self.assertIsNone(web.image_check_probe("http://127.0.0.1:9", "m", timeout=1)[0])
+        # Only the final answer counts: reasoning cut off by the token limit is not known yet (checked
+        # again later), and a reasoning model that then answers the colour reads images.
+        self.assertIsNone(web.image_check_probe(image_stub(self, "think")[0], "m")[0])
+        self.assertIs(web.image_check_probe(image_stub(self, "think-red")[0], "m")[0], True)
 
     def test_ollama_and_lm_studio_report_images_and_a_model_not_loaded_is_not_probed(self):
         server, asked = image_stub(self, "vision", ollama={"llava": ["completion", "vision"], "qwen": ["completion"],
@@ -10134,6 +10319,8 @@ class ImageCheckTests(unittest.TestCase):
         server, asked = image_stub(self, "vision", ollama={"old": None, "loaded": ["old"]})
         self.assertEqual(web.check_model_images(server, "ollama", "old")[:2], (True, "tested"))
         self.assertEqual(len(asked), 1)
+        # Thinking off where the server takes it (Ollama), as for adaptation.
+        self.assertEqual(asked[0]["reasoning_effort"], "none")
         server, asked = image_stub(self, "vision", lm_studio=[{"id": "seer", "type": "vlm", "state": "loaded"},
                                                              {"id": "plain", "type": "llm", "state": "loaded"},
                                                              {"id": "away", "state": "not-loaded"}])

@@ -266,9 +266,14 @@ became unreachable at part N", the parts kept and which model wrote them,
 **Continue with another model…**, which lists the other reachable models
 (local ones first) and sends only the remaining parts to the one you
 click; the parts already written stay. Hilde never switches models inside a
-job by itself. The finished card, the job's log ("Written by: parts 1–12:
-…"), and the book's details on **Listen** ("Text written by …") say which
-model wrote which parts.
+job by itself. The finished card and the book's details on **Listen** say in
+one line which model wrote the text, by model with the number of parts and
+why, such as "Text written by DeepSeek V4.1 Flash (98 parts) and GPT-6 Astra
+(42 parts: figures, tables and equations)" or "(42 parts: continued after
+DeepSeek V4.1 Flash became unreachable at part 25)", with every range under
+**Which parts** (its write times on hover); the job's log says "Written by:
+parts 1–12: …". Each job also keeps a model history with times, which goes
+into the book; see [Model history](configuration.md#model-history).
 
 The queue is global across browsers. Every web submission uses the
 server-owned pool of [narration workers](configuration.md#narration-workers): one job claims

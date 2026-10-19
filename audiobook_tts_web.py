@@ -2406,10 +2406,11 @@ def _copy_voice_folder(source, target):
                 shutil.copy2(item, target / item.name)
 
 
-def commit_book(storage, record, narration, reader_markdown, source, voice, audio, timings):
+def commit_book(storage, record, narration, reader_markdown, source, voice, audio, timings, history=()):
     """Publish a book made from its source, with one voice.
 
-    `record` holds the book's fields; `voice` is the voice's entry. A book
+    `record` holds the book's fields; `voice` is the voice's entry; `history`
+    the job's model history, appended to the book's history.jsonl. A book
     already made from the same content keeps its folder, its other voices, and
     the names its source went by; a voice of it whose text differs from the
     new one becomes stale. Return the book's id.
@@ -2458,11 +2459,17 @@ def commit_book(storage, record, narration, reader_markdown, source, voice, audi
                 # conversation cites the old text's paragraphs and goes.
                 if (old_path / BOOK_FILES_FOLDER).is_dir():
                     _copy_voice_folder(old_path / BOOK_FILES_FOLDER, build / BOOK_FILES_FOLDER)
+                # Its model history goes on: the jobs that made it before, then this one.
+                if (old_path / HISTORY_FILE).is_file():
+                    shutil.copyfile(old_path / HISTORY_FILE, build / HISTORY_FILE)
+                    (build / HISTORY_FILE).chmod(0o600)
                 final = old_path
             else:
                 final = storage.audiobooks / book_id(record["title"], record["source_sha256"])
             record["voices"] = voices
             write_json_atomic(build / "book.json", record)
+            if history:
+                append_history_lines(build / HISTORY_FILE, history)
             swap_into_place(build, final)
         except BaseException:
             shutil.rmtree(build, ignore_errors=True)
@@ -2470,8 +2477,9 @@ def commit_book(storage, record, narration, reader_markdown, source, voice, audi
     return final.name
 
 
-def commit_voice(storage, book, narration_sha256, voice, audio, timings):
-    """Publish one voice of a book read from the book's current text.
+def commit_voice(storage, book, narration_sha256, voice, audio, timings, history=()):
+    """Publish one voice of a book read from the book's current text; the
+    job's model history (`history`) is appended to the book's history.jsonl.
 
     The voice's old audio keeps playing until the new folder is renamed into
     place. A book whose text changed meanwhile refuses the voice.
@@ -2499,6 +2507,8 @@ def commit_voice(storage, book, narration_sha256, voice, audio, timings):
         ] + [entry]
         record["updated_at"] = entry["created_at"]
         write_json_atomic(path / "book.json", record)
+        if history:
+            append_history_lines(path / HISTORY_FILE, history)
 
 
 def book_audio(storage, book, voice=None):
@@ -3990,14 +4000,21 @@ def audiobook_reader_payload(storage, book, voice=None):
             for entry in record.get("voices") or ()
         ],
         "has_text": has_text,
-        # Which model wrote which parts, for the book's details on Listen.
+        # Which model wrote which parts, why and when, for the book's details
+        # on Listen: one line by model, and each range under it.
         "part_models": [
             {"first": item["first"], "last": item["last"], "model": item["model"],
-             "name": selector_name(item["model"]), "badge": model_badge(item["model"])}
+             "name": selector_name(item["model"]), "badge": model_badge(item["model"]),
+             **{key: item[key] for key in ("why", "after", "first_at", "last_at") if isinstance(item.get(key), str)}}
             for item in record.get("part_models") or ()
             if isinstance(item, dict) and isinstance(item.get("model"), str)
             and isinstance(item.get("first"), int) and isinstance(item.get("last"), int)
         ],
+        "part_models_summary": part_models_summary([
+            item for item in record.get("part_models") or ()
+            if isinstance(item, dict) and isinstance(item.get("model"), str)
+            and isinstance(item.get("first"), int) and isinstance(item.get("last"), int)
+        ]),
         "sample_rate": sample_rate,
         "timing_precision": timing_precision,
         "word_timing": word_timing,
@@ -5192,8 +5209,9 @@ class ModelUnreachable(RuntimeError):
     what it finished; it never goes on with another model by itself. `part`
     is the paragraph number its first unfinished part starts at, or None."""
 
-    def __init__(self, model, part=None):
-        self.model, self.part = model, part
+    def __init__(self, model, part=None, error=""):
+        # `error`: what the last request failed with, for the job's history.
+        self.model, self.part, self.error = model, part, error
         super().__init__(self.describe())
 
     def describe(self):
@@ -6762,6 +6780,8 @@ IMAGE_CHECK_TIMEOUT = 60
 IMAGE_CHECK_RETRY = 30
 IMAGE_CHECK_COLOUR = ("red", (255, 0, 0))
 IMAGE_CHECK_QUESTION = "What colour is this image? Answer with one word."
+# Room for a short answer after any reasoning a server does not let us turn off.
+IMAGE_CHECK_MAX_TOKENS = 64
 
 
 def solid_png(rgb, size=32):
@@ -6786,39 +6806,49 @@ def _image_check_post(server, path, payload, timeout):
 
 
 def _image_check_answer(body):
-    """The text of a chat answer: a JSON completion, or the deltas of a
-    stream sent anyway; reasoning counts, as a thinking model may answer there."""
-    def parts(message):
-        return [str(message.get(key) or "") for key in ("content", "reasoning_content", "reasoning")
-                if isinstance(message, dict)]
+    """The final answer of a chat reply, without its reasoning (a server's
+    reasoning field, or <think>…</think> in the answer), and whether the token
+    limit cut it off: a JSON completion, or the deltas of a stream sent anyway."""
+    content, reasons = [], []
     try:
         data = json.loads(body)
-        return " ".join(part for choice in data.get("choices") or () for part in parts(choice.get("message")))
+        for choice in data.get("choices") or ():
+            content.append(str((choice.get("message") or {}).get("content") or ""))
+            reasons.append(choice.get("finish_reason"))
     except (ValueError, AttributeError, TypeError):
-        pass
-    text = []
-    for line in body.splitlines():
-        if line.startswith("data:") and line[5:].strip() not in ("", "[DONE]"):
+        for line in body.splitlines():
+            if not line.startswith("data:") or line[5:].strip() in ("", "[DONE]"):
+                continue
             try:
                 event = json.loads(line[5:])
             except ValueError:
                 continue
             for choice in event.get("choices") or () if isinstance(event, dict) else ():
-                text += parts(choice.get("delta") if isinstance(choice, dict) else None)
-    return "".join(text)
+                if isinstance(choice, dict):
+                    content.append(str((choice.get("delta") or {}).get("content") or ""))
+                    reasons.append(choice.get("finish_reason"))
+    text = re.sub(r"<think>.*?</think>", " ", "".join(content), flags=re.DOTALL)
+    # Reasoning still open when the reply ended: no answer yet.
+    text = text.split("<think>")[0]
+    return " ".join(text.split()), "length" in reasons
 
 
-def image_check_probe(server, model, timeout=None):
+def image_check_probe(server, model, timeout=None, provider="lm-studio"):
     """Ask a local model what colour a small one-colour picture is: True when
-    the server takes it (HTTP 200) and the answer names the colour; False
-    when it refuses the picture (HTTP 400/422, or an error about images) or
-    names another colour; None when nothing is known (no answer in time, the
-    server unreachable, a server error). Returns (result, what happened)."""
+    the server takes it (HTTP 200) and the final answer names the colour;
+    False when it refuses the picture (HTTP 400/422, or an error about images)
+    or answers another colour; None when nothing is known (no answer in time,
+    the server unreachable, a server error, or an answer the token limit cut
+    off before it named a colour, as a model still reasoning). Thinking is off
+    where the server takes that (local_request_options()). Returns (result,
+    what happened)."""
     name, rgb = IMAGE_CHECK_COLOUR
     picture = base64.b64encode(solid_png(rgb)).decode("ascii")
-    payload = {"model": model, "max_tokens": 10, "temperature": 0, "stream": False, "messages": [{
-        "role": "user", "content": [{"type": "text", "text": IMAGE_CHECK_QUESTION},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{picture}"}}]}]}
+    payload = {"model": model, "max_tokens": IMAGE_CHECK_MAX_TOKENS, "temperature": 0, "stream": False,
+               **local_request_options(provider), "messages": [{
+                   "role": "user", "content": [
+                       {"type": "text", "text": IMAGE_CHECK_QUESTION},
+                       {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{picture}"}}]}]}
     try:
         status, body = _image_check_post(server, "/v1/chat/completions", payload,
                                          IMAGE_CHECK_TIMEOUT if timeout is None else timeout)
@@ -6829,9 +6859,11 @@ def image_check_probe(server, model, timeout=None):
         return False, f"HTTP {status}: the picture was refused"
     if status != 200:
         return None, f"HTTP {status}"
-    answer = " ".join(_image_check_answer(body).split())
+    answer, cut_off = _image_check_answer(body)
     if name in answer.lower():
         return True, f"answered {answer[:40]!r}"
+    if cut_off or not answer:
+        return None, f"no answer before the token limit ({answer[:40]!r}); checked again later"
     return False, f"answered {answer[:40]!r}, not {name}"
 
 
@@ -6870,7 +6902,7 @@ def check_model_images(server, provider, model):
         return result, "reported", "reported by the server"
     if how is False:
         return None, "", "not loaded; checked once it is"
-    result, said = image_check_probe(server, model)
+    result, said = image_check_probe(server, model, provider=provider)
     return result, "tested" if result is not None else "", said
 
 
@@ -13249,9 +13281,14 @@ def same_but_models(manifest, identity):
 
 def batch_models(checkpoint_dir):
     """Which model wrote which paragraphs, from a run's batch checkpoints, as
-    [{"first", "last", "model"}] in book order: neighbouring batches by one
-    model joined, a batch no model wrote (a numbered heading) joined to the
-    one before it, a batch not written yet left out."""
+    [{"first", "last", "model", "why", "first_at", "last_at", "after"}] in
+    book order: neighbouring batches by one model for one reason ("why":
+    "text", "figure" for a figure, table, or equation read by the figure
+    model, "continued" by a model chosen after another stopped, with "after"
+    saying why) joined, with the first and last time one of them was written;
+    a batch no model wrote (a numbered heading) joined to the one before it;
+    a batch not written yet left out. A batch saved before batches said why
+    gives a range of its model alone (no why or times)."""
     ranges = []
     for path in sorted(Path(checkpoint_dir).glob("*.json")):
         match = re.fullmatch(r"(\d{6})-(\d{6})", path.stem)
@@ -13259,11 +13296,22 @@ def batch_models(checkpoint_dir):
         if not match or not isinstance(checkpoint, dict) or "model" not in checkpoint:
             continue
         first, last, model = int(match[1]), int(match[2]), checkpoint["model"]
+        why, at = checkpoint.get("why"), checkpoint.get("at")
         follows = bool(ranges) and ranges[-1]["last"] == first - 1
-        if follows and model in (None, ranges[-1]["model"]):
+        if follows and (model is None or (model == ranges[-1]["model"] and why == ranges[-1].get("why"))):
             ranges[-1]["last"] = last
+            if model is not None and isinstance(at, str):
+                ranges[-1]["first_at"] = min(ranges[-1].get("first_at", at), at)
+                ranges[-1]["last_at"] = max(ranges[-1].get("last_at", at), at)
         elif isinstance(model, str) and model:
-            ranges.append({"first": first, "last": last, "model": model})
+            entry = {"first": first, "last": last, "model": model}
+            if isinstance(why, str):
+                entry["why"] = why
+            if isinstance(at, str):
+                entry.update(first_at=at, last_at=at)
+            if why == "continued" and isinstance(checkpoint.get("after"), str):
+                entry["after"] = checkpoint["after"]
+            ranges.append(entry)
     return ranges
 
 
@@ -13279,8 +13327,99 @@ def part_models_text(ranges):
     for item in ranges:
         first, last = item["first"], item["last"]
         parts = f"parts {first}–{last}" if last > first else f"part {first}"
-        lines.append(f"{parts}: {selector_name(item['model'])} ({item['model']})")
+        why = PART_REASONS.get(item.get("why")) or ""
+        if item.get("why") == "continued":
+            why = f"continued after {item.get('after') or 'the model was changed'}"
+        lines.append(f"{parts}: {selector_name(item['model'])} ({item['model']}{f', {why}' if why else ''})")
     return "; ".join(lines)
+
+
+# How the book's details name why a model wrote its parts (part_models' "why").
+PART_REASONS = {"figure": "figures, tables and equations"}
+
+
+def part_models_summary(ranges):
+    """Which model wrote the book's text, one line by model in the order each
+    first wrote: "Text written by A (98 parts) and B (42 parts: figures,
+    tables and equations)", a reason for parts not written as plain text
+    ("continued after A became unreachable at part 25"); "" for none."""
+    by_model = {}
+    for item in ranges or ():
+        counts = by_model.setdefault(item["model"], {})
+        why = item.get("why")
+        reason = (f"continued after {item.get('after') or 'the model was changed'}" if why == "continued"
+                  else PART_REASONS.get(why, ""))
+        counts[reason] = counts.get(reason, 0) + item["last"] - item["first"] + 1
+    if not by_model:
+        return ""
+
+    def parts(count):
+        return f"{count} part{'s' if count != 1 else ''}"
+    phrases = []
+    for model, counts in by_model.items():
+        total = sum(counts.values())
+        reasons = [reason for reason in counts if reason]
+        if not reasons:
+            said = parts(total)
+        elif len(counts) == 1:
+            said = f"{parts(total)}: {reasons[0]}"
+        else:
+            said = f"{parts(total)}; " + "; ".join(f"{counts[reason]} {reason}" for reason in reasons)
+        phrases.append(f"{selector_name(model)} ({said})")
+    listed = phrases[0] if len(phrases) == 1 else f"{', '.join(phrases[:-1])} and {phrases[-1]}"
+    return f"Text written by {listed}."
+
+
+# A job's model history: one JSON line per event, with the time in UTC, in
+# its stage (in_progress/<job>/history.jsonl, so it outlives a restart and
+# goes on with a resumed job), and appended to the book's own history.jsonl
+# when the book is published.
+HISTORY_FILE = "history.jsonl"
+# How the browser that started a job came by each model (pickerChoice()'s how).
+HOW_CHOSEN = {"chosen": "browser's choice", "default": "server default", "only": "the only model",
+              "same": "same as the text model"}
+
+
+def read_history_lines(path):
+    """The events of a history file, oldest first; a line that is not JSON is skipped."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    lines = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            lines.append(entry)
+    return lines
+
+
+def append_history_lines(path, entries):
+    """Append events to a history file, readable only by this user."""
+    path = Path(path)
+    path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as out:
+        for entry in entries:
+            out.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_book_history(folder, entries):
+    """Append a job's events to a published book's history.jsonl."""
+    with _BOOK_LOCK:
+        append_history_lines(Path(folder) / HISTORY_FILE, entries)
+
+
+def history_log(job_id, text):
+    """One line on the server's log for a change of model in a job."""
+    print(f"{utc_timestamp()} job {job_id[:8]}… {text}", flush=True)
+
+
+def parts_span(first, total):
+    return f"{first}–{total}" if total and total > first else str(first)
 
 
 class PaperRun(Run):
@@ -13368,6 +13507,18 @@ class PaperRun(Run):
         # Which model wrote which parts (batch_models()), for book.json and
         # the job's report.
         self.part_models = []
+        # The job's model history (AudiobookRun.note()): each batch written
+        # and each failed request that is asked again; nothing kept alone.
+        self.note = lambda event, **fields: None
+        # The roles ("text", "figure") whose model changed since the batches a
+        # resumed run keeps were written, and why ("<model> became unreachable
+        # at part N"): their batches now say "continued".
+        self.changed_roles = set()
+        self.continued_after = ""
+        # The number of parts (paragraphs) of the document, once read.
+        self.total_parts = None
+        # Per worker thread: the batch being asked and its model requests.
+        self.batch_state = threading.local()
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -13624,13 +13775,18 @@ class PaperRun(Run):
         times; `model` (the checking model) instead of the text model if given.
         A model still unreachable after that raises ModelUnreachable: the job
         pauses, and no other model takes over."""
+        batch = self.batch_state
         for retry in range(MODEL_RETRIES + 1):
+            batch.attempts = getattr(batch, "attempts", 0) + 1
             try:
                 return self.request_model(request_path, system_prompt, attachments, model)
             except ModelConnectionError as exc:
                 if retry == MODEL_RETRIES:
                     self.publish("log", f"{exc}; {MODEL_RETRIES} retries failed.\n")
-                    raise ModelUnreachable(model or self.model) from exc
+                    raise ModelUnreachable(model or self.model, error=str(exc)) from exc
+                # A failed request asked again: the job's history keeps it.
+                self.note("request_failed", model=model or self.model, part=getattr(batch, "start", None),
+                          attempt=retry + 1, error=str(exc))
                 delay = 2 ** retry
                 self.publish(
                     "log",
@@ -14019,6 +14175,7 @@ class PaperRun(Run):
 
     def process_paragraphs(self, scratch, paragraphs, image_paths, system_prompt, references=None):
         total = len(paragraphs)
+        self.total_parts = total
         checkpoint_dir = scratch / "paragraph-checkpoints"
         checkpoint_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         batches = paper_batches(paragraphs, self.paragraphs_per_worker)
@@ -14130,6 +14287,20 @@ class PaperRun(Run):
             visual = self.interpret_figures and _describes_visual(set(kinds[start - 1:end]))
             return models[1] if visual else models[0]
 
+        def why(start, end):
+            """Why a batch goes to its model: "figure" (a figure, table, or
+            equation while figures are interpreted), "text", or "continued"
+            when that role's model was changed after a pause (changed_roles)."""
+            role = "figure" if self.interpret_figures and _describes_visual(set(kinds[start - 1:end])) else "text"
+            return "continued" if role in self.changed_roles else role
+
+        def asked(start, *arguments):
+            """One batch's answer, with how many model requests it took and how long."""
+            state = self.batch_state
+            state.start, state.attempts = start, 0
+            began = time.monotonic()
+            return self.paragraph_batch_response(*arguments), state.attempts, round(time.monotonic() - began, 1)
+
         summaries = []
         results = {}
         completed_count = 0
@@ -14218,7 +14389,8 @@ class PaperRun(Run):
             else:
                 context, _ = paper_summary_context(summaries, self.summary_context_chars)
             future = executor.submit(
-                self.paragraph_batch_response,
+                asked,
+                start,
                 scratch,
                 tuple(requested[start - 1:end]),
                 context,
@@ -14304,26 +14476,33 @@ class PaperRun(Run):
                     ):
                         start, end = futures.pop(future)
                         try:
-                            narration, summary, tags, chart = future.result()
+                            (narration, summary, tags, chart), attempts, seconds = future.result()
                         except ModelUnreachable as exc:
-                            unreachable = unreachable or ModelUnreachable(exc.model, start)
+                            unreachable = unreachable or ModelUnreachable(exc.model, start, exc.error)
                             continue
                         narration, lines, flags = finish(start, end, narration, chart=chart)
-                        write_json_atomic(
-                            checkpoint_dir / f"{start:06d}-{end:06d}.json",
-                            {
-                                "end": end,
-                                "narration": narration,
-                                "summary": summary,
-                                "tags": tags,
-                                # Kept though asked about once more: marked on the passage.
-                                "flags": flags,
-                                # Described as a chart: its checks on resume hold it to that.
-                                "chart": chart,
-                                # Which model wrote it, for the book's record.
-                                "model": writer(start, end),
-                            },
-                        )
+                        reason = why(start, end)
+                        written = {
+                            "end": end,
+                            "narration": narration,
+                            "summary": summary,
+                            "tags": tags,
+                            # Kept though asked about once more: marked on the passage.
+                            "flags": flags,
+                            # Described as a chart: its checks on resume hold it to that.
+                            "chart": chart,
+                            # Which model wrote it, why, and when, for the book's record.
+                            "model": writer(start, end),
+                            "why": reason,
+                            "at": utc_timestamp(),
+                            **({"after": self.continued_after or "the model was changed"}
+                               if reason == "continued" else {}),
+                        }
+                        write_json_atomic(checkpoint_dir / f"{start:06d}-{end:06d}.json", written)
+                        checking = self.verify_model or self.model if self.verify and _describes_visual(
+                            set(kinds[start - 1:end])) else None
+                        self.note("batch", first=start, last=end, model=written["model"], why=reason,
+                                  checked_by=checking, attempts=attempts, seconds=float(seconds))
                         results[start] = (end, narration, summary)
                         for line in lines:
                             self.publish("log", line + "\n")
@@ -14498,6 +14677,17 @@ class PaperRun(Run):
             self.earlier_models = (
                 manifest["model"], (manifest.get("interpret_figures") or {}).get("model") or manifest["model"],
             )
+            # The roles whose model now differs write "continued" parts, and
+            # so do roles a run before this one already continued with the
+            # same model (its kept batches say so).
+            now = (self.model, self.figure_model or self.model)
+            self.changed_roles = {role for role, before, current in zip(("text", "figure"), self.earlier_models, now)
+                                  if before != current}
+            for path in (scratch / "paragraph-checkpoints").glob("*.json"):
+                kept = read_json_file(path)
+                if isinstance(kept, dict) and kept.get("why") == "continued" and kept.get("model") in now:
+                    self.changed_roles.add("figure" if kept["model"] == now[1] and now[1] != now[0] else "text")
+                    self.continued_after = self.continued_after or kept.get("after") or ""
             if manifest.get("model") != identity["model"] or manifest.get("interpret_figures") != identity[
                     "interpret_figures"] or manifest.get("verification") != identity["verification"]:
                 self.publish("log", "The model changed: the parts already written stay as their model wrote "
@@ -14641,6 +14831,72 @@ class AudiobookRun(Run):
         self.paused = None
         # How long this run took per stage, for the book's record.
         self.seconds = {}
+        # The job's model history, in its stage (HISTORY_FILE): it outlives
+        # a restart and goes on with a resumed job, and goes to the book.
+        self.history_path = self.stage / HISTORY_FILE
+
+    def note(self, event, **fields):
+        """Add one event to the job's model history, with the time in UTC."""
+        entry = {"at": utc_timestamp(), "job": self.job_id, "event": event, **fields}
+        append_history_lines(self.history_path, [entry])
+        return entry
+
+    def note_quietly(self, event, **fields):
+        """note(), for a job that is ending anyway: a history that can't be
+        written is said in the log, never a second failure."""
+        try:
+            self.note(event, **fields)
+        except OSError as exc:
+            self.publish("log", f"Could not keep the job's history: {exc}\n")
+
+    def note_start(self, models):
+        """The job's start in its history: its models ({"text", "figure",
+        "checking"}, None for an option that is off), how each was chosen,
+        and the browser that sent it. A start after a pause is a Retry (the
+        same model) or a continue with another model, said on the server's
+        log too; so is a start whose text model differs from the one the kept
+        parts were begun with. Returns why the parts written now continue
+        ("<model> became unreachable at part N"), or ""."""
+        submitted = self.values.get("submitted") or {}
+        browser = submitted.get("browser") or ""
+        choice = submitted.get("choice") if isinstance(submitted.get("choice"), dict) else {}
+        roles = {"text": "book", "figure": "figure", "checking": "verify"}
+        how = {role: HOW_CHOSEN.get(choice.get(picker), "browser's choice")
+               for role, picker in roles.items() if models.get(role)}
+        pause = None
+        for entry in read_history_lines(self.history_path):
+            if entry.get("event") == "paused":
+                pause = entry
+            elif entry.get("event") in ("continued", "retried", "done"):
+                pause = None
+        role = "text"
+        if pause:
+            role = {"book": "text", "figure": "figure", "verify": "checking"}.get(pause.get("picker"), "text")
+            if models.get(role) and models[role] != pause.get("model"):
+                how[role] = "continued"
+        self.note("start", mode=self.values.get("book_mode"), document=self.values.get("document_name"),
+                  voice=self.values.get("narrator"), text_model=models.get("text"),
+                  figure_model=models.get("figure"), interpret_figures=bool(self.values.get("interpret_figures")),
+                  checking_model=models.get("checking"), how=how, browser=browser)
+        if not pause:
+            manifest = read_json_file(self.stage / "extraction" / "extraction.json")
+            if isinstance(manifest, dict) and models.get("text") and manifest.get("model") not in (None, models["text"]):
+                self.note("models_changed", **{"from": manifest["model"], "to": models["text"]}, browser=browser)
+                history_log(self.job_id, f"model changed from {selector_name(manifest['model'])} to "
+                                         f"{selector_name(models['text'])} (browser {browser or 'unknown'})")
+            return ""
+        model = models.get(role) or pause.get("model")
+        parts = parts_span(pause.get("part") or 1, pause.get("total"))
+        if model == pause.get("model"):
+            self.note("retried", model=model, picker=pause.get("picker"), parts=parts, browser=browser)
+            history_log(self.job_id, f"retried with {selector_name(model)} for parts {parts} "
+                                     f"(browser {browser or 'unknown'})")
+            return ""
+        self.note("continued", **{"from": pause.get("model"), "to": model}, picker=pause.get("picker"),
+                  parts=parts, browser=browser)
+        history_log(self.job_id, f"continued with {selector_name(model)} for parts {parts} "
+                                 f"(browser {browser or 'unknown'})")
+        return pause.get("message") or ""
 
     def assign_workers(self, workers):
         """Bind a queued job to its local and SSH chunk workers."""
@@ -14901,6 +15157,7 @@ class AudiobookRun(Run):
 
     def _make_voice(self, input_path):
         """Read the book's own narration.json in a new voice; no model runs."""
+        self.note_start({})
         narration = json.loads(input_path.read_text(encoding="utf-8"))
         text = narration_text(narration)
         text_path = self.stage / "narration.txt"
@@ -14915,7 +15172,7 @@ class AudiobookRun(Run):
         self.seconds["aligning"] = round(time.monotonic() - started, 1)
         commit_voice(
             self.storage, self.values["book_id"], self.values["narration_sha256"],
-            self._voice_entry(timings, audio), audio, timings,
+            self._voice_entry(timings, audio), audio, timings, read_history_lines(self.history_path),
         )
         return self.values["book_id"]
 
@@ -14927,6 +15184,7 @@ class AudiobookRun(Run):
         if needs_extraction:
             self.set_phase("extraction", "Extraction")
             model = self.values["model"]
+            default = False
             if self.values["adapt"] and not model:
                 # No model chosen: what a browser that chose nothing starts
                 # with (first_use_models()), or nothing; never another model.
@@ -14938,6 +15196,16 @@ class AudiobookRun(Run):
                 model = first["selector"]
                 if not model:
                     raise RuntimeError("No model was chosen. Choose a model under Model for this book.")
+                default = True
+            adapt = self.values["adapt"]
+            if default:
+                self.values["submitted"] = {**(self.values.get("submitted") or {}), "choice": {
+                    **((self.values.get("submitted") or {}).get("choice") or {}), "book": "default"}}
+            continued_after = self.note_start({
+                "text": model if adapt else None,
+                "figure": (self.values["figure_model"] or model) if adapt and self.values["interpret_figures"] else None,
+                "checking": (self.values["verify_model"] or model) if adapt and self.values["verify"] else None,
+            })
             self.paper_run = PaperRun(
                 input_path,
                 extraction_dir / "prepared.txt",
@@ -14955,8 +15223,12 @@ class AudiobookRun(Run):
             )
             self.paper_run.publish = self.publish
             self.paper_run.stop_requested = self.stop_requested
+            self.paper_run.note = self.note
+            self.paper_run.continued_after = continued_after
             narration_input = self.paper_run.prepare_document(extraction_dir)
             self.seconds.update(self.paper_run.seconds)
+        else:
+            self.note_start({})
         if self.stop_requested.is_set():
             raise InterruptedError("audiobook workflow stopped")
         self.set_phase("narration", "Narration")
@@ -15022,7 +15294,7 @@ class AudiobookRun(Run):
         }
         return commit_book(
             self.storage, record, narration, markdown, input_path,
-            self._voice_entry(timings, audio), audio, timings,
+            self._voice_entry(timings, audio), audio, timings, read_history_lines(self.history_path),
         )
 
     def pump(self):
@@ -15033,6 +15305,9 @@ class AudiobookRun(Run):
             else:
                 book = self._make_book(input_path)
             path, record = read_book(self.storage, book)
+            # The job's last event goes to the book's history too.
+            append_book_history(path, [self.note("done", book=book, voice=self.values["narrator"],
+                                                 part_models=record.get("part_models") or [])])
             self.artifact = str(voice_folder(path, self.values["narrator"]) / "audio.mp3")
             seconds = {
                 "total": round(time.monotonic() - self.work_started_at, 1),
@@ -15042,12 +15317,14 @@ class AudiobookRun(Run):
             self.result = {
                 "book": book, "voice": self.values["narrator"], "title": record.get("title"),
                 "total_time": total_time, "part_models": record.get("part_models") or [],
+                "part_models_summary": part_models_summary(record.get("part_models") or []),
             }
             shutil.rmtree(self.stage, ignore_errors=True)
             self.publish("log", f"Completed audiobook: {record.get('title')} read by {self.values['narrator']}\n")
             self.publish("log", f"Total time: {total_time}.\n")
             self.close(0)
         except InterruptedError:
+            self.note_quietly("stopped")
             self.publish(
                 "log",
                 f"Stopped. Resume data remains in {self.stage}.\n",
@@ -15066,6 +15343,13 @@ class AudiobookRun(Run):
                 "model": exc.model, "name": selector_name(exc.model), "part": exc.part,
                 "message": str(exc), "picker": picker, "part_models": done,
             }
+            total = run.total_parts if run is not None else None
+            error = exc.error or str(exc.__cause__ or "")
+            self.note_quietly("paused", model=exc.model, picker=picker, part=exc.part, total=total,
+                              message=str(exc), error=error,
+                              kept=[{key: item[key] for key in ("first", "last", "model")} for item in done])
+            history_log(self.job_id, f"paused: {selector_name(exc.model)} unreachable"
+                                     + (f" at part {exc.part}" if exc.part else "") + (f" ({error})" if error else ""))
             self.publish(
                 "log",
                 f"Paused: {exc}." + (f" Kept: {part_models_text(done)}." if done else "")
@@ -15080,6 +15364,7 @@ class AudiobookRun(Run):
             ValueError,
             concurrent.futures.CancelledError,
         ) as exc:
+            self.note_quietly("failed", error=str(exc))
             self.publish(
                 "log",
                 f"Audiobook workflow failed: {exc}\n"
@@ -15740,6 +16025,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra=headers,
             )
         if route == "/api/run":
+            # How the page came by each model, for the job's history (queue_audiobook()).
+            self.run_body = body
             state = normalize(body.get("state", {}))
             try:
                 headers = state_cookie_headers(
@@ -16520,6 +16807,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def queue_audiobook(self, values, input_version, voice_version, state_headers, title=None):
         mode = values["book_mode"]
+        # Who sent the job and how each model was chosen (pickerChoice()'s
+        # how, by picker), for its model history; not part of its identity.
+        choice = getattr(self, "run_body", {}).get("choice")
+        values["submitted"] = {"browser": self.client_address[0], "choice": {
+            picker: how for picker, how in (choice.items() if isinstance(choice, dict) else ())
+            if picker in ("book", "figure", "verify") and how in HOW_CHOSEN}}
         label = f"{title or Path(values['document_name']).stem} · {values['narrator']}"
 
         def reply_job(job, duplicate=False):
@@ -16999,6 +17292,11 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .model-name { color:var(--dim); overflow-wrap:anywhere; }
 .model-reason { font-size:13px; }
 .picker-images-note { margin:0; font-size:13px; }
+/* Which model wrote the book: one line, and every range under Which parts. */
+.book-models .part-models-details { display:inline; }
+.book-models .part-models-details[open] { display:block; }
+.book-models .part-models-details summary { display:inline; cursor:pointer; text-decoration:underline; }
+.book-models .part-models-details ul { margin:4px 0 0; padding-left:18px; }
 /* A model chosen or preferred that does not answer: red, with its icon in the text. */
 .model-reason.unreachable { color:var(--bad); font-weight:600; }
 .alternatives { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:6px; }
@@ -17839,7 +18137,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <h3 id="result-title" tabindex="-1">Your audiobook is ready</h3>
       <p id="result-text" class="clamp"></p>
       <p id="result-time" class="note"></p>
-      <p id="result-models" class="note"></p>
+      <div id="result-models" class="note book-models"></div>
       <div class="actions">
         <button id="result-primary" type="button" onclick="startListening()">Start listening</button>
         <button id="download" type="button" onclick="downloadArtifact(this)">Download MP3</button>
@@ -18192,7 +18490,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <span id="reader-meta"></span>
           </p>
           <p id="reader-download" class="note reader-download" aria-live="polite"></p>
-          <p id="reader-models" class="book-models note hidden"></p>
+          <div id="reader-models" class="book-models note hidden"></div>
           <details id="book-files" class="book-files note hidden">
             <summary id="book-files-summary"></summary>
             <ul id="book-file-list" class="note-list"></ul>
@@ -20140,7 +20438,7 @@ async function openAudiobook(id, focus, voiceName) {
     if (readerAudio !== audio) return;
     readerPayload = payload;
     // The book's details: which model wrote which parts.
-    $("reader-models").textContent = partModelsText(payload.part_models);
+    renderPartModels($("reader-models"), payload.part_models, payload.part_models_summary);
     $("reader-models").classList.toggle("hidden", !$("reader-models").textContent);
     showBookVoices(payload);
     readerCues = payload.cues || [];
@@ -22972,17 +23270,44 @@ function renderResult() {
   if (!info) return;
   $("result-text").textContent = info.title || "";
   $("result-time").textContent = info.total_time ? `Total time: ${info.total_time}.` : "";
-  $("result-models").textContent = partModelsText(info.part_models);
+  renderPartModels($("result-models"), info.part_models, info.part_models_summary);
   $("airdrop").classList.toggle("hidden", !caps.airdrop || !info.artifact);
 }
-// Which model wrote which parts ([{first, last, model}], the book's
-// part_models), as the job's report and the book's details say it.
-function partModelsText(ranges) {
-  if (!ranges || !ranges.length) return "";
+// Which model wrote which parts (the book's part_models: [{first, last,
+// model, why, after, first_at, last_at}]), as the job's report and the
+// book's details say it: one line by model (the server's
+// part_models_summary(), else the counts by model) and, under "Which
+// parts", every range with why and when.
+const PART_REASONS = { figure:"figures, tables and equations" };
+function renderPartModels(node, ranges, summary) {
+  node.replaceChildren();
+  if (!ranges || !ranges.length) return;
   const name = (item) => item.name || textModel(item.model).short;
-  if (ranges.length === 1) return `Text written by ${name(ranges[0])}.`;
-  return `Text written by ${ranges.map((item) => `${item.last > item.first ? "parts" : "part"} ${item.first}`
-    + `${item.last > item.first ? `–${item.last}` : ""}: ${name(item)}`).join("; ")}.`;
+  if (!summary) {
+    const counts = new Map();
+    for (const item of ranges) counts.set(name(item), (counts.get(name(item)) || 0) + item.last - item.first + 1);
+    const said = [...counts].map(([model, count]) => `${model} (${count} part${count === 1 ? "" : "s"})`);
+    summary = `Text written by ${said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0]}.`;
+  }
+  const line = document.createElement("span");
+  line.className = "part-models-line"; line.textContent = summary;
+  const details = document.createElement("details");
+  details.className = "part-models-details";
+  const head = document.createElement("summary");
+  head.textContent = "Which parts";
+  const list = document.createElement("ul");
+  for (const item of ranges) {
+    const entry = document.createElement("li");
+    const parts = item.last > item.first ? `Parts ${item.first}–${item.last}` : `Part ${item.first}`;
+    const why = item.why === "continued" ? `continued after ${item.after || "the model was changed"}`
+      : PART_REASONS[item.why] || "";
+    entry.textContent = `${parts}: ${name(item)}${why ? ` (${why})` : ""}`;
+    if (item.first_at) entry.title = `Written ${item.first_at}${item.last_at && item.last_at !== item.first_at
+      ? ` to ${item.last_at}` : ""} (UTC)`;
+    list.append(entry);
+  }
+  details.append(head, list);
+  node.append(line, " ", details);
 }
 
 // --- A stopped or failed job, also after a reload: the newest one this
@@ -23529,10 +23854,14 @@ function log(text) {
 
 // `extra` names a book, with mode "voice" or "recreate" and the voice, for
 // a job started from Listen; Create sends the form alone.
+// How the page came by each model of the job Create sends (pickerChoice()'s
+// how, by picker), taken before startAudiobook() fixes the shown model as
+// this browser's; the server keeps it in the job's model history.
+let runChoice = null;
 async function requestRun(confirmed, extra) {
   const response = await fetch("/api/run", {
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ state, confirmed:!!confirmed, ...(extra || {}) }),
+    body:JSON.stringify({ state, confirmed:!!confirmed, ...(runChoice ? { choice:runChoice } : {}), ...(extra || {}) }),
   });
   const answer = await response.json().catch(() => ({}));
   if (response.status === 409 && answer.confirmation_required) {
@@ -23578,6 +23907,7 @@ async function startAudiobook() {
     // on it is this browser's last used text model. An unreachable model
     // sends nothing.
     if (!(existing && existing.has_text && !overwrite) && state.audiobook.adapt) {
+      runChoice = Object.fromEntries(["book", "figure", "verify"].map((name) => [name, pickerChoice(name).how]));
       const text = pickerChoice("book");
       if (!text.model) {
         setStatus(text.unreachable ? `${text.unreachable.short} is unreachable. Choose another model.`
@@ -23600,6 +23930,7 @@ async function startAudiobook() {
     queueSync();
     started = showStartedJob(answer);
   } finally {
+    runChoice = null;
     submitting = false; render();
     // Disabling the button dropped focus; return it to the view now shown.
     if (started) $("progress-title").focus();

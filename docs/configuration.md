@@ -175,6 +175,7 @@ alone. The server creates and owns this fixed layout:
 │       ├── source.pdf
 │       ├── narration.json
 │       ├── reader.md
+│       ├── history.jsonl
 │       └── voices/
 │           └── Eir/
 │               ├── audio.mp3
@@ -207,6 +208,10 @@ alone. The server creates and owns this fixed layout:
     text, and the author's paragraphs it came from, typed body, heading,
     figure, table, equation, footnote, or caption;
   - `reader.md` is the follow-along view with its pictures embedded;
+  - `history.jsonl` is the book's model history: one JSON line per event of
+    each job that made it or one of its voices, oldest first, each with its
+    time in UTC (`at`), the job (`job`), and the event; see
+    [Model history](#model-history);
   - `voices/<voice>/` holds that voice's `audio.mp3` and its own word and
     sentence `timings.json`.
 
@@ -214,8 +219,8 @@ alone. The server creates and owns this fixed layout:
   when it is complete, so a crash never leaves a half-made one; the next start
   removes what was left unfinished.
 - **in_progress** contains durable source snapshots, extraction checkpoints,
-  and narration chunks for unfinished jobs. It is removed for a job only after
-  its book is published.
+  narration chunks, and the job's model history (`history.jsonl`) for
+  unfinished jobs. It is removed for a job only after its book is published.
 - **workers.yaml**, present once a node is added or a local device turned off,
   lists the other machines that narrate over SSH and this machine's devices
   that do not; see [Narration workers on other machines](ssh-workers.md).
@@ -245,6 +250,41 @@ paths). Pass `--storage-root` with that folder to keep it where it is instead.
 Every copy of Hilde started without `--storage-root` uses the same library. Give
 an older copy you keep for testing its own `--storage-root`: it may rewrite
 books made by newer versions into the layout it knows.
+
+### Model history
+
+Each job keeps a history of the models it used, as JSON lines in its folder
+under `in_progress/<job>/history.jsonl`, so it outlives a restart and goes on
+with a resumed job; when the book (or a voice of it) is published, the job's
+lines are appended to the book's `history.jsonl` (readable only by the server's
+user; a book made again keeps its earlier lines). Every line has `at` (UTC,
+such as `2026-10-19T13:31:02Z`), `job`, and `event`:
+
+- `start`: the job's mode, document, voice, `text_model`, `figure_model` and
+  `interpret_figures`, `checking_model` (each `null` when off), `how` each was
+  chosen (`browser's choice`, `server default`, `the only model`, `same as the
+  text model`, or `continued`), and `browser`, the address of the browser that
+  sent it;
+- `batch`: one part written: `first` and `last` paragraph, `model`, `why`
+  (`text`; `figure` for a figure, table, or equation read by the figure model;
+  `continued` by a model chosen after another stopped), `checked_by` (the
+  checking model, or `null`), `attempts` (model requests), and `seconds`;
+- `request_failed`: a request that failed and is asked again (`model`,
+  `part`, `attempt`, `error`);
+- `paused`: the model became unreachable (`model`, `picker`, `part`, `total`,
+  `message` as the page says it, `error`, and the parts `kept`);
+- `retried` (the same model again: `model`, `parts` left, `browser`),
+  `continued` (`from` and `to` model, `picker`, `parts` left, `browser`), and
+  `models_changed` (a resumed job's text model differs from the one its kept
+  parts were begun with);
+- `stopped`, `failed` (`error`), and `done` (`book`, `voice`, `part_models`).
+
+The server's log has one line per pause, Retry, continue, and change of model,
+such as `2026-10-19T13:31:02Z job 1ee9a0c4… paused: DeepSeek V4.1 Flash
+unreachable at part 25 (…)` and `… continued with GPT-6 Astra for parts 25–140
+(browser 192.0.2.18)`. The book's `part_models` ranges also say `why`, `after`
+(for `continued`: why the model was changed), and the first and last time a
+part was written (`first_at`, `last_at`).
 
 ### Provider sign-ins and keys
 
@@ -353,13 +393,16 @@ model by model, in this order:
    or LM Studio's `/api/v0/models` type (`vlm` reads images, `llm` does not).
 3. **A test picture**: otherwise Hilde sends the model, automatically, one
    small request to `/v1/chat/completions`: a 32×32 PNG of one colour with
-   "What colour is this image? Answer with one word." (at most 10 tokens,
-   temperature 0, waiting up to 60 seconds). The model reads images when the
-   server takes the request and the answer names the colour; it is text only
-   when the server refuses the picture (HTTP 400 or 422, or an error about
-   images) or names another colour. No answer in time, a server that can't be
-   reached, or a server error decide nothing: the model is checked again on a
-   later model list. A model the server says is not loaded (Ollama's
+   "What colour is this image? Answer with one word." (at most 64 tokens,
+   temperature 0, thinking off where the server takes that, as for Ollama,
+   waiting up to 60 seconds). The model reads images when the server takes
+   the request and its final answer names the colour (reasoning a server
+   sends apart, or inside `<think>`, does not count); it is text only when the
+   server refuses the picture (HTTP 400 or 422, or an error about images) or
+   answers another colour. No answer in time, a server that can't be reached,
+   a server error, or an answer the token limit cut off before it named a
+   colour (a model still reasoning) decide nothing: the model is checked again
+   on a later model list. A model the server says is not loaded (Ollama's
    `/api/ps`) is never sent a picture, so no model is loaded for a check; it
    is checked once it is loaded.
 
