@@ -339,7 +339,7 @@ one bar docked at the bottom of the screen, on a computer and on a phone alike,
 and stays there while you scroll: from left to right a large play/pause
 button, **Ask Hilde**, the seek bar, the elapsed and total time, and the speed
 (it shows, for example, **1.25×**; click it to choose 0.75× to 2×). **Ask
-Hilde** looks like a short field with a blue border: a blue chat icon, **Ask
+Hilde** looks like a short teal field (teal is Ask Hilde's own colour): a teal chat icon, **Ask
 Hilde**, and "Ask about what you're hearing…" (shorter, "Ask about this…",
 where there is less room). On a phone, or any window too narrow for one row
 (under about 620 px), the seek bar takes a thin row of its own, the elapsed time
@@ -428,7 +428,7 @@ with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
 **Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
-in its place, with **← Back to the book**) and pauses the book, as **Ask
+in its place, with **← Back to the book**; its header has a teal top edge and a teal **Ask Hilde** tab) and pauses the book, as **Ask
 about this** on selected words and **Ask about this figure** do;
 it waits at that sentence until you press play (in the player bar, or **Play
 book** at the bottom of the chat); closing the
@@ -461,7 +461,7 @@ conversation grows long, its oldest messages and reads leave what Hilde
 remembers, and the chat says so.
 
 Ask Hilde attaches the part being read (or the words you selected) as a card
-above the message box: headed **Selected text** for a selection, else the
+above the message box: headed **Selected text** (in teal, Ask Hilde's colour) for a selection, else the
 section heading as in the book, below it your words in quotes or the part's
 first words, **Change** to attach what
 you have selected, or else what is playing now, and **×** to remove it. It
@@ -514,7 +514,7 @@ addresses, and Markdown are not read; a citation such as ¶12 is read as
 (`--voice-clone-model`); without it, neither shows.
 
 At the bottom of the chat, under the conversation and above the question box,
-one Play/Pause button stays in place while the conversation scrolls (on a phone
+one blue Play/Pause button stays in place while the conversation scrolls (on a phone
 too, at the bottom of the full-screen chat). It plays or pauses whatever plays
 now and says which: **Pause book** while the book plays, **Pause answer** while
 an answer is read aloud, **Play answer** for an answer paused partway, and

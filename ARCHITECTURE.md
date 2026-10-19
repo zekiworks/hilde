@@ -800,16 +800,29 @@ documents. Follow the text. Ask to understand." (shown on phones too, smaller).
 A small **by Zeki Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
-five colours, each in one role, used only through tokens: blue `--accent`
-(#2a5fe0) fills primary buttons, the play button, the active step marker, and
-a pressed preview, with white ink (`--accent-ink`, 5.5:1); `--accent-light`
+six colours, each in one role, used only through tokens: blue `--accent`
+(#2a5fe0) fills primary buttons, the Play/Pause buttons (the player bar's and
+the chat panel's), the active step marker, and a pressed preview, with white
+ink (`--accent-ink`, 5.5:1); `--accent-light`
 (#5aa2ff, 6.6:1 on the #1b1b1b ground) draws selected states (tab and switch
 underlines, the focus outline, links, indicators, a card's border, the LED
-dots, the reading highlight); `--accent-soft` mixes 16% of it; green `--local`
+dots, the reading highlight); `--accent-soft` mixes 16% of it; teal `--ask`
+(#2bb3a3; its light-mode value #127a6e is recorded beside it for Phase 3) only
+Ask Hilde: the player's **Ask Hilde** field (a 15% tint over `--field`, a 1 px
+border, the icon), the chat panel's header while the chat is shown (a 3 px top
+edge and the **Ask Hilde** tab's text and underline), and the **Selected text**
+card (`.chip-selection`, which sets `--accent-light` to `--ask`, so its left
+rule, attached outline, switch underline, and details mark are teal, and its
+title); green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items, red `--bad` (#e5534b) errors and destructive actions, always
-with an icon and text. Selected text (`::selection`) is a neutral gray fill
+with an icon and text. Contrast of `--ask`, dark: the field's off-white label
+12.4:1 and muted placeholder 5.7:1 on its tint (10.8:1 and 4.9:1 on the hover
+tint), its border 6.0:1 on the bar and icon 5.5:1 on the tint, the tab text
+5.2:1 on `--raised`, the card's title 7.0:1 on `--field`; light (#127a6e on
+white): border, icon, and title 5.2:1, icon 4.2:1 on its 15% tint, dark text
+14:1 on that tint. Selected text (`::selection`) is a neutral gray fill
 (#5c5c5c). No orange is left; no glow stays lit (the LED dots
 are flat); an answer being read aloud (`.chat-speaking`) is white on
 `--accent`; danger buttons are dark ink (`var(--bg)`) on `--bad`.
@@ -1691,8 +1704,8 @@ width (`68ch` of the reading font, centred), 12 px apart: from left to right a
 large play/pause (48 px), **Ask Hilde**, the seek bar (it takes the rest), elapsed
 and total time, and a speed button showing the speed ("1.25×") that opens 0.75×
 to 2× upwards. **Ask Hilde** is the same button, drawn as a field so it is easy
-to see: 340 px (`flex: 0 1 340px`, at most 360 px, never stretched), the dark
-`--field` surface, a 1 px `--accent-light` border, a blue chat icon, the bold
+to see: 340 px (`flex: 0 1 340px`, at most 360 px, never stretched), in Ask
+Hilde's teal: a 15% `--ask` tint over `--field`, a 1 px `--ask` border, a teal chat icon, the bold
 label and a muted placeholder (`aria-hidden`, so its name stays "Ask Hilde"):
 "Ask about what you're hearing…", or "Ask about this…" where that would be cut,
 or none (`fitAsk()`, on a `ResizeObserver` of the button), so its text is never
@@ -2026,7 +2039,7 @@ answer read last, with its `chatPlace`), else the book; `panelAnswer` is
 cleared when the book plays, and an answer that ends (`stopSpeaking(true)`)
 clears its place, so the control is the book's again. `renderPanelPlay()`
 (from `renderPlayer()`, `pauseOtherSounds()`, `setVoiceButton()`, and
-`stopSpeaking()`) draws a blue round play or pause icon and the label, also its
+`stopSpeaking()`) draws a play or pause icon and the label, white on a filled `--accent` button, also its
 `aria-label`: "Pause book", "Play book", "Pause answer", or "Play answer";
 `togglePanelPlay()` pauses or plays that source (`stopSpeaking()` keeps the
 answer's place; `speakAnswer()` goes on from it). It is at least 44 × 44 px;

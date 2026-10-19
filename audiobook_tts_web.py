@@ -17051,12 +17051,16 @@ PAGE = r"""<!doctype html>
 <link rel="apple-touch-icon" href="/hilde-dark.png">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, and five colours,
+        /* One charcoal ground, one neutral gray family, and six colours,
            each in one role only, used through these tokens:
-           blue: --accent, the fill of buttons and chosen things, white ink
-           on it (5.5:1); --accent-light, selected items, links, the LED dot
-           of a selected tab or a switch that is on, and the reading
-           highlight (6.6:1 on the ground);
+           blue: --accent, the fill of buttons and chosen things (Play/Pause
+           too), white ink on it (5.5:1); --accent-light, selected items,
+           links, the LED dot of a selected tab or a switch that is on, and
+           the reading highlight (6.6:1 on the ground);
+           teal --ask: Ask Hilde only: the player's Ask Hilde field (a 15%
+           tint, its border and icon), the chat panel's header, and the
+           Selected text card (6.6:1 on the ground; light mode, Phase 3:
+           #127a6e, 5.2:1 on white);
            green --local: the Local badge (with a chip) and Runs on Local;
            purple --cloud: the Cloud badge (with a cloud) and Runs on Cloud;
            gray --off: disabled and "not running" items (the selection
@@ -17067,6 +17071,7 @@ PAGE = r"""<!doctype html>
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
+        --ask:#2bb3a3; /* light mode: #127a6e */
         --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
         --bad:#e5534b; --radius:12px; }
 * { box-sizing:border-box; }
@@ -17607,14 +17612,16 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
                color:var(--accent-ink); }
 .player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
 .player-play svg { width:20px; height:20px; fill:currentColor; }
-/* Ask Hilde reads as a field, short and easy to see: a dark surface, a 1px blue border, a blue icon, the bold
-   label and a muted placeholder; 340px (at most 360px), never stretched. Text is never cut: where the long
-   placeholder would be, the short one shows, and where that would be too, none (fitAsk()). */
+/* Ask Hilde reads as a field, short and easy to see, in Ask Hilde's own teal (--ask): a 15% teal tint, a 1px teal
+   border, a teal icon, the bold off-white label and a muted placeholder (both at least 4.5:1 on the tint); 340px (at
+   most 360px), never stretched. Text is never cut: where the long placeholder would be, the short one shows, and
+   where that would be too, none (fitAsk()). */
 .player-bar .ask-hilde { display:flex; flex:0 1 340px; align-items:center; gap:8px; max-width:360px; height:44px;
-                         padding:0 14px; border:1px solid var(--accent-light); border-radius:999px;
-                         background:var(--field); box-shadow:none; color:var(--text); text-align:left; }
-.player-bar .ask-hilde:hover:not(:disabled) { background:color-mix(in srgb, var(--accent-light) 8%, var(--field)); }
-.ask-icon { flex:none; width:18px; height:18px; fill:var(--accent-light); }
+                         padding:0 14px; border:1px solid var(--ask); border-radius:999px;
+                         background:color-mix(in srgb, var(--ask) 15%, var(--field)); box-shadow:none;
+                         color:var(--text); text-align:left; }
+.player-bar .ask-hilde:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 22%, var(--field)); }
+.ask-icon { flex:none; width:18px; height:18px; fill:var(--ask); }
 .ask-text { display:flex; flex:1 1 auto; align-items:baseline; gap:8px; min-width:0; }
 .ask-label { flex:none; font-weight:650; white-space:nowrap; }
 .ask-hint { flex:1 1 0; width:0; min-width:0; overflow:hidden; color:var(--dim); font-size:13px; font-weight:400;
@@ -17672,11 +17679,14 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
   transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
 .panel-head { display:flex; align-items:center; gap:8px; padding:8px 10px;
               border-bottom:1px solid var(--line); }
+/* With the chat open, the panel's header is Ask Hilde's: a teal top edge and the Ask Hilde tab in teal. */
+.side-panel:has(#chat-pane:not(.hidden)) .panel-head { border-top:3px solid var(--ask); }
 .panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
 .panel-tabs [role=tab] { min-height:36px; padding:4px 12px; border:0; border-radius:8px;
                          background:transparent; color:var(--dim); white-space:nowrap; box-shadow:none; }
 .panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
                                              box-shadow:inset 0 -2px 0 var(--accent-light); }
+.panel-tabs #panel-tab-chat[aria-selected=true] { color:var(--ask); box-shadow:inset 0 -2px 0 var(--ask); }
 .panel-close { min-width:40px; padding:0 10px; font-size:18px; }
 .panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
 .panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
@@ -17718,13 +17728,14 @@ button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--acc
 .chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent);
                                  box-shadow:0 0 0 3px var(--accent); border-radius:3px; }
 .chat-notice { font-style:italic; }
-/* The panel's Play/Pause: under the conversation, above the box, never scrolling with either; a round blue
-   play/pause like the player's and what it is for ("Pause answer"), at least 44 x 44. */
+/* The panel's Play/Pause: under the conversation, above the box, never scrolling with either; filled blue like
+   the player's Play/Pause, white icon and what it is for ("Pause answer"), at least 44 x 44. */
 .panel-play-row { display:flex; flex:none; padding:8px 14px; border-top:1px solid var(--line); }
-button.panel-play { display:inline-flex; align-items:center; gap:10px; min-width:44px; min-height:44px;
-                    padding:0 16px 0 6px; border-radius:999px; font-size:14px; font-weight:600; }
-.panel-play-icon { display:grid; place-items:center; width:32px; height:32px; border-radius:50%;
-                   background:var(--accent); color:var(--accent-ink); }
+button.panel-play { display:inline-flex; align-items:center; gap:8px; min-width:44px; min-height:44px;
+                    padding:0 18px 0 14px; border-radius:999px; background:var(--accent); border-color:var(--accent);
+                    color:var(--accent-ink); font-size:14px; font-weight:600; }
+button.panel-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
+.panel-play-icon { display:grid; place-items:center; width:16px; height:16px; }
 .panel-play-icon svg { width:14px; height:14px; fill:currentColor; }
 .chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
                 border-top:1px solid var(--line); }
@@ -17735,6 +17746,7 @@ button.panel-play { display:inline-flex; align-items:center; gap:10px; min-width
 @keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
 .chat-about.attached { animation:chip-pulse 1.6s ease-out; }
 .chat-about.attached .chip { outline:2px solid var(--accent-light); outline-offset:0; }
+.chat-about.attached:has(.chip-selection) { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); }
 @media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
 .chip-failed-title { font-weight:600; }
 .chip-failed .chip-head { flex-wrap:wrap; }
@@ -17748,9 +17760,13 @@ button.panel-play { display:inline-flex; align-items:center; gap:10px; min-width
 .chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
         border:1px solid var(--line); border-left:3px solid var(--accent-light); border-radius:8px;
         background:var(--field); font-size:13px; }
+/* The Selected text card is Ask Hilde's: its accents (left rule, the attached outline, the switch and details
+   marks) and its title in teal. */
+.chip-selection { --accent-light:var(--ask); }
 .chip-head { display:flex; align-items:center; gap:4px; }
 .chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
                 white-space:nowrap; }
+.chip-selection .chip-section { color:var(--ask); }
 .chip-head button { min-height:24px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
 .chip-preview { color:var(--dim); overflow-wrap:anywhere; }
@@ -21447,7 +21463,7 @@ function focusControls(focus) {
 // the whole selection under its own details.
 function limitChip(current) {
   const chip = document.createElement("div");
-  chip.className = "chip chip-limit";
+  chip.className = "chip chip-limit chip-selection";
   const problem = document.createElement("p");
   problem.className = "problem";
   problem.textContent = current.error;
@@ -21600,9 +21616,10 @@ function chipDetails(manifest, withSection) {
 // card, without controls.
 function chipElement(manifest, editable = false) {
   const chip = document.createElement("div");
-  chip.className = "chip";
   const about = manifest.about || {};
   const selected = about.kind === "selection";
+  // The Selected text card wears Ask Hilde's teal.
+  chip.className = selected ? "chip chip-selection" : "chip";
   chip.append(
     chipHead(selected ? "Selected text" : manifest.section || "Before the first heading", editable),
     chipPreview(selected ? chatQuote(about.quote) : cutText(manifest.preview, 80)),
