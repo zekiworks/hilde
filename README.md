@@ -255,16 +255,16 @@ device must install again.
 
 ## Web UI
 
-The page has three tabs. **Create** turns a document into an audiobook in
+The page has three main tabs. **Create** turns a document into an audiobook in
 three steps, showing before you start which model prepares the text and
 whether it runs locally or in the cloud. **Voices** lists your narrators,
 searchable by description, and designs new ones. **Listen** opens the
 **Library**, where each book shows its last position on this device, and
 plays a book with its synchronized text, its source text, and its figures as
 printed in the PDF; **Ask Hilde** answers questions about what you are hearing
-and writes Markdown notes. A header indicator counts the audiobooks being
-made and opens their progress, and **Settings** holds the narration, text
-preparation, and machine settings: see [Web UI](docs/web-ui.md).
+and writes Markdown notes. A **Progress** tab, there while audiobooks are being
+made or one stopped or failed, follows them, and **Settings** holds the
+narration, text preparation, and machine settings: see [Web UI](docs/web-ui.md).
 
 ## Command line
 

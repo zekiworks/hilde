@@ -16775,16 +16775,6 @@ body.server-down [inert] { opacity:.5; }
 .brand { flex:1 1 200px; min-width:0; }
 .brand-name { font-size:24px; }
 .brand-tagline { color:var(--dim); font-size:13px; }
-.header-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end;
-                  gap:8px; margin-left:auto; }
-.header-actions button { min-height:0; padding:6px 12px; font-size:13px; }
-/* The jobs indicator: a small lamp, lit (no glow) while something runs. */
-.jobs-indicator { display:inline-flex; align-items:center; gap:8px;
-                  font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
-.jobs-indicator::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--dim); }
-.jobs-indicator.running::before { background:var(--accent-light); }
-.jobs-indicator.problem::before { background:var(--bad); }
-.jobs-indicator[aria-pressed=true] { box-shadow:inset 0 -2px 0 var(--accent-light); }
 /* Inline, not flex: flex drops the spaces around the mark, so copied text
    read "byZeki Works". */
 .signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
@@ -16833,8 +16823,9 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
   display:inline-block; margin-right:8px; vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below.
+   Progress is a tab of the tablist shown only while there is a job to follow.
    Settings (its own page, not one of the tablist's) is drawn as a tab too, at the
-   row's right end, and open, it is the selected tab. */
+   row's right end, and open, it is the selected tab. A tab never wraps its label. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
         border-bottom:1px solid var(--line); container-type:inline-size; }
 .tab-list { display:flex; align-items:flex-end; gap:4px; }
@@ -16842,7 +16833,7 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
   margin-bottom:-1px; min-height:0; padding:10px clamp(14px,3vw,22px) 7px;
   border-radius:9px 9px 0 0; color:var(--dim); background:linear-gradient(#383838,#292929);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 -3px 6px -2px rgba(0,0,0,.6);
-  transition:color .12s,background .12s; }
+  white-space:nowrap; transition:color .12s,background .12s; }
 .tab-list [role=tab]:hover:not([aria-selected=true]), .tabs .settings-button:hover:not([aria-pressed=true]) {
   color:var(--text); background:linear-gradient(#444,#303030);
 }
@@ -16866,6 +16857,34 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
    scrolls. */
 @container (max-width:299.98px) {
   .tab-list [role=tab], .tabs .settings-button { padding-left:11px; padding-right:11px; }
+}
+/* With the Progress tab shown, four tabs and Settings share the row. Below 500px the gear stands alone; below 410px,
+   350px, 310px and 290px the tabs' sides (Settings' too) and then their type tighten. Measured from 296 to 760px
+   wide, every 2px, with Create, Progress or Settings selected: one row, no sideways scroll, every tab and Settings
+   at least 44px wide. */
+@container (max-width:499.98px) {
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button .settings-label {
+    position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0);
+    white-space:nowrap; border:0; }
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { min-width:44px; justify-content:center; }
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button .gear { margin-right:0; }
+}
+@container (max-width:409.98px) {
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { min-width:44px; padding-left:8px; padding-right:8px; }
+}
+@container (max-width:349.98px) {
+  .tab-list:has(> #tab-progress:not(.hidden)) { gap:2px; }
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:7px; padding-right:7px; font-size:13px; }
+}
+@container (max-width:309.98px) {
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:4px; padding-right:4px; }
+}
+@container (max-width:289.98px) {
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
+  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:3px; padding-right:3px; font-size:12px; }
 }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
@@ -17602,7 +17621,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
-  button, .tab-list [role=tab], .tabs .settings-button, button.link, .job-row button, .header-actions button,
+  button, .tab-list [role=tab], .tabs .settings-button, button.link, .job-row button,
   button.description-toggle, button.row-more, .toast button, .note-item a, .note-item button.link,
   input[type=text], input[type=search], input[type=number], select, label.check {
     min-height:44px;
@@ -17635,10 +17654,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <h1 class="brand-name">Hilde</h1>
       <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
     </div>
-    <div class="header-actions">
-      <button id="jobs-indicator" class="jobs-indicator hidden" type="button" aria-controls="page-progress"
-        onclick="openProgress()"></button>
-    </div>
   </header>
 
   <nav class="tabs" aria-label="Main">
@@ -17649,6 +17664,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         onclick="setTab('voice')">Voices</button>
       <button id="tab-player" type="button" role="tab" aria-controls="page-player"
         onclick="chooseListen()">Listen</button>
+      <!-- Shown while a job is preparing, queued or running, or one stopped or failed undismissed. -->
+      <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
+        onclick="setTab('progress')">Progress</button>
     </div>
     <!-- Settings: a page of its own, not a tab; after the tabs, apart, the gear in the accent. -->
     <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
@@ -17997,7 +18015,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </section>
   </section>
 
-  <section id="page-progress" class="page hidden" aria-labelledby="progress-heading">
+  <section id="page-progress" class="page hidden" role="tabpanel" aria-labelledby="tab-progress">
     <div class="page-head">
       <h2 id="progress-heading" tabindex="-1">Progress</h2>
       <button type="button" onclick="createAnother()">Create another book</button>
@@ -23308,26 +23326,14 @@ function renderQueue() {
   $("queued-section").classList.toggle("hidden", !waiting.length);
 }
 
-// The header's jobs indicator: every job on this server, on every page.
-function renderIndicator() {
-  const running = jobs.filter((job) => job.status === "running").length;
-  const queued = jobs.length - running;
-  const problem = latestProblem();
-  const parts = [];
-  if (running) parts.push(`${running} running`);
-  if (queued) parts.push(`${queued} queued`);
-  if (!parts.length && problem)
-    parts.push(problem.paused ? "1 paused" : problem.status === "stopped" ? "1 stopped" : "1 failed");
-  const indicator = $("jobs-indicator");
-  indicator.textContent = parts.join(" · ");
-  indicator.classList.toggle("hidden", !parts.length);
-  indicator.classList.toggle("running", running > 0);
-  indicator.classList.toggle("problem", !running && !queued && !!problem);
-  indicator.setAttribute("aria-pressed", String(state.tab === "progress" && !settingsOpen));
-  indicator.setAttribute("aria-label", `${parts.join(", ")}: show progress`);
-}
+// The Progress tab: there while a job is preparing, queued or running (every job
+// on this server), or the latest one stopped or failed and is not dismissed.
 function progressAvailable() {
   return jobs.length > 0 || (running && runKind === "audiobook") || !!latestProblem();
+}
+// Between full renders (a followed job's poll): render() again once it should show or hide.
+function renderProgressTab() {
+  if (progressAvailable() === $("tab-progress").classList.contains("hidden")) render();
 }
 function openProgress() {
   if (settingsOpen) setSettings(false);
@@ -23361,7 +23367,7 @@ function followActive(info, reconnecting) {
 // What needs the server goes inert while it does not answer; the player, the
 // text, and its views stay, so a book already downloaded plays on.
 const SERVER_PARTS = [
-  "#page-settings", "#page-audiobook", "#page-progress", "#page-voice", "#jobs-indicator",
+  "#page-settings", "#page-audiobook", "#page-progress", "#page-voice",
   "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#chat-pane",
   "#figure-view .panel-actions", "#selection-ask",
 ];
@@ -23390,7 +23396,7 @@ async function refreshJobs() {
     const followed = runs.find(
       (item) => item.active && runKey(item) === followedRunKey
     );
-    if (followed) { renderQueue(); renderIndicator(); renderFailureCards(); return; }
+    if (followed) { renderQueue(); renderProgressTab(); renderFailureCards(); return; }
     const active = runs.find((item) => item.active) || null;
     if (active) followActive(active, true);
     else if (!running) render();
@@ -23402,17 +23408,20 @@ async function refreshJobs() {
 
 function render() {
   if (!state) return;
-  // The progress view is there while a job is, or one stopped or failed.
-  if (state.tab === "progress" && !progressAvailable()) state.tab = "audiobook";
+  // The Progress tab and its view are there while a job is, or one stopped or failed; hidden while
+  // current, the page goes back to Create (and the keyboard focus with it).
+  const progressShown = progressAvailable();
+  if (state.tab === "progress" && !progressShown) state.tab = "audiobook";
+  if (!progressShown && document.activeElement === $("tab-progress")) $("tab-audiobook").focus();
+  $("tab-progress").classList.toggle("hidden", !progressShown);
   const tab = state.tab;
-  for (const name of ["audiobook", "voice", "player"]) {
+  for (const name of ["audiobook", "voice", "player", "progress"]) {
     const selected = name === tab && !settingsOpen;
     $(`tab-${name}`).setAttribute("aria-selected", String(selected));
     // One tab stays in the keyboard's way into the tab list.
-    $(`tab-${name}`).tabIndex = name === (["voice", "player"].includes(tab) ? tab : "audiobook") ? 0 : -1;
+    $(`tab-${name}`).tabIndex = name === (["voice", "player", "progress"].includes(tab) ? tab : "audiobook") ? 0 : -1;
     $(`page-${name}`).classList.toggle("hidden", name !== tab || settingsOpen);
   }
-  $("page-progress").classList.toggle("hidden", tab !== "progress" || settingsOpen);
   // Settings is a view of its own, never above another page.
   $("page-settings").classList.toggle("hidden", !settingsOpen);
   $("settings-button").setAttribute("aria-pressed", String(settingsOpen));
@@ -23435,7 +23444,7 @@ function render() {
   // two-second poll's repaint until its page changes (setTab, setSettings).
   if (!reading) { hideSelectionAsk(); closeReaderMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
-  renderFailureCards(); renderIndicator();
+  renderFailureCards();
 }
 
 // Leaving Listen for another tab and coming back keeps the text where it was.
@@ -24721,8 +24730,8 @@ previewAudio.addEventListener("pause", syncPreviewButtons);
 previewAudio.addEventListener("timeupdate", () => noteDraftPlayed(false));
 previewAudio.addEventListener("ended", () => { noteDraftPlayed(true); previewing = ""; syncPreviewButtons(); });
 $("tab-list").addEventListener("keydown", (event) => {
-  // Arrow keys, Home, and End move between tabs, as in native tab strips.
-  const order = ["audiobook", "voice", "player"];
+  // Arrow keys, Home, and End move between tabs, as in native tab strips; Progress while it shows.
+  const order = ["audiobook", "voice", "player", ...(progressAvailable() ? ["progress"] : [])];
   const index = Math.max(0, order.indexOf(state.tab));
   const next = {
     ArrowRight:order[(index + 1) % order.length],

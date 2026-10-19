@@ -761,9 +761,8 @@ The page resets ETA at every step: one series of progress reports with the same 
 
 The browser app is **Hilde**. The header holds the Hilde logo
 (`assets/hilde-dark.png`), the name, and the tagline "Listen to your
-documents. Follow the text. Ask to understand." (shown on phones too, smaller);
-at its right is the jobs indicator. A small **by Zeki
-Works** signature with `assets/zeki.jpg` closes the page. No model names or
+documents. Follow the text. Ask to understand." (shown on phones too, smaller).
+A small **by Zeki Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
 five colours, each in one role, used only through tokens: blue `--accent`
@@ -776,7 +775,7 @@ dots, the reading highlight); `--accent-soft` mixes 16% of it; green `--local`
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items, red `--bad` (#e5534b) errors and destructive actions, always
 with an icon and text. Selected text (`::selection`) is a neutral gray fill
-(#5c5c5c). No orange is left; no glow stays lit (the jobs lamp and the LED dots
+(#5c5c5c). No orange is left; no glow stays lit (the LED dots
 are flat); an answer being read aloud (`.chat-speaking`) is white on
 `--accent`; danger buttons are dark ink (`var(--bg)`) on `--bad`.
 
@@ -796,8 +795,9 @@ Voices, **Create your first audiobook** on an empty Library, none in Settings.
 Secondary buttons are neutral; destructive or rare actions are text buttons or
 sit in a row's **⋯** menu, always behind a confirmation dialog.
 
-Three pages, **Create**, **Voices**, and **Listen**, form an ARIA tablist of
-folder tabs on a baseline (Arrow, Home, and End keys move between them).
+Three pages, **Create**, **Voices**, and **Listen**, and **Progress** while it
+shows, form an ARIA tablist of folder tabs on a baseline (Arrow, Home, and End
+keys move between them, Progress included while it shows).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
 an `--accent-light` top edge and opens into the page below. After the tablist,
 outside it, at the row's right end, sits **Settings** (`#settings-button`,
@@ -809,22 +809,30 @@ height, type, fill, borders, and bevel as a tab that is not selected, and, open
 (`aria-pressed="true"`), exactly the selected tab's look (flush, the
 `--accent-light` top edge, heavier text, open into the page below, the LED
 dot). Before its label `.settings-label` is an inline SVG gear,
-`fill: currentColor` in `--accent-light`. `.tabs` is an inline-size container:
-below 380 px (measured: the three tabs, the row's gap, and the open Settings tab
-with its label need 368 px; a 390 px phone's row has 358 px) the label is
-visually hidden, leaving the gear, named "Settings", at least 44 × 44 px; below
-300 px the tabs' side padding (Settings' too) shrinks so the gear keeps clear of
-Listen and the row never scrolls. Two more views are not in the tablist:
+`fill: currentColor` in `--accent-light`. A tab never wraps its label. `.tabs` is
+an inline-size container: below 380 px (measured: the three tabs, the row's gap,
+and the open Settings tab with its label need 368 px; a 390 px phone's row has
+358 px) the label is visually hidden, leaving the gear, named "Settings", at
+least 44 × 44 px; below 300 px the tabs' side padding (Settings' too) shrinks so
+the gear keeps clear of Listen and the row never scrolls. With Progress shown
+(`.tab-list:has(> #tab-progress:not(.hidden))`), four tabs and Settings share
+the row: the gear stands alone below 500 px, and below 410, 350, 310, and 290 px
+the side padding (8, 7, 4, 3 px) and then the type (13, 12 px) tighten, each tab
+at least 44 px wide; measured from 296 to 760 px with Create, Progress, or
+Settings selected, the row stays one line and never scrolls. One more view is
+not in the tablist:
 
-- The **progress view** (`#page-progress`, tab `progress` in state) opens from
-  the header's jobs indicator (`#jobs-indicator`, `openProgress()`), from
-  **View progress** on Create, and by itself when this browser starts a job
-  that runs at once (`showStartedJob()`). `renderIndicator()` counts every job
-  on the server, from `/api/jobs`'s `queue`: "1 running · 2 queued" (preparing
-  counts as queued), or "1 failed" / "1 stopped" while nothing is queued and
-  the latest problem (below) is not dismissed; it is hidden otherwise.
-  `progressAvailable()` is the same condition, and `render()` returns an open
-  progress view to Create without it.
+- The **progress view** (`#page-progress`, tab `progress` in state, the
+  `tabpanel` of `#tab-progress`) opens from the **Progress** tab, from
+  **View progress** on Create (`viewJob()`, `openProgress()`), and by itself
+  when this browser starts a job that runs at once (`showStartedJob()`). The
+  tab, labelled "Progress" with no counts, shows while `progressAvailable()`:
+  a job of this server is preparing, queued, or running (`/api/jobs`'s
+  `queue`), this browser follows an audiobook run, or the latest problem
+  (below) is not dismissed. `render()` hides it otherwise, and a page on it
+  returns to Create (the keyboard focus to the Create tab);
+  `renderProgressTab()` calls `render()` when a followed job's poll changes
+  that.
 - **Settings** (`#page-settings`, `settingsOpen`, page-local) opens from the
   Settings button (`toggleSettings()`) in place of the current page, never
   above it, and closes with the button again, **Close settings**, or any tab
@@ -1206,7 +1214,7 @@ The page polls `/api/jobs` every 2 seconds (`refreshJobs()`), which doubles as
 the server probe: a `fetch()` that fails with a `TypeError` (the server cannot
 be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
 shows `#server-down` and makes `SERVER_PARTS` inert (Settings, Create, the
-progress view, Voices, the jobs indicator, the Library, an open book's
+progress view, Voices, the Library, an open book's
 **More** menu, stale-voice notice, **Ask Hilde**, the chat, **Ask about this
 figure**, and the floating **Ask about this** on a selection), so nothing that needs
 the server can be pressed or focused; the tabs, the player, the text, its

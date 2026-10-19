@@ -6,22 +6,24 @@ Open the address the server prints when it starts, for example
 ## Header and navigation
 
 The header shows Hilde's name and "Listen to your documents. Follow the text.
-Ask to understand." (smaller on a phone). Below it are three tabs: **Create**,
-**Voices**, and **Listen**. **Listen** opens the **Library**, the list of your
-audiobooks, or the book you had open.
+Ask to understand." (smaller on a phone). Below it are the tabs: **Create**,
+**Voices**, and **Listen**, then **Progress** while there is a job to follow.
+**Listen** opens the **Library**, the list of your audiobooks, or the book you
+had open.
+
+**Progress** shows while anything is being made, queued, or prepared on this
+server, from any browser, and after an audiobook stopped or failed until you
+dismiss it. It opens the [progress view](#following-an-audiobook-being-made);
+once nothing is left it goes, and if you were on it you are back on **Create**.
 
 At the right end of the same row, across from **Create**, is **Settings**, a
 tab like the others with a blue gear before the word. It opens the settings in
 place of the page and, while they are open, looks like the selected tab, with
 its blue top edge and dot (no other tab is selected then); **Settings** again,
 **Close settings**, or any tab closes them. On a phone whose row is too narrow
-for the word (a 390 px phone and narrower), it shows the gear alone. See
-[Settings](#settings).
-
-At the right of the header, while anything is being made, or after an
-audiobook stopped or failed, a small indicator counts every job on this
-server, from any browser, for example `1 running · 2 queued` (or `1 failed`,
-`1 stopped`). It opens the [progress view](#following-an-audiobook-being-made).
+for the word (a 390 px phone and narrower, or with **Progress** shown, any
+phone), it shows the gear alone; on the narrowest phones the tabs also tighten
+so the row never scrolls sideways. See [Settings](#settings).
 
 ## Create an audiobook
 
@@ -219,7 +221,7 @@ stop counts only its own work.
 
 ### Following an audiobook being made
 
-The progress view opens from the header indicator or **View progress**, and by
+The progress view opens from the **Progress** tab or **View progress**, and by
 itself when a book you start begins at once. **Create another book** returns to
 **Create** with the first step empty. The view lists every job on this server
 under **Running** and **Queued**, each with its document and voice; a running
