@@ -937,7 +937,7 @@ Each page:
      and `#<name>-alternatives` (`pickerAlternatives()`,
      `renderAlternatives()`) offers one-click alternatives, the other
      reachable models, local ones first (name, badge, size); for figures and
-     image narration only models that read images; `setPickerModel()` applies
+     image narration only models known to read images (`images === true`); `setPickerModel()` applies
      a click. Settings' defaults (`PICKERS[name].server`, `pickerValue()`
      reads the catalog's `defaults`) follow `defaultChoice()`: the stored
      model by name and badge, red "⚠ <name> is unreachable" with
@@ -993,11 +993,16 @@ Each page:
      auto / yes / no** (`setLocalModelImages()`, `POST
      /api/providers/local/images`); **Check again** (`checkLocalImages()`)
      drops what was found out. While a model is being checked the open
-     dialog asks for the catalog again every 3 seconds. The figure lists
-     (`renderPickerList()`) disable a local model not known to read images
-     ("not checked for images yet", "checking whether it reads images…"),
-     image narration's list leaves it out, and when no model of the kind
-     reads images a muted heading says so. Cloud has the
+     dialog asks for the catalog again every 3 seconds. An image picker
+     (`PICKERS[name].images`: `figure`, `default-image`) lists
+     (`renderPickerList()`) only models with `images === true` and only
+     offline rows with `images === true`; text-only and not-known models are
+     left out, not greyed. Its `#<name>-images-note` (`IMAGES_ONLY_NOTE`,
+     "Only models that can read images are listed.", muted, under the boxes;
+     hidden with them in a read-only Settings row) says so; "Same as the text
+     model" is in the figure list only while the text model reads images;
+     when no model of the kind reads images a muted heading in the list says
+     so. Cloud has the
      provider (`CONNECT_PROVIDERS`: OpenAI, Anthropic, Google, DeepSeek,
      xAI), its `.connect-provider` section with the API key, and
      **Subscription** only for OpenAI (the ChatGPT device sign-in), Anthropic

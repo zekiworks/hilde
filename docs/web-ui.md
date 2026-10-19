@@ -92,10 +92,15 @@ a greyed row keeps a model of a local server that does not answer):
   read images, see [Which local models read images](configuration.md#which-local-models-read-images),
   a DeepSeek model when DeepSeek's model
   list says it takes images, every other cloud model); the full model code
-  shows on hover. The figure option disables models that can't read images,
-  and local models not checked yet ("not checked for images yet", "checking
-  whether it reads images…"); when no model of that kind is known to read
-  images, a muted line at the top of the list says so.
+  shows on hover. An image picker (the figure model in Create, **Default
+  image narration** in Settings) lists only models known to read images
+  (tested, reported by the server, or set by hand), with the muted line "Only
+  models that can read images are listed." under its boxes; text-only models
+  and models not checked yet are left out, and a remembered model that reads
+  images stays as a greyed "server unreachable" row while its server is down.
+  Its **Same as the text model** entry is there only while the text model
+  reads images. When no model of that kind is known to read images, a muted
+  line at the top of the list says so.
 - Local: the models each local server under **Settings › Providers** lists,
   as "<model> · <server name>" with the server's address underneath. An
   Ollama model that is installed but not loaded is tagged **loads on first
@@ -729,7 +734,8 @@ next audiobook" or "Applies now". The groups:
   that reads figures) are the server's defaults for every browser, set with
   the same picker as Create; see
   [Default models](configuration.md#default-models). Image narration lists
-  only models that read images. Each row shows the chosen model's name and
+  only models known to read images, as the line under it says ("Only models
+  that can read images are listed."). Each row shows the chosen model's name and
   badge, "Not set" when unset (with no image default, figures in Create
   follow the text model), and, when its server is down, the red "⚠ <name> is
   unreachable" with one-click alternatives that set another default. Their

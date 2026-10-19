@@ -16998,6 +16998,7 @@ button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-none button.link { font-size:13px; }
 .model-name { color:var(--dim); overflow-wrap:anywhere; }
 .model-reason { font-size:13px; }
+.picker-images-note { margin:0; font-size:13px; }
 /* A model chosen or preferred that does not answer: red, with its icon in the text. */
 .model-reason.unreachable { color:var(--bad); font-weight:600; }
 .alternatives { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:6px; }
@@ -22169,6 +22170,8 @@ function renderCreate() {
 // model for it (its cookie field), else on first use the server's default
 // model, the only model there is, or nothing; never another model by itself.
 const PICKER_SEARCH_FROM = 10;
+// Under each image picker (figures, image narration), whose list holds only models known to read images.
+const IMAGES_ONLY_NOTE = "Only models that can read images are listed.";
 const PICKERS = {
   book:{ field:["audiobook", "model"], label:"Model for this book", title:"Adapt the text for listening",
          why:"Where the document's text goes", short:"Text", flag:"adapt" },
@@ -22282,7 +22285,7 @@ function defaultChoice(name) {
 // for figures and image narration only models that read images.
 function pickerAlternatives(name, missing) {
   const usable = (paperCatalog.models || [])
-    .filter((model) => model.selector !== missing && (!PICKERS[name].images || model.images));
+    .filter((model) => model.selector !== missing && (!PICKERS[name].images || model.images === true));
   return [...usable.filter((model) => model.kind === "local"), ...usable.filter((model) => model.kind !== "local")];
 }
 // Local or Cloud: a Runs on switch not yet followed by a choice, else the
@@ -22377,6 +22380,7 @@ function mountPicker(host) {
       <button id="${name}-picker-change" class="picker-change" type="button"
         aria-label="Change the ${picker.label.toLowerCase()}">Change</button>
     </div>
+    ${picker.images ? `<p id="${name}-images-note" class="note picker-images-note">${IMAGES_ONLY_NOTE}</p>` : ""}
     <p id="${name}-model-reason" class="model-reason note hidden" role="status"></p>
     <div id="${name}-alternatives" class="alternatives hidden" role="group"
       aria-label="${picker.label}: other models"></div>
@@ -22475,6 +22479,7 @@ function renderPicker(name) {
   const readOnly = !!picker.server && !caps.manage_providers;
   if (picker.server) {
     kindBox.closest(".picker-boxes").classList.toggle("hidden", readOnly);
+    $(`${name}-images-note`)?.classList.toggle("hidden", readOnly);
     const fixed = $(`${name}-static`);
     fixed.classList.toggle("hidden", !readOnly);
     if (readOnly) {
@@ -22613,9 +22618,12 @@ function pickerHeading(name, id, text) {
 function renderPickerList(name, typed = false) {
   const picker = PICKERS[name], mode = openPicker.mode, kind = pickerKind(name);
   const list = $(`${name}-picker-list`), search = $(`${name}-picker-search`);
-  // Image narration's list holds only models that read images.
-  const imagesOnly = !!(picker.server && picker.images);
-  const models = (paperCatalog.models || []).filter((model) => model.kind === kind && !(imagesOnly && !model.images));
+  // An image picker (figures, image narration) lists only models known to
+  // read images (tested, reported, or set by hand), and of the remembered
+  // models of a server that does not answer only those; the rest are left
+  // out, not greyed. Its note under the boxes says so (IMAGES_ONLY_NOTE).
+  const imagesOnly = !!picker.images;
+  const models = (paperCatalog.models || []).filter((model) => model.kind === kind && !(imagesOnly && model.images !== true));
   const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind
     && !(imagesOnly && row.row === "offline" && row.images !== true));
   const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
@@ -22636,34 +22644,27 @@ function renderPickerList(name, typed = false) {
                                                selected:value === kind }));
   } else {
     const matches = (...texts) => !query || texts.some((text) => String(text || "").toLowerCase().includes(query));
-    // Figures go only to a model known to read images: say so when none of this kind is.
-    if (picker.images && !(paperCatalog.models || []).some((model) => model.kind === kind && model.images === true))
+    // No model of this kind known to read images: the list says so.
+    if (imagesOnly && !models.length)
       nodes.push(pickerHeading(name, "no-images", "No model here is known to read images yet: models are "
         + "checked automatically, or set one under Settings › Providers › Edit."));
     const { same, model:chosen } = pickerChoice(name);
     // A local model by its name and its server's ("<model> · <server name>").
-    const option = (model, tags = []) => {
-      const cannot = !!picker.images && !model.images;
-      // A local model not known yet to read images is not offered for figures.
-      const why = !cannot ? "" : model.images === false ? " · can't read images"
-        : model.image_check && model.image_check.state === "checking" ? " · checking whether it reads images…"
-        : " · not checked for images yet";
-      return pickerOption(name, index++, { key:model.selector, value:model.selector,
-        text:model.endpoint ? `${model.name} · ${model.endpoint}` : model.name,
-        tags:[...tags, ...(model.images ? ["reads images"] : []),
-              ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
-        sub:`${modelSource(model)}${why}`, badge:model.badge,
-        selected:!same && !!chosen && chosen.selector === model.selector, disabled:cannot });
-    };
+    const option = (model, tags = []) => pickerOption(name, index++, { key:model.selector, value:model.selector,
+      text:model.endpoint ? `${model.name} · ${model.endpoint}` : model.name,
+      tags:[...tags, ...(model.images ? ["reads images"] : []),
+            ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
+      sub:modelSource(model), badge:model.badge,
+      selected:!same && !!chosen && chosen.selector === model.selector });
+    // "Same as the text model": in a figure list only while the text model reads images.
     const text = picker.same ? pickerChoice("book").model : null;
-    if (text && text.selector && modelKind(text.selector) === kind && matches("Same as the text model", text.short)) {
-      const cannot = !!(picker.images && !text.images);
+    if (text && text.selector && modelKind(text.selector) === kind && (!imagesOnly || text.images === true)
+        && matches("Same as the text model", text.short)) {
       // Left open, figures would start with the server's default image
       // narration model: "Same" then names the text model itself.
       const value = name === "figure" && perOptionModels && firstUse("figure").how !== "same" ? text.selector : "";
       nodes.push(pickerOption(name, index++, { key:"same", value, text:"Same as the text model",
-        tags:text.images ? ["reads images"] : [], sub:`${text.short}${cannot ? " · can't read images" : ""}`,
-        title:text.selector, selected:same, disabled:cannot }));
+        tags:text.images ? ["reads images"] : [], sub:text.short, title:text.selector, selected:same }));
     }
     const shown = models.filter((model) => matches(model.name, model.endpoint, model.selector, modelSource(model)));
     // Default: what this picker starts with when nothing is chosen (none in Settings).
