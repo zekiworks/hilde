@@ -4722,9 +4722,16 @@ class LocalPaperProviderTests(unittest.TestCase):
         # Once Continue downloaded the link, its document is used and nothing is downloaded again.
         downloaded = normalize({"audiobook": {**filled, "source": "url", "url_document": "linked.pdf"}})["audiobook"]
         self.assertEqual((web.chosen_document(downloaded), web.pending_url(downloaded)), ("linked.pdf", ""))
-        # A browser from before the cards: its typed link is the source, else the dropdown.
+        # A new browser starts on Upload a file; one from before the cards: its typed link, else its dropdown's document.
+        self.assertEqual(normalize({})["audiobook"]["source"], "upload")
+        self.assertEqual(normalize({"audiobook": {"source": "elsewhere"}})["audiobook"]["source"], "upload")
         self.assertEqual(normalize({"audiobook": {"source_url": "https://example.com/a.pdf"}})["audiobook"]["source"], "url")
-        self.assertEqual(normalize({"audiobook": {"source": "elsewhere"}})["audiobook"]["source"], "saved")
+        self.assertEqual(normalize({"audiobook": {"document": "kept.pdf"}})["audiobook"]["source"], "saved")
+        # The last used card stays this browser's.
+        self.assertEqual(normalize({"audiobook": {"source": "saved"}})["audiobook"]["source"], "saved")
+        # From a URL takes an arXiv abstract page's link as its PDF; other links stay as given.
+        self.assertEqual(web.arxiv_pdf_url("https://arxiv.org/abs/1706.03762v7"), "https://arxiv.org/pdf/1706.03762v7")
+        self.assertEqual(web.arxiv_pdf_url("https://example.com/abs/x.pdf"), "https://example.com/abs/x.pdf")
 
     def test_a_local_server_registered_on_the_server_is_parsed_and_checked(self):
         option = web.local_server_option
@@ -7061,6 +7068,52 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["assets"]["documents"], ["paper-narration.txt"])
         self.assertTrue(audiobook.is_file())
+
+    def test_deleting_a_saved_document_removes_only_that_file(self):
+        # Create's trash buttons: the saved PDF goes; the book made from it (its own copy of the PDF, its text,
+        # a note and its chat), the voices, the other documents, and anything outside Documents stay.
+        source = self.storage.root / "upload.pdf"
+        source.write_bytes(b"%PDF-1.7 paper\n")
+        (self.storage.documents / "paper.pdf").write_bytes(b"%PDF-1.7 paper\n")
+        (self.storage.documents / "other.pdf").write_bytes(b"%PDF-1.7 other\n")
+        book = store_book(self.storage, "Paper", "a" * 64, "Martin", source=source)
+        folder = self.storage.audiobooks / book
+        (folder / "files").mkdir(exist_ok=True)
+        (folder / "files" / "note.md").write_text("# A note\n", encoding="utf-8")
+        (folder / "chat.json").write_text('{"schema": 1, "entries": []}', encoding="utf-8")
+        self.add_voice("Keep", web.VOICE_REFERENCE_TEXT)
+        outside = self.storage.root / "outside.pdf"
+        outside.write_bytes(b"%PDF-1.7 outside\n")
+        (self.storage.documents / "linked.pdf").symlink_to(outside)
+
+        def everything():
+            return {str(path.relative_to(self.storage.root)): path.read_bytes()
+                    for path in sorted(self.storage.root.rglob("*")) if path.is_file() and not path.is_symlink()}
+
+        before = everything()
+        origin = self.serve()
+        refused = [self.delete(origin, "documents", name)[0] for name in (
+            "../outside.pdf", f"../Audiobooks/{book}/source.pdf", "../Voices/Keep/reference.wav",
+            str(outside), str(folder / "source.pdf"), "..", "",
+        )]
+        self.assertEqual(refused, [400] * 7)
+        self.assertEqual(everything(), before)
+
+        status, payload = self.delete(origin, "documents", "paper.pdf")
+        linked = self.delete(origin, "documents", "linked.pdf")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(linked[0], 200)
+        self.assertEqual(payload["assets"]["documents"], ["linked.pdf", "other.pdf"])
+        self.assertEqual(set(payload["assets"]["document_times"]), {"linked.pdf", "other.pdf"})
+        # Only the saved PDF and the link itself are gone; the link's target outside Documents stays.
+        after = everything()
+        self.assertEqual(set(before) - set(after), {"Documents/paper.pdf"})
+        self.assertEqual({name: after[name] for name in after}, {name: before[name] for name in after})
+        self.assertTrue(outside.is_file())
+        self.assertFalse((self.storage.documents / "linked.pdf").exists())
+        with urllib.request.urlopen(f"{origin}/api/library") as response:
+            self.assertEqual([entry["id"] for entry in json.load(response)["books"]], [book])
 
     def test_delete_refuses_traversal_missing_assets_and_other_origins(self):
         keep = self.add_voice("Keep", web.VOICE_REFERENCE_TEXT)

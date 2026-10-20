@@ -897,10 +897,27 @@ not in the tablist:
 
 Each page:
 
-- **Create** shows three steps, one open at a time; a finished step collapses
-  to a summary with **Change**, a later step opens only after the earlier
-  ones are complete, and going back resets nothing.
-  1. **Add the source document**: three `.source-card`s, always shown, in
+- **Create** shows three steps as rows on one page, one open at a time; a
+  finished step collapses to one row, a later step opens only after the
+  earlier ones are complete, and going back resets nothing. Each step has its
+  colour (`#step-book/voice/create` set `--step`, `--step-done`,
+  `--step-ink`: blue `--accent`/`--accent-light`/white, green `--local` with
+  a dark number, burgundy-pink `#b3366a`/`#d6517f`/white) on the rows' own
+  ground `--step-bg` #17181b, where every border and circle clears 3:1 and
+  text 4.5:1. Open (`.is-active`): a 2 px border and a solid circle in
+  `--step`, a white bold title. Finished (`.is-done`, `renderCreate()`):
+  `STEP_CHECK_ICON` in a `--step-done` ring with a 12% fill, the title in
+  `--step-done` (a click on it calls `setStep()`), then `.step-summary`
+  (`setSummary()`: the value cut with "…", a gray "· type"), then its
+  `button.change` about 12 px after it (under it on a phone). Not reached
+  (`.is-upcoming`): a `--step-off` outline circle, `--off` title. The
+  visually hidden `.step-state` reads "(current step)", "(completed)" or
+  "(not reached yet)". Every Change on Create (`button.change`, the pickers'
+  `button.picker-change`) is the quiet blue: `PENCIL_ICON` and the word in
+  `--accent-light`, a thin blue border, no fill. Step 3 is never finished: a
+  queued book starts the next one.
+  1. **Add the source document**: three `.source-card`s side by side
+     (stacked up to 640 px), always shown, in
      one radio group (`.sources`, `role="radiogroup"` "Source document"; a
      native radio `.source-radio` in each header, named by the card's title,
      so arrow keys move the choice). The chosen card (`audiobook.source`,
@@ -910,17 +927,30 @@ Each page:
      with their values kept, and their contents take no pointer, so a click
      anywhere on the card reaches it, chooses it, and focuses its first field
      (`SOURCE_FIRST`); a keyboard click (`detail` 0) leaves focus on the
-     radio. **Saved document** is the dropdown, with **⋯** (`#document-more`,
-     the shared `#row-menu`) holding **Delete…**, which asks "Delete
-     '<name>'?" in the page; **From a URL** is a link and an optional save-as
+     radio. A new browser starts on Upload (`normalize()`), then keeps the
+     last card used. **Saved document** is a field (`#document`, a button)
+     opening `#document-list` (`openDocumentList()`, `renderDocumentList()`):
+     the saved documents newest first by `assets.document_times`, each row a
+     `.doc-pick` (name, `documentDate()`) and its own `.doc-trash` (gray,
+     red on hover); `#document-delete` after the field deletes the chosen
+     one. Both call `deleteDocument()`, which asks 'Delete "<name>"?' with
+     the trash icon (`askConfirm({ icon, more })`, a deep red
+     `button.danger.with-icon`) and removes only that file
+     (`POST /api/documents/delete`); **From a URL** is a link and an optional save-as
      name, which **Continue** downloads first (`materializeUrl()`, only while
-     `pendingUrl()`); **Upload a file** is **Choose a file…**, uploading at
+     `pendingUrl()`; an arXiv `/abs/` page is fetched as its `/pdf/`,
+     `arxiv_pdf_url()`); **Upload a file** is a dashed drop area with
+     **browse**, uploading at
      once and naming the file in `#upload-name`; a file dropped anywhere on
      the step chooses Upload and uploads. **Continue** uses only
-     `chosenDocument()`. `#book-chosen` shows the chosen card alone:
+     `chosenDocument()`; pressed with it empty it stays and `#book-chosen`,
+     the hint beside it, says "Choose a document first" (`bookEmptyContinue`).
+     Otherwise `#book-chosen` shows the chosen card alone:
      "Chosen (URL): <link>", or "Chosen (Saved document|Upload): <name> ·
-     PDF|Markdown|Text"; **Continue** refuses other types. Server errors for
-     links and uploads become short plain sentences in `#book-problem`. An
+     PDF|Markdown|Text", else "No document chosen yet"; **Continue** refuses
+     other types. Reopened from step 3 (`reachedCreate`), **Continue** returns
+     to step 3 with the voice kept; Overwrite and Change voice go through step 2.
+     Server errors for links and uploads become short plain sentences in `#book-problem`. An
      upload or link whose predicted file name (`predictedDownloadNames()`) is
      already in Documents asks first (`replaceDocumentOk()`). A link still to
      download hides **You already have this one** and shows **Continue**.
@@ -2092,7 +2122,7 @@ read aloud by **Read answers aloud**.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
-| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog. A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |

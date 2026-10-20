@@ -27,40 +27,58 @@ so the row never scrolls sideways. See [Settings](#settings).
 
 ## Create an audiobook
 
-**Create** walks through three steps, one at a time: **Add the source document**,
-**Choose a voice**, and **How Hilde prepares the text**. A finished step
-collapses to a summary with **Change**; going back to a step keeps what you
-chose in the others.
+**Create** walks through three steps, shown as rows on one page, one open at a
+time: **Add the source document**, **Choose a voice**, and **How Hilde prepares
+the text**. Each step has its own colour: blue for the document, green for the
+voice, burgundy-pink for preparing the text. The open step has a border and a
+filled circle with its number in that colour. A finished step folds into one
+row: a check in a circle and its title in the step's colour, then what you
+chose (the file name and its type, or the voice), then **Change** (a pencil and
+the word, in blue). On a phone, **Change** sits under what you chose. A step
+not reached yet is gray. A long file name is cut short with "…".
 
-The first step offers three ways to choose a document, as three cards that
-are always shown. A radio circle in each card's header says which one is used:
-exactly one is chosen, with a filled dot and a blue border. The other two are
-dimmed, with gray text and their fields switched off, but they keep what you
-entered. Click anywhere on a dimmed card to choose it; its first field gets
-the focus. With the keyboard, the arrow keys move between the three choices.
-On a phone the cards are stacked and work the same way.
+**Change**, or a click on a finished step's title, opens that step again;
+nothing in the other steps is cleared. After **Change** next to the document in
+step 3, picking another document and pressing **Continue** goes straight back
+to step 3 with the voice you chose.
 
-- **Saved document**: one you added before. Its **⋯** menu holds **Delete…**,
-  which removes the chosen document after you confirm ("Delete 'X.pdf'?").
-  Audiobooks made from it are kept, and a job already queued keeps its own
-  copy.
-- **From a URL**: a direct HTTP(S) link to a PDF, Markdown, or text file,
-  downloaded when you press **Continue**. **Save as** is optional: the server
-  works out the document type and adds the matching extension when needed,
-  including for PDF links without one, such as arXiv `/pdf/<id>` links.
-- **Upload a file**: **Choose a file…**; the card then names the uploaded
-  file. Dropping a file anywhere on the step chooses this card and uploads it.
+The first step offers three ways to choose a document, as three cards side by
+side (stacked on a phone). A radio circle in each card's header says which one
+is used: exactly one is chosen, with a filled dot and a blue border. The other
+two are dimmed, with gray text and their fields switched off, but they keep
+what you entered. Click anywhere on a dimmed card to choose it; its first field
+gets the focus. With the keyboard, the arrow keys move between the three
+choices. The first time, **Upload a file** is chosen; after that, this browser
+remembers the card you used last.
+
+- **Saved document**: one you added before. The field opens the list of your
+  saved documents, newest first, each with the date it was added and its own
+  trash button on the right (gray; red under the pointer). Once you have chosen
+  one, a trash button after the field deletes it. Either asks first: 'Delete
+  "X.pdf"?', "It is removed from your saved documents. Audiobooks already made
+  from it stay in your library." Delete removes only that saved file, never an
+  audiobook, a voice, a note, or a conversation, and a job already queued keeps
+  its own copy.
+- **From a URL**: a direct HTTP(S) link to a PDF (or Markdown or text file) or
+  an arXiv page, downloaded when you press **Continue**. **Save as** is
+  optional: the server works out the document type and adds the matching
+  extension when needed, including for PDF links without one, such as arXiv
+  `/pdf/<id>` links.
+- **Upload a file**: drop a PDF on the dashed area, or **browse**; the card
+  then names the uploaded file. Dropping a file anywhere on the step chooses
+  this card and uploads it.
 
 **Continue** uses only the chosen card, whatever the others hold: no link is
-downloaded unless **From a URL** is chosen. The step shows **Chosen** for that
-card only: "Chosen (URL): https://…", "Chosen (Saved document): X.pdf · PDF",
-or "Chosen (Upload): X.pdf · PDF". This browser remembers which card you
-chose. Files are limited to 64 MiB. Supported document types are PDF (`.pdf`),
-Markdown (`.md` or `.markdown`), and plain text (`.txt` or `.text`), not HTML
-web pages. A problem, such as a link that is not a document or a file type
-Hilde can't read, is said in a short sentence inside the step. Adding a
-document under a name you already have asks first, naming the file it would
-replace.
+downloaded unless **From a URL** is chosen. Beside **Continue**, the step says
+what that card holds: "Chosen (URL): https://…", "Chosen (Saved document):
+X.pdf · PDF", or "Chosen (Upload): X.pdf · PDF", and "No document chosen yet"
+before that. Pressed with the chosen card empty, **Continue** stays and says
+"Choose a document first". Files are limited to 64 MiB. Supported document
+types are PDF (`.pdf`), Markdown (`.md` or `.markdown`), and plain text (`.txt`
+or `.text`), not HTML web pages. A problem, such as a link that is not a
+document or a file type Hilde can't read, is said in a short sentence inside
+the step. Adding a document under a name you already have asks first, naming
+the file it would replace.
 
 The voice step is a dropdown of your saved voices (the same choice as
 **Select** on **Voices**), with a card that previews the one you choose.

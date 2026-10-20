@@ -2031,14 +2031,22 @@ def write_json_atomic(path, value):
 
 
 def asset_catalog(storage):
+    documents = {}
+    for path in storage.documents.iterdir():
+        try:
+            if path.is_file():
+                documents[path.name] = int(path.stat().st_mtime)
+        except OSError:
+            continue
     return {
         "voices": sorted(
             path.name for path in storage.voices.iterdir()
             if path.is_dir() and is_saved_voice(path)
         ),
-        "documents": sorted(
-            path.name for path in storage.documents.iterdir() if path.is_file()
-        ),
+        "documents": sorted(documents),
+        # When each document was saved (seconds), for the date in Create's
+        # list of saved documents, newest first.
+        "document_times": documents,
     }
 
 
@@ -4903,6 +4911,17 @@ def normalize_paper_url(value):
         parsed.query,
         "",
     ))
+
+
+def arxiv_pdf_url(url):
+    """An arXiv abstract page (arxiv.org/abs/<id>) as the PDF it describes
+    (arxiv.org/pdf/<id>), so From a URL takes the page's link; other URLs as given."""
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.hostname or "").lower() in ("arxiv.org", "www.arxiv.org") and parsed.path.startswith("/abs/"):
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, "/pdf/" + parsed.path[len("/abs/"):], parsed.query, "")
+        )
+    return url
 
 
 def normalize_local_server(value):
@@ -10416,11 +10435,16 @@ def normalize(state):
     step = audiobook.get("step")
     if step not in ("book", "voice", "create"):
         step = "book"
-    # Step 1's chosen source card; a browser from before the cards used its
-    # typed link when it had one.
+    # Step 1's chosen source card, the last one this browser used. A new
+    # browser starts on Upload a file; one from before the cards used its
+    # typed link when it had one, else its dropdown's document.
     source = audiobook.get("source")
     if source not in DOCUMENT_SOURCES:
-        source = "url" if stored_text(audiobook, "source_url").strip() else "saved"
+        source = (
+            "url" if stored_text(audiobook, "source_url").strip()
+            else "saved" if stored_text(audiobook, "document").strip()
+            else "upload"
+        )
     # Local model servers are server-wide (Settings › Providers): the local
     # servers a browser once added for itself ("local_servers", and before
     # that "local_server") are no longer read, and drop out of its cookie.
@@ -16331,7 +16355,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def download_document(self, body):
         try:
-            url = normalize_paper_url(body.get("url", ""))
+            url = arxiv_pdf_url(normalize_paper_url(body.get("url", "")))
         except ValueError as exc:
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
         name = str(body.get("name", "")).strip()
@@ -17093,7 +17117,13 @@ PAGE = r"""<!doctype html>
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
         --ask:#2bb3a3; /* light mode: #127a6e */
         --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
-        --bad:#e5534b; --radius:12px; }
+        --bad:#e5534b; --radius:12px;
+        /* Create's step rows (Part B, 20 Oct): their own darker ground, on
+           which each step's colour clears 3:1 (#2a5fe0 3.2, #b3366a 3.1) and
+           a finished step 3's title 4.5:1 (#d6517f 4.5); thin row and card
+           lines; a gray circle for a step not reached (3.5:1). */
+        --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
+        --popover:#1d1f23; --popover-line:#3a3d44; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
        font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; }
@@ -17254,48 +17284,119 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .banner > span { flex:1 1 200px; }
 .steps { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:0; padding:0;
          list-style:none; }
-.step { min-width:0; padding:18px 22px; background:var(--surface); border-radius:var(--radius); }
-.step:not(.is-active) { padding-top:12px; padding-bottom:12px; }
+/* Create's steps: rows on one page, one colour per step. --step: the open
+   step's 2 px border and solid circle; --step-done: a finished step's check
+   ring and title; --step-ink: the number on the open circle. A step not
+   reached: a gray outline circle with its number and a gray title. */
+#step-book { --step:var(--accent); --step-done:var(--accent-light); --step-ink:var(--accent-ink); }
+#step-voice { --step:var(--local); --step-done:var(--local); --step-ink:#111111; }
+#step-create { --step:#b3366a; --step-done:#d6517f; --step-ink:#ffffff; }
+.step { min-width:0; padding:14px 19px; background:var(--step-bg); border:1px solid var(--step-line);
+        border-radius:var(--radius); }
+.step.is-active { padding:18px 18px 20px; border:2px solid var(--step); }
 .step.drop-target { outline:2px dashed var(--accent-light); outline-offset:-2px; }
-.step-head { display:flex; align-items:center; gap:14px; min-height:32px; min-width:0; }
+.step-head { display:flex; align-items:center; gap:12px; min-height:32px; min-width:0; }
 .step-marker { display:grid; place-items:center; flex:0 0 auto; width:30px; height:30px;
-               border-radius:50%; background:var(--raised); color:var(--dim);
-               font-size:14px; font-weight:650; }
-.step.is-active .step-marker { background:var(--accent); color:var(--accent-ink); }
-.step.is-done .step-marker { color:var(--text); }
-.step-title { font-size:17px; }
-.step.is-upcoming .step-title { color:var(--dim); }
-.step-summary { flex:1; min-width:0; color:var(--dim); }
-.step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin-top:14px;
-             padding-left:44px; }
+               border:2px solid var(--step-off); border-radius:50%; background:transparent; color:var(--off);
+               font-size:14px; font-weight:650; line-height:1; }
+.step.is-active .step-marker { border-color:var(--step); background:var(--step); color:var(--step-ink);
+                               box-shadow:0 0 0 4px color-mix(in srgb, var(--step) 22%, transparent); }
+.step.is-done .step-marker { border-color:var(--step-done); color:var(--step-done);
+                             background:color-mix(in srgb, var(--step-done) 12%, transparent); }
+.step-marker svg { width:14px; height:14px; }
+.step-title { flex:0 0 auto; max-width:100%; font-size:17px; font-weight:650; color:var(--text); }
+.step.is-upcoming .step-title { color:var(--off); }
+/* A finished step's title reopens it, as its Change does. */
+.step.is-done .step-title { color:var(--step-done); cursor:pointer; }
+.step.is-done .step-title:hover { text-decoration:underline; text-underline-offset:3px; }
+/* What was chosen, cut with "…" on one line; the type after it, gray. */
+.step-summary { display:flex; align-items:baseline; flex:0 1 auto; min-width:0; color:var(--text); white-space:nowrap; }
+.step-summary:empty { display:none; }
+.summary-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.summary-type { flex:0 0 auto; color:var(--off); }
+/* Every Change on Create: quiet blue, a pencil and the word, a thin blue
+   border, no fill; right after what it changes. */
+button.change, button.picker-change {
+  display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; min-height:28px; padding:3px 11px;
+  background:transparent; border:1px solid color-mix(in srgb, var(--accent-light) 45%, transparent);
+  border-radius:8px; box-shadow:none; color:var(--accent-light); font-size:13px; font-weight:500; line-height:1.2; }
+button.change:hover:not(:disabled), button.picker-change:hover:not(:disabled) {
+  background:var(--accent-soft); border-color:var(--accent-light); }
+button.change svg, button.picker-change svg { flex:0 0 auto; width:13px; height:13px; }
+.step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; margin-top:16px; }
 .step:not(.is-active) .step-body { display:none; }
+/* Continue on the right, what is chosen (or what is missing) before it. */
+.step-actions { flex-wrap:nowrap; justify-content:flex-end; }
+.step-hint { flex:0 1 auto; min-width:0; overflow:hidden; color:var(--off); font-size:14px;
+             text-overflow:ellipsis; white-space:nowrap; }
+.step-hint.problem { color:var(--bad); }
+.step-actions > button { flex:0 0 auto; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-/* Step 1: three ways to bring a document, one radio group. The chosen card:
-   a filled dot and a blue border. The others: an empty circle, gray --off
-   text (not opacity alone), disabled controls that keep their values; a
-   click anywhere on one reaches the card (its contents take no pointer) and
-   chooses it. */
-.sources { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:10px; }
-.source-card { display:grid; grid-template-columns:minmax(0,1fr); align-content:start; gap:10px;
-               min-width:0; padding:11px 13px; border:2px solid var(--line); border-radius:10px; }
+/* Step 1: three ways to bring a document, side by side, one radio group. The
+   chosen card: a filled dot and a blue border. The others: an empty circle,
+   gray --off text (not opacity alone), disabled controls that keep their
+   values; a click anywhere on one reaches the card (its contents take no
+   pointer) and chooses it. */
+.sources { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; }
+.source-card { display:flex; flex-direction:column; min-width:0; min-height:158px; padding:14px 16px 16px;
+               background:var(--step-card); border:2px solid var(--step-line); border-radius:12px; }
 .source-card.is-on { border-color:var(--accent); }
 .source-card.is-off { cursor:pointer; }
 .source-card.is-off * { pointer-events:none; }
 .source-card.is-off .source-radio { pointer-events:auto; }
-.source-card.is-off .source-title, .source-card.is-off .field > label, .source-card.is-off .note,
-.source-card.is-off .upload-name { color:var(--off); }
+.source-card.is-off .source-title, .source-card.is-off .source-sub, .source-card.is-off .field > label,
+.source-card.is-off .note, .source-card.is-off .upload-name, .source-card.is-off .dropzone { color:var(--off); }
 .source-card.is-off :is(input, select, button):disabled { opacity:1; color:var(--off); }
 .source-card.is-off input::placeholder { color:var(--off); }
 .source-head { display:flex; align-items:center; gap:10px; min-width:0; }
-.source-title { flex:1 1 auto; min-width:0; margin:0; font-size:14px; font-weight:650; }
+.source-title { flex:1 1 auto; min-width:0; margin:0; font-size:16px; font-weight:650; }
 .source-title label { cursor:pointer; }
+.source-sub { margin:4px 0 14px; color:var(--dim); font-size:13px; }
+.source-card .field { margin-top:10px; }
 .source-radio { appearance:none; flex:0 0 auto; width:20px; height:20px; margin:0; border:2px solid var(--off);
                 border-radius:50%; background:var(--field); cursor:pointer; }
 .source-radio:checked { border-color:var(--accent-light);
                         background:radial-gradient(circle, var(--accent-light) 0 4px, var(--field) 5px); }
 .source-radio:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
-.upload-name { margin:0; overflow-wrap:anywhere; }
-.chosen { overflow-wrap:anywhere; }
+/* Saved document: a field that opens the list of saved documents (newest
+   first: name, date, and a trash button each), and a trash button after it
+   for the one chosen. Trash buttons are gray, red under the pointer. */
+.doc-field { position:relative; display:flex; gap:12px; min-width:0; }
+button.doc-select { display:flex; align-items:center; gap:8px; flex:1 1 auto; min-width:0; min-height:38px;
+                    padding:7px 12px; background:var(--field); border:1px solid var(--popover-line);
+                    border-radius:8px; box-shadow:none; color:var(--text); text-align:left; }
+button.doc-select:hover:not(:disabled) { background:var(--field); border-color:var(--off); }
+.doc-select-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.doc-select.is-empty .doc-select-name { color:var(--off); }
+.doc-select svg { flex:0 0 auto; }
+button.trash { display:inline-grid; place-items:center; flex:0 0 auto; width:38px; min-width:38px; min-height:38px;
+               padding:0; background:transparent; border:1px solid var(--popover-line); border-radius:8px;
+               box-shadow:none; color:var(--off); }
+button.trash svg { width:16px; height:16px; }
+button.trash:hover:not(:disabled) { background:color-mix(in srgb, var(--bad) 14%, transparent); color:var(--bad); }
+/* At least the card's width, wider on a desktop so names fit, never past the screen. */
+.doc-list { position:absolute; z-index:30; top:calc(100% + 6px); left:0; display:grid; gap:2px;
+            width:max(100%, min(440px, calc(100vw - 40px)));
+            max-height:min(60vh, 340px); overflow:auto; padding:6px; background:var(--popover);
+            border:1px solid var(--popover-line); border-radius:10px; box-shadow:0 12px 32px rgba(0,0,0,.5); }
+.doc-row { display:flex; align-items:center; gap:4px; min-width:0; padding-right:6px; border-radius:8px; }
+.doc-row:hover { background:#24262b; }
+.doc-row.is-chosen { background:#26303f; }
+button.doc-pick { display:flex; align-items:center; gap:12px; flex:1 1 auto; min-width:0; min-height:40px;
+                  padding:8px 6px 8px 10px; background:transparent; border:0; box-shadow:none; color:var(--text);
+                  text-align:left; }
+button.doc-pick:hover:not(:disabled) { background:transparent; }
+.doc-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.doc-date { flex:0 0 auto; color:var(--off); font-size:13px; }
+.doc-row button.trash { width:32px; min-width:32px; min-height:32px; border-color:transparent; }
+.doc-list .note { padding:8px 10px; }
+/* Upload a file: a dashed drop area with a browse link. */
+.dropzone { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:0 .3em; min-height:72px;
+            padding:10px 12px; border:1.5px dashed #4a4e57; border-radius:8px; color:var(--text); text-align:center; }
+button.browse { min-height:0; padding:0; background:none; border:0; box-shadow:none; color:var(--accent-light);
+                font:inherit; }
+button.browse:hover:not(:disabled) { background:none; text-decoration:underline; }
+.upload-name { margin:10px 0 0; overflow-wrap:anywhere; }
 /* Step 3: the book's model in its own box, then each option in its own card:
    checkbox and bold title, one muted line, the smaller "Can change" line, a
    quiet More. Three text sizes in the whole step: 17 px (the step title),
@@ -17339,7 +17440,6 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
 /* Settings' read-only boxes show all of it: voice design names its device and that device's ID. */
 .picker-box.static .picker-name { display:block; }
 .picker-box .badge { flex:0 0 auto; }
-button.picker-change { min-height:32px; padding:4px 12px; font-size:13px; }
 .picker-none { display:flex; flex-wrap:wrap; gap:4px 16px; }
 .picker-none button.link { font-size:13px; }
 .model-name { color:var(--dim); overflow-wrap:anywhere; }
@@ -17554,10 +17654,21 @@ button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1;
 .confirm-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
 .confirm-dialog p { overflow-wrap:anywhere; }
 .confirm-dialog .field { margin-top:12px; }
+#confirm-more { margin-top:6px; }
+/* Deleting a saved document: a red trash before the question and on Delete. */
+#confirm-title { display:flex; align-items:center; gap:10px; }
+.confirm-icon { display:inline-grid; flex:0 0 auto; color:var(--bad); }
+.confirm-icon svg { width:18px; height:18px; }
 /* The confirming button of a risky action: plain words, a warning color. */
 button.danger { background:var(--bad); border-color:var(--bad); color:var(--bg); font-weight:650; }
 button.danger::before { content:"⚠\FE0E  "; }
 button.danger:hover:not(:disabled) { background:var(--bad); filter:brightness(1.08); }
+/* With its trash icon instead of the warning sign: a deeper red, white words (6.6:1). */
+button.danger.with-icon { display:inline-flex; align-items:center; gap:8px; background:#b3261e; border-color:#b3261e;
+                          color:#ffffff; }
+button.danger.with-icon::before { content:none; }
+button.danger.with-icon:hover:not(:disabled) { background:#b3261e; }
+button.danger.with-icon svg { width:15px; height:15px; }
 #confirm-where, #change-voice-where { margin-top:10px; gap:6px 8px; }
 /* Where a job's text goes: a label, the model's short name, its badge. */
 .where { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0;
@@ -17996,8 +18107,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .brand-tagline { font-size:12px; line-height:1.3; }
   .tabs { gap:6px; margin-top:12px; padding:0 2px; }
   .page { padding-top:18px; }
-  .card, .step, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
-  .step-body { padding-left:0; }
+  .card, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
+  .step { padding:14px 15px; }
+  .step.is-active { padding:16px 14px 16px; }
+  .sources { grid-template-columns:minmax(0,1fr); gap:12px; }
+  .source-card { min-height:0; }
+  .doc-list { width:100%; }
   .option-line, .more-details, .option .model-pick { padding-left:0; }
   .picker-box, .picker-none button.link, .picker-option, button.picker-change, .alternatives button.alt,
   .book-files > summary { min-height:44px; }
@@ -18005,12 +18120,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .row > label:first-child, .row > .row-label { text-align:left; }
   .settings fieldset > p.group-note { margin-left:0; }
   .job-row { grid-template-columns:minmax(0,1fr); }
-  /* A step's head: its marker, its title, and what was chosen on a line of its own. */
-  .step-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:2px 12px; }
-  .step-marker { grid-row:1 / span 2; }
+  /* A step's head: its marker, its title, then what was chosen on a line of
+     its own, then Change under it. */
+  .step-head { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:2px 12px; }
+  .step.is-done .step-marker { grid-row:1 / span 3; align-self:start; }
   .step-title { grid-column:2; }
-  .step-summary { grid-column:2; grid-row:2; }
-  .step-head > button.link { grid-column:3; grid-row:1 / span 2; }
+  /* On a phone the name and its type are cut together, as one line. */
+  .step-summary { grid-column:2; display:block; overflow:hidden; text-overflow:ellipsis; }
+  .summary-name { display:inline; }
+  .step-head > button.change { grid-column:2; justify-self:start; margin-top:8px; }
+  /* Change looks small and takes a 44 px tall touch. */
+  button.change { position:relative; min-height:32px; }
+  button.change::after { content:""; position:absolute; inset:-6px -2px; }
   /* Table rows become compact list items; cells keep their order. */
   .data-table thead { display:none; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
@@ -18257,12 +18378,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <span class="step-marker" aria-hidden="true">1</span>
           <h3 class="step-title" tabindex="-1">Add the source document</h3>
           <span class="visually-hidden step-state"></span>
-          <span id="book-summary" class="step-summary clamp"></span>
-          <button id="book-change" class="link" type="button" aria-label="Change source document"
-            onclick="setStep('book')">Change</button>
+          <span id="book-summary" class="step-summary"></span>
+          <button id="book-change" class="change" type="button" aria-label="Change source document"
+            onclick="setStep('book')"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</button>
         </div>
         <div class="step-body">
-          <p id="book-chosen" class="chosen hidden"></p>
           <!-- One radio group: the chosen card is the only source Continue uses;
                the others are dimmed and disabled but keep what was entered. -->
           <div class="sources" role="radiogroup" aria-label="Source document">
@@ -18270,39 +18391,44 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <div class="source-head">
                 <input id="source-pick-saved" class="source-radio" type="radio" name="source" value="saved">
                 <h4 class="source-title"><label id="source-saved-title" for="source-pick-saved">Saved document</label></h4>
-                <button id="document-more" class="row-more" type="button" aria-label="More for the saved document"
-                  aria-haspopup="menu" aria-expanded="false" aria-controls="row-menu">⋯</button>
               </div>
-              <select id="document" aria-labelledby="source-saved-title"><option value="">Choose a document</option></select>
+              <p class="source-sub">A PDF already in your library</p>
+              <div class="doc-field">
+                <button id="document" class="doc-select" type="button" aria-expanded="false"
+                  aria-controls="document-list" aria-labelledby="source-saved-title document-name"><span
+                  id="document-name" class="doc-select-name">Choose a document</span><svg viewBox="0 0 16 16" width="14"
+                  height="14" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor"
+                  stroke-width="1.7" stroke-linecap="round"/></svg></button>
+                <button id="document-delete" class="trash" type="button" aria-label="Delete the saved document"
+                  onclick="deleteDocument(state.audiobook.document, this)"><svg viewBox="0 0 16 16" aria-hidden="true"
+                  fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path
+                  d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.6 6.8v4.4M9.4 6.8v4.4"/></svg></button>
+                <div id="document-list" class="doc-list hidden" role="group" aria-label="Saved documents"></div>
+              </div>
             </section>
             <section class="source-card" data-source="url" aria-labelledby="source-url-title">
               <div class="source-head">
                 <input id="source-pick-url" class="source-radio" type="radio" name="source" value="url">
                 <h4 class="source-title"><label id="source-url-title" for="source-pick-url">From a URL</label></h4>
               </div>
-              <div class="field">
-                <label for="source-url">Link to a PDF, Markdown, or text file</label>
-                <input id="source-url" type="text" inputmode="url"
-                  placeholder="https://arxiv.org/pdf/2508.21433">
-              </div>
+              <p id="source-url-sub" class="source-sub">A link to a PDF or an arXiv page</p>
+              <input id="source-url" type="text" inputmode="url" aria-labelledby="source-url-title"
+                aria-describedby="source-url-sub" placeholder="https://arxiv.org/abs/…">
               <div class="field">
                 <label for="download-name">Save as (optional)</label>
                 <input id="download-name" type="text" placeholder="For example paper.pdf">
               </div>
-              <p class="note">Hilde downloads it when you press Continue.</p>
             </section>
             <section class="source-card" data-source="upload" aria-labelledby="source-file-title">
               <div class="source-head">
                 <input id="source-pick-upload" class="source-radio" type="radio" name="source" value="upload">
                 <h4 class="source-title"><label id="source-file-title" for="source-pick-upload">Upload a file</label></h4>
               </div>
+              <p class="source-sub">A PDF from your computer</p>
               <input id="document-file" class="hidden" type="file"
                 accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
-              <div class="line">
-                <button id="document-upload" type="button" onclick="chooseDocument()">Choose a file…</button>
-              </div>
+              <div class="dropzone">Drop a PDF here or <button id="document-upload" class="browse" type="button" onclick="chooseDocument()">browse</button></div>
               <p id="upload-name" class="upload-name hidden"></p>
-              <p class="note">PDF, Markdown, or plain text; or drop a file on this step.</p>
             </section>
           </div>
           <p id="book-problem" class="problem hidden" role="alert"></p>
@@ -18317,7 +18443,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 onclick="addVoiceToBook()">Change voice</button>
             </div>
           </div>
-          <div class="actions">
+          <div class="actions step-actions">
+            <span id="book-chosen" class="step-hint" aria-live="polite"></span>
             <button id="book-continue" class="primary" type="button"
               onclick="continueFromBook()">Continue</button>
           </div>
@@ -18328,9 +18455,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <span class="step-marker" aria-hidden="true">2</span>
           <h3 class="step-title" tabindex="-1">Choose a voice</h3>
           <span class="visually-hidden step-state"></span>
-          <span id="voice-summary" class="step-summary clamp"></span>
-          <button id="voice-change" class="link" type="button" aria-label="Change voice"
-            onclick="setStep('voice')">Change</button>
+          <span id="voice-summary" class="step-summary"></span>
+          <button id="voice-change" class="change" type="button" aria-label="Change voice"
+            onclick="setStep('voice')"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</button>
         </div>
         <div class="step-body">
           <div class="field" id="shared-voice-row">
@@ -18343,7 +18471,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               placeholder="Preset or server voice ID">
           </div>
           <div id="selected-voice" class="voice-card hidden"></div>
-          <div class="actions">
+          <div class="actions step-actions">
             <button id="voice-continue" class="primary" type="button"
               onclick="continueFromVoice()">Continue</button>
           </div>
@@ -18780,8 +18908,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <!-- One confirmation for every risky action: it names its target. -->
 <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
   <form method="dialog">
-    <h2 id="confirm-title"></h2>
+    <h2 id="confirm-title"><span id="confirm-icon" class="confirm-icon hidden" aria-hidden="true"><svg viewBox="0 0 16 16"
+      fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path
+      d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.6 6.8v4.4M9.4 6.8v4.4"/></svg></span><span id="confirm-heading"></span></h2>
     <p id="confirm-text"></p>
+    <p id="confirm-more" class="hidden"></p>
     <div id="confirm-where" class="line hidden"></div>
     <div id="confirm-field" class="field hidden">
       <label id="confirm-label" for="confirm-input"></label>
@@ -19072,6 +19203,14 @@ const READER_WORD_LEAD_SECONDS = 0.1;
 const PLAY_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5v11L13 8z"/></svg>';
 const PAUSE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zm5 0h3v10H9z"/></svg>';
 const CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 11.1 3 7.9 1.6 9.3l4.6 4.6 8.2-8.2-1.4-1.4z"/></svg>';
+// A finished Create step's check, drawn in its circle.
+const STEP_CHECK_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.4l3 3 6-6.4" fill="none" '
+  + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const TRASH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" '
+  + 'stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.6 6.8v4.4M9.4 6.8v4.4"/></svg>';
+// Every Change on Create: a pencil before the word.
+const PENCIL_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" '
+  + 'stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>';
 let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], consumers = [];
 // Jobs this server process finished, newest first: done, failed, or stopped.
 let recent = [];
@@ -19147,7 +19286,7 @@ const FIELDS = [
   ["design-voice", "voice.server_voice"], ["voice-name", "voice.name"],
   ["instruct", "voice.instruct"],
   ["wav-subtype", "voice.wav_subtype"], ["clone-voice", "audiobook.server_voice"],
-  ["shared-voice", "audiobook.voice"], ["document", "audiobook.document"],
+  ["shared-voice", "audiobook.voice"],
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
   ["paper-in-flight", "audiobook.in_flight"],
   ["paper-paragraphs-per-worker", "audiobook.paragraphs_per_worker"],
@@ -19190,8 +19329,83 @@ function fillAssetSelect(id, values, selected, placeholder) {
 }
 
 function populateAssets() {
-  fillAssetSelect("document", assets.documents, state.audiobook.document, "Choose a document");
+  renderDocumentField();
+  if (!$("document-list").classList.contains("hidden")) renderDocumentList();
   fillAssetSelect("shared-voice", assets.voices, state.audiobook.voice, "Choose a voice");
+}
+
+// Step 1's Saved document: a field that opens the saved documents, newest
+// first, each with its date and its own trash button; the trash button after
+// the field deletes the one chosen.
+function documentTime(name) { return Number((assets.document_times || {})[name]) || 0; }
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// "20 Oct", with the year when it is not this year's.
+function documentDate(name) {
+  const seconds = documentTime(name);
+  if (!seconds) return "";
+  const day = new Date(seconds * 1000);
+  const year = day.getFullYear() === new Date().getFullYear() ? "" : ` ${day.getFullYear()}`;
+  return `${day.getDate()} ${MONTHS[day.getMonth()]}${year}`;
+}
+function savedDocuments() {
+  return [...(assets.documents || [])].sort((a, b) => documentTime(b) - documentTime(a) || a.localeCompare(b));
+}
+function renderDocumentField() {
+  const name = state.audiobook.document;
+  const saved = (assets.documents || []).includes(name);
+  $("document-name").textContent = !name ? "Choose a document" : saved ? name : `${name} (missing)`;
+  $("document").classList.toggle("is-empty", !name);
+  $("document").title = name;
+  $("document-delete").setAttribute("aria-label", name ? `Delete ${name}` : "Delete the saved document");
+}
+function renderDocumentList() {
+  const list = $("document-list");
+  const rows = savedDocuments().map((name) => {
+    const row = document.createElement("div");
+    row.className = "doc-row";
+    row.dataset.name = name;
+    row.classList.toggle("is-chosen", name === state.audiobook.document);
+    const pick = document.createElement("button");
+    pick.type = "button"; pick.className = "doc-pick"; pick.title = name;
+    pick.setAttribute("aria-pressed", String(name === state.audiobook.document));
+    const label = document.createElement("span");
+    label.className = "doc-name"; label.textContent = name;
+    const date = document.createElement("span");
+    date.className = "doc-date"; date.textContent = documentDate(name);
+    pick.append(label, date);
+    pick.addEventListener("click", () => pickDocument(name));
+    const trash = document.createElement("button");
+    trash.type = "button"; trash.className = "trash doc-trash"; trash.innerHTML = TRASH_ICON;
+    trash.setAttribute("aria-label", `Delete ${name}`);
+    trash.addEventListener("click", () => { closeDocumentList(false); deleteDocument(name, $("document")); });
+    row.append(pick, trash);
+    return row;
+  });
+  if (!rows.length) {
+    const none = document.createElement("p");
+    none.className = "note"; none.textContent = "No saved documents yet";
+    rows.push(none);
+  }
+  list.replaceChildren(...rows);
+}
+function openDocumentList() {
+  renderDocumentList();
+  $("document-list").classList.remove("hidden");
+  $("document").setAttribute("aria-expanded", "true");
+  const picks = [...$("document-list").querySelectorAll(".doc-pick")];
+  (picks.find((pick) => pick.getAttribute("aria-pressed") === "true") || picks[0] || $("document")).focus();
+}
+function closeDocumentList(focusField) {
+  if ($("document-list").classList.contains("hidden")) return;
+  $("document-list").classList.add("hidden");
+  $("document").setAttribute("aria-expanded", "false");
+  if (focusField) $("document").focus();
+}
+function pickDocument(name) {
+  state.audiobook.document = name;
+  bookProblemText = ""; bookEmptyContinue = false;
+  closeDocumentList(true);
+  populateAssets(); render(); queueSync();
 }
 
 function load(data) {
@@ -19322,7 +19536,8 @@ function pendingUrl() {
 function selectSource(source, focusField) {
   if (state.audiobook.source !== source) {
     state.audiobook.source = source;
-    bookProblemText = ""; overwriting = "";
+    bookProblemText = ""; bookEmptyContinue = false; overwriting = "";
+    if (source !== "saved") closeDocumentList(false);
     render(); queueSync();
   }
   if (focusField) $(SOURCE_FIRST[source]).focus();
@@ -19337,9 +19552,10 @@ function renderSources() {
   }
   const saved = book.source === "saved", url = book.source === "url", upload = book.source === "upload";
   $("document").disabled = !saved;
-  $("document-more").disabled = !saved || submitting || !(assets.documents || []).includes(book.document);
-  $("document-more").setAttribute("aria-label",
-    book.document ? `More for ${book.document}` : "More for the saved document");
+  // The trash after the field shows once a saved document is chosen in it.
+  const savedOne = (assets.documents || []).includes(book.document);
+  $("document-delete").classList.toggle("hidden", !savedOne);
+  $("document-delete").disabled = !saved || submitting || !savedOne;
   $("source-url").disabled = $("download-name").disabled = !url || submitting;
   $("document-upload").disabled = !upload || uploading;
   $("upload-name").textContent = book.upload ? `Uploaded: ${book.upload}` : "";
@@ -19426,12 +19642,17 @@ function showToast(text, action) {
 function hideToast() { clearTimeout(toastTimer); $("toast").classList.add("hidden"); }
 
 // The one confirmation of every risky action, in the page: its title names
-// the target. Resolves true (or the typed text, with `input`) or false.
-function askConfirm({ title, text, confirm, danger = false, input = null, where = [] }) {
+// the target. `more` is a second line; `icon` puts a trash before the title
+// and on the confirming button. Resolves true (or the typed text, with
+// `input`) or false.
+function askConfirm({ title, text, more = "", confirm, danger = false, icon = false, input = null, where = [] }) {
   const dialog = $("confirm-dialog");
-  $("confirm-title").textContent = title;
+  $("confirm-heading").textContent = title;
+  $("confirm-icon").classList.toggle("hidden", !icon);
   $("confirm-text").textContent = text || "";
   $("confirm-text").classList.toggle("hidden", !text);
+  $("confirm-more").textContent = more;
+  $("confirm-more").classList.toggle("hidden", !more);
   $("confirm-where").replaceChildren(...where);
   $("confirm-where").classList.toggle("hidden", !where.length);
   $("confirm-field").classList.toggle("hidden", !input);
@@ -19440,7 +19661,8 @@ function askConfirm({ title, text, confirm, danger = false, input = null, where 
     $("confirm-input").value = input.value || "";
   }
   $("confirm-ok").textContent = confirm;
-  $("confirm-ok").className = danger ? "danger" : "primary";
+  if (icon) $("confirm-ok").insertAdjacentHTML("afterbegin", TRASH_ICON);
+  $("confirm-ok").className = danger ? (icon ? "danger with-icon" : "danger") : "primary";
   dialog.returnValue = "";
   dialog.showModal();
   if (input) $("confirm-input").select();
@@ -22224,14 +22446,17 @@ async function deleteBook(book, button) {
   setStatus(`Deleted the audiobook ${book.title}.`);
   await refreshLibrary();
 }
-// Saved document's ⋯ → Delete…: the chosen document, after a confirmation naming it.
-async function deleteDocument(button) {
-  const name = state.audiobook.document;
+// A saved document's trash (after the field, or on its row in the list): the
+// document only, after a question naming it; books made from it are not touched.
+async function deleteDocument(name, button) {
   if (!name) return;
   const answer = await deleteAsset("documents", name, {
-    title:`Delete '${name}'?`,
-    text:"It is removed from your documents. Audiobooks made from it are kept.",
+    title:`Delete "${name}"?`,
+    text:"It is removed from your saved documents.",
+    more:"Audiobooks already made from it stay in your library.",
+    icon:true,
   }, button);
+  $("document").focus();
   if (!answer) return;
   assets = answer.assets || assets;
   // Every card that held it lets it go.
@@ -22303,9 +22528,16 @@ function focusStep() {
   )].find((control) => shown(control) && !control.disabled);
   (target || node.querySelector(".step-title")).focus();
 }
-async function continueFromBook() {
+// Continue uses only the chosen card. Nothing in it: "Choose a document
+// first" beside Continue. A step reopened from step 3 goes back there, its
+// choices kept; Overwrite and Change voice (`ahead` false) go through step 2.
+async function continueFromBook(ahead = true) {
   if (submitting) return;
   collect();
+  if (!chosenDocument() && !pendingUrl()) {
+    bookEmptyContinue = true; render();
+    return;
+  }
   if (pendingUrl()) {
     submitting = true; render();
     const downloaded = await materializeUrl();
@@ -22314,18 +22546,18 @@ async function continueFromBook() {
   }
   // A type Hilde doesn't read stops here; step 1 says so (renderCreate()).
   if (!bookReady() || !documentType(chosenDocument())) return;
-  setStep("voice");
+  setStep(ahead && reachedCreate && voiceReady() ? "create" : "voice");
 }
 // Overwrite: the existing book is made again, so steps 2 and 3 run as for a
 // new book, with its adaptation settings.
 function overwriteBook() {
   if (!facts.existing_book) return;
   overwriting = facts.existing_book.id;
-  continueFromBook();
+  continueFromBook(false);
 }
 function addVoiceToBook() {
   overwriting = "";
-  continueFromBook();
+  continueFromBook(false);
 }
 function continueFromVoice() {
   collect();
@@ -22336,7 +22568,7 @@ function continueFromVoice() {
 // chosen source card stays.
 function clearBookChoice() {
   Object.assign(state.audiobook, { document:"", upload:"", url_document:"", source_url:"", download_name:"" });
-  overwriting = "";
+  overwriting = ""; reachedCreate = false;
   $("source-url").value = ""; $("download-name").value = "";
   populateAssets();
 }
@@ -22542,8 +22774,27 @@ function sendOutBadges(kind) {
 }
 
 let bookProblemText = "";
+// Continue was pressed with the chosen card empty; said until a document is chosen.
+let bookEmptyContinue = false;
+// Step 3 was open for this book: Continue in a reopened step 1 goes back there.
+let reachedCreate = false;
+// A finished step's value, cut with "…", and its type in gray after it.
+function setSummary(node, value, type) {
+  if (!value) { node.replaceChildren(); node.title = ""; return; }
+  const name = document.createElement("span");
+  name.className = "summary-name"; name.textContent = value;
+  const parts = [name];
+  if (type) {
+    const kind = document.createElement("span");
+    kind.className = "summary-type"; kind.textContent = `\u00a0· ${type}`;
+    parts.push(kind);
+  }
+  node.replaceChildren(...parts);
+  node.title = value;
+}
 function renderCreate() {
   const step = currentStep();
+  if (step === "create") reachedCreate = true;
   const done = { book:bookReady(), voice:voiceReady(), create:false };
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
@@ -22551,31 +22802,36 @@ function renderCreate() {
     node.classList.toggle("is-active", active);
     node.classList.toggle("is-done", complete);
     node.classList.toggle("is-upcoming", !active && !complete);
-    node.querySelector(".step-marker").textContent = complete ? "✓" : String(index + 1);
+    // A finished step: a check in its circle; otherwise its number.
+    const marker = node.querySelector(".step-marker");
+    if (complete && !marker.querySelector("svg")) marker.innerHTML = STEP_CHECK_ICON;
+    else if (!complete && marker.textContent !== String(index + 1)) marker.textContent = String(index + 1);
     node.querySelector(".step-state").textContent =
-      active ? "(current step)" : complete ? "(done)" : "";
+      active ? "(current step)" : complete ? "(completed)" : "(not reached yet)";
   });
   renderSources();
   const documentName = chosenDocument();
   const type = documentType(documentName);
   const chosen = `${documentName} · ${type || "not a type Hilde reads"}`;
-  $("book-summary").textContent = step !== "book" && done.book ? chosen : "";
-  $("book-summary").title = documentName;
-  $("book-change").classList.toggle("hidden", step === "book");
-  // Only the chosen card: its link as typed, else its document and type.
+  setSummary($("book-summary"), step !== "book" && done.book ? documentName : "", type || "not a type Hilde reads");
+  $("book-change").classList.toggle("hidden", step === "book" || !done.book);
+  // Beside Continue: what the chosen card holds (its link as typed, else its
+  // document and type), or that nothing is chosen yet.
   const source = state.audiobook.source, link = state.audiobook.source_url.trim();
   const chosenText = source === "url" ? (link ? `Chosen (URL): ${link}` : "")
     : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}` : "";
-  $("book-chosen").textContent = chosenText;
-  $("book-chosen").classList.toggle("hidden", !chosenText);
+  const empty = bookEmptyContinue && !documentName && !pendingUrl();
+  $("book-chosen").textContent = empty ? "Choose a document first" : chosenText || "No document chosen yet";
+  $("book-chosen").classList.toggle("problem", empty);
+  $("book-chosen").title = chosenText;
   const problem = bookProblemText
     || (done.book && !type ? "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt." : "");
   $("book-problem").textContent = problem;
   $("book-problem").classList.toggle("hidden", !problem);
   const voiceName = facts.clone_server
     ? state.audiobook.server_voice.trim() : state.audiobook.voice;
-  $("voice-summary").textContent = step !== "voice" && done.voice ? voiceName : "";
-  $("voice-change").classList.toggle("hidden", step === "voice" || !done.book);
+  setSummary($("voice-summary"), step !== "voice" && done.voice ? voiceName : "");
+  $("voice-change").classList.toggle("hidden", step === "voice" || !done.voice);
   // A document that is already a book with its own text gets a new voice,
   // read from that text without any model.
   // Only the chosen card's document counts; a link not yet downloaded is new.
@@ -22593,8 +22849,8 @@ function renderCreate() {
   $("existing-book-voice").classList.toggle("hidden", !(existing && existing.has_text));
   $("existing-book-overwrite").classList.toggle("hidden", !(existing && existing.has_text));
   $("book-continue").classList.toggle("hidden", !!(existing && existing.has_text) && step === "book");
-  $("book-continue").disabled =
-    submitting || !(done.book || pendingUrl());
+  // Pressed with nothing chosen, Continue says so beside it.
+  $("book-continue").disabled = submitting || uploading;
   $("option-adapt").classList.toggle("hidden", voiceOnly);
   // Figures and checking are part of adapting; they show while it is on.
   $("figure-interpretation").classList.toggle("hidden", voiceOnly || !state.audiobook.adapt);
@@ -22872,7 +23128,7 @@ function mountPicker(host) {
           class="badge"></span>${CHEVRON}</button>
       </div>
       <button id="${name}-picker-change" class="picker-change" type="button"
-        aria-label="Change the ${picker.label.toLowerCase()}">Change</button>
+        aria-label="Change the ${picker.label.toLowerCase()}">${PENCIL_ICON}Change</button>
     </div>
     ${picker.images ? `<p id="${name}-images-note" class="note picker-images-note">${IMAGES_ONLY_NOTE}</p>` : ""}
     <p id="${name}-model-reason" class="model-reason note hidden" role="status"></p>
@@ -25189,10 +25445,10 @@ async function removeWorkerNode(host) {
 
 // A new choice or link in step 1 clears the last problem adding a document;
 // a changed link or Save as name is downloaded again.
-for (const id of ["document", "source-url", "download-name"])
-  $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => {
+for (const id of ["source-url", "download-name"])
+  $(id).addEventListener("input", () => {
     bookProblemText = "";
-    if (id !== "document") state.audiobook.url_document = "";
+    state.audiobook.url_document = "";
   });
 // Step 1's source cards: the radios (arrow keys move the choice and keep focus
 // on the radio), and a click anywhere on a dimmed card, which chooses it and
@@ -25204,9 +25460,38 @@ for (const card of document.querySelectorAll(".source-card"))
     if (!card.classList.contains("is-off") || event.detail === 0) return;
     selectSource(card.dataset.source, true);
   });
-$("document-more").addEventListener("click", () => openRowMenu($("document-more"),
-  $("document-more").getAttribute("aria-label"),
-  [{ label:"Delete…", run:(button) => deleteDocument(button) }]));
+// Saved document's field opens and closes its list; arrow keys move through
+// the rows, Escape closes it; a click or focus outside the field closes it.
+$("document").addEventListener("click", () => {
+  if ($("document-list").classList.contains("hidden")) openDocumentList(); else closeDocumentList(true);
+});
+const documentField = $("document").closest(".doc-field");
+documentField.addEventListener("keydown", (event) => {
+  const open = !$("document-list").classList.contains("hidden");
+  if (event.key === "Escape" && open) { event.preventDefault(); closeDocumentList(true); return; }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  if (!open) {
+    if (event.target === $("document")) { event.preventDefault(); openDocumentList(); }
+    return;
+  }
+  const picks = [...$("document-list").querySelectorAll(".doc-pick")];
+  if (!picks.length) return;
+  event.preventDefault();
+  const at = picks.indexOf(document.activeElement.closest(".doc-row")?.querySelector(".doc-pick"));
+  const next = at < 0 ? 0 : (at + (event.key === "ArrowDown" ? 1 : -1) + picks.length) % picks.length;
+  picks[next].focus();
+});
+documentField.addEventListener("focusout", (event) => {
+  if (event.relatedTarget && !documentField.contains(event.relatedTarget)) closeDocumentList(false);
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!documentField.contains(event.target)) closeDocumentList(false);
+});
+// A finished step's title reopens it, as its Change does; nothing else is cleared.
+for (const name of ["book", "voice", "create"])
+  $(`step-${name}`).querySelector(".step-title").addEventListener("click", () => {
+    if ($(`step-${name}`).classList.contains("is-done")) setStep(name);
+  });
 for (const [id] of FIELDS) {
   const node = $(id);
   node.addEventListener(node.tagName === "SELECT" ? "change" : "input", () => {
