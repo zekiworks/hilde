@@ -30,7 +30,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `qa/` | The QA records reviewers and the fixer share: bug classes, findings, runs, papers, decisions, open questions, golden assertions per paper (`golden/<paper>.yaml`), fact sets per test paper (`facts/<paper>.yaml`, format in `facts/README.md`), `qa.py` (`validate`, `check`, `report`, `next`, and `facts`, which scores fact sets over several runs and against a baseline's), and `describe.py`, which makes descriptions-only runs: `PaperRun(descriptions_only=True)` sends only figure, table, and equation batches to the model, with every request, check, and second request a book gets, keeps prose as printed, and writes each run's `narration.json` and a `book.json` stamp; the flag is part of the scratch identity, so such a run is never reused for a book. `qa/AGENTS.md` is its protocol. Golden checks and fact sets run only here, on an output; the app never reads `qa/`. Output texts under `qa/outputs/` stay out of git. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | Where earlier versions kept the library; still ignored by git. The server refuses to start an empty `~/.hilde/library` while it holds voices or books (`library_left_behind()`). |
-| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, and preview rendering. |
+| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, voice tags (validation, the tag file, suggestions, composition, routes), and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
 | `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. **Set up** in **Add narration workers** pipes it to a node over SSH. |
 | `README.md` | User guide: what Hilde does, how it reads a paper, measured results, a two-command quickstart through `install.sh`, known limitations, access and security, and License. Short summaries link to the guides below. |
@@ -70,9 +70,12 @@ A saved local voice is:
 <voice-dir>/
 ├── reference.wav
 ├── transcript.txt
-├── description.txt   voice description (--instruct), searched by the web UI
+├── description.txt   voice description (--instruct), searched by the web UI; a voice made
+│                     from tags holds exactly the composed request (compose_voice_instruct())
 └── preview.wav       optional; the fixed preview passage rendered for older voices
 ```
+
+The web UI's tags for a voice are not in this folder: they live in the library's `voice-tags.json` (see [Voice tags](#voice-tags)).
 
 `save_voice()` stages the clip, transcript, and description in a sibling directory. Without `--overwrite`, an existing destination is rejected. With it, `keep_voice_version()` first copies the voice being replaced (clip, transcript, and description; never a preview) into `<voice>/.versions/vN`, N one past the highest kept, and then the owned files are replaced: a replacement without a description removes the old `description.txt`, and every replacement removes a `preview.wav` rendered from the old audio. Unrelated files remain. `transcript.txt` is the exact UTF-8 passage used for generation and is written last as the commit marker.
 
@@ -212,6 +215,7 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 ├── Documents/
 ├── in_progress/
 │   └── voice-drafts/
+├── voice-tags.json
 └── workers.yaml
 ```
 
@@ -223,6 +227,56 @@ Browser state contains only flat asset names and book ids. `safe_asset_name()` a
 creates `Voices/`, copies in each stock voice from `STOCK_VOICES_PATH` whole:
 staged under a hidden folder, hidden files skipped, then renamed into place. An
 existing library is never reseeded, so a deleted stock voice stays deleted.
+
+### Voice tags
+
+A voice's tags live in one library-level file, `<root>/voice-tags.json`
+(`VOICE_TAGS_FILE`), never in a voice folder, so tagging, confirming, or
+editing tags leaves every `description.txt`, reference clip, and transcript
+byte-identical:
+
+```json
+{"schema": 1,
+ "vocabulary": ["late-night radio"],
+ "voices": {"Eir": {"tags": ["female", "adult", "warm"], "confirmed": true},
+            "Tagtest": {"tags": ["male", "warm"], "details": "Reads like a radio host.", "confirmed": true}}}
+```
+
+`vocabulary` holds the user's own tags (the page's **Yours** group);
+Hilde's are `VOICE_TAG_GROUPS` in code (Voice, Pitch, Texture, Pace, Manner,
+Suited to: 40 tags), each with the phrases a description may use for it.
+`details` is a voice made from tags' **More details**. `write_voice_tags()`
+writes a hidden temporary file opened `0600`, fsyncs it, and renames it into
+place; `update_voice_tags()` reads (strictly: an unreadable file raises, so it is
+never written over), changes, and writes under `_VOICE_TAGS_LOCK`.
+`read_voice_tags()` without `strict` treats an unreadable file as empty, so the
+list still shows. `rename_voice()` moves a voice's entry (`move_voice_tags()`),
+`delete_voice()` removes it (`forget_voice_tags()`), `save_voice_draft()`
+replaces it after the voice is saved; a voice without an entry writes nothing.
+Removing a tag from `vocabulary` leaves the voices that use it as they are.
+
+- `clean_voice_tag()`: trimmed, inner runs of spaces made one, 1 to 32
+  characters (`VOICE_TAG_MAX_LENGTH`), printable (no line break, tab, or control
+  character), no comma; one of Hilde's tags in its own spelling.
+  `clean_voice_tags()`: a list, repeats (any case) dropped, at most 12
+  (`VOICE_TAG_MAX_COUNT`), Hilde's tags in vocabulary order, then the user's own
+  as given. Both raise `ValueError` with the reason the page shows.
+- `suggest_voice_tags(description, custom)`: for a voice without an entry, the
+  tags (Hilde's, then the user's own) whose text or one of its phrases occurs in
+  the description as whole words in order (`voice_tag_words()`: lower case; a
+  hyphen or apostrophe inside a word keeps it one word, so "soft-edged" is not
+  "soft"), ignoring words from a negation (`VOICE_TAG_NEGATIONS`: without, not,
+  never, no, nor, avoid…, and the pairs rather than, instead of) to the end of
+  its sentence (`. ! ? ; :` or a line break), so a sentence starting with
+  "Avoid" suggests nothing. No model is asked; at most 12.
+- `compose_voice_instruct(tags, details)`: the request a new voice is designed
+  from and its `description.txt`: "A|An <Manner>, <yours>, <Texture>, <Pitch>
+  <age> <gender> voice." (An before a vowel letter; left out without such tags),
+  "Reads at a <Pace> pace.", "Suited to <a>, <b> and <c>." (`VOICE_TAG_SUITED`:
+  narration, storytelling, lectures, news reading, academic texts), then the
+  details with whitespace runs made single spaces; each group in vocabulary
+  order. The page shows the server's result (`derived.voice_instruct`), never a
+  copy of the rule.
 
 ### Books
 
@@ -360,7 +414,7 @@ needs the text written again. The browser asks and retries with
 `normalize()` accepts tabs `audiobook` (Create), `progress` (the progress view), `voice` (Voices), and `player` (Listen); Settings is page-local, never a saved tab. It and rebuilds four known sections:
 
 - `runtime`: dtype, attention, language, input encoding, seed;
-- `voice`: remote design voice, name, description prompt, reference WAV subtype;
+- `voice`: remote design voice, name, New voice's `tags` (`stored_voice_tags()`: the valid ones, once each, at most 12, in vocabulary order) and `details` (More details), reference WAV subtype. `values_of()` composes `instruct` from them (`compose_voice_instruct()`), and `derived()` returns it as `voice_instruct`;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
 - `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
@@ -1194,68 +1248,92 @@ Each page:
   `recent`; the followed run's "The server restarted…" notice stays.
 - **Voices** is a table (`voiceRow()`, each row `tr[data-voice]`): a preview
   button (a #3fb950 outline circle; filled, with "Playing preview" under the
-  name, while its clip plays), Name, Voice description, Modified (local
+  name, while its clip plays), Name, Tags and description, Modified (local
   YYYY-MM-DD in monospace, the exact time in its tooltip; hidden on phones),
   and **Select**, 50 rows at a time with **Show more**. Order: the selected
   voice (`audiobook.voice`, unless a clone server narrates) first on a 10%
   green row, then the rest A–Z by `compareVoiceNames()` (an `Intl.Collator`
-  of the browser's locale, sensitivity `base`); `refreshVoices()` sorts once
-  and `renderVoiceTable()` moves the selected match to the top. The
-  description is the VoiceDesign prompt saved as `description.txt`, shown as
-  tags (`descriptionTags()`: its comma-separated parts, trimmed, empty parts
-  skipped; display only, the file is never rewritten) in #d66bc6 on an opaque
-  14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour, ≥ 3:1 on the
-  green row); no description reads "No description". A wide screen
-  (`foldVoiceRow()`, run by `renderVoiceTable()` and, through a
-  `ResizeObserver` on `#voice-table`, on every new width) shows a description
-  whole (`is-whole`) when its wrapped tags fit two lines (measured: the tags'
-  extent against two tag heights and the row gap); otherwise each tag keeps to
-  one line (`white-space: nowrap`, a longer one cut with "…", its whole text
-  in its `title`), the tags past the second line are `hidden`, and
-  `button.voice-more-tags` ("+N more", N the hidden tags, or "Show all" when
-  only a cut tag is left to open; `aria-expanded`) takes the second line's
-  end, tags giving way until it fits. It (`toggleVoiceTags()`) sets `is-open`,
-  every tag shown wrapping, and reads "Show less". During a search a row
-  whose filled tag would be hidden opens by itself; its **Show less** folds it
-  for that search (`searchFoldedVoices`). The cell has `width: 100%` and its
-  tags `contain: inline-size`, so tags never widen the table. A phone keeps
-  one line fading out at the right (no button), and a tap on the
-  row (not on a button) toggles `is-open`, kept across re-renders in
-  `expandedVoices` (shared with "+N more"), which shows them all; while a phone row's preview plays,
-  "Playing preview" takes the tags' line. Search (placeholder "Search voice
-  descriptions, e.g. warm british female") reads descriptions only: every
-  typed word must begin a description word (AND, any order, case- and
-  accent-insensitive, so `male` does not match `female`); a tag is filled
-  (`aria-pressed`) when a search word begins one of its words. A click on a
-  tag (`toggleVoiceTag()`) adds its words not yet searched to the box, or, on
-  a filled tag, removes the typed words that fill it; **×**
+  of the browser's locale, sensitivity `base`); `takeVoices()` sorts once
+  (from `GET /api/voices` or a tag route's answer, the same shape) and
+  `renderVoiceTable()` moves the selected match to the top. A row shows the
+  voice's tags (`voiceTags()`: the confirmed ones, else the suggested ones,
+  `.is-suggested`, a dashed border) as `button.voice-tag` chips in #d66bc6 on
+  an opaque 14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour,
+  ≥ 3:1 on the green row) on one line (`.voice-tags`, no wrapping, fading out
+  where cut: `is-cut`, always on a phone), with `button.voice-confirm`
+  ("Suggested — confirm", `POST /api/voices/tags` with the suggestions) while
+  suggested; then `.voice-text`, one line ending in "…" (`text-overflow`):
+  More details for a voice made from tags, else the description
+  (`description.txt`, whitespace collapsed). No tags and no description read
+  "No description". On a wide screen `button.voice-full` ("Full description",
+  `aria-expanded`) is there when `fitVoiceRow()` measures the text or the
+  chips cut, or the text shown is not the whole description; it
+  (`toggleVoiceRow()`) sets `is-open`: every chip wrapping and the whole stored
+  description, and reads "Show less". `fitVoiceRows()` runs after each render
+  and, through a `ResizeObserver` on `#voice-table`, on every new width. The
+  cell has `width: 100%` and its two lines `contain: inline-size`, so nothing
+  widens the table. A phone has no button: a tap on the row (not on a button)
+  toggles `is-open`; open rows are kept across re-renders in
+  `expandedVoices`. While a phone row's preview plays, "Playing preview"
+  takes the chips' lines. Search (placeholder "Search tags and descriptions,
+  e.g. warm calm female"): every typed word must begin a word of the
+  description or of the voice's tags (`voice.words`, AND, any order, case-
+  and accent-insensitive, so `male` does not match `female`), so tags only
+  add to what the description alone finds. A chip is filled (`aria-pressed`,
+  `tagFilled()`) when each of its tag's words begins with a search word, so
+  `mid-pitched` fills `mid-pitched` but not `low-pitched`; filled chips come
+  first in their row. A click on a chip (`toggleVoiceTag()`) appends its tag
+  as typed, or, on a filled chip, removes the typed words that fill it; **×**
   (`#voice-search-clear`, shown while the box has text) and **Clear search**
   empty it. Each keystroke rebuilds only `#voice-rows`, never the box, so its
   text and cursor stay; `#voice-count` under the list reads "N voices" or "N
-  of M voices"; no match reads "No voice description contains all of:
-  <terms>." with **Clear search**. One shared player (`previewAudio`)
+  of M voices"; no match reads "No voice matches all of: <terms>." with
+  **Clear search**. One shared player (`previewAudio`)
   previews in place, so filtering never stops it, ignoring clips replaced
   before they start; a second preview stops the first, and a preview never
   changes the selection. **Select** (`chooseVoice()`) sets `audiobook.voice`,
-  the state Create's step 2 uses; that voice moves to the top and shows
+  the state Create's step 2 uses (its `#selected-voice` card,
+  `renderSelectedVoice()`, shows the same chips as `span.voice-tag`, on one
+  line, and one `.voice-text` line); that voice moves to the top and shows
   "✓ Selected" (solid green, dark text) instead, and a banner offers **Back
   to Create**; a search that hides it leaves it selected. Each row's **⋯**
-  (`rowMoreButton()`, one shared `#row-menu`) holds **Edit** (opens the
-  editor on that voice, titled "Edit <name>"), **Rename…**, and **Delete…**.
-  Rename (a confirm dialog with a name field, then `POST /api/voices/rename`)
-  moves the voice to its new name and carries the browser's selected voice,
-  open book's voice, and editor name along.
-- **New voice** (primary) opens the editor (`#voice-form`): **Describe the
-  voice**, with an example, and **Name**. **Generate preview** designs a draft
-  from the description without touching any saved voice and plays it when
-  ready; **Stop** cancels it; it is refused while any audiobook is queued.
-  **Save voice** stores exactly that draft under the name; it is enabled only
-  once the draft was played to its end or for 3 seconds (`noteDraftPlayed()`)
-  and while the description still equals the previewed one, and
-  `#voice-save-note` says which condition is missing. A name that exists shows
-  "A voice named '<name>' exists. Saving replaces it; its current version is
-  kept in its history." and Save asks "Replace voice '<name>'?" first. Saving
-  under another name keeps both voices.
+  (`rowMoreButton()`, one shared `#row-menu`) holds **Edit**, **Rename…**,
+  and **Delete…**. **Edit** (`editVoice()`) opens `#voice-edit`, "Edit
+  <name>": "Tags help you find this voice. They don't change how it sounds.",
+  a note while the tags are suggestions, the tag picker (`#voice-edit-picker`,
+  `editTags`), and the stored description, read only. **Save tags**
+  (`saveVoiceTags()`, `POST /api/voices/tags`) writes only the tag file; **Make
+  a new voice from these tags** (`newVoiceFromTags()`) opens New voice with
+  them on. Rename (a confirm dialog with a name field, then `POST
+  /api/voices/rename`) moves the voice to its new name and carries the
+  browser's selected voice, open book's voice, editor names, and open row
+  along.
+- The tag picker (`renderTagPicker()`, New voice and Edit): one
+  `fieldset.tag-group` per vocabulary group (`legend`, `button.tag-option`
+  toggles with `aria-pressed` and `data-tag`), then **Yours**: the user's own
+  tags, each with `button.tag-remove` ("Remove <tag> from your tags", `POST
+  /api/voices/vocabulary` `remove`), any chosen tag of no group, and **Add your
+  own tag** (`input.tag-add-input`, **Add** or Enter: `add`; the server's
+  refusal shows under it in `.tag-add-problem`; one of Hilde's tags is just
+  turned on). Changes come back in vocabulary order (`canonicalTags()`). It is
+  rebuilt only when the vocabulary changes, so focus and a half-typed tag stay.
+- **New voice** (primary, `openVoiceForm(tags)`) opens the editor
+  (`#voice-form`): the tag picker (`#voice-new-picker`, `voice.tags`), **More
+  details** (`#voice-details`, `voice.details`), **Name**, and **Sent to the
+  voice model:** (`#voice-instruct`), the server's `derived.voice_instruct`
+  for the synced state. With neither tags nor details the problem is "Choose
+  at least one tag or write some details." and Generate preview is disabled.
+  **Generate preview** designs a draft from the composed request without
+  touching any saved voice and plays it when ready; **Stop** cancels it; it is
+  refused while any audiobook is queued. **Save voice** stores exactly that
+  draft under the name, sending its tags and details (`voiceRequestKey()`
+  must equal the draft's); it is enabled only once the draft was played to
+  its end or for 3 seconds (`noteDraftPlayed()`) and while the tags and
+  details still equal the previewed ones, and `#voice-save-note` says which
+  condition is missing. A name that exists shows "A voice named '<name>'
+  exists. Saving replaces it; its current version is kept in its history."
+  and Save asks "Replace voice '<name>'?" first. Saving under another name
+  keeps both voices.
 - **Listen** opens the **Library** (`#library-view`): a compact table
   (`bookRow()`) of Title, Duration, Source file, Voice (the voice last heard
   here, else the book's; "(+N)" for more ready voices, all named in its
@@ -2179,15 +2257,17 @@ read aloud by **Read answers aloud**.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
-| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
-| `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice's entry in `voice-tags.json` goes too. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were; its entry in `voice-tags.json`, if any, moves to the new name. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
-| `GET /api/voices` | Saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later is not a change. |
+| `GET /api/voices` | `voices`: saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), `tags` (the confirmed ones, else empty), `suggested` (`suggest_voice_tags()` while the voice has no entry, else empty), `confirmed`, `details` (More details of a voice made from tags), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later or a tag change is not a change. `vocabulary`: `groups` (each `name` and `tags`, Hilde's) and `yours`, the user's own tags. |
+| `POST /api/voices/tags` | Store JSON `tags` as the confirmed tags of the saved voice `name` (`set_voice_tags()`; its `details` are kept); only `voice-tags.json` is written. A bad tag or list returns HTTP 400 with the reason, an unknown voice 404. Answers as `GET /api/voices`. |
+| `POST /api/voices/vocabulary` | JSON `add` adds a tag of the user's own (cleaned; one of Hilde's tags or a repeat changes nothing), `remove` takes one off the list; voices that use it keep it. A bad tag, or neither or both keys, returns HTTP 400. Answers as `GET /api/voices`. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so the editor can play it before it is saved. |
-| `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft. A missing draft returns HTTP 404; a bad name or a linked voice folder returns HTTP 400. |
+| `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft and store JSON `tags` and `details` as the voice's confirmed tag entry. `compose_voice_instruct(tags, details)` must equal the draft's `description.txt`, else HTTP 409 and nothing is written. A missing draft returns HTTP 404; a bad name, a bad tag, or a linked voice folder returns HTTP 400. |
 | `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<title> - <voice>.mp3` (`book_download_name()`). `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
@@ -2238,7 +2318,8 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Chat's web tools exist only when the operator passes `--search-server`; the page a model asks to read is fetched only from a public address, checked on the connection itself at every redirect.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
-- **Generate preview** never changes a saved voice; **Save voice** stores exactly the draft clip that was heard, with the prompt that made it.
+- **Generate preview** never changes a saved voice; **Save voice** stores exactly the draft clip that was heard, with the prompt that made it: the tags and details Save sends must compose to the draft's `description.txt`, else HTTP 409 and nothing is written.
+- Voice tags live only in `<root>/voice-tags.json` (0600, replaced atomically); no tag route writes inside `Voices/`, and an unreadable tag file is never written over. Tags only add to what the Voices search finds: a voice's search words are its description's plus its tags'.
 - A resumable narration never mixes checkpoints from different text/chunk/voice/inference identities.
 - A local narration worker starts only on a GPU measured to have room, and measuring never opens a CUDA context; a local worker that runs out of GPU memory returns its chunks to the queue instead of failing the book.
 - Public audiobook job identity contains only the document content version and voice version.

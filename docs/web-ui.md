@@ -98,7 +98,8 @@ the step. Adding a document under a name you already have asks first, naming
 the file it would replace.
 
 The voice step is a dropdown of your saved voices (the same choice as
-**Select** on **Voices**), with a card that previews the one you choose.
+**Select** on **Voices**), with a card that previews the one you choose and
+shows its tags and the start of its description, as on **Voices**.
 
 The third step, **How Hilde prepares the text**, starts with **Model for this
 book**: the model all three options use. **Use different models per option**
@@ -636,22 +637,50 @@ that does not establish that the generated file is silent.
 ## Voices
 
 **Voices** lists every saved voice in a table: a green play button, **Name**,
-**Voice description**, **Modified** (the date its sample, transcript, or
+**Tags and description**, **Modified** (the date its sample, transcript, or
 description last changed, the exact time in its tooltip; hidden on a phone),
 and **Select**, 50 rows at a time. The selected voice comes first, on a faint
 green row, then every other voice A–Z by name, ignoring upper and lower case,
 with letters such as Ö, Ş, and Ü where your browser's language sorts them.
 
-Each description shows as pink tags, one per comma-separated part, in its own
-order and wording; the saved description itself is unchanged. A voice without
-a description says "No description". On a wide screen the first two lines of
-tags show, then **+N more** (N, the tags left out); a tag too long for its line
-ends in "…" there, its whole text in its tooltip. **+N more** shows the whole
-description and becomes **Show less**, which folds it again. While you search,
-a row whose filled tag would be left out opens by itself, so every matching tag
-shows; **Show less** still folds it. On a phone the tags stay on one line that
-fades out at the right, and a tap on the row shows them all (another tap folds
-them).
+### Voice tags
+
+Tags are short words that describe a voice: **warm**, **husky**,
+**low-pitched**, **confident**, and so on. Hilde comes with about forty, in
+groups:
+
+| Group | Tags |
+| --- | --- |
+| Voice | female, male, young, adult, mature |
+| Pitch | deep, low-pitched, mid-pitched, high-pitched |
+| Texture | husky, smooth, breathy, raspy, gravelly, bright, resonant, crisp, soft |
+| Pace | slow, measured, brisk |
+| Manner | warm, calm, confident, gentle, playful, serious, authoritative, intimate, energetic, soothing, composed, expressive, conversational, matter-of-fact |
+| Suited to | narrator, storyteller, lecturer, news reader, academic |
+
+You can add your own (**Yours**). A tag is at most 32 characters, on one line,
+without commas; a voice has at most 12.
+
+Each row shows its tags as pink chips on one line, then one line of text that
+ends in "…" when it is longer: the voice's description, or, for a voice made
+from tags, its **More details**. **Full description** (on a wide screen) shows
+the whole saved description and every chip, and becomes **Show less**; on a
+phone a tap on the row does the same (another tap folds it). A voice without a
+description or tags says "No description".
+
+A voice you have not tagged yet shows the tags Hilde **suggests** from its
+description, with a dashed outline and **Suggested — confirm**. Confirm keeps
+them; **Edit** changes them first. A suggestion is a tag whose word appears in
+the description as a whole word (or a few related words, such as "low pitch"
+for **low-pitched**, "warmth" for **warm**, "older" for **mature**,
+"narration" for **narrator**, "research" for **academic**), but not in what the
+description rules out: words after "without", "not", "never", "rather than",
+or "instead of" in the same sentence, or a sentence that starts with "Avoid".
+No model is asked.
+
+Tags are kept in one file, `voice-tags.json` in the library folder beside
+`Voices/` (readable only by you); a voice's own folder never changes when you
+tag it. Renaming a voice carries its tags along, and deleting it removes them.
 
 The play button plays the voice's preview in place: while it plays, the circle
 is filled and "Playing preview" shows under the name. Playing another stops
@@ -666,21 +695,27 @@ says it is selected, with **Back to Create**. **⋯** on a row holds **Edit**,
 - **Delete** removes a voice after a confirmation naming it; audiobooks made
   with it keep their audio, and a job already queued keeps its own copy.
 - **Rename** asks for the new name in a dialog and keeps everything else: its
-  sample, transcript, and description stay as they are, and the audiobooks it
-  read show the new name too. It waits while an audiobook is being made with
-  the voice, and refuses a name another voice already has.
-- **Edit** opens the voice in the editor at the top.
+  sample, transcript, description, and tags stay as they are, and the
+  audiobooks it read show the new name too. It waits while an audiobook is
+  being made with the voice, and refuses a name another voice already has.
+- **Edit** opens the voice's tags: every group with the voice's tags on (the
+  suggested ones until you save), **Add your own tag**, and the saved
+  description, which stays as it is. "Tags help you find this voice. They
+  don't change how it sounds." **Save tags** keeps them; nothing in the voice's
+  folder changes. **Make a new voice from these tags** opens **New voice** with
+  the same tags on. Under **Yours**, **×** takes a tag of your own off the
+  list; voices that have it keep it.
 
-Search looks only at descriptions: every word you type must begin a word of
-the description, in any order, ignoring case and accents, so
-`warm british female` finds voices whose description contains all three.
-Tags that contain a word you typed are filled, and under the list a count
-says how many voices match ("1 of 9 voices"). A click on a tag adds its words
-to the search; a click on a filled tag takes its words out again; **×** in the
-search box empties it. A preview keeps playing while you search, and the
-selected voice stays selected even when the search hides it. When none
-matches, the page says "No voice description contains all of: warm, british,
-female." with **Clear search**.
+Search looks at descriptions and tags: every word you type must begin a word
+of the description or of a tag, in any order, ignoring case and accents, so
+`warm calm female` finds voices that have all three. Tags only add to what the
+description alone finds. Chips whose words you typed are filled and come first
+in their row, and under the list a count says how many voices match ("1 of 9
+voices"). A click on a chip adds its tag to the search; a click on a filled
+chip takes it out again; **×** in the search box empties it. A preview keeps
+playing while you search, and the selected voice stays selected even when the
+search hides it. When none matches, the page says "No voice matches all of:
+warm, british, zzqx." with **Clear search**.
 
 A new library comes with eight stock voices, each with its description:
 Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun
@@ -688,17 +723,33 @@ Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun
 
 ### Making a new voice
 
-**New voice** opens the editor. **Describe the voice** takes a description
-such as "Warm British female narrator in her thirties; calm, clear, and
-unhurried.", and **Name** the voice's name. **Generate preview** has
-VoiceDesign make a version, which plays as soon as it is ready; **Stop**
-cancels it. Voices can be designed only while no audiobook is being made.
-**Save voice** turns on once you have heard this preview to its end or for at
-least 3 seconds, and only while the description is the one previewed; change
-the description and you generate a new preview first. Save keeps exactly the
-version you heard. **Edit** on a voice opens the same editor with its name and
-description, as **Edit <name>**; the saved voice stays as it was until you
-save.
+**New voice** opens the editor: the tags (the same groups as above, and your
+own), **More details** in your own words (optional), and **Name**. Under them,
+**Sent to the voice model:** shows exactly what Generate preview sends, as you
+change the tags or details. Hilde writes it as one or more sentences, each
+part left out when no tag is on for it:
+
+1. "A" (or "An" before a vowel) and the Manner tags, your own tags, the
+   Texture tags, and the Pitch tags, separated by commas, then the age and
+   gender tags and "voice": "A warm, husky, low-pitched adult male voice."
+2. The Pace tags: "Reads at a measured pace."
+3. The Suited to tags as narration, storytelling, lectures, news reading,
+   academic texts: "Suited to narration and lectures."
+4. More details, with line breaks and extra spaces made single spaces.
+
+For example **warm**, **husky**, **low-pitched**, **adult**, **male**,
+**measured**, **narrator** and the details "Reads like a late-night radio
+host." give "A warm, husky, low-pitched adult male voice. Reads at a measured
+pace. Suited to narration. Reads like a late-night radio host." At least one
+tag or some details are needed.
+
+**Generate preview** has VoiceDesign make a version, which plays as soon as
+it is ready; **Stop** cancels it. Voices can be designed only while no
+audiobook is being made. **Save voice** turns on once you have heard this
+preview to its end or for at least 3 seconds, and only while the tags and
+details are the ones previewed; change them and you generate a new preview
+first. Save keeps exactly the version you heard, with the sent text as its
+description, and then its tags and details.
 
 When the name is taken, the editor says "A voice named '<name>' exists.
 Saving replaces it; its current version is kept in its history.", and **Save
@@ -721,8 +772,7 @@ python audiobook_tts_web.py \
 This narrates the fixed passage with each such voice into its `preview.wav`
 and exits; the voices themselves are unchanged. Until then, **Voices** notes
 that their previews read an older passage. Voices made before descriptions were
-saved have none, so search cannot find them; write the description into the
-voice folder's `description.txt` to make one searchable.
+saved have none; give them tags with **Edit** to make them searchable.
 
 ## Settings
 

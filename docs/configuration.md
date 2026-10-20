@@ -182,6 +182,7 @@ alone. The server creates and owns this fixed layout:
 │               └── timings.json
 ├── Documents/
 ├── in_progress/
+├── voice-tags.json
 └── workers.yaml
 ```
 
@@ -221,6 +222,13 @@ alone. The server creates and owns this fixed layout:
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   narration chunks, and the job's model history (`history.jsonl`) for
   unfinished jobs. It is removed for a job only after its book is published.
+- **voice-tags.json**, present once you confirm or edit a voice's tags, save a
+  new voice, or add a tag of your own, holds each tagged voice's tags (and, for
+  a voice made from tags, its **More details**) and your own tags, readable
+  only by you. It is
+  the only file tagging writes: the voice folders never change. Renaming a
+  voice moves its tags; deleting it removes them. See
+  [Voice tags](web-ui.md#voice-tags).
 - **workers.yaml**, present once a node is added or a local device turned off,
   lists the other machines that narrate over SSH and this machine's devices
   that do not; see [Narration workers on other machines](ssh-workers.md).

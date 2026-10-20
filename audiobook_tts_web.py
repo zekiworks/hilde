@@ -2065,8 +2065,308 @@ def voice_preview(voice_dir):
     return directory / "reference.wav", False
 
 
+# --- voice tags -----------------------------------------------------------------
+#
+# Tags are short words that describe a voice: Hilde's vocabulary below, grouped,
+# plus tags of the user's own ("Yours"). They live in one library-level file,
+# VOICE_TAGS_FILE beside Voices/, never in a voice folder:
+#
+#   {"schema": 1,
+#    "vocabulary": ["late-night radio", ...],          the user's own tags
+#    "voices": {"<voice name>": {"tags": [...], "confirmed": true,
+#                                "details": "..."}}}   details: voices made from tags
+#
+# A voice without an entry shows the tags suggest_voice_tags() finds in its
+# description until the user confirms or edits them. A new voice's request to
+# the voice model is compose_voice_instruct(tags, details), its description.txt.
+
+# Each tag with the other words a description may use for it (a phrase matches
+# whole words in order; a hyphenated word is one word).
+VOICE_TAG_GROUPS = (
+    ("Voice", (
+        ("female", ("woman",)), ("male", ("man",)), ("young", ("youthful",)), ("adult", ()),
+        ("mature", ("older", "elderly")),
+    )),
+    ("Pitch", (
+        ("deep", ("deep-voiced", "baritone", "bass")),
+        ("low-pitched", ("low pitched", "low pitch", "low register", "lower register", "low voice")),
+        ("mid-pitched", ("mid pitched", "mid pitch", "mid-range", "midrange", "middle register",
+                         "middle speaking register", "medium pitch")),
+        ("high-pitched", ("high pitched", "high pitch", "high register", "higher register", "upper register")),
+    )),
+    ("Texture", (
+        ("husky", ()), ("smooth", ("smoothly",)), ("breathy", ()), ("raspy", ("rasp", "raspiness")),
+        ("gravelly", ("gravel",)), ("bright", ("brightness",)), ("resonant", ("resonance",)),
+        ("crisp", ("crisply",)), ("soft", ("softly", "soft-spoken")),
+    )),
+    ("Pace", (
+        ("slow", ("slowly", "unhurried", "leisurely")),
+        ("measured", ("deliberate", "moderate pace", "even pace", "steady pace")),
+        ("brisk", ("fast", "fast-paced", "quick pace", "rapid")),
+    )),
+    ("Manner", (
+        ("warm", ("warmly", "warmth")), ("calm", ("calmly",)),
+        ("confident", ("confidently", "confidence")), ("gentle", ("gently",)), ("playful", ()),
+        ("serious", ()), ("authoritative", ("authority", "commanding")), ("intimate", ()),
+        ("energetic", ("lively",)), ("soothing", ("comforting", "reassuring")), ("composed", ("poised",)),
+        ("expressive", ()), ("conversational", ()), ("matter-of-fact", ()),
+    )),
+    ("Suited to", (
+        ("narrator", ("narration", "narrating", "audiobook")), ("storyteller", ("storytelling",)),
+        ("lecturer", ("lecture", "lectures", "teacher")),
+        ("news reader", ("newsreader", "newscaster", "news")),
+        ("academic", ("research", "scientific", "technical")),
+    )),
+)
+VOICE_TAG_GROUP = {
+    tag: group for group, tags in VOICE_TAG_GROUPS for tag, _ in tags
+}
+VOICE_TAG_ORDER = {tag: index for index, tag in enumerate(VOICE_TAG_GROUP)}
+# How the "Suited to" tags read in a request to the voice model.
+VOICE_TAG_SUITED = {
+    "narrator": "narration", "storyteller": "storytelling", "lecturer": "lectures",
+    "news reader": "news reading", "academic": "academic texts",
+}
+VOICE_TAG_AGES = ("young", "adult", "mature")
+VOICE_TAG_GENDERS = ("female", "male")
+VOICE_TAGS_FILE = "voice-tags.json"
+VOICE_TAG_MAX_LENGTH = 32
+VOICE_TAG_MAX_COUNT = 12
+# A description's words after these, to the end of the sentence, do not
+# suggest a tag ("without sounding raspy"); nor does a sentence that starts
+# with one ("Avoid breathy softness.").
+VOICE_TAG_NEGATIONS = frozenset({
+    "without", "not", "never", "no", "nor", "neither", "avoid", "avoids", "avoiding",
+    "don't", "doesn't", "isn't", "aren't", "shouldn't", "won't",
+})
+VOICE_TAG_NEGATION_PAIRS = frozenset({("rather", "than"), ("instead", "of")})
+_VOICE_TAGS_LOCK = threading.Lock()
+
+
+def voice_tag_words(text):
+    """Lower-case words; a hyphen or apostrophe inside a word keeps it one word."""
+    return re.findall(r"[^\W_]+(?:['’-][^\W_]+)*", str(text).casefold().replace("’", "'"))
+
+
+def clean_voice_tag(value):
+    """One tag as stored: trimmed, inner spaces collapsed, Hilde's own tags in
+    their spelling. Raises ValueError with a plain reason."""
+    if not isinstance(value, str):
+        raise ValueError("A tag must be text.")
+    if "," in value:
+        raise ValueError("A tag can't contain a comma.")
+    if not value.isprintable():
+        raise ValueError("A tag fits on one line: no line breaks or control characters.")
+    tag = re.sub(r" {2,}", " ", value.strip())
+    if not tag:
+        raise ValueError("A tag can't be empty.")
+    if len(tag) > VOICE_TAG_MAX_LENGTH:
+        raise ValueError(f"A tag is at most {VOICE_TAG_MAX_LENGTH} characters.")
+    folded = tag.casefold()
+    return next((known for known in VOICE_TAG_GROUP if known == folded), tag)
+
+
+def clean_voice_tags(values):
+    """A voice's tags: each cleaned, repeats (any case) dropped, Hilde's tags in
+    vocabulary order, then the user's own as given. Raises ValueError."""
+    if not isinstance(values, list):
+        raise ValueError("Tags must be a list.")
+    tags, seen = [], set()
+    for value in values:
+        tag = clean_voice_tag(value)
+        if tag.casefold() not in seen:
+            seen.add(tag.casefold())
+            tags.append(tag)
+    if len(tags) > VOICE_TAG_MAX_COUNT:
+        raise ValueError(f"A voice has at most {VOICE_TAG_MAX_COUNT} tags.")
+    known = sorted((tag for tag in tags if tag in VOICE_TAG_ORDER), key=VOICE_TAG_ORDER.get)
+    return known + [tag for tag in tags if tag not in VOICE_TAG_ORDER]
+
+
+def suggest_voice_tags(description, custom=()):
+    """The tags whose words a description uses, in vocabulary order (then the
+    user's own): the tag itself or one of its phrases, as whole words in order,
+    case aside. Words after a negation (VOICE_TAG_NEGATIONS, "rather than",
+    "instead of") up to the end of their sentence (. ! ? ; : or a line break)
+    do not count. No model is asked."""
+    clauses = []
+    for sentence in re.split(r"[.!?;:\n]+", str(description or "")):
+        words = voice_tag_words(sentence)
+        for index, word in enumerate(words):
+            if word in VOICE_TAG_NEGATIONS or tuple(words[index:index + 2]) in VOICE_TAG_NEGATION_PAIRS:
+                words = words[:index]
+                break
+        if words:
+            clauses.append(words)
+
+    def used(phrase):
+        want = voice_tag_words(phrase)
+        return bool(want) and any(
+            words[at:at + len(want)] == want
+            for words in clauses for at in range(len(words) - len(want) + 1)
+        )
+
+    found = [
+        tag for _, tags in VOICE_TAG_GROUPS for tag, phrases in tags
+        if any(used(phrase) for phrase in (tag, *phrases))
+    ]
+    found += [tag for tag in custom if tag.casefold() not in {f.casefold() for f in found} and used(tag)]
+    return found[:VOICE_TAG_MAX_COUNT]
+
+
+def compose_voice_instruct(tags, details=""):
+    """The request a new voice is designed from, and its description.txt.
+
+    "A <manner>, <yours>, <texture>, <pitch> <age> <gender> voice." (A or An by
+    its first letter; left out without such tags), "Reads at a <pace> pace.",
+    "Suited to <a>, <b> and <c>." (narration, storytelling, lectures, news
+    reading, academic texts), then the More details text with its spaces and
+    line breaks collapsed. Each group keeps vocabulary order; parts without
+    tags are left out. For example warm, husky, low-pitched, adult, male,
+    measured, narrator: "A warm, husky, low-pitched adult male voice. Reads at a
+    measured pace. Suited to narration."
+    """
+    picked = {group: [] for group, _ in VOICE_TAG_GROUPS}
+    yours = []
+    for tag in tags:
+        if tag in VOICE_TAG_GROUP:
+            picked[VOICE_TAG_GROUP[tag]].append(tag)
+        else:
+            yours.append(tag)
+    for group in picked.values():
+        group.sort(key=VOICE_TAG_ORDER.get)
+    adjectives = picked["Manner"] + yours + picked["Texture"] + picked["Pitch"]
+    nouns = [tag for tag in picked["Voice"] if tag in VOICE_TAG_AGES] + [
+        tag for tag in picked["Voice"] if tag in VOICE_TAG_GENDERS
+    ]
+    parts = []
+    if adjectives or nouns:
+        phrase = " ".join(filter(None, (", ".join(adjectives), *nouns, "voice")))
+        parts.append(f"{'An' if phrase[0].casefold() in 'aeiou' else 'A'} {phrase}.")
+    if picked["Pace"]:
+        parts.append(f"Reads at a {', '.join(picked['Pace'])} pace.")
+    suited = [VOICE_TAG_SUITED[tag] for tag in picked["Suited to"]]
+    if suited:
+        listed = suited[0] if len(suited) == 1 else f"{', '.join(suited[:-1])} and {suited[-1]}"
+        parts.append(f"Suited to {listed}.")
+    parts.append(" ".join(str(details or "").split()))
+    return " ".join(part for part in parts if part)
+
+
+def _empty_voice_tags():
+    return {"schema": 1, "vocabulary": [], "voices": {}}
+
+
+def read_voice_tags(storage, strict=False):
+    """The library's tag file. Missing: empty. Unreadable: empty, or with
+    `strict` a ValueError, so a change never writes over it."""
+    path = Path(storage.root) / VOICE_TAGS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _empty_voice_tags()
+    except (OSError, UnicodeError, ValueError):
+        data = None
+    voices = data.get("voices") if isinstance(data, dict) else None
+    vocabulary = data.get("vocabulary") if isinstance(data, dict) else None
+    if not isinstance(voices, dict) or not isinstance(vocabulary, list):
+        if strict:
+            raise ValueError(f"{VOICE_TAGS_FILE} in the library can't be read; fix or remove it first.")
+        return _empty_voice_tags()
+    entries = {}
+    for name, entry in voices.items():
+        if isinstance(entry, dict) and isinstance(entry.get("tags"), list):
+            entries[name] = {
+                "tags": [str(tag) for tag in entry["tags"]],
+                "confirmed": bool(entry.get("confirmed")),
+                **({"details": str(entry["details"])} if entry.get("details") else {}),
+            }
+    return {"schema": 1, "vocabulary": [str(tag) for tag in vocabulary], "voices": entries}
+
+
+def write_voice_tags(storage, data):
+    """Replace the tag file in one step; only its owner reads it (0600)."""
+    path = Path(storage.root) / VOICE_TAGS_FILE
+    temporary = path.with_name(f".{path.name}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(data, stream, ensure_ascii=False, indent=1, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def update_voice_tags(storage, change):
+    """Read, change in place, and write the tag file under one lock; `change`
+    returns what the caller wants back."""
+    with _VOICE_TAGS_LOCK:
+        data = read_voice_tags(storage, strict=True)
+        result = change(data)
+        write_voice_tags(storage, data)
+        return result
+
+
+def set_voice_tags(storage, name, tags, details=None):
+    """Store a saved voice's tags as confirmed (and a new voice's details);
+    nothing else is written. Raises ValueError, FileNotFoundError."""
+    tags = clean_voice_tags(tags)
+    voice_dir = resolve_asset(storage.voices, name)
+    if not is_saved_voice(voice_dir):
+        raise FileNotFoundError("no such voice")
+    name = voice_dir.name
+
+    def change(data):
+        entry = {"tags": tags, "confirmed": True}
+        kept = details if details is not None else data["voices"].get(name, {}).get("details")
+        if kept:
+            entry["details"] = kept
+        data["voices"][name] = entry
+        return entry
+
+    return update_voice_tags(storage, change)
+
+
+def move_voice_tags(storage, name, new_name):
+    """A renamed voice keeps its tags; a voice without an entry writes nothing."""
+    if name not in read_voice_tags(storage)["voices"]:
+        return
+    update_voice_tags(storage, lambda data: data["voices"].__setitem__(new_name, data["voices"].pop(name)))
+
+
+def forget_voice_tags(storage, name):
+    if name in read_voice_tags(storage)["voices"]:
+        update_voice_tags(storage, lambda data: data["voices"].pop(name, None))
+
+
+def change_voice_vocabulary(storage, add=None, remove=None):
+    """Add a tag of the user's own (a Hilde tag or a repeat is left as it is)
+    or remove one; voices that use it keep it. Raises ValueError."""
+    tag = clean_voice_tag(add if add is not None else remove)
+
+    def change(data):
+        mine = data["vocabulary"]
+        folded = tag.casefold()
+        if add is not None:
+            if tag not in VOICE_TAG_GROUP and folded not in {item.casefold() for item in mine}:
+                mine.append(tag)
+        else:
+            mine[:] = [item for item in mine if item.casefold() != folded]
+
+    update_voice_tags(storage, change)
+
+
+def voice_vocabulary(tag_file):
+    return {
+        "groups": [{"name": group, "tags": [tag for tag, _ in tags]} for group, tags in VOICE_TAG_GROUPS],
+        "yours": list(tag_file["vocabulary"]),
+    }
+
+
 def voice_catalog(storage):
-    """List saved voices with descriptions and preview versions for searching."""
+    """List saved voices with descriptions, tags, and preview versions for searching."""
+    tag_file = read_voice_tags(storage)
     voices = []
     for path in sorted(storage.voices.iterdir(), key=lambda item: item.name.casefold()):
         if not path.is_dir() or not is_saved_voice(path):
@@ -2080,9 +2380,15 @@ def voice_catalog(storage):
             version = f"{preview.stat().st_mtime_ns:x}"
         except OSError:
             continue
+        entry = tag_file["voices"].get(path.name)
         voices.append({
             "name": path.name,
             "description": " ".join(description.split()),
+            # Confirmed tags; until then the ones the description suggests.
+            "tags": entry["tags"] if entry else [],
+            "suggested": [] if entry else suggest_voice_tags(description, tag_file["vocabulary"]),
+            "confirmed": bool(entry and entry["confirmed"]),
+            "details": entry.get("details", "") if entry else "",
             "comparable": comparable,
             # Changes whenever the clip is replaced, so browsers refetch it.
             "preview": version,
@@ -2628,20 +2934,21 @@ def cached_file_version(path):
 
 
 def delete_voice(storage, name):
-    """Delete one saved voice; a linked voice loses only its link."""
+    """Delete one saved voice, and its tags; a linked voice loses only its link."""
     voice_dir = resolve_asset(storage.voices, name)
     if not is_saved_voice(voice_dir):
         raise FileNotFoundError("no such voice")
     if voice_dir.is_symlink():
         voice_dir.unlink()
-        return
-    # One rename takes the whole voice out of the library, so no catalog or job
-    # snapshot sees part of it while its files are removed.
-    trash = Path(tempfile.mkdtemp(prefix=".deleting-", dir=storage.voices))
-    try:
-        voice_dir.rename(trash / voice_dir.name)
-    finally:
-        shutil.rmtree(trash)
+    else:
+        # One rename takes the whole voice out of the library, so no catalog or
+        # job snapshot sees part of it while its files are removed.
+        trash = Path(tempfile.mkdtemp(prefix=".deleting-", dir=storage.voices))
+        try:
+            voice_dir.rename(trash / voice_dir.name)
+        finally:
+            shutil.rmtree(trash)
+    forget_voice_tags(storage, voice_dir.name)
 
 
 def voice_versions(voice_dir):
@@ -2692,6 +2999,7 @@ def rename_voice(storage, name, new_name):
                 )
             books.append((path, record, entries[0]))
         voice_dir.rename(storage.voices / new_name)
+        move_voice_tags(storage, name, new_name)
         for path, record, entry in books:
             voice_folder(path, entry["name"]).rename(voice_folder(path, new_name))
             entry["name"] = new_name
@@ -2997,8 +3305,16 @@ def new_voice_draft(storage):
     return storage.drafts / os.urandom(8).hex()
 
 
-def save_voice_draft(storage, draft_id, name):
-    """Save exactly the draft that was heard as the named voice."""
+class DraftChanged(ValueError):
+    """The tags or details sent with Save are not the ones the draft was made from."""
+
+
+def save_voice_draft(storage, draft_id, name, tags, details):
+    """Save exactly the draft that was heard as the named voice, then its tags.
+
+    `tags` and `details` are the ones the draft was designed from: their
+    composed request must be the draft's description, else DraftChanged.
+    """
     import soundfile as sf
 
     draft = resolve_asset(storage.drafts, draft_id)
@@ -3006,17 +3322,26 @@ def save_voice_draft(storage, draft_id, name):
         raise FileNotFoundError("no such draft")
     if not name or safe_asset_name(name) != name:
         raise ValueError("Enter a voice name without a slash.")
+    tags = clean_voice_tags(tags)
+    details = " ".join(str(details or "").split())
     waveform, rate, transcript = read_voice(draft)
     try:
         description = (draft / VOICE_DESCRIPTION_FILE).read_text(encoding="utf-8")
     except FileNotFoundError:
         description = ""
+    if compose_voice_instruct(tags, details) != description:
+        raise DraftChanged(
+            "The tags or details changed since this preview. Generate a new preview before saving."
+        )
     save_voice(
         storage.voices / name, waveform, rate, transcript,
         sf.info(str(draft / "reference.wav")).subtype,
         overwrite=True, description=description,
     )
     shutil.rmtree(draft)
+    # The voice first, then its entry: a crash between leaves a voice whose
+    # tags are suggested from its description.
+    set_voice_tags(storage, name, tags, details)
 
 
 def is_markdown_table(paragraph):
@@ -10394,8 +10719,8 @@ def create_voice_problem(values):
     target = Path(values["new_voice_dir"])
     if os.path.lexists(target) and (target.is_symlink() or not target.is_dir()):
         return "An existing voice must be a directory."
-    if not values["instruct"].strip():
-        return "Describe the voice to create."
+    if not values["instruct"]:
+        return "Choose at least one tag or write some details."
     if values["design"]["source"] == "server" and not values["design_voice"]:
         return "Enter the voice name the server should shape."
     return seed_problem(values)
@@ -10504,6 +10829,20 @@ def stored_text(mapping, key, fallback=""):
     return value if isinstance(value, str) else fallback
 
 
+def stored_voice_tags(voice):
+    """The New voice tags a browser chose: the valid ones, without repeats, at
+    most VOICE_TAG_MAX_COUNT, in vocabulary order."""
+    values = voice.get("tags")
+    kept, seen = [], set()
+    for value in values if isinstance(values, list) else ():
+        try:
+            tag = clean_voice_tag(value)
+        except ValueError:
+            continue
+        if tag.casefold() not in seen:
+            seen.add(tag.casefold())
+            kept.append(tag)
+    return clean_voice_tags(kept[:VOICE_TAG_MAX_COUNT])
 
 
 def normalize(state):
@@ -10544,7 +10883,10 @@ def normalize(state):
         "voice": {
             "server_voice": stored_text(voice, "server_voice"),
             "name": stored_text(voice, "name"),
-            "instruct": stored_text(voice, "instruct"),
+            # New voice: the chosen tags and More details; the server composes
+            # the request from them (compose_voice_instruct()).
+            "tags": stored_voice_tags(voice),
+            "details": stored_text(voice, "details"),
             "wav_subtype": stored_text(voice, "wav_subtype", "FLOAT"),
         },
         "audiobook": {
@@ -10660,7 +11002,7 @@ def values_of(state, tts_models, storage):
         "clone_voice": clone_voice,
         "voice_name": voice_name,
         "new_voice_dir": _optional_asset(storage.voices, voice_name),
-        "instruct": voice["instruct"],
+        "instruct": compose_voice_instruct(voice["tags"], voice["details"]),
         "wav_subtype": voice["wav_subtype"],
         "selected_voice": audiobook["voice"].strip(),
         "voice_dir": _optional_asset(storage.voices, audiobook["voice"].strip()),
@@ -10746,6 +11088,8 @@ def derived(state, tts_models, storage):
         "existing_book": book,
         "voice_dir_ok": is_saved_voice(values["voice_dir"]),
         "voice_exists": bool(target) and os.path.lexists(Path(target)),
+        # New voice: exactly what Generate preview sends to the voice model.
+        "voice_instruct": values["instruct"],
         "design_server": values["design"]["source"] == "server",
         "clone_server": values["clone"]["source"] == "server",
         # Facts hold for the tab they were derived on; the page checks this.
@@ -15889,7 +16233,7 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/voices":
             return self.reply(
                 HTTPStatus.OK,
-                {"voices": voice_catalog(self.server.storage)},
+                self.voices_payload(),
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/voices/draft":
@@ -16062,8 +16406,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_asset("audiobook", body.get("name", ""))
         if route == "/api/voices/save":
             return self.save_draft(
-                str(body.get("draft", "")), str(body.get("name", "")).strip()
+                str(body.get("draft", "")), str(body.get("name", "")).strip(),
+                body.get("tags", []), str(body.get("details") or ""),
             )
+        if route == "/api/voices/tags":
+            return self.save_voice_tags(str(body.get("name") or ""), body.get("tags"))
+        if route == "/api/voices/vocabulary":
+            return self.change_vocabulary(body)
         # Settings › Models and connection: the server's default models, set
         # only by a browser that may manage (may_manage()); others read them.
         if route == "/api/models/defaults":
@@ -16790,10 +17139,51 @@ class Handler(BaseHTTPRequestHandler):
             )
         return self.reply(HTTPStatus.OK, {"name": new_name, "assets": asset_catalog(storage)})
 
-    def save_draft(self, draft_id, name):
+    def voices_payload(self):
+        """The saved voices with their tags, and the vocabulary the picker offers."""
+        storage = self.server.storage
+        return {
+            "voices": voice_catalog(storage),
+            "vocabulary": voice_vocabulary(read_voice_tags(storage)),
+        }
+
+    def save_voice_tags(self, name, tags):
+        """Store a voice's tags (only the library's tag file is written)."""
+        try:
+            set_voice_tags(self.server.storage, name, tags)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except FileNotFoundError:
+            return self.fail(HTTPStatus.NOT_FOUND, "That voice no longer exists.")
+        except OSError as exc:
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not save the tags: {exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, self.voices_payload())
+
+    def change_vocabulary(self, body):
+        """Add a tag of your own ({"add": tag}) or remove one ({"remove": tag})."""
+        add, remove = body.get("add"), body.get("remove")
+        if (add is None) == (remove is None):
+            return self.fail(HTTPStatus.BAD_REQUEST, "Send a tag to add or to remove.")
+        try:
+            change_voice_vocabulary(self.server.storage, add=add, remove=remove)
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except OSError as exc:
+            return self.fail(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                f"Could not save your tags: {exc.strerror or 'file system error'}.",
+            )
+        return self.reply(HTTPStatus.OK, self.voices_payload())
+
+    def save_draft(self, draft_id, name, tags, details):
         storage = self.server.storage
         try:
-            save_voice_draft(storage, draft_id, name)
+            save_voice_draft(storage, draft_id, name, tags, details)
+        except DraftChanged as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
         except ValueError as exc:
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
         except FileNotFoundError:
@@ -17598,7 +17988,9 @@ details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-spac
                         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
 .voice-card { display:flex; align-items:center; gap:14px; min-width:0; padding:12px 14px;
               background:var(--raised); border-radius:10px; }
-.voice-meta { display:grid; gap:2px; min-width:0; }
+.voice-meta { display:grid; grid-template-columns:minmax(0,1fr); gap:2px; min-width:0; }
+#selected-voice .voice-meta { flex:1 1 auto; gap:4px; }
+.voice-text-line > [hidden] { display:none; }
 .clamp { display:-webkit-box; overflow:hidden; overflow-wrap:anywhere; -webkit-line-clamp:2;
          -webkit-box-orient:vertical; }
 .preview-button { display:grid; place-items:center; flex:0 0 auto; width:40px; height:40px;
@@ -17704,11 +18096,11 @@ legend ~ * { clear:both; }
                  vertical-align:middle; }
 .data-table tbody tr:hover { background:var(--surface); }
 /* Voices (Part C, 20 Oct): white names; green (#3fb950) play circles, the
-   selected voice's faint green row and its solid "✓ Selected"; each
-   description as pink-purple tags (#d66bc6) that fill the search box; Select,
-   ⋯ and the search box gray. Tags sit on an opaque tint so their text keeps
-   4.5:1 on any row (5.1:1, 4.6:1 hovered), their border 3:1 on the green row. */
-#page-voice { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
+   selected voice's faint green row and its solid "✓ Selected"; each voice's
+   tags as pink-purple chips (#d66bc6) that fill the search box; Select, ⋯ and
+   the search box gray. Chips sit on an opaque tint so their text keeps 4.5:1
+   on any row (5.1:1, 4.6:1 hovered), their border 3:1 on the green row. */
+#page-voice, #selected-voice { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
               --tag-line:color-mix(in srgb, var(--tag) 80%, #111); --gray-line:#707070; }
 .voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
                   text-transform:none; }
@@ -17727,43 +18119,83 @@ legend ~ * { clear:both; }
 .voice-table .preview-button[aria-pressed=true],
 .voice-table .preview-button[aria-pressed=true]:hover:not(:disabled) {
   background:var(--play); border-color:var(--play); color:var(--play-ink); }
-/* Desktop: two lines of tags, then "+N more" in the accent; folded, a tag
-   longer than the column ends in "…" on its line (whole in its tooltip);
-   open, every tag shows in full, wrapping inside, and "Show less". */
+/* Voice tags (20 Oct): a row's chips on one line (fading out where they run
+   past the column), then its free text on one line ending in "…"; "Full
+   description" (wide screens) or a tap on the row (phones) shows the whole
+   stored description and every chip. Suggested chips are dashed until
+   confirmed. */
 .voice-table .description { min-width:0; }
-.voice-tags { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
-.voice-tags > [hidden] { display:none; }
+.voice-tag-line, .voice-text-line { display:flex; align-items:center; gap:8px; min-width:0; }
+.voice-text-line { margin-top:4px; }
+.voice-tags { display:flex; flex:1 1 auto; flex-wrap:nowrap; gap:6px; min-width:0; overflow:hidden; }
+.voice-tags.is-cut, .voice-card .voice-tags {
+  -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.voice-text { flex:1 1 auto; min-width:0; overflow:hidden; color:var(--dim); font-size:13px; line-height:20px;
+              white-space:nowrap; text-overflow:ellipsis; }
+.voice-table tr.is-open .voice-tags { flex-wrap:wrap; overflow:visible; -webkit-mask-image:none; mask-image:none; }
+.voice-table tr.is-open .voice-text-line { align-items:flex-start; flex-wrap:wrap; }
+.voice-table tr.is-open .voice-text { flex-basis:100%; white-space:normal; overflow-wrap:anywhere; }
 @media (min-width:768px) {
-  /* The tags never widen the table: the description takes the room the other
-     columns leave, and its tags fold into it. */
+  /* The text never widens the table: the description takes the room the
+     other columns leave, and its lines are cut to it. */
   .voice-table td.description { width:100%; }
-  .voice-table .voice-tags { contain:inline-size; }
-  .voice-table tr:not(.is-open):not(.is-whole) button.voice-tag { white-space:nowrap; overflow:hidden;
-    text-overflow:ellipsis; }
+  .voice-table .voice-tag-line, .voice-table .voice-text-line { contain:inline-size; }
 }
-.voice-table button.voice-more-tags { flex:0 0 auto; min-height:0; padding:1px 10px; border:1px solid var(--line);
-  border-radius:12px; background:transparent; color:var(--accent-light); box-shadow:none; font-size:13px;
-  line-height:20px; white-space:nowrap; }
-.voice-table button.voice-more-tags:hover:not(:disabled) { background:var(--hover); border-color:var(--accent-light); }
-.voice-table button.voice-tag { max-width:100%; min-height:0; padding:1px 10px; border:1px solid var(--tag-line);
+.voice-tag { flex:0 0 auto; max-width:none; min-height:0; padding:1px 10px; border:1px solid var(--tag-line);
   border-radius:12px; background:color-mix(in srgb, var(--tag) 14%, #111); color:var(--tag); box-shadow:none;
-  font-size:13px; line-height:20px; text-align:left; overflow-wrap:anywhere; }
+  font-size:13px; line-height:20px; text-align:left; white-space:nowrap; }
+.voice-tag.is-suggested { border-style:dashed; }
+.voice-table tr.is-open .voice-tag { flex:0 1 auto; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
 .voice-table button.voice-tag:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 20%, #111); }
 .voice-table button.voice-tag[aria-pressed=true],
 .voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled) {
   background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
+.voice-table button.voice-confirm, .voice-table button.voice-full { position:relative; flex:0 0 auto;
+  min-height:0; padding:1px 8px; border:1px dashed var(--tag-line); border-radius:12px; background:transparent;
+  color:var(--text); box-shadow:none; font-size:13px; line-height:20px; white-space:nowrap; }
+.voice-table button.voice-full { border:1px solid var(--line); color:var(--accent-light); }
+.voice-table button.voice-confirm:hover:not(:disabled), .voice-table button.voice-full:hover:not(:disabled) {
+  background:var(--hover); }
 .voice-no-description { color:var(--dim); font-size:13px; }
 .voice-table td.modified { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 @media (min-width:768px) {
-  /* A wide screen tops every cell, lined up with the first line of tags, so a
-     tall row of tags reads on from its name. */
+  /* A wide screen tops every cell, lined up with the chips, so the text reads
+     on from its name. */
   .voice-table td { vertical-align:top; }
   .voice-table .voice-name { padding-top:9px; }
-  .voice-table .voice-tags { padding-top:8px; }
+  .voice-table .voice-tag-line { padding-top:8px; }
   .voice-table .voice-no-description { display:block; padding-top:10px; }
   .voice-table td.modified { padding-top:21px; }
   .voice-count { padding-left:12px; }
 }
+/* The tag picker (New voice, Edit): a group's tags as toggle chips; Yours
+   holds the user's own tags, each removable, and the field that adds one. */
+.field > .field-label { color:var(--dim); font-size:13px; }
+.tag-picker { display:grid; gap:12px; min-width:0; }
+.tag-group { display:block; min-width:0; margin:0; padding:0; border:0; }
+.tag-group > legend { margin-bottom:6px; padding:0; color:var(--text); font-size:13px; font-weight:600; }
+.tag-group > .tag-add { margin-top:10px; }
+.tag-options { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.tag-mine { display:inline-flex; align-items:center; min-width:0; }
+.tag-picker button.tag-option { min-height:32px; max-width:100%; padding:2px 12px; border:1px solid var(--tag-line);
+  border-radius:16px; background:transparent; color:var(--text); box-shadow:none; font-size:13px;
+  overflow-wrap:anywhere; }
+.tag-picker button.tag-option:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 14%, #111); }
+.tag-picker button.tag-option[aria-pressed=true],
+.tag-picker button.tag-option[aria-pressed=true]:hover:not(:disabled) {
+  background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
+.tag-mine button.tag-option { border-radius:16px 0 0 16px; }
+.tag-picker button.tag-remove { min-height:32px; min-width:32px; padding:0 8px; border:1px solid var(--tag-line);
+  border-left:0; border-radius:0 16px 16px 0; background:transparent; color:var(--dim); box-shadow:none; }
+.tag-add { display:grid; gap:4px; min-width:0; }
+.tag-add .tag-add-label { color:var(--dim); font-size:13px; }
+.tag-add .line { flex-wrap:nowrap; }
+.tag-add input.tag-add-input { flex:1 1 auto; min-width:0; max-width:320px; }
+.tag-none { color:var(--dim); font-size:13px; }
+.sent-text { margin:0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--field);
+             overflow-wrap:anywhere; }
+.stored-description { margin:0; color:var(--dim); overflow-wrap:anywhere; }
 .voice-table button.voice-select { min-width:120px; background:transparent; border-color:var(--gray-line);
                                    box-shadow:none; }
 .voice-table button.voice-select:hover:not(:disabled) { background:var(--hover); }
@@ -18297,31 +18729,29 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
                    border-bottom:1px solid var(--surface); }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
-  /* A voice: preview, then the name over its tags (one line, fading out at
-     the right), then Select with ⋯; a tap on the row shows every tag. */
+  /* A voice: preview, the name, then Select with ⋯; under them its chips (one
+     line, fading out at the right) and its text on one line; a tap on the row
+     shows the whole description and every chip. */
   .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; cursor:pointer; }
   .voice-table tr.is-selected { background:color-mix(in srgb, var(--play) 10%, transparent);
                                 border-radius:12px; }
   .voice-table tr.is-selected > td { background:none; }
   .voice-table .preview { grid-column:1; grid-row:1 / span 2; align-self:center; }
   .voice-table .name { grid-column:2; grid-row:1; }
-  .voice-table .description { grid-column:2; grid-row:2; }
-  .voice-tags { flex-wrap:nowrap; overflow:hidden;
-                -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  .voice-table .description { grid-column:2 / span 2; grid-row:2; }
+  .voice-tags { -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
                 mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
-  .voice-table button.voice-tag { flex:0 0 auto; max-width:none; white-space:nowrap; }
   .voice-table tr.is-open .preview { align-self:start; }
-  .voice-table tr.is-open .description { grid-column:2 / span 2; }
-  .voice-table tr.is-open .voice-tags { flex-wrap:wrap; overflow:visible; -webkit-mask-image:none; mask-image:none; }
-  .voice-table tr.is-open button.voice-tag { flex:0 1 auto; max-width:100%; white-space:normal; }
+  .voice-table button.voice-full { display:none; }
+  /* "Suggested — confirm" looks small and takes a 44 px tall touch. */
+  .voice-table button.voice-confirm::after { content:""; position:absolute; inset:-11px -2px; }
   /* While a preview plays, "Playing preview" takes the tags' line. */
   .voice-table tr.is-playing:not(.is-open) .description { display:none; }
   /* The phone leaves out when a voice changed. */
   .voice-table .modified { display:none !important; }
   .data-table .modified { font-size:13px; }
-  .voice-table .select { grid-column:3; grid-row:1 / span 2; display:flex; flex-wrap:nowrap;
+  .voice-table .select { grid-column:3; grid-row:1; display:flex; flex-wrap:nowrap;
                          align-items:center; gap:6px; }
-  .voice-table tr.is-open .select { grid-row:1; }
   .voice-table button.voice-select { min-width:0; }
   .voice-table .selected-badge { min-width:0; min-height:44px; padding:0 12px; }
   .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
@@ -18807,12 +19237,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             placeholder="Preset or server voice ID">
         </div>
         <div class="field">
-          <label for="instruct">Describe the voice</label>
-          <textarea id="instruct"
-            placeholder="Warm British female narrator in her thirties; calm, clear, and unhurried."></textarea>
-          <span class="note">For example: “Warm British female narrator in her thirties; calm, clear,
-            and unhurried.” Say the speaker, tone, accent, pace, and delivery. Voices are found by
-            searching these descriptions, and every voice reads the same short passage.</span>
+          <span class="field-label" id="voice-new-tags-label">Tags</span>
+          <div id="voice-new-picker" class="tag-picker" role="group" aria-labelledby="voice-new-tags-label"></div>
+        </div>
+        <div class="field">
+          <label for="voice-details">More details (optional)</label>
+          <textarea id="voice-details"
+            placeholder="For example: reads like a late-night radio host, with a slight smile."></textarea>
+          <span class="note">Choose tags, add details in your own words, or both. Every voice reads the same
+            short passage.</span>
+        </div>
+        <div class="field">
+          <span class="field-label" id="voice-instruct-label">Sent to the voice model:</span>
+          <p id="voice-instruct" class="sent-text" aria-labelledby="voice-instruct-label" aria-live="polite"></p>
+          <p id="voice-instruct-empty" class="note">Choose a tag or write some details to see it here.</p>
         </div>
         <div class="field">
           <label for="voice-name">Name</label>
@@ -18836,13 +19274,36 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <p id="voice-save-note" class="note"></p>
       </div>
     </section>
+    <section id="voice-edit" class="card hidden" aria-labelledby="voice-edit-title">
+      <div class="stack">
+        <h3 id="voice-edit-title">Edit</h3>
+        <p class="note">Tags help you find this voice. They don't change how it sounds.</p>
+        <p id="voice-edit-suggested" class="note hidden">Hilde suggested the tags that are on from the
+          description. Save tags keeps them; change them first if you like.</p>
+        <div class="field">
+          <span class="field-label" id="voice-edit-tags-label">Tags</span>
+          <div id="voice-edit-picker" class="tag-picker" role="group" aria-labelledby="voice-edit-tags-label"></div>
+        </div>
+        <div class="field">
+          <span class="field-label" id="voice-edit-description-label">Description (what the voice was made
+            from; it stays as it is)</span>
+          <p id="voice-edit-description" class="stored-description" aria-labelledby="voice-edit-description-label"></p>
+        </div>
+        <div class="actions">
+          <button id="voice-edit-save" class="primary" type="button" onclick="saveVoiceTags(this)">Save tags</button>
+          <button id="voice-edit-new" type="button" onclick="newVoiceFromTags()">Make a new voice from these
+            tags</button>
+          <button id="voice-edit-close" class="link" type="button" onclick="closeVoiceEdit()">Close</button>
+        </div>
+      </div>
+    </section>
     <div class="search">
       <div class="voice-search-field">
         <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
           stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
-        <label for="voice-search" class="visually-hidden">Search voice descriptions</label>
+        <label for="voice-search" class="visually-hidden">Search voice tags and descriptions</label>
         <input id="voice-search" type="search" autocomplete="off"
-          placeholder="Search voice descriptions, e.g. warm british female">
+          placeholder="Search tags and descriptions, e.g. warm calm female">
         <button id="voice-search-clear" class="hidden" type="button" aria-label="Clear search"
           onclick="clearVoiceSearch()">×</button>
       </div>
@@ -18850,7 +19311,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
       <thead><tr><th scope="col"><span class="visually-hidden">Preview</span></th><th scope="col">Name</th>
-        <th scope="col">Voice description</th><th scope="col" class="modified">Modified</th>
+        <th scope="col">Tags and description</th><th scope="col" class="modified">Modified</th>
         <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
     </table>
@@ -19443,14 +19904,16 @@ let overwriting = "";
 // What the followed job has done so far (newHistory()), and a ready book's outcome.
 let runHistory = null, recentLog = [], resultInfo = null;
 // A draft is the clip a preview made; Save stores exactly that clip, once heard.
-let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
+// `draftRequest` is the tags and details a preview is being made from.
+let voiceResult = null, voiceDraft = null, draftRequest = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
-// Voices whose whole description shows: a tap on the row (phone) or "+N more"
-// (wide screen). A wide screen also opens, during a search, a row whose filled
-// tag would be left out; its "Show less" folds it for that search
-// (`searchFoldedVoices`: name → the search's words).
+// Voices whose whole description and every chip show: a tap on the row
+// (phone) or Full description (wide screen).
 const expandedVoices = new Set();
-const searchFoldedVoices = new Map();
+// Hilde's tag vocabulary by group and the user's own tags (GET /api/voices).
+let vocabulary = { groups:[], yours:[] };
+// Edit: the voice whose tags are being edited, and the tags on in its picker.
+let editingVoice = "", editTags = [];
 // The current stage's first and latest real counts; the estimate is their average pace.
 let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
@@ -19469,7 +19932,7 @@ const FIELDS = [
   ["dtype", "runtime.dtype"], ["attn", "runtime.attn"],
   ["language", "runtime.language"], ["encoding", "runtime.encoding"], ["seed", "runtime.seed"],
   ["design-voice", "voice.server_voice"], ["voice-name", "voice.name"],
-  ["instruct", "voice.instruct"],
+  ["voice-details", "voice.details"],
   ["wav-subtype", "voice.wav_subtype"], ["clone-voice", "audiobook.server_voice"],
   ["shared-voice", "audiobook.voice"],
   ["source-url", "audiobook.source_url"], ["download-name", "audiobook.download_name"],
@@ -22425,19 +22888,43 @@ function openRowMenu(button, label, items) {
   menu.querySelector("button")?.focus({ preventScroll:true });
 }
 
+// The voices and the vocabulary, from GET /api/voices or a route that changed
+// tags (the same answer). A voice is found by its description and its tags.
+function takeVoices(answer) {
+  vocabulary = answer.vocabulary || vocabulary;
+  voices = (answer.voices || []).map((voice) => ({
+    ...voice, words: searchWords(`${voice.description} ${voiceTags(voice).join(" ")}`),
+  })).sort(compareVoiceNames);
+  renderVoiceTable(); renderSelectedVoice(); renderVoiceForm(); renderVoiceEdit();
+}
 async function refreshVoices() {
+  let answer;
   try {
-    const answer = await jsonRequest("/api/voices");
-    voices = (answer.voices || []).map(
-      (voice) => ({...voice, words: searchWords(voice.description)})
-    ).sort(compareVoiceNames);
+    answer = await jsonRequest("/api/voices");
   } catch (error) {
     setStatus(error.message, true);
     return;
   }
-  renderVoiceTable(); renderSelectedVoice(); renderVoiceForm();
+  takeVoices(answer);
 }
 function voiceByName(name) { return voices.find((voice) => voice.name === name) || null; }
+// A voice's tags as shown: the confirmed ones, else those Hilde suggests from
+// its description (dashed until confirmed).
+function voiceTags(voice) { return voice.confirmed ? voice.tags : voice.suggested; }
+function voiceSuggested(voice) { return !voice.confirmed && voice.suggested.length > 0; }
+// Hilde's tags in vocabulary order, then the user's own as given; no repeats.
+function vocabularyOrder() { return vocabulary.groups.flatMap((group) => group.tags); }
+function canonicalTags(tags) {
+  const order = vocabularyOrder(), seen = new Set(), kept = [];
+  for (const tag of tags) {
+    if (seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase()); kept.push(tag);
+  }
+  return [
+    ...kept.filter((tag) => order.includes(tag)).sort((a, b) => order.indexOf(a) - order.indexOf(b)),
+    ...kept.filter((tag) => !order.includes(tag)),
+  ];
+}
 
 // Voices list A–Z by the browser's locale comparison, case and accents
 // aside (Özge after Oscar, Şule before Sven, Ümit after Ulla).
@@ -22445,10 +22932,11 @@ const VOICE_COLLATOR = new Intl.Collator(undefined, { sensitivity:"base" });
 function compareVoiceNames(a, b) {
   return VOICE_COLLATOR.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
-// The search (unchanged: every typed word begins a description word) keeps
-// that order, the selected voice first when it matches. Only the rows are
-// rebuilt: the search box keeps its text and cursor, and the one shared
-// preview player keeps playing.
+// The search: every typed word begins a word of the voice's description or
+// of its tags (AND, any order, case and accents aside), so tags only add to
+// what the description alone finds. It keeps the order above, the selected
+// voice first when it matches. Only the rows are rebuilt: the search box
+// keeps its text and cursor, and the one shared preview player keeps playing.
 function renderVoiceTable() {
   const query = $("voice-search").value;
   const terms = searchWords(query);
@@ -22462,7 +22950,7 @@ function renderVoiceTable() {
   $("voice-none").classList.toggle("hidden", matches.length > 0);
   $("voice-none-text").textContent = !voices.length
     ? "No voices yet. Use New voice to create the first one."
-    : `No voice description contains all of: ${terms.join(", ")}.`;
+    : `No voice matches all of: ${terms.join(", ")}.`;
   $("voice-clear").classList.toggle("hidden", !voices.length || !terms.length);
   const hidden = Math.max(0, matches.length - voiceLimit);
   $("voice-more").classList.toggle("hidden", hidden === 0);
@@ -22470,7 +22958,7 @@ function renderVoiceTable() {
   $("voice-count").textContent = terms.length
     ? `${matches.length} of ${plural(voices.length, "voice")}`
     : plural(voices.length, "voice");
-  foldVoiceRows();
+  fitVoiceRows();
 }
 function showMoreVoices() { voiceLimit += PAGE_SIZE; renderVoiceTable(); }
 function clearVoiceSearch() {
@@ -22479,122 +22967,110 @@ function clearVoiceSearch() {
   $("voice-search").focus();
 }
 
-// A description shows as tags: its comma-separated parts, trimmed, in order;
-// the stored description stays as it is.
-function descriptionTags(description) {
-  return String(description || "").split(",").map((part) => part.trim()).filter(Boolean);
+// A chip is filled when each of its tag's words begins with a search word
+// ("mid-pitched" needs mid and pitched, so "low-pitched" stays light).
+function tagFilled(words, terms) {
+  return words.length > 0 && words.every((word) => terms.some((term) => word.startsWith(term)));
 }
-function tagMatches(words, terms) {
-  return terms.some((term) => words.some((word) => word.startsWith(term)));
-}
-// A tag fills the search box: its words are added (every word must match, as
-// typed ones do). A filled tag, one a search word begins a word of, takes its
-// words out again.
-function toggleVoiceTag(text, voiceName, index) {
-  const input = $("voice-search"), words = searchWords(text);
+// A chip puts its tag in the search box (a hyphenated tag whole); a filled
+// chip takes out the typed words that fill it.
+function toggleVoiceTag(tag, voiceName) {
+  const input = $("voice-search"), words = searchWords(tag);
   const focused = document.activeElement && document.activeElement.classList.contains("voice-tag");
   let tokens = input.value.split(/\s+/).filter(Boolean);
-  if (tagMatches(words, searchWords(input.value))) {
-    tokens = tokens.filter((token) => !tagMatches(words, searchWords(token)));
+  if (tagFilled(words, searchWords(input.value))) {
+    tokens = tokens.filter((token) => {
+      const terms = searchWords(token);
+      return !terms.length || !terms.every((term) => words.some((word) => word.startsWith(term)));
+    });
   } else {
-    const have = new Set(searchWords(input.value));
-    for (const word of text.split(/[^\p{L}\p{N}]+/u)) {
-      const term = searchWords(word)[0];
-      if (term && !have.has(term)) { tokens.push(word); have.add(term); }
-    }
+    tokens.push(tag);
   }
   input.value = tokens.join(" ");
   voiceLimit = PAGE_SIZE; renderVoiceTable();
   if (!focused) return;
   const row = [...$("voice-rows").rows].find((item) => item.dataset.voice === voiceName);
-  (row ? row.querySelectorAll(".voice-tag")[index] : null)?.focus({ preventScroll:true });
+  (row ? [...row.querySelectorAll(".voice-tag")].find((chip) => chip.textContent === tag) : null)
+    ?.focus({ preventScroll:true });
 }
-function voiceTag(text, terms, voiceName, index) {
-  const tag = document.createElement("button");
-  tag.type = "button"; tag.className = "voice-tag";
-  tag.textContent = text; tag.title = text;
-  tag.setAttribute("aria-pressed", String(tagMatches(searchWords(text), terms)));
-  tag.addEventListener("click", () => toggleVoiceTag(text, voiceName, index));
-  return tag;
+function voiceTag(tag, filled, voice) {
+  const chip = document.createElement("button");
+  chip.type = "button"; chip.className = "voice-tag";
+  chip.classList.toggle("is-suggested", !voice.confirmed);
+  chip.textContent = tag;
+  chip.title = voice.confirmed ? tag : `${tag} (suggested by Hilde)`;
+  chip.setAttribute("aria-pressed", String(filled));
+  chip.addEventListener("click", () => toggleVoiceTag(tag, voice.name));
+  return chip;
+}
+// "Suggested — confirm" keeps Hilde's suggestions as the voice's tags.
+async function confirmVoiceTags(name, button) {
+  const voice = voiceByName(name);
+  if (!voice) return;
+  button.disabled = true;
+  try {
+    const answer = await jsonRequest("/api/voices/tags", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name, tags:voice.suggested }),
+    });
+    takeVoices(answer);
+    setStatus(`Saved the tags of ${name}.`);
+  } catch (error) {
+    button.disabled = false;
+    setStatus(error.message, true);
+  }
 }
 
-// A wide screen shows the first two lines of a description's tags, then
-// "+N more" (N, the tags left out), which shows them all and becomes "Show
-// less". A description whose tags fit two lines as they are shows whole
-// (`is-whole`); folded, each tag keeps to one line, a longer one cut with "…"
-// ("Show all" when that is all there is to open). Measured as drawn, so it
+// A row shows its chips on one line and its free text (More details, else
+// the description) on one line; open, the whole stored description and every
+// chip. "Full description" is there on a wide screen when something is cut,
+// or the text shown is not the whole description; measured as drawn, so it
 // follows the width of the window.
-function foldVoiceRows() {
-  if (!$("voice-table").getClientRects().length) return;
-  for (const row of $("voice-rows").rows) foldVoiceRow(row);
-}
-function foldVoiceRow(row) {
-  const box = row.querySelector(".voice-tags");
-  if (!box) return;
-  const name = row.dataset.voice, more = box.querySelector(".voice-more-tags");
-  const tags = [...box.querySelectorAll(".voice-tag")];
-  for (const tag of tags) tag.hidden = false;
-  more.hidden = true;
-  row.classList.remove("is-open");
-  row.classList.add("is-whole");
-  if (narrowLayout() || !box.getClientRects().length) {
-    row.classList.remove("is-whole");
-    row.classList.toggle("is-open", expandedVoices.has(name));
-    return;
-  }
-  const style = getComputedStyle(tags[0]);
-  const line = ["lineHeight", "paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]
-    .reduce((sum, key) => sum + parseFloat(style[key]), 0);
-  const extent = Math.max(...tags.map((tag) => tag.getBoundingClientRect().bottom)) - tags[0].getBoundingClientRect().top;
-  if (extent <= 2 * line + (parseFloat(getComputedStyle(box).rowGap) || 0) + 1) return;
-  row.classList.remove("is-whole");
-  const tops = [], lines = tags.map((tag) => {
-    const top = tag.getBoundingClientRect().top;
-    if (!tops.length || top > tops[tops.length - 1] + 2) tops.push(top);
-    return tops.length - 1;
-  });
-  const terms = searchWords($("voice-search").value);
-  const hiddenMatch = tags.some((tag, i) => lines[i] >= 2 && tag.getAttribute("aria-pressed") === "true");
-  const open = expandedVoices.has(name) || (hiddenMatch && searchFoldedVoices.get(name) !== terms.join(" "));
+function setVoiceRowOpen(row, voice, open) {
   row.classList.toggle("is-open", open);
-  more.hidden = false;
-  more.setAttribute("aria-expanded", String(open));
-  if (open) { more.textContent = "Show less"; return; }
-  let shown = lines.filter((at) => at < 2).length;
-  for (const tag of tags.slice(shown)) tag.hidden = true;
-  // The button takes the second line's end; tags give way until it fits there.
-  for (;;) {
-    more.textContent = shown < tags.length ? `+${tags.length - shown} more` : "Show all";
-    if (more.getBoundingClientRect().top <= tops[Math.min(1, tops.length - 1)] + 2 || shown === 0) break;
-    tags[--shown].hidden = true;
+  const text = row.querySelector(".voice-text"), full = row.querySelector(".voice-full");
+  if (text) text.textContent = open ? voice.description || voice.details : voice.details || voice.description;
+  if (full) {
+    full.textContent = open ? "Show less" : "Full description";
+    full.setAttribute("aria-expanded", String(open));
   }
 }
-function toggleVoiceTags(row, more) {
-  const name = row.dataset.voice, terms = searchWords($("voice-search").value);
-  if (row.classList.contains("is-open")) {
-    expandedVoices.delete(name);
-    if (terms.length) searchFoldedVoices.set(name, terms.join(" "));
-  } else {
-    expandedVoices.add(name);
-    searchFoldedVoices.delete(name);
-  }
-  foldVoiceRow(row);
-  more.focus();
+function toggleVoiceRow(row, voice) {
+  const open = !expandedVoices.has(voice.name);
+  if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
+  setVoiceRowOpen(row, voice, open);
+  fitVoiceRow(row);
 }
-// A new width (the window, or the table shown again) folds the rows anew.
-let voiceFoldWidth = -1;
+function fitVoiceRows() {
+  if (!$("voice-table").getClientRects().length) return;
+  for (const row of $("voice-rows").rows) fitVoiceRow(row);
+}
+function fitVoiceRow(row) {
+  const voice = voiceByName(row.dataset.voice);
+  if (!voice) return;
+  const chips = row.querySelector(".voice-tags"), text = row.querySelector(".voice-text");
+  const full = row.querySelector(".voice-full"), open = row.classList.contains("is-open");
+  const chipsCut = () => !!chips && chips.scrollWidth > chips.clientWidth + 1;
+  if (chips) chips.classList.toggle("is-cut", !open && chipsCut());
+  if (!full) return;
+  if (narrowLayout() || open) { full.hidden = narrowLayout(); return; }
+  full.hidden = true;
+  const textCut = !!text && text.scrollWidth > text.clientWidth + 1;
+  full.hidden = !(textCut || chipsCut() || (voice.details && voice.details !== voice.description));
+}
+// A new width (the window, or the table shown again) measures the rows anew.
+let voiceFitWidth = -1;
 new ResizeObserver((entries) => {
   const width = Math.round(entries[entries.length - 1].contentRect.width);
-  if (width === voiceFoldWidth) return;
-  voiceFoldWidth = width;
-  requestAnimationFrame(foldVoiceRows);
+  if (width === voiceFitWidth) return;
+  voiceFitWidth = width;
+  requestAnimationFrame(fitVoiceRows);
 }).observe($("voice-table"));
 function voiceRow(voice, terms) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
   row.dataset.voice = voice.name;
   row.classList.toggle("is-selected", selected);
-  row.classList.toggle("is-open", expandedVoices.has(voice.name));
   const preview = cell("preview");
   const play = previewButton(voice);
   preview.append(play);
@@ -22604,18 +23080,40 @@ function voiceRow(voice, terms) {
   title.textContent = voice.name;
   name.append(title);
   const description = cell("description");
-  const parts = descriptionTags(voice.description);
-  if (parts.length) {
-    const tags = document.createElement("div");
-    tags.className = "voice-tags";
-    tags.append(...parts.map((part, index) => voiceTag(part, terms, voice.name, index)));
-    // A wide screen shows two lines of tags, then this button (foldVoiceRow()).
-    const more = document.createElement("button");
-    more.type = "button"; more.className = "voice-more-tags"; more.hidden = true;
-    more.addEventListener("click", () => toggleVoiceTags(row, more));
-    tags.append(more);
-    description.append(tags);
-  } else {
+  const tags = voiceTags(voice), text = voice.details || voice.description;
+  if (tags.length) {
+    const line = document.createElement("div");
+    line.className = "voice-tag-line";
+    const chips = document.createElement("div");
+    chips.className = "voice-tags";
+    // During a search the filled chips come first, so a match never fades out.
+    const shown = tags.map((tag) => ({ tag, filled:tagFilled(searchWords(tag), terms) }));
+    shown.sort((a, b) => Number(b.filled) - Number(a.filled));
+    chips.append(...shown.map(({ tag, filled }) => voiceTag(tag, filled, voice)));
+    line.append(chips);
+    if (voiceSuggested(voice)) {
+      const confirm = document.createElement("button");
+      confirm.type = "button"; confirm.className = "voice-confirm";
+      confirm.textContent = "Suggested — confirm";
+      confirm.title = "Hilde suggested these tags from the description. Confirm keeps them; Edit changes them.";
+      confirm.setAttribute("aria-label", `Confirm the suggested tags of ${voice.name}`);
+      confirm.addEventListener("click", () => confirmVoiceTags(voice.name, confirm));
+      line.append(confirm);
+    }
+    description.append(line);
+  }
+  if (text) {
+    const line = document.createElement("div");
+    line.className = "voice-text-line";
+    const words = document.createElement("span");
+    words.className = "voice-text";
+    const full = document.createElement("button");
+    full.type = "button"; full.className = "voice-full"; full.hidden = true;
+    full.addEventListener("click", () => { toggleVoiceRow(row, voice); full.focus(); });
+    line.append(words, full);
+    description.append(line);
+  }
+  if (!tags.length && !text) {
     const none = document.createElement("span");
     none.className = "voice-no-description";
     none.textContent = "No description";
@@ -22648,16 +23146,15 @@ function voiceRow(voice, terms) {
     { label:"Delete…", run:(button) => deleteVoice(voice.name, button) },
   ]));
   row.append(preview, name, description, modifiedCell(voice.modified), select);
+  setVoiceRowOpen(row, voice, expandedVoices.has(voice.name));
   setPreviewButton(play);
-  // On a phone the tags are one line; a tap on the row (not on one of its
-  // buttons) shows them all, and another folds them.
+  // On a phone a tap on the row (not on one of its buttons) shows the whole
+  // description and every chip, and another folds them.
   row.addEventListener("click", (event) => {
     // The path as dispatched: a preview button redraws its icon while the click is under way.
     if (!narrowLayout() || String(window.getSelection())
         || event.composedPath().some((node) => node instanceof Element && node.matches("button, a, input"))) return;
-    const open = !expandedVoices.has(voice.name);
-    if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
-    row.classList.toggle("is-open", open);
+    toggleVoiceRow(row, voice);
   });
   return row;
 }
@@ -22756,6 +23253,8 @@ async function deleteVoice(name, button) {
   if (!answer) return;
   if (previewing === name) stopPreview();
   if (voiceResult && voiceResult.saved === name) voiceResult = null;
+  if (editingVoice === name) { editingVoice = ""; editTags = []; }
+  expandedVoices.delete(name);
   assets = answer.assets || assets;
   if (state.audiobook.voice === name) state.audiobook.voice = "";
   populateAssets();
@@ -22782,6 +23281,8 @@ async function renameVoice(name, button) {
     if (previewing === name) stopPreview();
     if (voiceResult && voiceResult.saved === name) voiceResult.saved = answer.name;
     if (state.voice.name === name) { state.voice.name = answer.name; $("voice-name").value = answer.name; }
+    if (editingVoice === name) editingVoice = answer.name;
+    if (expandedVoices.delete(name)) expandedVoices.add(answer.name);
     if (state.audiobook.voice === name) state.audiobook.voice = answer.name;
     if (state.player.voice === name) state.player.voice = answer.name;
     assets = answer.assets || assets;
@@ -22828,16 +23329,167 @@ async function deleteDocument(name, button) {
   $("document").focus();
 }
 
+// Edit (an existing voice): its tags in the picker and its stored description,
+// read only. Save tags writes only the library's tag file.
 function editVoice(voice) {
   stopPreview();
-  state.voice.name = voice.name;
-  state.voice.instruct = voice.description;
-  $("voice-name").value = voice.name;
-  $("instruct").value = voice.description;
-  voiceFormOpen = true; voiceDraft = null; voiceResult = null;
-  render(); queueSync();
-  $("voice-form").scrollIntoView({ block:"start" });
-  $("instruct").focus({ preventScroll:true });
+  voiceFormOpen = false; voiceDraft = null; voiceResult = null;
+  editingVoice = voice.name; editTags = [...voiceTags(voice)];
+  render(); renderVoiceEdit();
+  $("voice-edit").scrollIntoView({ block:"start" });
+  $("voice-edit-title").setAttribute("tabindex", "-1");
+  $("voice-edit-title").focus({ preventScroll:true });
+}
+function closeVoiceEdit() {
+  editingVoice = ""; editTags = [];
+  renderVoiceEdit();
+  $("new-voice").focus();
+}
+function renderVoiceEdit() {
+  const voice = editingVoice ? voiceByName(editingVoice) : null;
+  $("voice-edit").classList.toggle("hidden", !voice);
+  if (!voice) return;
+  $("voice-edit-title").textContent = `Edit ${voice.name}`;
+  $("voice-edit-suggested").classList.toggle("hidden", voice.confirmed);
+  $("voice-edit-description").textContent = voice.description || "No description";
+  renderTagPicker($("voice-edit-picker"), editTags, (tags) => { editTags = tags; renderVoiceEdit(); });
+}
+async function saveVoiceTags(button) {
+  const name = editingVoice;
+  button.disabled = true;
+  try {
+    const answer = await jsonRequest("/api/voices/tags", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ name, tags:editTags }),
+    });
+    editingVoice = ""; editTags = [];
+    takeVoices(answer);
+    setStatus(`Saved the tags of ${name}.`);
+    $("new-voice").focus();
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+// New voice, with the tags on in Edit; the edited voice is not changed.
+function newVoiceFromTags() {
+  openVoiceForm(editTags);
+}
+
+// The tag picker: each group's tags as toggle chips, then Yours: the user's
+// own tags (each removable from the list; voices that have one keep it), a
+// chosen tag of no group, and "Add your own tag". `onChange` gets the tags on,
+// in vocabulary order. Rebuilt only when the vocabulary changes, so focus and
+// a half-typed tag stay.
+function renderTagPicker(root, selected, onChange) {
+  const known = vocabularyOrder();
+  const mine = [...vocabulary.yours,
+    ...selected.filter((tag) => !known.includes(tag) && !vocabulary.yours.includes(tag))];
+  root.selectedTags = selected; root.onTagsChange = onChange;
+  const key = JSON.stringify([vocabulary.groups, vocabulary.yours, mine]);
+  if (root.dataset.key !== key) {
+    const focused = root.contains(document.activeElement) ? document.activeElement.dataset.tag : undefined;
+    root.dataset.key = key;
+    root.replaceChildren(
+      ...vocabulary.groups.map((group) => tagGroup(root, group.name, group.tags, false)),
+      tagGroup(root, "Yours", mine, true),
+    );
+    if (focused) root.querySelector(`button.tag-option[data-tag="${CSS.escape(focused)}"]`)?.focus();
+  }
+  for (const option of root.querySelectorAll("button.tag-option"))
+    option.setAttribute("aria-pressed", String(selected.includes(option.dataset.tag)));
+}
+function tagGroup(root, name, tags, yours) {
+  const group = document.createElement("fieldset");
+  group.className = "tag-group";
+  const legend = document.createElement("legend");
+  legend.textContent = name;
+  const options = document.createElement("div");
+  options.className = "tag-options";
+  for (const tag of tags) {
+    const option = document.createElement("button");
+    option.type = "button"; option.className = "tag-option";
+    option.dataset.tag = tag; option.textContent = tag;
+    option.addEventListener("click", () => {
+      const on = root.selectedTags.includes(tag);
+      root.onTagsChange(canonicalTags(on ? root.selectedTags.filter((item) => item !== tag)
+        : [...root.selectedTags, tag]));
+    });
+    if (!yours || !vocabulary.yours.includes(tag)) { options.append(option); continue; }
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "tag-remove"; remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${tag} from your tags`);
+    remove.title = "Takes it off this list. Voices that have it keep it.";
+    remove.addEventListener("click", () => changeOwnTags({ remove:tag }, remove));
+    const pair = document.createElement("span");
+    pair.className = "tag-mine";
+    pair.append(option, remove);
+    options.append(pair);
+  }
+  if (yours && !tags.length) {
+    const none = document.createElement("span");
+    none.className = "tag-none";
+    none.textContent = "None yet.";
+    options.append(none);
+  }
+  group.append(legend, options);
+  if (yours) group.append(tagAddField(root));
+  return group;
+}
+function tagAddField(root) {
+  const field = document.createElement("div");
+  field.className = "tag-add";
+  const label = document.createElement("label");
+  label.className = "tag-add-label"; label.htmlFor = `${root.id}-add`; label.textContent = "Add your own tag";
+  const line = document.createElement("div");
+  line.className = "line";
+  const input = document.createElement("input");
+  input.type = "text"; input.id = `${root.id}-add`; input.className = "tag-add-input";
+  input.autocomplete = "off"; input.maxLength = 32; input.placeholder = "For example late-night radio";
+  const add = document.createElement("button");
+  add.type = "button"; add.className = "tag-add"; add.textContent = "Add";
+  const problem = document.createElement("p");
+  problem.className = "tag-add-problem problem hidden";
+  const submit = () => addOwnTag(root, input, problem);
+  add.addEventListener("click", submit);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); submit(); }
+  });
+  input.addEventListener("input", () => problem.classList.add("hidden"));
+  line.append(input, add);
+  field.append(label, line, problem);
+  return field;
+}
+async function changeOwnTags(change, button) {
+  if (button) button.disabled = true;
+  try {
+    const answer = await jsonRequest("/api/voices/vocabulary", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(change),
+    });
+    takeVoices(answer);
+    return answer;
+  } finally {
+    if (button && button.isConnected) button.disabled = false;
+  }
+}
+// A tag of your own joins Yours and is on in this picker; one of Hilde's is
+// just turned on.
+async function addOwnTag(root, input, problem) {
+  const typed = input.value.trim().replace(/ {2,}/g, " ");
+  if (!typed) return;
+  let answer;
+  try {
+    answer = await changeOwnTags({ add:typed });
+  } catch (error) {
+    problem.textContent = error.message;
+    problem.classList.remove("hidden");
+    return;
+  }
+  const tag = [...vocabularyOrder(), ...answer.vocabulary.yours]
+    .find((item) => item.toLowerCase() === typed.toLowerCase()) || typed;
+  root.onTagsChange(canonicalTags(root.selectedTags.includes(tag) ? root.selectedTags : [...root.selectedTags, tag]));
+  root.querySelector("input.tag-add-input")?.focus();
 }
 
 function renderSelectedVoice() {
@@ -22845,18 +23497,37 @@ function renderSelectedVoice() {
   const voice = facts.clone_server ? null : voiceByName(state.audiobook.voice);
   card.classList.toggle("hidden", !voice);
   // Rebuild only on change, so a focused preview button keeps its focus.
-  const key = voice ? JSON.stringify([voice.name, voice.preview, voice.description]) : "";
+  const key = voice
+    ? JSON.stringify([voice.name, voice.preview, voice.description, voice.details, voiceTags(voice), voice.confirmed])
+    : "";
   if (card.dataset.key === key) return;
   card.dataset.key = key;
   if (!voice) { card.replaceChildren(); return; }
+  // The same chips (dashed while suggested) and one cropped line of text as
+  // the Voices list; the chips here are not buttons.
   const meta = document.createElement("div");
   meta.className = "voice-meta";
   const name = document.createElement("strong");
   name.textContent = voice.name;
-  const description = document.createElement("span");
-  description.className = "note clamp";
-  description.textContent = voice.description || "No prompt saved";
-  meta.append(name, description);
+  meta.append(name);
+  const tags = voiceTags(voice);
+  if (tags.length) {
+    const chips = document.createElement("div");
+    chips.className = "voice-tags";
+    chips.append(...tags.map((tag) => {
+      const chip = document.createElement("span");
+      chip.className = "voice-tag";
+      chip.classList.toggle("is-suggested", !voice.confirmed);
+      chip.textContent = tag;
+      return chip;
+    }));
+    meta.append(chips);
+  }
+  const text = document.createElement("span");
+  text.className = "voice-text";
+  text.textContent = voice.details || voice.description || "No prompt saved";
+  text.title = voice.description;
+  meta.append(text);
   card.replaceChildren(previewButton(voice), meta);
 }
 
@@ -24285,14 +24956,21 @@ async function continueJob(entry) {
   startAudiobook();
 }
 
-function openVoiceForm() {
-  // New voice starts empty; Select loads an existing voice instead.
+// New voice: tags (`tags`, e.g. from Edit's "Make a new voice from these
+// tags") and More details; the name starts empty.
+function openVoiceForm(tags) {
   stopPreview();
-  state.voice.name = ""; state.voice.instruct = "";
-  $("voice-name").value = ""; $("instruct").value = "";
+  editingVoice = ""; editTags = [];
+  state.voice.name = ""; state.voice.tags = canonicalTags(tags || []); state.voice.details = "";
+  $("voice-name").value = ""; $("voice-details").value = "";
   voiceFormOpen = true; voiceDraft = null; voiceResult = null;
-  render(); queueSync();
-  $("instruct").focus();
+  render(); renderVoiceEdit(); sync();
+  $("voice-form").scrollIntoView({ block:"start" });
+  ($("voice-new-picker").querySelector("button.tag-option") || $("voice-details")).focus({ preventScroll:true });
+}
+// The tags and details a preview is made from; Save needs the same again.
+function voiceRequestKey() {
+  return JSON.stringify([state.voice.tags, state.voice.details.split(/\s+/).filter(Boolean).join(" ")]);
 }
 function closeVoiceForm() {
   voiceFormOpen = false; voiceDraft = null; voiceResult = null; stopPreview();
@@ -24311,20 +24989,29 @@ function renderVoiceForm() {
   $("voice-stop").classList.toggle("hidden", !creating);
   $("voice-close").classList.toggle("hidden", creating);
   const name = state.voice.name.trim();
-  $("voice-form-title").textContent = voiceByName(name) ? `Edit ${name}` : "New voice";
+  $("voice-form-title").textContent = "New voice";
+  renderTagPicker($("voice-new-picker"), state.voice.tags, (tags) => {
+    state.voice.tags = tags; render(); queueSync();
+  });
+  // Exactly what Generate preview sends to the voice model, as the server
+  // composes it from the tags and details (compose_voice_instruct()).
+  const sent = facts.voice_instruct || "";
+  $("voice-instruct").textContent = sent;
+  $("voice-instruct").classList.toggle("hidden", !sent);
+  $("voice-instruct-empty").classList.toggle("hidden", !!sent);
   const exists = !!name && (voiceByName(name) || (facts.tab === "voice" && facts.voice_exists));
   $("voice-exists").textContent = exists
     ? `A voice named '${name}' exists. Saving replaces it; its current version is kept in its history.` : "";
   // Designing a voice needs every narration worker, so it waits for an empty queue.
   const queued = !creating && jobs.length > 0;
-  const typed = !!(name || state.voice.instruct.trim());
+  const typed = !!(name || state.voice.tags.length || state.voice.details.trim());
   const problem = queued ? "Voices can be designed once no audiobook is being made."
     : typed && state.tab === "voice" && facts.tab === "voice" ? facts.problem : "";
   $("voice-problem").textContent = problem || "";
   $("voice-problem").classList.toggle("hidden", !problem);
-  // Save keeps the clip that was heard: the preview of this very description,
-  // played to its end or for at least 3 seconds.
-  const current = !!voiceDraft && voiceDraft.prompt.trim() === state.voice.instruct.trim();
+  // Save keeps the clip that was heard: the preview of these very tags and
+  // details, played to its end or for at least 3 seconds.
+  const current = !!voiceDraft && voiceDraft.request === voiceRequestKey();
   const heard = current && voiceDraft.played;
   $("voice-listen").disabled =
     submitting || creating || queued || facts.tab !== "voice" || !!facts.problem;
@@ -24334,8 +25021,8 @@ function renderVoiceForm() {
   $("voice-save").disabled =
     !heard || submitting || creating || facts.tab !== "voice" || !!facts.problem;
   $("voice-save-note").textContent = creating ? ""
-    : !voiceDraft ? "Save voice works once you have heard a preview of this description."
-    : !current ? "The description has changed since this preview. Generate a new preview before saving."
+    : !voiceDraft ? "Save voice works once you have heard a preview of these tags and details."
+    : !current ? "The tags or details have changed since this preview. Generate a new preview before saving."
     : !heard ? "Listen to the preview, to its end or for at least 3 seconds, before saving."
     : "";
   const where = speechWhere("design", "Voice design");
@@ -24355,14 +25042,14 @@ function renderVoiceForm() {
   const message = document.createElement("span");
   if (voiceDraft) {
     message.textContent = !current
-      ? "This preview is of an earlier description."
-      : heard ? "This is the new voice. Save it to keep it, or change the description and generate another preview."
+      ? "This preview is of earlier tags or details."
+      : heard ? "This is the new voice. Save it to keep it, or change the tags or details and generate another preview."
       : "Here is the preview. Play it before saving.";
   } else {
     message.className = voiceResult.saved || voiceResult.stopped ? "" : "problem";
     message.textContent = voiceResult.saved ? `${voiceResult.saved} is saved.`
       : voiceResult.stopped ? "Stopped. Nothing was saved."
-      : "We couldn't generate this preview. Try again, or change the description.";
+      : "We couldn't generate this preview. Try again, or change the tags or details.";
   }
   text.append(message);
   if (voiceResult && voiceResult.detail) {
@@ -24748,7 +25435,7 @@ async function listenVoice() {
   try {
     collect();
     state.tab = "voice";
-    draftPrompt = state.voice.instruct;
+    draftRequest = voiceRequestKey();
     const answer = await requestRun(false);
     if (!answer) return;
     jobs = answer.queue || jobs; runs = answer.runs || runs;
@@ -24772,7 +25459,9 @@ async function saveVoice(button) {
   try {
     const answer = await jsonRequest("/api/voices/save", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ draft:voiceDraft.id, name:state.voice.name.trim() }),
+      body:JSON.stringify({
+        draft:voiceDraft.id, name:state.voice.name.trim(), tags:state.voice.tags, details:state.voice.details,
+      }),
     });
     stopPreview();
     voiceDraft = null; voiceResult = { saved:answer.name };
@@ -24882,11 +25571,11 @@ function watch(jobId="") {
       // Stop terminates the voice process, which then reports SIGTERM.
       const stopped = info.code === 130 || info.code === -15;
       voiceDraft = info.code === 0 && info.name
-        ? { id:info.name, prompt:draftPrompt ?? state.voice.instruct, played:false } : null;
+        ? { id:info.name, request:draftRequest ?? voiceRequestKey(), played:false } : null;
       voiceResult = voiceDraft ? null : {
         ok:false, stopped, detail:info.code && !stopped ? recentLog.join("\n") : "",
       };
-      draftPrompt = null;
+      draftRequest = null;
       if (state.tab === "voice") focus = "voice-result";
     }
     let nextRun = null;

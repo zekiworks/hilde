@@ -1561,7 +1561,7 @@ class PaperWorkflowTests(unittest.TestCase):
 
             def sync(client, language, description=""):
                 state = normalize({"tab": "audiobook", "runtime": {"language": language}})
-                state["voice"]["instruct"] = description
+                state["voice"]["details"] = description
                 request = urllib.request.Request(
                     f"{origin}/api/sync",
                     data=json.dumps({"state": state}).encode(),
@@ -1589,13 +1589,13 @@ class PaperWorkflowTests(unittest.TestCase):
                 sync(clients[0], "French", long_description)
                 first = load(clients[0])
                 self.assertEqual(first["runtime"]["language"], "French")
-                self.assertEqual(first["voice"]["instruct"], long_description)
+                self.assertEqual(first["voice"]["details"], long_description)
                 self.assertEqual(load(clients[1])["runtime"]["language"], "Auto")
                 sync(clients[1], "German")
                 self.assertEqual(load(clients[0])["runtime"]["language"], "French")
                 self.assertEqual(load(clients[1])["runtime"]["language"], "German")
                 sync(clients[0], "French")
-                self.assertEqual(load(clients[0])["voice"]["instruct"], "")
+                self.assertEqual(load(clients[0])["voice"]["details"], "")
             finally:
                 server.shutdown()
                 thread.join()
@@ -1702,7 +1702,7 @@ class WebTtsConfigurationTests(unittest.TestCase):
                 },
                 "parent": str(root),
                 "name": "narrator",
-                "instruct": "A calm narrator.",
+                "details": "A calm narrator.",
             },
         })
 
@@ -6913,12 +6913,13 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             1_700_000_100,
         )
 
-    def test_every_new_voice_reads_the_fixed_passage(self):
+    def test_every_new_voice_reads_the_fixed_passage_from_its_composed_request(self):
         state = normalize({
             "tab": "voice",
             "voice": {
                 "name": "Rebecca",
-                "instruct": "Warm narrator.",
+                "tags": ["narrator", "warm", "Warm", "not, valid"],
+                "details": " Reads  slowly. ",
                 "reference_text": "Words chosen in the browser.",
             },
         })
@@ -6931,8 +6932,13 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
                 web.values_of(state, models, self.storage), self.storage.drafts / "draft"
             )
 
+        # The browser's tags are kept valid, once each, in vocabulary order.
+        self.assertEqual(state["voice"]["tags"], ["warm", "narrator"])
         self.assertEqual(command[command.index("--text") + 1], web.VOICE_REFERENCE_TEXT)
-        self.assertEqual(command[command.index("--instruct") + 1], "Warm narrator.")
+        self.assertEqual(
+            command[command.index("--instruct") + 1],
+            "A warm voice. Suited to narration. Reads slowly.",
+        )
         self.assertNotIn("Words chosen in the browser.", command)
 
     def test_rendering_skips_comparable_voices_and_never_publishes_a_failed_clip(self):
@@ -7335,7 +7341,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             "design": {"source": "local", "model": "/models/design", "allow_downloads": False},
             "clone": {"source": "missing"},
         }
-        state = normalize({"tab": "voice", "voice": {"name": "Freyja", "instruct": "New prompt."}})
+        state = normalize({"tab": "voice", "voice": {"name": "Freyja", "tags": ["calm"], "details": "New prompt."}})
         with mock.patch.object(web, "SCRIPT", fake), \
                 mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
             origin = self.serve(models)
@@ -7353,19 +7359,34 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
             (freyja / "reference.wav").read_bytes() == before
             and (freyja / "description.txt").read_text(encoding="utf-8") == "Old prompt."
         )
-        saved = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Freyja"})
+        changed = self.post(
+            origin, "/api/voices/save", {"draft": draft.name, "name": "Freyja", "tags": ["warm"], "details": "New prompt."}
+        )
+        untouched = untouched and (freyja / "description.txt").read_text(encoding="utf-8") == "Old prompt."
+        saved = self.post(
+            origin, "/api/voices/save", {"draft": draft.name, "name": "Freyja", "tags": ["calm"], "details": "New prompt."}
+        )
 
         self.assertEqual(status, 200)
         self.assertEqual(designed["device"], {"device": "cpu", "kind": "cpu", "name": "", "memory": "", "id": ""})
+        # Tags other than the draft's are refused before anything is written.
+        self.assertEqual(changed[0], 409)
         self.assertTrue(untouched)
         self.assertEqual(saved[0], 200)
         np.testing.assert_array_equal(sf.read(freyja / "reference.wav", dtype="float32")[0], heard)
-        self.assertEqual((freyja / "description.txt").read_text(encoding="utf-8"), "New prompt.")
+        self.assertEqual((freyja / "description.txt").read_text(encoding="utf-8"), "A calm voice. New prompt.")
         self.assertEqual(
             (freyja / "transcript.txt").read_text(encoding="utf-8"), web.VOICE_REFERENCE_TEXT
         )
         self.assertFalse((freyja / "preview.wav").exists())
         self.assertFalse(draft.exists())
+        # The tag entry follows the voice, outside its folder.
+        self.assertEqual(
+            web.read_voice_tags(self.storage)["voices"]["Freyja"],
+            {"tags": ["calm"], "details": "New prompt.", "confirmed": True},
+        )
+        self.assertEqual(sorted(path.name for path in freyja.iterdir() if not path.name.startswith(".")),
+                         ["description.txt", "reference.wav", "transcript.txt"])
 
     def test_save_refuses_missing_drafts_bad_names_and_linked_voices(self):
         draft = self.storage.drafts / "0123456789abcdef"
@@ -7380,7 +7401,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
 
         missing = self.post(origin, "/api/voices/save", {"draft": "feedfacefeedface", "name": "Nova"})
         bad_name = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "../Nova"})
-        linked = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Linked"})
+        linked = self.post(origin, "/api/voices/save", {"draft": draft.name, "name": "Linked", "details": "Prompt."})
         with self.assertRaises(urllib.error.HTTPError) as traversal:
             urllib.request.urlopen(f"{origin}/api/voices/draft?id=..%2FVoices")
 
@@ -7405,6 +7426,167 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         )
         self.assertEqual(fresh.parent, self.storage.drafts)
         self.assertFalse(fresh.exists())
+
+
+class VoiceTagTests(unittest.TestCase):
+    setUp = VoiceAndLibraryCatalogTests.setUp
+    add_voice = VoiceAndLibraryCatalogTests.add_voice
+    serve = VoiceAndLibraryCatalogTests.serve
+    post = VoiceAndLibraryCatalogTests.post
+
+    def folder_hashes(self):
+        return {
+            str(path.relative_to(self.storage.voices)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(self.storage.voices.rglob("*")) if path.is_file()
+        }
+
+    def test_a_tag_is_short_printable_and_one_line(self):
+        refused = {
+            "a comma": "warm, soft", "a newline": "warm\nsoft", "a tab": "warm\tsoft", "a bell": "warm\x07",
+            "33 characters": "x" * 33, "nothing": "   ", "not text": 7,
+        }
+        for what, value in refused.items():
+            with self.subTest(what=what), self.assertRaises(ValueError):
+                web.clean_voice_tag(value)
+        self.assertEqual(web.clean_voice_tag("  late-night   radio "), "late-night radio")
+        self.assertEqual(web.clean_voice_tag("x" * 32), "x" * 32)
+        self.assertEqual(web.clean_voice_tag("WARM"), "warm")
+        self.assertEqual(web.clean_voice_tag("Ölçülü"), "Ölçülü")
+        self.assertEqual(
+            web.clean_voice_tags(["narrator", "mine", "Warm", "warm", "male", "adult"]),
+            ["male", "adult", "warm", "narrator", "mine"],
+        )
+        with self.assertRaises(ValueError):
+            web.clean_voice_tags([f"tag {n}" for n in range(13)])
+        self.assertEqual(len(web.clean_voice_tags([f"tag {n}" for n in range(12)])), 12)
+        with self.assertRaises(ValueError):
+            web.clean_voice_tags("warm")
+
+    def test_the_vocabulary_is_small_grouped_and_composable(self):
+        groups = [group for group, _ in web.VOICE_TAG_GROUPS]
+        tags = [tag for _, items in web.VOICE_TAG_GROUPS for tag, _ in items]
+        self.assertEqual(groups, ["Voice", "Pitch", "Texture", "Pace", "Manner", "Suited to"])
+        self.assertEqual(len(tags), len(set(tags)))
+        self.assertTrue(36 <= len(tags) <= 44, len(tags))
+        self.assertEqual(set(web.VOICE_TAG_SUITED), {tag for tag, _ in dict(web.VOICE_TAG_GROUPS)["Suited to"]})
+        for tag in tags:
+            self.assertEqual(web.clean_voice_tag(tag), tag)
+
+    def test_suggestions_match_whole_words_and_skip_what_a_description_rules_out(self):
+        suggest = web.suggest_voice_tags
+        self.assertEqual(
+            suggest("A warm adult female voice with a smooth mid-range tone. Well suited to audiobook narration."),
+            ["female", "adult", "mid-pitched", "smooth", "warm", "narrator"],
+        )
+        # Synonyms and phrases: "low pitch", "steady pace", "older", "warmth", "research".
+        self.assertEqual(
+            suggest("An older man with a low pitch and restrained warmth, reading research at a steady pace."),
+            ["male", "mature", "low-pitched", "measured", "warm", "academic"],
+        )
+        # Whole words only: "human" is not "man", "deeply" not "deep", "soft-edged" not "soft".
+        self.assertEqual(suggest("Deeply human, with soft-edged articulation."), [])
+        # Ruled out: after without / not / never / rather than / instead of, and a sentence starting with Avoid.
+        self.assertEqual(
+            suggest("A calm voice without sounding raspy, breathy, or deep. Avoid a husky tone. "
+                    "Sound bright rather than gravelly; never slow. Clear, not soft. Gentle instead of serious."),
+            ["bright", "calm", "gentle"],
+        )
+        # The user's own tags are suggested too, after Hilde's.
+        self.assertEqual(suggest("A late-night radio voice, warm.", ["late-night radio", "absent"]),
+                         ["warm", "late-night radio"])
+        self.assertEqual(suggest(""), [])
+
+    def test_composition_is_the_documented_sentence(self):
+        compose = web.compose_voice_instruct
+        self.assertEqual(
+            compose(web.clean_voice_tags(["warm", "husky", "low-pitched", "adult", "male", "measured", "narrator"]),
+                    "Reads like a late-night radio host."),
+            "A warm, husky, low-pitched adult male voice. Reads at a measured pace. Suited to narration. "
+            "Reads like a late-night radio host.",
+        )
+        self.assertEqual(compose(["energetic", "young", "female", "lecturer", "news reader"]),
+                         "An energetic young female voice. Suited to lectures and news reading.")
+        self.assertEqual(compose(["adult"]), "An adult voice.")
+        self.assertEqual(compose(["slow"]), "Reads at a slow pace.")
+        self.assertEqual(compose(["narrator", "storyteller", "academic"]),
+                         "Suited to narration, storytelling and academic texts.")
+        # The user's own tags read as adjectives after Hilde's manner tags.
+        self.assertEqual(compose(["calm", "smooth", "british"]), "A calm, british, smooth voice.")
+        self.assertEqual(compose([], "  Calm and clear,\n unhurried.  "), "Calm and clear, unhurried.")
+        self.assertEqual(compose([], ""), "")
+
+    def test_the_tag_file_lives_beside_the_voices_and_only_it_changes(self):
+        self.add_voice("Eir", web.VOICE_REFERENCE_TEXT, "An adult female voice, warm and gentle.")
+        path = self.storage.root / web.VOICE_TAGS_FILE
+        before = self.folder_hashes()
+        self.assertEqual(web.read_voice_tags(self.storage), {"schema": 1, "vocabulary": [], "voices": {}})
+
+        entry = web.set_voice_tags(self.storage, "Eir", ["gentle", "warm"])
+
+        self.assertEqual(entry, {"tags": ["warm", "gentle"], "confirmed": True})
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["voices"]["Eir"], entry)
+        self.assertEqual(self.folder_hashes(), before)
+        self.assertEqual([p.name for p in self.storage.root.iterdir() if p.name.startswith(".voice-tags")], [])
+        with self.assertRaises(FileNotFoundError):
+            web.set_voice_tags(self.storage, "Nobody", ["warm"])
+        with self.assertRaises(ValueError):
+            web.set_voice_tags(self.storage, "Eir", ["a,b"])
+        # A file that cannot be read is never written over.
+        path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(web.read_voice_tags(self.storage)["voices"], {})
+        with self.assertRaises(ValueError):
+            web.read_voice_tags(self.storage, strict=True)
+        with self.assertRaises(ValueError):
+            web.set_voice_tags(self.storage, "Eir", ["warm"])
+        self.assertEqual(path.read_text(encoding="utf-8"), "{not json")
+
+    def test_routes_suggest_save_and_follow_rename_and_delete(self):
+        self.add_voice("Eir", web.VOICE_REFERENCE_TEXT, "An adult female voice, warm and gentle, never breathy.")
+        self.add_voice("Bo", web.VOICE_REFERENCE_TEXT, "")
+        before = self.folder_hashes()
+        origin = self.serve()
+        with urllib.request.urlopen(f"{origin}/api/voices") as response:
+            listed = json.load(response)
+        eir = next(voice for voice in listed["voices"] if voice["name"] == "Eir")
+        self.assertEqual(
+            {key: eir[key] for key in ("tags", "suggested", "confirmed", "details")},
+            {"tags": [], "suggested": ["female", "adult", "warm", "gentle"], "confirmed": False, "details": ""},
+        )
+        self.assertEqual([group["name"] for group in listed["vocabulary"]["groups"]],
+                         ["Voice", "Pitch", "Texture", "Pace", "Manner", "Suited to"])
+        self.assertEqual(listed["vocabulary"]["yours"], [])
+
+        self.assertEqual(self.post(origin, "/api/voices/tags", {"name": "Eir", "tags": ["a,b"]})[0], 400)
+        self.assertEqual(self.post(origin, "/api/voices/tags", {"name": "Eir", "tags": ["x" * 33]})[0], 400)
+        self.assertEqual(self.post(origin, "/api/voices/tags", {"name": "Nobody", "tags": ["warm"]})[0], 404)
+        self.assertEqual(self.post(origin, "/api/voices/tags", {"name": "../Eir", "tags": ["warm"]})[0], 400)
+        self.assertFalse((self.storage.root / web.VOICE_TAGS_FILE).exists())
+        status, saved = self.post(origin, "/api/voices/tags", {"name": "Eir", "tags": ["warm", "late-night radio"]})
+        self.assertEqual(status, 200)
+        eir = next(voice for voice in saved["voices"] if voice["name"] == "Eir")
+        self.assertEqual((eir["tags"], eir["suggested"], eir["confirmed"]), (["warm", "late-night radio"], [], True))
+        # A confirmed tag is searched as well: the page builds its words from the description and these tags.
+
+        status, added = self.post(origin, "/api/voices/vocabulary", {"add": " late-night  radio"})
+        self.assertEqual((status, added["vocabulary"]["yours"]), (200, ["late-night radio"]))
+        self.assertEqual(self.post(origin, "/api/voices/vocabulary", {"add": "Warm"})[1]["vocabulary"]["yours"],
+                         ["late-night radio"])
+        self.assertEqual(self.post(origin, "/api/voices/vocabulary", {"add": "a\nb"})[0], 400)
+        self.assertEqual(self.post(origin, "/api/voices/vocabulary", {})[0], 400)
+        status, removed = self.post(origin, "/api/voices/vocabulary", {"remove": "late-night radio"})
+        self.assertEqual((status, removed["vocabulary"]["yours"]), (200, []))
+        # Removing it from the list leaves the voice's tags as they were.
+        self.assertEqual(web.read_voice_tags(self.storage)["voices"]["Eir"]["tags"], ["warm", "late-night radio"])
+
+        self.assertEqual(self.post(origin, "/api/voices/rename", {"name": "Eir", "new_name": "Eira"})[0], 200)
+        self.assertEqual(sorted(web.read_voice_tags(self.storage)["voices"]), ["Eira"])
+        self.assertEqual(self.post(origin, "/api/voices/rename", {"name": "Bo", "new_name": "Bob"})[0], 200)
+        self.assertEqual(sorted(web.read_voice_tags(self.storage)["voices"]), ["Eira"])
+        renamed = {key.replace("Eir/", "Eira/", 1).replace("Bo/", "Bob/", 1): value for key, value in before.items()}
+        self.assertEqual(self.folder_hashes(), renamed)
+        self.assertEqual(self.post(origin, "/api/voices/delete", {"name": "Eira"})[0], 200)
+        self.assertEqual(web.read_voice_tags(self.storage)["voices"], {})
 
 
 class DocumentUploadTests(unittest.TestCase):

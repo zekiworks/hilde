@@ -25,9 +25,9 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   leaves out cross-references, citation marks, and email addresses, and turns
   formulas, notation, and tables into plain words; headings keep the paper's
   own numbers. See [How Hilde reads a paper](#how-hilde-reads-a-paper).
-- **One narrator, start to finish.** A voice is designed once from a written
-  description, then cloned for every chunk of every book, across sessions.
-  Eight stock voices are included.
+- **One narrator, start to finish.** A voice is designed once from tags such as
+  *warm*, *husky*, *low-pitched* and your own words, then cloned for every chunk
+  of every book, across sessions. Eight stock voices are included.
 - **One text, any voice.** A book is written once from its document. Another
   voice reads the same text with no model, and the same document added again
   under another name opens the book you already have.
@@ -258,8 +258,10 @@ device must install again.
 The page has three main tabs. **Create** turns a document into an audiobook in
 three steps (an arXiv link brings the paper's PDF and shows its title),
 showing before you start which model prepares the text and
-whether it runs locally or in the cloud. **Voices** lists your narrators,
-searchable by description, and designs new ones. **Listen** opens the
+whether it runs locally or in the cloud. **Voices** lists your narrators with
+their tags, searchable by tag and description, and designs new ones from tags.
+Tags live in `voice-tags.json` in the library, never in a voice's folder.
+**Listen** opens the
 **Library**, where each book shows its last position on this device, and
 plays a book with its synchronized text, its source text, and its figures as
 printed in the PDF; **Ask Hilde** answers questions about what you are hearing
