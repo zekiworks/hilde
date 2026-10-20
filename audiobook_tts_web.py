@@ -4913,15 +4913,98 @@ def normalize_paper_url(value):
     ))
 
 
+# arXiv links: the abstract page and the PDF on arxiv.org or www.arxiv.org only
+# (no other host, so arxiv.org.evil.com stays an ordinary link), with a new-style
+# id (2401.12345) or an old-style one (cs/0112017, math.GT/0309136), either with
+# an optional version (v2).
+ARXIV_HOSTS = ("arxiv.org", "www.arxiv.org")
+ARXIV_ID = re.compile(r"(?:\d{4}\.\d{4,5}|[a-z]+(?:-[a-z]+)*(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?")
+ARXIV_TITLE_TIMEOUT = 15
+
+
+def arxiv_id(url):
+    """The paper id of an arXiv link (arxiv.org/abs/<id> or arxiv.org/pdf/<id>,
+    with or without .pdf), else ""."""
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.hostname or "").lower() not in ARXIV_HOSTS:
+        return ""
+    match = re.fullmatch(r"/(?:abs|pdf)/(.+?)(?:\.pdf)?/?", parsed.path)
+    return match.group(1) if match and ARXIV_ID.fullmatch(match.group(1)) else ""
+
+
 def arxiv_pdf_url(url):
     """An arXiv abstract page (arxiv.org/abs/<id>) as the PDF it describes
     (arxiv.org/pdf/<id>), so From a URL takes the page's link; other URLs as given."""
     parsed = urllib.parse.urlsplit(url)
-    if (parsed.hostname or "").lower() in ("arxiv.org", "www.arxiv.org") and parsed.path.startswith("/abs/"):
-        return urllib.parse.urlunsplit(
-            (parsed.scheme, parsed.netloc, "/pdf/" + parsed.path[len("/abs/"):], parsed.query, "")
-        )
+    paper = arxiv_id(url)
+    if paper and parsed.path.startswith("/abs/"):
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, f"/pdf/{paper}", parsed.query, ""))
     return url
+
+
+class _CitationTitle(html.parser.HTMLParser):
+    """The content of an HTML page's first <meta name="citation_title">."""
+
+    def __init__(self):
+        super().__init__()
+        self.title = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "meta" and not self.title and (attrs.get("name") or "").lower() == "citation_title":
+            self.title = " ".join((attrs.get("content") or "").split())
+
+
+def arxiv_title_from_html(text):
+    """A paper's title from its arXiv abstract page (the citation_title meta), or ""."""
+    parser = _CitationTitle()
+    parser.feed(text)
+    parser.close()
+    return parser.title
+
+
+def arxiv_title(paper):
+    """A paper's title from its abstract page on arXiv, or "" when arXiv doesn't give one."""
+    request = urllib.request.Request(
+        f"https://arxiv.org/abs/{paper}", headers={"User-Agent": "audiobook-tts/1"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=ARXIV_TITLE_TIMEOUT) as response:
+            return arxiv_title_from_html(response.read(4 * 1024 * 1024).decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return ""
+
+
+def pdf_title(path):
+    """The title a PDF's metadata gives, or ""."""
+    try:
+        import pymupdf
+
+        with pymupdf.open(path) as document:
+            title = (document.metadata or {}).get("title") or ""
+    except Exception:
+        return ""
+    return " ".join(str(title).split())
+
+
+def arxiv_problem(reason):
+    """A failed arXiv download, said plainly in step 1."""
+    return f"Couldn't download this arXiv paper: {reason}. Check the link or try again."
+
+
+def network_reason(exc):
+    """A short reason a request got no answer: timed out, name not found, refused."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        return "timed out"
+    if isinstance(reason, socket.gaierror):
+        return "no network, or the name could not be looked up"
+    if isinstance(reason, ConnectionRefusedError):
+        return "connection refused"
+    if isinstance(reason, ssl.SSLError):
+        return "the secure connection failed"
+    text = " ".join(str(reason).split())
+    return text[:80] or type(reason).__name__
 
 
 def normalize_local_server(value):
@@ -10470,14 +10553,16 @@ def normalize(state):
             "voice": stored_text(audiobook, "voice"),
             # Each source card keeps its own value; only `source`'s is used
             # (chosen_document()): the Saved document dropdown, the file
-            # uploaded under Upload, and the link with its Save as name and
-            # the Documents name Continue downloaded it to (`url_document`).
+            # uploaded under Upload, and the link with its Save as name, the
+            # Documents name Continue downloaded it to (`url_document`), and,
+            # for an arXiv link, the paper's title (`url_title`), shown for it.
             "source": source,
             "document": stored_text(audiobook, "document"),
             "upload": stored_text(audiobook, "upload"),
             "source_url": stored_text(audiobook, "source_url"),
             "download_name": stored_text(audiobook, "download_name"),
             "url_document": stored_text(audiobook, "url_document"),
+            "url_title": stored_text(audiobook, "url_title"),
             "adapt": audiobook.get("adapt") is not False,
             "model": stored_text(audiobook, "model"),
             # Error correction of descriptions: off unless ticked, since a
@@ -16358,6 +16443,9 @@ class Handler(BaseHTTPRequestHandler):
             url = arxiv_pdf_url(normalize_paper_url(body.get("url", "")))
         except ValueError as exc:
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        # An arXiv link's failures are said plainly, and its download gets the
+        # paper's title.
+        paper = arxiv_id(url)
         name = str(body.get("name", "")).strip()
         if not url or (name and safe_asset_name(name) != name):
             return self.fail(
@@ -16379,23 +16467,34 @@ class Handler(BaseHTTPRequestHandler):
                 request, timeout=PAPER_DOWNLOAD_TIMEOUT
             )
         except urllib.error.HTTPError as exc:
+            if paper:
+                return self.fail(HTTPStatus.BAD_GATEWAY, arxiv_problem(
+                    "arXiv has no paper at that link (404)" if exc.code == 404
+                    else f"arXiv answered {exc.code} {exc.reason}"
+                ))
             return self.fail(
                 HTTPStatus.BAD_GATEWAY,
                 f"Document URL returned HTTP {exc.code} {exc.reason}.",
             )
         except (urllib.error.URLError, OSError) as exc:
+            if paper:
+                return self.fail(HTTPStatus.BAD_GATEWAY, arxiv_problem(
+                    f"arXiv could not be reached ({network_reason(exc)})"
+                ))
             return self.fail(
                 HTTPStatus.BAD_GATEWAY,
                 f"Cannot download document URL: {exc}",
             )
         descriptor = None
         temporary = None
+        not_pdf = arxiv_problem("arXiv did not send a PDF")
         try:
             with response:
                 final_url = normalize_paper_url(response.geturl())
                 content_type = response.headers.get_content_type().lower()
                 if content_type in ("text/html", "application/xhtml+xml"):
                     raise ValueError(
+                        not_pdf if paper else
                         "Document URL returned HTML; use a direct document URL."
                     )
                 try:
@@ -16432,7 +16531,11 @@ class Handler(BaseHTTPRequestHandler):
                             )
                         output.write(chunk)
             if size == 0:
-                raise ValueError("Document URL returned an empty file.")
+                raise ValueError(not_pdf if paper else "Document URL returned an empty file.")
+            if paper:
+                with temporary.open("rb") as downloaded:
+                    if downloaded.read(5) != b"%PDF-":
+                        raise ValueError(not_pdf)
             final_component = safe_asset_name(
                 Path(
                     urllib.parse.unquote(urllib.parse.urlsplit(final_url).path)
@@ -16475,14 +16578,11 @@ class Handler(BaseHTTPRequestHandler):
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
-        return self.reply(
-            HTTPStatus.CREATED,
-            {
-                "name": name,
-                "bytes": size,
-                "assets": asset_catalog(self.server.storage),
-            },
-        )
+        reply = {"name": name, "bytes": size, "assets": asset_catalog(self.server.storage)}
+        if paper:
+            # The paper's title from arXiv, else the PDF's own, else the file's name.
+            reply["title"] = arxiv_title(paper) or pdf_title(target) or name
+        return self.reply(HTTPStatus.CREATED, reply)
 
     def reply_chat(self, book):
         """Answer with a book's conversation, files, and whether Hilde is answering."""
@@ -17191,77 +17291,66 @@ button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
 label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
 /* A small steady LED (no glow) on what is on: a checked switch, the selected
-   tab (or the open Settings), the chosen highlight style. */
+   tab, the chosen highlight style. */
 label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before,
-.tabs .settings-button[aria-pressed=true]::before, #highlight-style [aria-checked=true] span::before {
-  content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
-.tab-list [role=tab][aria-selected=true]::before, .tabs .settings-button[aria-pressed=true]::before,
 #highlight-style [aria-checked=true] span::before {
+  content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
+.tab-list [role=tab][aria-selected=true]::before, #highlight-style [aria-checked=true] span::before {
   display:inline-block; margin-right:8px; vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below.
    Progress is a tab of the tablist shown only while there is a job to follow.
-   Settings (its own page, not one of the tablist's) is drawn as a tab too, at the
-   row's right end, and open, it is the selected tab. A tab never wraps its label. */
+   A tab never wraps its label. */
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
         border-bottom:1px solid var(--line); container-type:inline-size; }
 .tab-list { display:flex; align-items:flex-end; gap:4px; }
-.tab-list [role=tab], .tabs .settings-button {
+.tab-list [role=tab] {
   margin-bottom:-1px; min-height:0; padding:10px clamp(14px,3vw,22px) 7px;
   border-radius:9px 9px 0 0; color:var(--dim); background:linear-gradient(#383838,#292929);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 -3px 6px -2px rgba(0,0,0,.6);
   white-space:nowrap; transition:color .12s,background .12s; }
-.tab-list [role=tab]:hover:not([aria-selected=true]), .tabs .settings-button:hover:not([aria-pressed=true]) {
+.tab-list [role=tab]:hover:not([aria-selected=true]) {
   color:var(--text); background:linear-gradient(#444,#303030);
 }
-.tab-list [role=tab][aria-selected=true], .tabs .settings-button[aria-pressed=true] {
+.tab-list [role=tab][aria-selected=true] {
   padding-top:7px; color:var(--text); font-weight:650; background:var(--bg); border-bottom-color:var(--bg);
   box-shadow:inset 0 3px 0 var(--accent-light); }
-/* Settings' place: the right end of the row, its right edge as far in as Create's left edge (the row's padding,
-   mirrored); the blue gear before the word. */
-.tabs .settings-button { display:inline-flex; align-items:center; flex:0 0 auto; margin-left:auto; }
-.settings-button .gear { flex:0 0 auto; margin-right:8px; color:var(--accent-light); fill:currentColor; }
-/* A row too narrow for the tabs and "Settings" with room between them (measured: the three tabs, the row's gap and
-   the open Settings tab with its label need 368px; a 390px phone's row has 358px): the gear alone, still named
-   Settings, at least 44 x 44. */
-@container (max-width:379.98px) {
-  .settings-label { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden;
-                    clip:rect(0 0 0 0); white-space:nowrap; border:0; }
-  .settings-button { min-width:44px; justify-content:center; }
-  .settings-button .gear { margin-right:0; }
+/* Settings (its own page, not one of the tablist's): a solid blue rounded
+   square with a white gear, right after the last tab; on a phone at the row's
+   right end. Open, a ring in the light accent goes round it. */
+.tabs .settings-button { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
+  width:44px; height:44px; min-height:44px; margin:0 0 3px 8px; padding:0; border:0; border-radius:10px;
+  background:var(--accent); color:#fff; box-shadow:none; transition:box-shadow .12s, filter .12s; }
+.tabs .settings-button:hover:not(:disabled) { background:var(--accent); filter:brightness(1.12); }
+.tabs .settings-button[aria-pressed=true] { box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--accent-light); }
+.settings-button .gear { flex:0 0 auto; width:22px; height:22px; color:#fff; fill:none; stroke:currentColor;
+  stroke-width:1.7; stroke-linejoin:round; }
+@media (max-width:767.98px) {
+  .tabs .settings-button { margin-left:auto; }
 }
 /* Narrower still (a 320px phone): the tabs a little tighter, so the gear keeps clear of Listen and the row never
-   scrolls. */
+   scrolls; tighter again in a row under 290px (a phone under 318px). */
 @container (max-width:299.98px) {
-  .tab-list [role=tab], .tabs .settings-button { padding-left:11px; padding-right:11px; }
+  .tab-list [role=tab] { padding-left:11px; padding-right:11px; }
 }
-/* With the Progress tab shown, four tabs and Settings share the row. Below 500px the gear stands alone; below 410px,
-   350px, 310px and 290px the tabs' sides (Settings' too) and then their type tighten. Measured from 296 to 760px
-   wide, every 2px, with Create, Progress or Settings selected: one row, no sideways scroll, every tab and Settings
-   at least 44px wide. */
-@container (max-width:499.98px) {
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button .settings-label {
-    position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0);
-    white-space:nowrap; border:0; }
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { min-width:44px; justify-content:center; }
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button .gear { margin-right:0; }
+@container (max-width:289.98px) {
+  .tab-list [role=tab] { padding-left:8px; padding-right:8px; }
 }
+/* With the Progress tab shown, four tabs and the gear share the row. Below 410px, 350px, 310px and 290px the tabs'
+   sides and then their type tighten. Measured from 296 to 760px wide, every 2px, with and without Progress, with
+   Create, Progress or Settings selected: one row, no sideways scroll, every tab and the gear at least 44px wide. */
 @container (max-width:409.98px) {
-  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { min-width:44px; padding-left:8px; padding-right:8px; }
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { min-width:44px; padding-left:8px; padding-right:8px; }
 }
 @container (max-width:349.98px) {
   .tab-list:has(> #tab-progress:not(.hidden)) { gap:2px; }
-  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:7px; padding-right:7px; font-size:13px; }
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:7px; padding-right:7px; font-size:13px; }
 }
 @container (max-width:309.98px) {
-  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:4px; padding-right:4px; }
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:4px; padding-right:4px; }
 }
 @container (max-width:289.98px) {
-  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab],
-  .tab-list:has(> #tab-progress:not(.hidden)) ~ .settings-button { padding-left:3px; padding-right:3px; font-size:12px; }
+  .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:3px; padding-right:3px; font-size:12px; }
 }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
@@ -17638,9 +17727,24 @@ legend ~ * { clear:both; }
 .voice-table .preview-button[aria-pressed=true],
 .voice-table .preview-button[aria-pressed=true]:hover:not(:disabled) {
   background:var(--play); border-color:var(--play); color:var(--play-ink); }
-/* Desktop: every tag shows, wrapping; a tag longer than the column wraps inside. */
+/* Desktop: two lines of tags, then "+N more" in the accent; folded, a tag
+   longer than the column ends in "…" on its line (whole in its tooltip);
+   open, every tag shows in full, wrapping inside, and "Show less". */
 .voice-table .description { min-width:0; }
 .voice-tags { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.voice-tags > [hidden] { display:none; }
+@media (min-width:768px) {
+  /* The tags never widen the table: the description takes the room the other
+     columns leave, and its tags fold into it. */
+  .voice-table td.description { width:100%; }
+  .voice-table .voice-tags { contain:inline-size; }
+  .voice-table tr:not(.is-open):not(.is-whole) button.voice-tag { white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; }
+}
+.voice-table button.voice-more-tags { flex:0 0 auto; min-height:0; padding:1px 10px; border:1px solid var(--line);
+  border-radius:12px; background:transparent; color:var(--accent-light); box-shadow:none; font-size:13px;
+  line-height:20px; white-space:nowrap; }
+.voice-table button.voice-more-tags:hover:not(:disabled) { background:var(--hover); border-color:var(--accent-light); }
 .voice-table button.voice-tag { max-width:100%; min-height:0; padding:1px 10px; border:1px solid var(--tag-line);
   border-radius:12px; background:color-mix(in srgb, var(--tag) 14%, #111); color:var(--tag); box-shadow:none;
   font-size:13px; line-height:20px; text-align:left; overflow-wrap:anywhere; }
@@ -18288,14 +18392,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
         onclick="setTab('progress')">Progress</button>
     </div>
-    <!-- Settings: a page of its own, not a tab; after the tabs, apart, the gear in the accent. -->
+    <!-- Settings: a page of its own, not a tab; a blue gear button right after the tabs. -->
     <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
-      aria-pressed="false" onclick="toggleSettings()"><svg class="gear" viewBox="0 0 24 24" width="18" height="18"
-      aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M9.6 4.4 10.2 1.7 13.8 1.7 14.4 4.4 15.7 4.9
+      aria-label="Settings" aria-pressed="false" onclick="toggleSettings()"><svg class="gear" viewBox="0 0 24 24"
+      width="22" height="22" aria-hidden="true" focusable="false"><path d="M9.6 4.4 10.2 1.7 13.8 1.7 14.4 4.4 15.7 4.9
       18.1 3.4 20.6 5.9 19.1 8.3 19.6 9.6 22.3 10.2 22.3 13.8 19.6 14.4 19.1 15.7 20.6 18.1 18.1 20.6 15.7 19.1 14.4
       19.6 13.8 22.3 10.2 22.3 9.6 19.6 8.3 19.1 5.9 20.6 3.4 18.1 4.9 15.7 4.4 14.4 1.7 13.8 1.7 10.2 4.4 9.6 4.9 8.3
-      3.4 5.9 5.9 3.4 8.3 4.9ZM12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z"/></svg><span
-      class="settings-label">Settings</span></button>
+      3.4 5.9 5.9 3.4 8.3 4.9ZM12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4z"/></svg></button>
   </nav>
   <p id="status" class="notice" role="status" aria-live="polite"></p>
   <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
@@ -19342,8 +19445,12 @@ let runHistory = null, recentLog = [], resultInfo = null;
 // A draft is the clip a preview made; Save stores exactly that clip, once heard.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
-// Voices whose whole description a phone shows (a tap on the row).
+// Voices whose whole description shows: a tap on the row (phone) or "+N more"
+// (wide screen). A wide screen also opens, during a search, a row whose filled
+// tag would be left out; its "Show less" folds it for that search
+// (`searchFoldedVoices`: name → the search's words).
 const expandedVoices = new Set();
+const searchFoldedVoices = new Map();
 // The current stage's first and latest real counts; the estimate is their average pace.
 let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
@@ -19464,14 +19571,31 @@ function renderDocumentList() {
     none.className = "note"; none.textContent = "No saved documents yet";
     rows.push(none);
   }
+  const focused = document.activeElement && list.contains(document.activeElement)
+    ? document.activeElement.closest(".doc-row")?.dataset.name : null;
   list.replaceChildren(...rows);
+  const row = rows.find((item) => item.dataset && item.dataset.name === focused);
+  if (row) focusDocumentRow(row); else markDocumentRow(null);
+}
+// The open list is one Tab stop: the current row's name and its trash button;
+// the arrow keys, Home and End move the current row.
+function markDocumentRow(current) {
+  const rows = [...$("document-list").querySelectorAll(".doc-row")];
+  current = current || rows.find((row) => row.classList.contains("is-chosen")) || rows[0];
+  for (const row of rows)
+    for (const button of row.querySelectorAll("button")) button.tabIndex = row === current ? 0 : -1;
+  return current;
+}
+function focusDocumentRow(row) {
+  const current = markDocumentRow(row);
+  if (current) current.querySelector(".doc-pick").focus();
 }
 function openDocumentList() {
   renderDocumentList();
   $("document-list").classList.remove("hidden");
   $("document").setAttribute("aria-expanded", "true");
-  const picks = [...$("document-list").querySelectorAll(".doc-pick")];
-  (picks.find((pick) => pick.getAttribute("aria-pressed") === "true") || picks[0] || $("document")).focus();
+  const current = markDocumentRow(null);
+  (current ? current.querySelector(".doc-pick") : $("document")).focus();
 }
 function closeDocumentList(focusField) {
   if ($("document-list").classList.contains("hidden")) return;
@@ -19606,6 +19730,11 @@ function chosenDocument() {
   const book = state.audiobook;
   return ({ saved:book.document, url:book.url_document, upload:book.upload }[book.source] || "").trim();
 }
+// The paper's title an arXiv link's download gave, shown for its document.
+function chosenTitle() {
+  const book = state.audiobook;
+  return book.source === "url" && book.url_document ? book.url_title.trim() : "";
+}
 // The chosen link, while Continue still has to download it (as pending_url()).
 function pendingUrl() {
   const book = state.audiobook;
@@ -19684,13 +19813,17 @@ async function materializeUrl() {
     });
     assets = answer.assets || assets;
     state.audiobook.url_document = answer.name;
+    state.audiobook.url_title = answer.title || "";
     populateAssets();
     setStatus(`Added ${answer.name}.`);
     await sync();
     return true;
   } catch (error) {
     setStatus("");
-    setBookProblem(documentProblem(error.message));
+    // No answer at all (the request itself failed) is not the link's fault.
+    setBookProblem(error instanceof TypeError
+      ? "Hilde's server couldn't be reached to download the link. Check the connection and try again."
+      : documentProblem(error.message));
     return false;
   }
 }
@@ -22337,6 +22470,7 @@ function renderVoiceTable() {
   $("voice-count").textContent = terms.length
     ? `${matches.length} of ${plural(voices.length, "voice")}`
     : plural(voices.length, "voice");
+  foldVoiceRows();
 }
 function showMoreVoices() { voiceLimit += PAGE_SIZE; renderVoiceTable(); }
 function clearVoiceSearch() {
@@ -22378,12 +22512,83 @@ function toggleVoiceTag(text, voiceName, index) {
 function voiceTag(text, terms, voiceName, index) {
   const tag = document.createElement("button");
   tag.type = "button"; tag.className = "voice-tag";
-  tag.textContent = text;
+  tag.textContent = text; tag.title = text;
   tag.setAttribute("aria-pressed", String(tagMatches(searchWords(text), terms)));
   tag.addEventListener("click", () => toggleVoiceTag(text, voiceName, index));
   return tag;
 }
 
+// A wide screen shows the first two lines of a description's tags, then
+// "+N more" (N, the tags left out), which shows them all and becomes "Show
+// less". A description whose tags fit two lines as they are shows whole
+// (`is-whole`); folded, each tag keeps to one line, a longer one cut with "…"
+// ("Show all" when that is all there is to open). Measured as drawn, so it
+// follows the width of the window.
+function foldVoiceRows() {
+  if (!$("voice-table").getClientRects().length) return;
+  for (const row of $("voice-rows").rows) foldVoiceRow(row);
+}
+function foldVoiceRow(row) {
+  const box = row.querySelector(".voice-tags");
+  if (!box) return;
+  const name = row.dataset.voice, more = box.querySelector(".voice-more-tags");
+  const tags = [...box.querySelectorAll(".voice-tag")];
+  for (const tag of tags) tag.hidden = false;
+  more.hidden = true;
+  row.classList.remove("is-open");
+  row.classList.add("is-whole");
+  if (narrowLayout() || !box.getClientRects().length) {
+    row.classList.remove("is-whole");
+    row.classList.toggle("is-open", expandedVoices.has(name));
+    return;
+  }
+  const style = getComputedStyle(tags[0]);
+  const line = ["lineHeight", "paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]
+    .reduce((sum, key) => sum + parseFloat(style[key]), 0);
+  const extent = Math.max(...tags.map((tag) => tag.getBoundingClientRect().bottom)) - tags[0].getBoundingClientRect().top;
+  if (extent <= 2 * line + (parseFloat(getComputedStyle(box).rowGap) || 0) + 1) return;
+  row.classList.remove("is-whole");
+  const tops = [], lines = tags.map((tag) => {
+    const top = tag.getBoundingClientRect().top;
+    if (!tops.length || top > tops[tops.length - 1] + 2) tops.push(top);
+    return tops.length - 1;
+  });
+  const terms = searchWords($("voice-search").value);
+  const hiddenMatch = tags.some((tag, i) => lines[i] >= 2 && tag.getAttribute("aria-pressed") === "true");
+  const open = expandedVoices.has(name) || (hiddenMatch && searchFoldedVoices.get(name) !== terms.join(" "));
+  row.classList.toggle("is-open", open);
+  more.hidden = false;
+  more.setAttribute("aria-expanded", String(open));
+  if (open) { more.textContent = "Show less"; return; }
+  let shown = lines.filter((at) => at < 2).length;
+  for (const tag of tags.slice(shown)) tag.hidden = true;
+  // The button takes the second line's end; tags give way until it fits there.
+  for (;;) {
+    more.textContent = shown < tags.length ? `+${tags.length - shown} more` : "Show all";
+    if (more.getBoundingClientRect().top <= tops[Math.min(1, tops.length - 1)] + 2 || shown === 0) break;
+    tags[--shown].hidden = true;
+  }
+}
+function toggleVoiceTags(row, more) {
+  const name = row.dataset.voice, terms = searchWords($("voice-search").value);
+  if (row.classList.contains("is-open")) {
+    expandedVoices.delete(name);
+    if (terms.length) searchFoldedVoices.set(name, terms.join(" "));
+  } else {
+    expandedVoices.add(name);
+    searchFoldedVoices.delete(name);
+  }
+  foldVoiceRow(row);
+  more.focus();
+}
+// A new width (the window, or the table shown again) folds the rows anew.
+let voiceFoldWidth = -1;
+new ResizeObserver((entries) => {
+  const width = Math.round(entries[entries.length - 1].contentRect.width);
+  if (width === voiceFoldWidth) return;
+  voiceFoldWidth = width;
+  requestAnimationFrame(foldVoiceRows);
+}).observe($("voice-table"));
 function voiceRow(voice, terms) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
@@ -22404,6 +22609,11 @@ function voiceRow(voice, terms) {
     const tags = document.createElement("div");
     tags.className = "voice-tags";
     tags.append(...parts.map((part, index) => voiceTag(part, terms, voice.name, index)));
+    // A wide screen shows two lines of tags, then this button (foldVoiceRow()).
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "voice-more-tags"; more.hidden = true;
+    more.addEventListener("click", () => toggleVoiceTags(row, more));
+    tags.append(more);
     description.append(tags);
   } else {
     const none = document.createElement("span");
@@ -22605,15 +22815,17 @@ async function deleteDocument(name, button) {
     more:"Audiobooks already made from it stay in your library.",
     icon:true,
   }, button);
-  $("document").focus();
-  if (!answer) return;
+  // Cancelled: back to the button that asked (a row's trash gives the field).
+  if (!answer) { button.focus(); return; }
   assets = answer.assets || assets;
   // Every card that held it lets it go.
   for (const key of ["document", "upload", "url_document"])
     if (state.audiobook[key] === name) state.audiobook[key] = "";
+  if (!state.audiobook.url_document) state.audiobook.url_title = "";
   populateAssets();
   setStatus(`Deleted ${name}.`);
   render(); queueSync();
+  $("document").focus();
 }
 
 function editVoice(voice) {
@@ -22716,7 +22928,8 @@ function continueFromVoice() {
 // first step starts empty, with no document chosen and no link typed; the
 // chosen source card stays.
 function clearBookChoice() {
-  Object.assign(state.audiobook, { document:"", upload:"", url_document:"", source_url:"", download_name:"" });
+  Object.assign(state.audiobook,
+    { document:"", upload:"", url_document:"", url_title:"", source_url:"", download_name:"" });
   overwriting = ""; reachedCreate = false;
   $("source-url").value = ""; $("download-name").value = "";
   populateAssets();
@@ -22927,8 +23140,9 @@ let bookProblemText = "";
 let bookEmptyContinue = false;
 // Step 3 was open for this book: Continue in a reopened step 1 goes back there.
 let reachedCreate = false;
-// A finished step's value, cut with "…", and its type in gray after it.
-function setSummary(node, value, type) {
+// A finished step's value, cut with "…", and its type in gray after it;
+// `tip` (its tooltip) defaults to the value.
+function setSummary(node, value, type, tip = value) {
   if (!value) { node.replaceChildren(); node.title = ""; return; }
   const name = document.createElement("span");
   name.className = "summary-name"; name.textContent = value;
@@ -22939,7 +23153,7 @@ function setSummary(node, value, type) {
     parts.push(kind);
   }
   node.replaceChildren(...parts);
-  node.title = value;
+  node.title = tip;
 }
 function renderCreate() {
   const step = currentStep();
@@ -22959,15 +23173,18 @@ function renderCreate() {
       active ? "(current step)" : complete ? "(completed)" : "(not reached yet)";
   });
   renderSources();
-  const documentName = chosenDocument();
+  const documentName = chosenDocument(), title = chosenTitle();
   const type = documentType(documentName);
-  const chosen = `${documentName} · ${type || "not a type Hilde reads"}`;
-  setSummary($("book-summary"), step !== "book" && done.book ? documentName : "", type || "not a type Hilde reads");
+  const chosen = `${title || documentName} · ${type || "not a type Hilde reads"}`;
+  // An arXiv paper shows its title; its tooltip names the file it was saved as.
+  setSummary($("book-summary"), step !== "book" && done.book ? title || documentName : "",
+    type || "not a type Hilde reads", title ? `${title} (saved as ${documentName})` : documentName);
   $("book-change").classList.toggle("hidden", step === "book" || !done.book);
-  // Beside Continue: what the chosen card holds (its link as typed, else its
-  // document and type), or that nothing is chosen yet.
+  // Beside Continue: what the chosen card holds (its link as typed, or the
+  // paper's title once downloaded, else its document and type), or that
+  // nothing is chosen yet.
   const source = state.audiobook.source, link = state.audiobook.source_url.trim();
-  const chosenText = source === "url" ? (link ? `Chosen (URL): ${link}` : "")
+  const chosenText = source === "url" ? (title && done.book ? `Chosen (URL): ${chosen}` : link ? `Chosen (URL): ${link}` : "")
     : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}` : "";
   const empty = bookEmptyContinue && !documentName && !pendingUrl();
   $("book-chosen").textContent = empty ? "Choose a document first" : chosenText || "No document chosen yet";
@@ -23763,8 +23980,9 @@ function renderSummary(voiceOnly) {
     item.append(dt, dd);
     rows.push(item);
   };
-  const documentName = chosenDocument();
-  add("Document", `${documentName} (${documentType(documentName) || "unknown type"})`);
+  const documentName = chosenDocument(), title = chosenTitle();
+  const kind = documentType(documentName) || "unknown type";
+  add("Document", title ? `${title} (${documentName}, ${kind})` : `${documentName} (${kind})`);
   add("Voice", facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice);
   if (voiceOnly) add("Text", "The book's own text; no text model", " ", badgeElement("Local"));
   else if (!state.audiobook.adapt) add("Text", "Read as written; no text model", " ", badgeElement("Local"));
@@ -25597,7 +25815,7 @@ async function removeWorkerNode(host) {
 for (const id of ["source-url", "download-name"])
   $(id).addEventListener("input", () => {
     bookProblemText = "";
-    state.audiobook.url_document = "";
+    state.audiobook.url_document = state.audiobook.url_title = "";
   });
 // Step 1's source cards: the radios (arrow keys move the choice and keep focus
 // on the radio), and a click anywhere on a dimmed card, which chooses it and
@@ -25609,26 +25827,36 @@ for (const card of document.querySelectorAll(".source-card"))
     if (!card.classList.contains("is-off") || event.detail === 0) return;
     selectSource(card.dataset.source, true);
   });
-// Saved document's field opens and closes its list; arrow keys move through
-// the rows, Escape closes it; a click or focus outside the field closes it.
+// Saved document's field opens and closes its list (a click, Enter or Space;
+// ArrowDown or ArrowUp open it too). Open, ArrowDown and ArrowUp move through
+// the rows, Home and End go to the first and last, Enter chooses, Escape
+// closes it and returns to the field, and Tab goes to the row's trash button,
+// then on out of the list. Delete and Backspace do nothing: only a trash
+// button deletes, after its question. A click or focus outside closes it.
 $("document").addEventListener("click", () => {
   if ($("document-list").classList.contains("hidden")) openDocumentList(); else closeDocumentList(true);
 });
 const documentField = $("document").closest(".doc-field");
+const DOCUMENT_KEYS = ["ArrowDown", "ArrowUp", "Home", "End"];
 documentField.addEventListener("keydown", (event) => {
   const open = !$("document-list").classList.contains("hidden");
   if (event.key === "Escape" && open) { event.preventDefault(); closeDocumentList(true); return; }
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-  if (!open) {
-    if (event.target === $("document")) { event.preventDefault(); openDocumentList(); }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    if (event.target.closest(".doc-row")) event.preventDefault();
     return;
   }
-  const picks = [...$("document-list").querySelectorAll(".doc-pick")];
-  if (!picks.length) return;
+  if (!DOCUMENT_KEYS.includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!open) {
+    if (event.target === $("document") && event.key.startsWith("Arrow")) { event.preventDefault(); openDocumentList(); }
+    return;
+  }
+  const rows = [...$("document-list").querySelectorAll(".doc-row")];
+  if (!rows.length) return;
   event.preventDefault();
-  const at = picks.indexOf(document.activeElement.closest(".doc-row")?.querySelector(".doc-pick"));
-  const next = at < 0 ? 0 : (at + (event.key === "ArrowDown" ? 1 : -1) + picks.length) % picks.length;
-  picks[next].focus();
+  const at = rows.indexOf(document.activeElement.closest(".doc-row"));
+  const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1
+    : at < 0 ? 0 : (at + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+  focusDocumentRow(rows[next]);
 });
 documentField.addEventListener("focusout", (event) => {
   if (event.relatedTarget && !documentField.contains(event.relatedTarget)) closeDocumentList(false);
@@ -25710,6 +25938,18 @@ $("confirm-input").addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   $("confirm-dialog").close("ok");
+});
+// Tab and Shift+Tab stay inside the confirmation, going round its controls
+// (Escape is Cancel, as the dialog itself does).
+$("confirm-dialog").addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const controls = [...$("confirm-dialog").querySelectorAll("input, button")]
+    .filter((control) => !control.disabled && control.getClientRects().length);
+  if (!controls.length) return;
+  const at = controls.indexOf(document.activeElement);
+  const next = at < 0 ? 0 : (at + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+  event.preventDefault();
+  controls[next].focus();
 });
 
 // The model pickers (mountPicker()); a press outside the open list closes

@@ -4727,11 +4727,129 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertEqual(normalize({"audiobook": {"source": "elsewhere"}})["audiobook"]["source"], "upload")
         self.assertEqual(normalize({"audiobook": {"source_url": "https://example.com/a.pdf"}})["audiobook"]["source"], "url")
         self.assertEqual(normalize({"audiobook": {"document": "kept.pdf"}})["audiobook"]["source"], "saved")
-        # The last used card stays this browser's.
+        # The last used card stays this browser's; an arXiv link's paper title is kept with its download.
         self.assertEqual(normalize({"audiobook": {"source": "saved"}})["audiobook"]["source"], "saved")
-        # From a URL takes an arXiv abstract page's link as its PDF; other links stay as given.
-        self.assertEqual(web.arxiv_pdf_url("https://arxiv.org/abs/1706.03762v7"), "https://arxiv.org/pdf/1706.03762v7")
-        self.assertEqual(web.arxiv_pdf_url("https://example.com/abs/x.pdf"), "https://example.com/abs/x.pdf")
+        self.assertEqual(normalize({"audiobook": {"url_title": "A Paper"}})["audiobook"]["url_title"], "A Paper")
+        self.assertEqual(normalize({})["audiobook"]["url_title"], "")
+
+    def test_arxiv_links_become_their_pdf_only_on_arxiv(self):
+        pdf = web.arxiv_pdf_url
+        for given, wanted in (
+            ("https://arxiv.org/abs/1706.03762", "https://arxiv.org/pdf/1706.03762"),
+            ("https://arxiv.org/abs/1706.03762v7", "https://arxiv.org/pdf/1706.03762v7"),
+            ("https://www.arxiv.org/abs/2401.12345v2", "https://www.arxiv.org/pdf/2401.12345v2"),
+            ("http://arxiv.org/abs/1706.03762/", "http://arxiv.org/pdf/1706.03762"),
+            ("https://arxiv.org/abs/cs/0112017", "https://arxiv.org/pdf/cs/0112017"),
+            ("https://arxiv.org/abs/cs/0112017v1", "https://arxiv.org/pdf/cs/0112017v1"),
+            ("https://arxiv.org/abs/math.GT/0309136", "https://arxiv.org/pdf/math.GT/0309136"),
+            ("https://arxiv.org/abs/hep-th/9901001v3", "https://arxiv.org/pdf/hep-th/9901001v3"),
+            ("https://ARXIV.org/abs/1706.03762", "https://ARXIV.org/pdf/1706.03762"),
+        ):
+            self.assertEqual(pdf(given), wanted, given)
+        # PDF links stay as given; other hosts, lookalikes, and pages that are not a paper are untouched.
+        for same in ("https://arxiv.org/pdf/1706.03762", "https://arxiv.org/pdf/1706.03762v7.pdf",
+                     "https://arxiv.org/pdf/cs/0112017", "https://export.arxiv.org/abs/1706.03762",
+                     "https://arxiv.org.evil.com/abs/1706.03762", "https://evilarxiv.org/abs/1706.03762",
+                     "https://evil.com/arxiv.org/abs/1706.03762", "https://example.com/abs/x.pdf",
+                     "https://arxiv.org/abs/not-an-id", "https://arxiv.org/list/cs.AI/recent",
+                     "https://arxiv.org/abs/1706.03762/extra"):
+            self.assertEqual(pdf(same), same, same)
+        paper = web.arxiv_id
+        self.assertEqual(paper("https://arxiv.org/abs/1706.03762"), "1706.03762")
+        self.assertEqual(paper("https://arxiv.org/pdf/1706.03762v7.pdf"), "1706.03762v7")
+        self.assertEqual(paper("https://www.arxiv.org/pdf/cs/0112017v2"), "cs/0112017v2")
+        self.assertEqual(paper("https://arxiv.org/abs/2401.12345"), "2401.12345")
+        for other in ("https://arxiv.org.evil.com/pdf/1706.03762", "https://export.arxiv.org/pdf/1706.03762",
+                      "https://example.com/pdf/1706.03762", "https://arxiv.org/abs/12.345"):
+            self.assertEqual(paper(other), "", other)
+
+    def test_an_arxiv_title_is_read_from_its_abstract_page(self):
+        page = """<!DOCTYPE html><html lang="en"><head>
+  <title>[1706.03762] Attention Is All You Need</title>
+  <meta name="description" content="Abstract page for arXiv paper 1706.03762: Attention Is All You Need">
+  <meta property="og:title" content="Attention Is All You Need"/>
+  <meta name="citation_title" content="Attention Is   All You
+ Need" />
+  <meta name="citation_author" content="Vaswani, Ashish" />
+  <meta name="citation_title" content="A second title, ignored" />
+</head><body><h1 class="title mathjax"><span class="descriptor">Title:</span>Attention Is All You Need</h1></body></html>"""
+        self.assertEqual(web.arxiv_title_from_html(page), "Attention Is All You Need")
+        self.assertEqual(web.arxiv_title_from_html('<meta name="citation_title" content="Q&amp;A &lt;b&gt;">'),
+                         "Q&A <b>")
+        self.assertEqual(web.arxiv_title_from_html("<html><head><title>No meta</title></head></html>"), "")
+
+    def test_an_arxiv_download_says_plainly_why_it_failed_and_names_the_paper(self):
+        class Response(io.BytesIO):
+            def __init__(self, data, kind, url):
+                super().__init__(data)
+                self.headers = http.client.HTTPMessage()
+                self.headers["Content-Type"] = kind
+                self.url = url
+
+            def geturl(self):
+                return self.url
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name in ("Audiobooks", "Voices", "Documents", "in_progress"):
+                (Path(folder) / name).mkdir()
+            storage = web.SharedStorage(Path(folder))
+            handler = web.Handler.__new__(web.Handler)
+            handler.server = mock.Mock(storage=storage)
+            handler.fail = lambda code, message: (int(code), message)
+            handler.reply = lambda code, body, **_: (int(code), body)
+
+            def download(url, answer, title=""):
+                opened = []
+
+                def urlopen(request, timeout=None):
+                    opened.append(request.full_url)
+                    if isinstance(answer, BaseException):
+                        raise answer
+                    return answer
+                with mock.patch.object(web.urllib.request, "urlopen", urlopen), \
+                        mock.patch.object(web, "arxiv_title", lambda paper: title):
+                    return handler.download_document({"url": url}), opened
+
+            pdf_link = "https://arxiv.org/pdf/9999.99999"
+            missing = urllib.error.HTTPError(pdf_link, 404, "Not Found", http.client.HTTPMessage(), None)
+            (code, message), opened = download("https://arxiv.org/abs/9999.99999", missing)
+            self.assertEqual(opened, [pdf_link])
+            self.assertEqual((code, message), (502, "Couldn't download this arXiv paper: arXiv has no paper at that "
+                                                    "link (404). Check the link or try again."))
+            gone = urllib.error.URLError(socket.timeout("timed out"))
+            self.assertEqual(download("https://arxiv.org/abs/1706.03762", gone)[0][1],
+                             "Couldn't download this arXiv paper: arXiv could not be reached (timed out). Check the "
+                             "link or try again.")
+            unknown = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+            self.assertIn("(no network, or the name could not be looked up)",
+                          download("https://arxiv.org/pdf/1706.03762", unknown)[0][1])
+            not_pdf = "Couldn't download this arXiv paper: arXiv did not send a PDF. Check the link or try again."
+            page = Response(b"<html>withdrawn</html>", "text/html", pdf_link)
+            self.assertEqual(download("https://arxiv.org/abs/1706.03762", page)[0][1], not_pdf)
+            text = Response(b"not a pdf at all", "application/octet-stream", pdf_link)
+            self.assertEqual(download("https://arxiv.org/abs/1706.03762", text)[0][1], not_pdf)
+            self.assertEqual(sorted(p.name for p in storage.documents.iterdir()), [])
+            # Other links keep their own messages.
+            self.assertEqual(download("https://example.com/a.pdf", missing)[0][1],
+                             "Document URL returned HTTP 404 Not Found.")
+            self.assertTrue(download("https://arxiv.org.evil.com/abs/1706.03762", gone)[0][1]
+                            .startswith("Cannot download document URL"))
+            # A download from an arXiv link answers with the paper's title: arXiv's, else the PDF's, else the name.
+            body = b"%PDF-1.4\n% test\n%%EOF\n"
+            (code, answer), opened = download("https://arxiv.org/abs/1706.03762", Response(
+                body, "application/pdf", "https://arxiv.org/pdf/1706.03762"), "Attention Is All You Need")
+            self.assertEqual((code, opened, answer["name"], answer["title"]),
+                             (201, ["https://arxiv.org/pdf/1706.03762"], "1706.03762.pdf", "Attention Is All You Need"))
+            with mock.patch.object(web, "pdf_title", lambda path: "From the PDF"):
+                answer = download("https://arxiv.org/pdf/cs/0112017v1", Response(
+                    body, "application/pdf", "https://arxiv.org/pdf/cs/0112017v1"))[0][1]
+            self.assertEqual((answer["name"], answer["title"]), ("0112017v1.pdf", "From the PDF"))
+            answer = download("https://arxiv.org/pdf/2401.12345v2", Response(
+                body, "application/pdf", "https://arxiv.org/pdf/2401.12345v2"))[0][1]
+            self.assertEqual((answer["name"], answer["title"]), ("2401.12345v2.pdf", "2401.12345v2.pdf"))
+            answer = download("https://example.com/paper.pdf", Response(
+                body, "application/pdf", "https://example.com/paper.pdf"))[0][1]
+            self.assertNotIn("title", answer)
 
     def test_a_local_server_registered_on_the_server_is_parsed_and_checked(self):
         option = web.local_server_option

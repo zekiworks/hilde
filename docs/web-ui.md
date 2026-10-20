@@ -16,13 +16,12 @@ server, from any browser, and after an audiobook stopped or failed until you
 dismiss it. It opens the [progress view](#following-an-audiobook-being-made);
 once nothing is left it goes, and if you were on it you are back on **Create**.
 
-At the right end of the same row, across from **Create**, is **Settings**, a
-tab like the others with a blue gear before the word. It opens the settings in
-place of the page and, while they are open, looks like the selected tab, with
-its blue top edge and dot (no other tab is selected then); **Settings** again,
-**Close settings**, or any tab closes them. On a phone whose row is too narrow
-for the word (a 390 px phone and narrower, or with **Progress** shown, any
-phone), it shows the gear alone; on the narrowest phones the tabs also tighten
+Right after the last tab (**Progress** when it shows, else **Listen**) is
+**Settings**: a blue square button with a white gear, named "Settings" for
+screen readers; on a phone it sits at the right end of the tab row. It opens
+the settings in place of the page; while they are open, a light blue ring goes
+round the button (and no tab is selected). **Settings** again, **Close
+settings**, or any tab closes them. On the narrowest phones the tabs tighten
 so the row never scrolls sideways. See [Settings](#settings).
 
 ## Create an audiobook
@@ -38,9 +37,11 @@ the word, in blue). On a phone, **Change** sits under what you chose. A step
 not reached yet is gray. A long file name is cut short with "…".
 
 **Change**, or a click on a finished step's title, opens that step again;
-nothing in the other steps is cleared. After **Change** next to the document in
-step 3, picking another document and pressing **Continue** goes straight back
-to step 3 with the voice you chose.
+nothing in the other steps is cleared. **Continue** in a reopened step goes
+straight back to the furthest step you reached, with every choice kept: after
+**Change** next to the document in step 3, picking another document and
+pressing **Continue** returns to step 3 with the voice and text settings you
+chose.
 
 The first step offers three ways to choose a document, as three cards side by
 side (stacked on a phone). A radio circle in each card's header says which one
@@ -58,20 +59,36 @@ remembers the card you used last.
   "X.pdf"?', "It is removed from your saved documents. Audiobooks already made
   from it stay in your library." Delete removes only that saved file, never an
   audiobook, a voice, a note, or a conversation, and a job already queued keeps
-  its own copy.
+  its own copy. With the keyboard: Enter, Space, or the down arrow on the field
+  opens the list; the up and down arrows move through it, Home and End go to
+  the first and last document, Enter chooses one, and Escape closes the list
+  and returns to the field. Tab goes from a document to its trash button, and
+  then on out of the list. Delete and Backspace do nothing in the list: only a
+  trash button deletes, after its question. In the question, Tab stays inside
+  it, Escape is **Cancel**, and the focus goes back to the field (or to the
+  trash button after it, if you used that one).
 - **From a URL**: a direct HTTP(S) link to a PDF (or Markdown or text file) or
   an arXiv page, downloaded when you press **Continue**. **Save as** is
   optional: the server works out the document type and adds the matching
   extension when needed, including for PDF links without one, such as arXiv
-  `/pdf/<id>` links.
+  `/pdf/<id>` links. An arXiv link (on `arxiv.org` or `www.arxiv.org`, its
+  abstract page `/abs/<id>` or its PDF `/pdf/<id>`, new ids such as
+  `2401.12345v2` or old ones such as `cs/0112017`) downloads the paper's PDF,
+  saved under its id (`1706.03762.pdf`), and the step then shows the paper's
+  title (from arXiv, else from the PDF, else the file name), with the saved
+  file's name in its tooltip. If that download fails, the step says why:
+  "Couldn't download this arXiv paper: arXiv has no paper at that link (404).
+  Check the link or try again.", or that arXiv could not be reached, or did
+  not send a PDF.
 - **Upload a file**: drop a PDF on the dashed area, or **browse**; the card
   then names the uploaded file. Dropping a file anywhere on the step chooses
   this card and uploads it.
 
 **Continue** uses only the chosen card, whatever the others hold: no link is
 downloaded unless **From a URL** is chosen. Beside **Continue**, the step says
-what that card holds: "Chosen (URL): https://…", "Chosen (Saved document):
-X.pdf · PDF", or "Chosen (Upload): X.pdf · PDF", and "No document chosen yet"
+what that card holds: "Chosen (URL): https://…" (after an arXiv download, the
+paper's title and type), "Chosen (Saved document): X.pdf · PDF", or "Chosen
+(Upload): X.pdf · PDF", and "No document chosen yet"
 before that. Pressed with the chosen card empty, **Continue** stays and says
 "Choose a document first". Files are limited to 64 MiB. Supported document
 types are PDF (`.pdf`), Markdown (`.md` or `.markdown`), and plain text (`.txt`
@@ -627,9 +644,14 @@ with letters such as Ö, Ş, and Ü where your browser's language sorts them.
 
 Each description shows as pink tags, one per comma-separated part, in its own
 order and wording; the saved description itself is unchanged. A voice without
-a description says "No description". On a wide screen every tag shows,
-wrapping as needed; on a phone they stay on one line that fades out at the
-right, and a tap on the row shows them all (another tap folds them).
+a description says "No description". On a wide screen the first two lines of
+tags show, then **+N more** (N, the tags left out); a tag too long for its line
+ends in "…" there, its whole text in its tooltip. **+N more** shows the whole
+description and becomes **Show less**, which folds it again. While you search,
+a row whose filled tag would be left out opens by itself, so every matching tag
+shows; **Show less** still folds it. On a phone the tags stay on one line that
+fades out at the right, and a tap on the row shows them all (another tap folds
+them).
 
 The play button plays the voice's preview in place: while it plays, the circle
 is filled and "Playing preview" shows under the name. Playing another stops
@@ -704,7 +726,7 @@ voice folder's `description.txt` to make one searchable.
 
 ## Settings
 
-**Settings**, the gear tab at the right end of the tab row, replaces the
+**Settings**, the blue gear button after the tabs, replaces the
 page until you choose **Settings** again, **Close settings**, or a tab. Each
 group of settings ends with one note on when it takes effect: "Applies to the
 next audiobook" or "Applies now". The groups:

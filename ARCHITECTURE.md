@@ -361,7 +361,7 @@ needs the text written again. The browser asks and retries with
 
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, description prompt, reference WAV subtype;
-- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
+- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
 - `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
@@ -838,11 +838,11 @@ are flat); an answer being read aloud stays plain text (no fill); danger buttons
 Buttons are raised: a 1 px top highlight (inset white 10%) and a 2 px shadow
 below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
 shadow and brightens, fading back in 100 ms; with `prefers-reduced-motion`
-only the 1 px move remains. Links, tabs (the Settings tab too), switch segments
+only the 1 px move remains. Links, tabs, the Settings gear, switch segments
 (`role=radio`), and menu items stay flat. A steady 6 px `--accent-light` LED dot
-marks what is on: the selected folder tab and the open Settings tab
-(`::before`), every `label.check` whose box is ticked (`::after`: Follow along,
-Create step 3's options, Settings' boxes), and the chosen highlight style. The
+marks what is on: the selected folder tab (`::before`), every `label.check`
+whose box is ticked (`::after`: Follow along, Create step 3's options,
+Settings' boxes), and the chosen highlight style. The
 player's time is monospace with tabular figures.
 
 Each view shows at most one primary (blue)
@@ -856,27 +856,22 @@ shows, form an ARIA tablist of folder tabs on a baseline (Arrow, Home, and End
 keys move between them, Progress included while it shows).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
 an `--accent-light` top edge and opens into the page below. After the tablist,
-outside it, at the row's right end, sits **Settings** (`#settings-button`,
-`margin-left: auto`: its right edge as far in from the row's right edge as
-Create's left edge from the left, the row's padding mirrored). It is a button
-(`aria-pressed`), not one of the tablist's tabs, but it shares the folder tabs'
-rules (`.tab-list [role=tab], .tabs .settings-button`): the same shape, padding,
-height, type, fill, borders, and bevel as a tab that is not selected, and, open
-(`aria-pressed="true"`), exactly the selected tab's look (flush, the
-`--accent-light` top edge, heavier text, open into the page below, the LED
-dot). Before its label `.settings-label` is an inline SVG gear,
-`fill: currentColor` in `--accent-light`. A tab never wraps its label. `.tabs` is
-an inline-size container: below 380 px (measured: the three tabs, the row's gap,
-and the open Settings tab with its label need 368 px; a 390 px phone's row has
-358 px) the label is visually hidden, leaving the gear, named "Settings", at
-least 44 × 44 px; below 300 px the tabs' side padding (Settings' too) shrinks so
-the gear keeps clear of Listen and the row never scrolls. With Progress shown
-(`.tab-list:has(> #tab-progress:not(.hidden))`), four tabs and Settings share
-the row: the gear stands alone below 500 px, and below 410, 350, 310, and 290 px
-the side padding (8, 7, 4, 3 px) and then the type (13, 12 px) tighten, each tab
-at least 44 px wide; measured from 296 to 760 px with Create, Progress, or
-Settings selected, the row stays one line and never scrolls. One more view is
-not in the tablist:
+outside it, right after its last shown tab (Progress while it shows, else
+Listen), sits **Settings** (`#settings-button`): a button (`aria-pressed`,
+`aria-label="Settings"`, no visible label), not one of the tablist's tabs, drawn
+as a solid `--accent` rounded square (44 × 44 px, radius 10 px) with a white
+outline gear (inline SVG, `stroke: currentColor`), as the mockups have it. On a
+phone (`narrowLayout()`'s 768 px) `margin-left: auto` puts it at the row's right
+end. Open (`aria-pressed="true"`), a ring goes round it: a 2 px gap in `--bg`,
+then 2 px of `--accent-light` (`box-shadow`). A tab never wraps its label.
+`.tabs` is an inline-size container: below 300 and 290 px the tabs' side padding
+shrinks (11, then 8 px) so the gear keeps clear of Listen and the row never
+scrolls. With Progress shown (`.tab-list:has(> #tab-progress:not(.hidden))`),
+four tabs and the gear share the row: below 410, 350, 310, and 290 px the side
+padding (8, 7, 4, 3 px) and then the type (13, 12 px) tighten, each tab at least
+44 px wide; measured from 296 to 760 px with and without Progress, with Create,
+Progress, or Settings selected, the row stays one line and never scrolls. One
+more view is not in the tablist:
 
 - The **progress view** (`#page-progress`, tab `progress` in state, the
   `tabpanel` of `#tab-progress`) opens from the **Progress** tab, from
@@ -893,7 +888,7 @@ not in the tablist:
   Settings button (`toggleSettings()`) in place of the current page, never
   above it, and closes with the button again, **Close settings**, or any tab
   (`setTab()`, `chooseListen()` call `setSettings(false)`). While it is open
-  the button has `aria-pressed="true"` and the selected tab's look, and no tab is
+  the button has `aria-pressed="true"` and its ring, and no tab is
   `aria-selected` (the tabs' pages are hidden). See [Settings and
   devices](#settings-and-devices).
 
@@ -935,23 +930,50 @@ Each page:
      the saved documents newest first by `assets.document_times`, each row a
      `.doc-pick` (name, `documentDate()`) and its own `.doc-trash` (gray,
      red on hover); `#document-delete` after the field deletes the chosen
-     one. Both call `deleteDocument()`, which asks 'Delete "<name>"?' with
-     the trash icon (`askConfirm({ icon, more })`, a deep red
-     `button.danger.with-icon`) and removes only that file
-     (`POST /api/documents/delete`); **From a URL** is a link and an optional save-as
-     name, which **Continue** downloads first (`materializeUrl()`, only while
-     `pendingUrl()`; an arXiv `/abs/` page is fetched as its `/pdf/`,
-     `arxiv_pdf_url()`); **Upload a file** is a dashed drop area with
-     **browse**, uploading at
+     one. By keyboard (`documentField`'s keydown): Enter or Space (the
+     button's click) or ArrowDown/ArrowUp opens the list on the chosen row,
+     else the first; ArrowDown/ArrowUp (wrapping), Home, and End move
+     between rows; Enter chooses (`pickDocument()`, focus back on the field);
+     Escape closes it and returns to the field. The open list is one Tab stop
+     (`markDocumentRow()`, `focusDocumentRow()`: only the current row's pick
+     and trash have `tabIndex` 0), so Tab goes from a row to its trash, then
+     out of the field, which closes the list (focusout). Delete and Backspace
+     do nothing there. Both trash buttons call `deleteDocument()`, which asks
+     'Delete "<name>"?' with the trash icon (`askConfirm({ icon, more })`, a
+     deep red `button.danger.with-icon`; Tab and Shift+Tab go round the
+     confirmation's controls, Escape is Cancel) and removes only that file
+     (`POST /api/documents/delete`); cancelled, focus returns to the button
+     that asked (a row's trash passes the field). **From a URL** is a link and
+     an optional save-as name, which **Continue** downloads first
+     (`materializeUrl()`, only while `pendingUrl()`; a request that gets no
+     answer at all says the server couldn't be reached). An arXiv link
+     (`arxiv_id()`: host `arxiv.org` or `www.arxiv.org` only, path
+     `/abs/<id>` or `/pdf/<id>[.pdf]`, `ARXIV_ID` new-style `2401.12345` or
+     old-style `cs/0112017`, `math.GT/0309136`, either with `vN`) is fetched
+     as its `/pdf/<id>` (`arxiv_pdf_url()`); its failures answer in plain
+     words (`arxiv_problem()`: 404 "arXiv has no paper at that link", no
+     answer "arXiv could not be reached (<network_reason()>)", HTML or a body
+     not starting `%PDF-` "arXiv did not send a PDF", another status "arXiv
+     answered <code>"), and its download answers a `title`: the abstract
+     page's `citation_title` meta (`arxiv_title()`,
+     `arxiv_title_from_html()`), else the PDF's metadata title
+     (`pdf_title()`), else the saved name (`<id>.pdf`, from the final URL as
+     for any link). The page keeps it as `audiobook.url_title` with
+     `url_document` (cleared with it: a changed link or Save as, a delete,
+     `clearBookChoice()`), and `chosenTitle()` shows it for that document: the
+     finished step's summary (tooltip "<title> (saved as <name>)"), the hint
+     beside **Continue**, and step 3's summary. **Upload a file** is a dashed
+     drop area with **browse**, uploading at
      once and naming the file in `#upload-name`; a file dropped anywhere on
      the step chooses Upload and uploads. **Continue** uses only
      `chosenDocument()`; pressed with it empty it stays and `#book-chosen`,
      the hint beside it, says "Choose a document first" (`bookEmptyContinue`).
      Otherwise `#book-chosen` shows the chosen card alone:
-     "Chosen (URL): <link>", or "Chosen (Saved document|Upload): <name> ·
+     "Chosen (URL): <link>" (once an arXiv link is downloaded, "<title> ·
+     PDF"), or "Chosen (Saved document|Upload): <name> ·
      PDF|Markdown|Text", else "No document chosen yet"; **Continue** refuses
      other types. Reopened from step 3 (`reachedCreate`), **Continue** returns
-     to step 3 with the voice kept; Overwrite and Change voice go through step 2.
+     to step 3 with every choice kept; Overwrite and Change voice go through step 2.
      Server errors for links and uploads become short plain sentences in `#book-problem`. An
      upload or link whose predicted file name (`predictedDownloadNames()`) is
      already in Documents asks first (`replaceDocumentOk()`). A link still to
@@ -1183,10 +1205,23 @@ Each page:
   tags (`descriptionTags()`: its comma-separated parts, trimmed, empty parts
   skipped; display only, the file is never rewritten) in #d66bc6 on an opaque
   14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour, ≥ 3:1 on the
-  green row); no description reads "No description". A wide screen wraps
-  every tag; a phone keeps one line fading out at the right, and a tap on the
+  green row); no description reads "No description". A wide screen
+  (`foldVoiceRow()`, run by `renderVoiceTable()` and, through a
+  `ResizeObserver` on `#voice-table`, on every new width) shows a description
+  whole (`is-whole`) when its wrapped tags fit two lines (measured: the tags'
+  extent against two tag heights and the row gap); otherwise each tag keeps to
+  one line (`white-space: nowrap`, a longer one cut with "…", its whole text
+  in its `title`), the tags past the second line are `hidden`, and
+  `button.voice-more-tags` ("+N more", N the hidden tags, or "Show all" when
+  only a cut tag is left to open; `aria-expanded`) takes the second line's
+  end, tags giving way until it fits. It (`toggleVoiceTags()`) sets `is-open`,
+  every tag shown wrapping, and reads "Show less". During a search a row
+  whose filled tag would be hidden opens by itself; its **Show less** folds it
+  for that search (`searchFoldedVoices`). The cell has `width: 100%` and its
+  tags `contain: inline-size`, so tags never widen the table. A phone keeps
+  one line fading out at the right (no button), and a tap on the
   row (not on a button) toggles `is-open`, kept across re-renders in
-  `expandedVoices`, which shows them all; while a phone row's preview plays,
+  `expandedVoices` (shared with "+N more"), which shows them all; while a phone row's preview plays,
   "Playing preview" takes the tags' line. Search (placeholder "Search voice
   descriptions, e.g. warm british female") reads descriptions only: every
   typed word must begin a description word (AND, any order, case- and
