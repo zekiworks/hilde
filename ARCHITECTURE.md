@@ -1406,8 +1406,8 @@ this browser".
 from the files listing's `section` (else "No section"), "In this book's files
 on the server" with its size, **Copy text**, and **Download .md**. A chat
 tool row that wrote a note gains "· Saved" only after the server's confirmed
-tool result. The chat header shows "Web search on" when `chat_payload`'s
-`web_search` is true.
+tool result. The chat's ⋯ menu (`#chat-web`) says "Web search on" when
+`chat_payload`'s `web_search` is true.
 
 Document names and book titles wrap to at most two lines, the second ending in
 an ellipsis when cut (the `.clamp` class, which also breaks a name with no
@@ -1481,7 +1481,7 @@ visually hidden step states).
 
 Listen below 768 px: the text takes the full width, the view's controls
 (`#listen-bar`, `display: contents`) scroll with it, and menus dock above the
-player (`narrowLayout()`). Below 1200 px the side panel (the chat, a figure, a
+player (`narrowLayout()`). Below 900 px (`narrowScreen()`) the side panel (the chat, a figure, a
 source page) is a bottom sheet: fixed at the foot of the visual viewport, the
 full width up to 720 px (centred beyond), 60% of the visible height
 (`--vv-height`), rounded at the top with a grabber (`.sheet-grabber`), the book
@@ -1489,8 +1489,9 @@ dimmed above it by `#panel-backdrop` (50% black; a tap there closes the
 panel), and `html.sheet-open` stopping the page from scrolling beneath; **×**
 closes it as on a wide screen. `fitVisualViewport()` sets `--vv-height` and
 `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of the
-screen makes the sheet the whole visual viewport and leaves out the chat's
-book and section line, the model picker, and the no-model notice
+screen makes the sheet the whole visual viewport and leaves out the model's
+notes (`#chat-model-notes`), the model box's own line in a narrow header, and
+the no-model notice
 (`#chat-problem`; a send then says why in `#chat-hint`), and a context card
 scrolls within a quarter of the visible height, so the message box and
 **Send** stay visible with an on-screen keyboard. Every Listen control is at
@@ -1872,7 +1873,7 @@ The player bar is the page's own, one bar docked at the bottom of every
 screen (`#player-dock`, `position: fixed`, inside
 `env(safe-area-inset-bottom)`, its `--surface` background the full width
 under a 1 px `--line` top border); with the side panel open beside the text
-(1200 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
+(900 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
 stays under the reading column. Its controls sit in one column
 (`.player-bar`, at most 560 px and centred; on a phone the dock's 16 px
 padding leaves them 16 px from the screen's edges), in two rows 8 px apart,
@@ -1912,9 +1913,12 @@ when they start; an answer read aloud keeps its place when paused this way.
 
 One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
 a source page (`#page-view`), with a tab for each one opened. On a screen
-1200 px or wider it sits fixed at the right, `--panel-w` wide (440 px by
-default, 400 to 720 by dragging its left edge or with ← and → on it,
-`setPanelWidth()`, kept as `hilde.panelWidth`), and the text moves left
+900 px or wider it sits fixed at the right, `--panel-w` wide (440 px by
+default, 400 to 720 by dragging its left edge or with ← and → on it, 360 at
+the least in a window under 1100 px, and at most the window less 700 px;
+`setPanelWidth()`, kept as `hilde.panelWidth`, fitted again on every resize;
+at 900 px the panel is 360 px and the reading column 481 px, about 50
+characters a line), and the text moves left
 beside it (`.panel-open`); narrower, it covers the reading view (see the
 phone paragraph under UI contract). Each view keeps its state while another
 shows or the panel is closed, until another book opens (`resetChatFor()`):
@@ -1933,19 +1937,39 @@ about this figure** pause it the same way; a click in the text never asks
 attached; else, with no card and no draft, the passage playing at the press
 is (a figure passage as a figure). `selectedPassages()` takes only passages
 the selection takes words from, so a triple-click ending at offset 0 of the
-next paragraph does not attach it. The panel's header (`.panel-head`) is the
+next paragraph does not attach it. The panel's header (`#panel-head`) is the
 tablist, whose **Ask Hilde** tab carries the sparkle (`.ask-icon`, the bar
-button's own) and reads as a teal title while the chat is shown, and **×**
-(`closePanel()`) at the right on every size. Under it the chat's compact,
-muted settings block (`.chat-head`): one line with the book and the section of
-the card (else of the passage playing), then the shared model picker in a
-small form (the `chat` picker of Create step 3's component, its **Runs on** and
-**Model** labels visually hidden, its **Change** left out as the model box
-opens the same list; `chatModel()` is its usable choice, kept as
-`player.chat_model` once used; first use follows the same rules as the text
-model, and an unreachable model is never replaced silently: its red line and
-alternatives wrap under it), **Read answers aloud** when the server reads
-aloud, and **New conversation** at the end; then the
+button's own) and reads as a teal title while the chat is shown; then, while
+the chat is shown, its model box (`#chat-model-pick`) and **⋯**
+(`#chat-more`); and **×** (`closePanel()`) at the right on every size, in one
+row. In a panel narrower than 420 px (`.narrow-head`, set by a
+`ResizeObserver` on the panel: a phone's sheet, a 900–1099 px window) or with
+a figure or page tab (`.has-tabs`), the model box wraps onto a line of its own
+under the title row, still in the header. The model box is the shared model
+picker in a small form (the `chat` picker of Create step 3's component, its
+**Runs on** and **Model** labels visually hidden, its **Change** left out as
+the model box opens the same list; Runs on shows only its icon in one row; the
+badge shows its kind, Local or Cloud, and keeps the rest of its text, the
+server or the provider and how it is reached, in `.badge-detail`, visually
+hidden but in the box's accessible name; `chatModel()` is its usable choice,
+kept as `player.chat_model` once used; first use follows the same rules as the
+text model, and an unreachable model is never replaced silently). Its red
+line, alternatives, and Add local / Connect a provider (the picker's own
+elements, moved into `#chat-model-notes` when the page starts) show under the
+header only when there is something to say; its list (`#chat-picker-pop`)
+hangs from the panel, outside the header, and the box's hover and open border
+is teal (`--ask`), as the header never shows blue. **⋯** opens `#chat-menu`
+(`toggleChatMenu()`, `role=menu`): a muted block that is not a control, the
+book and the section of the card (else of the passage playing) and "Web
+search on" when the server searches, then **Read answers aloud**
+(`#chat-speak`, a `menuitemcheckbox` with `aria-checked` and a ticked box,
+when the server reads aloud; toggling keeps the menu open) and **New
+conversation** (`#chat-new`, which closes the menu and asks first). Enter,
+Space, or ↓ on ⋯ opens it on its first item (↑ on its last); ↑ ↓ (round at
+the ends), Home, and End move; Escape closes it and returns to ⋯; Tab, a
+press elsewhere, or leaving the chat closes it. It hangs under ⋯ inside the
+panel, its items 44 px tall on phones and coarse pointers. Under the header
+come the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
 one **Providers…** link, `openProvidersPanel()`), the conversation (a past
 question: its card the panel's width, its words right-aligned in a bubble),
@@ -2172,7 +2196,7 @@ recorded turn wrote the file.
 ### Reading answers aloud
 
 With a local narration model (`--voice-clone-model`), each answer has
-**Listen**, and the chat header **Read answers aloud**
+**Listen**, and the chat's ⋯ menu **Read answers aloud**
 (`player.chat_speak`); `/api/chat`'s `speech` is empty, or
 `CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is Hilde's
 (`chat_speech_voice()`: the saved voice `CHAT_SPEECH_VOICE`, else the first
@@ -2302,13 +2326,13 @@ POST requests with a cross-origin `Origin` host are refused. This is CSRF harden
 
 ### Local model servers
 
-The local model servers are the server's, for every browser: `LOCAL_ENDPOINTS` (under `LOCAL_ENDPOINTS_LOCK`; `local_endpoints()` gives each as `{"name", "server", "provider", "reads_images", "from_flag"}`), kept in `~/.hilde/providers.yaml` (`PROVIDERS_FILE`, `providers_path()`). `load_providers()` reads it at startup with `read_providers()` (an invalid file stops startup naming it) and also sets `CLAUDE_CODE_USED` and `SERVER_DEFAULT_MODELS`; `write_providers()` replaces it atomically, the file 0600 in a 0700 folder, with a header saying to stop the server before editing by hand. Each entry is `name`, `address`, `type` (`openai-compatible` or `ollama`), and `reads_images` (only when some model is set by hand: `{model: true|false}`, `set_model_images()`); an earlier server-wide `images: true|false` is read and dropped on the next write; `claude_code: false` appears only once Claude Code was removed; `defaults:` holds the server's default models, `text` and `image` (each a selector checked by `model_selector()`; one unset is left out, and the block with both), written by `save_default_models()` under `LOCAL_ENDPOINTS_LOCK`, which takes a model only while the catalog lists it and, for `image`, only one that reads images. Local servers browsers once kept in their own cookie are not migrated.
+The local model servers are the server's, for every browser: `LOCAL_ENDPOINTS` (under `LOCAL_ENDPOINTS_LOCK`; `local_endpoints()` gives each as `{"name", "server", "provider", "reads_images", "from_flag"}`), kept in `~/.hilde/providers.yaml` (`PROVIDERS_FILE`, `providers_path()`). `load_providers()` reads it at startup with `read_providers()` (an invalid file stops startup naming it) and also sets `CLAUDE_CODE_USED` and `SERVER_DEFAULT_MODELS`; `write_providers()` replaces it atomically, the file 0600 in a 0700 folder, with a header saying to stop the server before editing by hand. Each entry is `name`, `address`, `type` (`openai-compatible` or `ollama`), and `reads_images` (only when some model is set by hand: `{model: true|false}`, `set_model_images()`); an earlier server-wide `images: true|false` is ignored, `read_providers()` printing one line to stderr that names the file and those servers, and is left out on the next write, so a file from before still starts the server (another value than true or false is an invalid file); `claude_code: false` appears only once Claude Code was removed; `defaults:` holds the server's default models, `text` and `image` (each a selector checked by `model_selector()`; one unset is left out, and the block with both), written by `save_default_models()` under `LOCAL_ENDPOINTS_LOCK`, which takes a model only while the catalog lists it and, for `image`, only one that reads images. Local servers browsers once kept in their own cookie are not migrated.
 
 Each server's last model list is remembered in `~/.hilde/local-models.json` (`LOCAL_MODELS_FILE`, `local_models_path()`), `{"schema": 1, "servers": {"<address>": {"provider", "models": [ids]}}}`, by address, so a server that does not answer keeps its models in every picker as disabled "server unreachable" rows (`offline_local_rows()`) instead of dropping them. `paper_model_catalog()` calls `remember_local_models()` for each list it gets; under `LOCAL_ENDPOINTS_LOCK` it keeps only a server still in `LOCAL_ENDPOINTS` with the same type (a job's own copy of the servers can't bring back a removed one) and writes (`write_remembered_models()`, `_write_private_json()`: atomic, 0600 in a 0700 folder) only when the list changed. Each entry also keeps what was found out about its models' images, `"images": {model: {"images", "how": "tested"|"reported", "at"}}` (an entry without it, from before, has none); a model that leaves the list loses its result, so it is checked again when it comes back. A model's size comes from its name. `read_remembered_models()` treats a missing or malformed file as nothing remembered. `forget_local_models()` keeps only the given addresses: `remove_local_endpoint()`, `save_local_endpoint()` (a changed address is another server), and `load_providers()` (an address gone from `providers.yaml`) call it. A server never listed since has nothing remembered and is one "not-running" row; no model or server is invented.
 
 Whether a local model reads images is decided model by model (`local_model_images()`): the owner's choice (`reads_images`), else what was found out and kept in `local-models.json`, else not known (`None`: not offered for figures, no picture sent). Finding out runs in the background (`IMAGE_CHECKS`, an `ImageChecks`: off until `main()` turns it on, so importing the module or a test asks no server anything): `paper_model_catalog()` queues, for each model of a server under Settings › Providers that has no result or one older than `IMAGE_CHECK_MAX_AGE` (7 days), `IMAGE_CHECKS.want()`, and never waits; one worker thread per server checks its queue one model at a time, so at most one request per server is under way. `check_model_images()` first asks what the server reports (`image_check_reported()`: Ollama `POST /api/show` `capabilities` holding `vision`; LM Studio `/api/v0/models` `type` `vlm` or `llm`); else, unless the server says the model is not loaded (Ollama `/api/ps`, LM Studio's `state`), it sends the model one small request automatically (`image_check_probe()`): `POST /v1/chat/completions` with a 32×32 PNG of one colour (`solid_png()`, `IMAGE_CHECK_COLOUR` red) and `IMAGE_CHECK_QUESTION` ("What colour is this image? Answer with one word."), `max_tokens` `IMAGE_CHECK_MAX_TOKENS` (64), `temperature` 0, `stream` false, `local_request_options()` (thinking off for Ollama), `IMAGE_CHECK_TIMEOUT` 60 s. `_image_check_answer()` takes only the final answer (`content`, or a stream's content deltas; a separate reasoning field and `<think>…</think>` left out) and whether `finish_reason` was `length`. HTTP 200 with a final answer naming the colour reads images; HTTP 400/422, another 4xx about images, or a finished answer of another colour is text only; an answer cut off by the token limit (or empty) before it named a colour, a timeout, connection error, or 5xx decides nothing and is not kept (the model is asked again on a later catalog, not within `IMAGE_CHECK_RETRY` 30 s). `record_image_check()` keeps a result under `LOCAL_ENDPOINTS_LOCK` only while the server is registered and still lists the model; each check prints one line (`Image check <host:port> <model>: reads images (tested); answered 'Red.'`). Cloud providers are never probed: their lists say (`images`). `forget_image_checks()` is Check again.
 
-`--local-server PROVIDER=URL` (repeatable; `local_server_option()`): PROVIDER `ollama` or `lm-studio` (any OpenAI-compatible server), the URL checked by `normalize_local_server()`; anything after a comma (the earlier `,vision`) is refused: each model's images are found out. `load_providers()` adds each flag's server to `providers.yaml` when its address is not saved yet, named by `default_endpoint_name()` (its host, else host and port, else either with a number); a saved address keeps its saved name and its models set by hand. The flags' addresses are this run's `STARTUP_LOCAL_SERVERS`: their entries are `from_flag`, shown as "set at startup", and only their name can change; without the flag at the next start the entry is an ordinary one. Startup prints "Local model servers (Settings › Providers, <path>): <name> = <host:port> (<type>, set at startup), …", then the default text and image narration models ("not set", "same as text narration"). The catalog, chat context and send, and job values (`values_of()`) all use `local_endpoints()`.
+`--local-server PROVIDER=URL` (repeatable; `local_server_option()`): PROVIDER `ollama` or `lm-studio` (any OpenAI-compatible server), and only the address, checked by `normalize_local_server()`, which refuses a comma in it like any other invalid address (nothing about images is given on the command line: each model's images are found out). `load_providers()` adds each flag's server to `providers.yaml` when its address is not saved yet, named by `default_endpoint_name()` (its host, else host and port, else either with a number); a saved address keeps its saved name and its models set by hand. The flags' addresses are this run's `STARTUP_LOCAL_SERVERS`: their entries are `from_flag`, shown as "set at startup", and only their name can change; without the flag at the next start the entry is an ordinary one. Startup prints "Local model servers (Settings › Providers, <path>): <name> = <host:port> (<type>, set at startup), …", then the default text and image narration models ("not set", "same as text narration"). The catalog, chat context and send, and job values (`values_of()`) all use `local_endpoints()`.
 
 HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key` it serves the user's certificate; with `--https`, `ensure_tls_files()` (the `cryptography` package) keeps Hilde's own authority in `~/.hilde/tls` (`ca.pem`, `ca-key.pem`, mode 0600 in a 0700 folder) and a certificate for `machine_names()`: localhost, the host name with and without `.local`, and the machine's private addresses (the one its default route leaves by, and its host name's). Browsers treat only `localhost` as secure, so downloads from a page opened over plain HTTP from another device warn, and no public authority certifies a private address. The authority is an EC P-256 key valid `TLS_CA_DAYS`, path length 0, with critical name constraints permitting only `TLS_PRIVATE_NETWORKS` and the names it was made with, so a device that installs it trusts it for nothing else. The server certificate lasts `TLS_SERVER_DAYS` (397, under Apple's 825-day limit for user-installed authorities) and is made again, under the same authority, when under `TLS_RENEW_DAYS` remain or the names or addresses change, so devices keep trusting the server. `HildeServer.finish_request()`, in the request's own thread, peeks at the first byte: a TLS handshake is wrapped (TLS 1.2 or later), and plain HTTP gets a 307 to the same host and path over `https://`, with `Cache-Control: no-store`, so old bookmarks open; a handshake the browser refuses ends quietly. The redirect is temporary and never cached: a 301 stayed in Chrome after the server went back to plain HTTP, which it then could not reach. A new host name outside the authority's names needs a new authority: delete `~/.hilde/tls`. **Connection** under **Settings** › **Models and connection** shows whether this connection will flag downloads and offers **Download Hilde's certificate** (`renderConnection()`).
 

@@ -265,7 +265,9 @@ Tags live in `voice-tags.json` in the library, never in a voice's folder.
 **Library**, where each book shows its last position on this device, and
 plays a book with its synchronized text, its source text, and its figures as
 printed in the PDF; **Ask Hilde** answers questions about what you are hearing
-and writes Markdown notes. A **Progress** tab, there while audiobooks are being
+and writes Markdown notes, in a panel beside the text from 900 px wide (below
+that, a sheet rising from the bottom) with its model in the header and a **⋯**
+menu for **Read answers aloud** and **New conversation**. A **Progress** tab, there while audiobooks are being
 made or one stopped or failed, follows them, and the blue gear button after
 the tabs opens **Settings**, which holds the
 narration, text preparation, and machine settings: see [Web UI](docs/web-ui.md).

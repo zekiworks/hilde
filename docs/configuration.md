@@ -32,7 +32,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines and sets the default models. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
-| `--local-server PROVIDER=URL` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server. Whether each of its models reads images is [found out automatically](#which-local-models-read-images). At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
+| `--local-server PROVIDER=URL` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server. Only the provider and the address: a comma and anything after it is refused, as an invalid address. Whether each of its models reads images is [found out automatically](#which-local-models-read-images). At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -373,8 +373,10 @@ defaults:                         # only the defaults set
   image: lm-studio/my-vision-model  # Default image narration; left out: not set, figures follow the text model
 ```
 
-A server's `images: true|false` from earlier versions is still read and
-then dropped: each model's images are found out instead.
+A server's `images: true|false` from earlier versions (one setting for all its
+models) is ignored: Hilde starts as usual, prints one line naming the file and
+those servers, and leaves it out the next time it saves the file; each model's
+images are found out instead.
 `claude_code: false` means Hilde no longer uses this server's Claude Code;
 **Subscription** for Anthropic turns it on again. A default is written as the
 model picker shows a model in its details: `lm-studio/<model>` or

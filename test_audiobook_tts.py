@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from unittest import mock
 import urllib.request
 import urllib.error
@@ -10874,26 +10874,63 @@ class ImageCheckTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             web.set_model_images("Box", "plain", "maybe")
 
-    def test_a_servers_old_images_flag_is_read_and_dropped(self):
+    def test_a_servers_old_images_flag_is_read_ignored_and_dropped_with_one_warning(self):
         path = self.home / "providers.yaml"
         self.home.mkdir(parents=True)
         path.write_text("local:\n- {name: A, address: 'h:1', type: ollama, images: true}\n"
                         "- {name: B, address: 'h:2', type: openai-compatible, images: false}\n", encoding="utf-8")
-        web.load_providers([])
+        printed = io.StringIO()
+        with redirect_stderr(printed):
+            web.load_providers([])
+        # One line at startup: the setting is named, ignored, and goes at the next save.
+        lines = printed.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(str(path), lines[0])
+        self.assertIn("images:", lines[0])
+        self.assertIn("ignored", lines[0])
         self.assertEqual([(entry["name"], entry["reads_images"]) for entry in web.LOCAL_ENDPOINTS],
                          [("A", {}), ("B", {})])
         self.assertNotIn("vision", web.LOCAL_ENDPOINTS[0])
         web.use_claude_code(True)
         self.assertEqual([sorted(item) for item in yaml.safe_load(path.read_text(encoding="utf-8"))["local"]],
                          [["address", "name", "type"]] * 2)
+        # Saved again without it: the next start says nothing.
+        printed = io.StringIO()
+        with redirect_stderr(printed):
+            web.load_providers([])
+        self.assertEqual(printed.getvalue(), "")
         # An earlier local-models.json (no images found out) still reads.
         (self.home / web.LOCAL_MODELS_FILE).write_text(json.dumps(
             {"schema": 1, "servers": {"http://h:1": {"provider": "ollama", "models": ["a"]}}}), encoding="utf-8")
         self.assertEqual(web.read_remembered_models(),
                          {"http://h:1": {"provider": "ollama", "models": ["a"], "images": {}}})
-        # --local-server takes no ",vision" any more.
-        with self.assertRaises(argparse.ArgumentTypeError):
-            web.local_server_option("lm-studio=http://127.0.0.1:8000,vision")
+
+    def test_a_local_server_flag_is_only_provider_and_address(self):
+        option = web.local_server_option
+        for value, server in (("lm-studio=http://127.0.0.1:8000", "http://127.0.0.1:8000"),
+                              ("lm-studio=127.0.0.1:8000", "http://127.0.0.1:8000"),
+                              ("ollama=http://localhost:11434/", "http://localhost:11434"),
+                              ("lm-studio=https://box.example:8443", "https://box.example:8443")):
+            self.assertEqual(option(value), {"server": server, "provider": value.partition("=")[0],
+                                             "reads_images": {}}, value)
+        # The ",vision" form is gone: what follows a comma is no part of an address, refused as any wrong
+        # address is, with nothing said about images.
+        for wrong in ("lm-studio=http://127.0.0.1:8000,vision", "lm-studio=127.0.0.1:8000,vision",
+                      "ollama=box,vision", "lm-studio=box.example,fast"):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=wrong) as raised:
+                option(wrong)
+            self.assertNotIn("image", str(raised.exception), wrong)
+            self.assertNotIn("vision", str(raised.exception), wrong)
+        for wrong in ("box,vision", "http://box:8000,vision"):
+            with self.assertRaises(ValueError, msg=wrong):
+                web.normalize_local_server(wrong)
+        # Nothing documents or parses it any more: the help, the page, and the docs.
+        root = Path(web.__file__).resolve().parent
+        texts = {"--help": web.build_parser().format_help(), "PAGE": web.PAGE,
+                 "source": (root / "audiobook_tts_web.py").read_text(encoding="utf-8")}
+        for name in ("README.md", "ARCHITECTURE.md", *(f"docs/{doc.name}" for doc in (root / "docs").glob("*.md"))):
+            texts[name] = (root / name).read_text(encoding="utf-8")
+        self.assertEqual([name for name, text in texts.items() if ",vision" in text], [])
 
     def test_check_again_and_a_choice_by_hand_only_from_a_browser_that_may_manage(self):
         server, asked = image_stub(self, "vision", models=("seer",))

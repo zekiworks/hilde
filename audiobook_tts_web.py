@@ -5340,7 +5340,8 @@ def normalize_local_server(value):
     if "://" not in value:
         value = f"http://{value}"
     parsed = urllib.parse.urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    # A comma is no part of a host; urlsplit would keep it in the name.
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or "," in parsed.netloc:
         raise ValueError("Local server must be an HTTP URL or host:port.")
     if parsed.username or parsed.password:
         raise ValueError("Local server URL cannot contain credentials.")
@@ -7104,7 +7105,7 @@ PROVIDERS_HEADER = """\
 """
 # A local server's type as providers.yaml names it, and as model selectors do.
 LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
-# `images` is a server's flag from earlier versions: read, never written.
+# `images` is a server's flag from earlier versions: read, ignored with a warning, never written.
 LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "reads_images", "images")
 PROVIDERS_LOCAL_ONLY = (
     "Providers are added, changed, and removed in a browser on the server's own machine, "
@@ -7487,7 +7488,8 @@ def read_providers(path):
     whether Claude Code is used, and the default models ({"text", "image"},
     each a selector or ""). An absent file has no local server, uses Claude
     Code, and sets no default. A server's `images: true|false` from earlier
-    versions is read and dropped: each model's images are found out now."""
+    versions (one flag for all its models) is ignored with one line on stderr,
+    and gone once the file is next saved: each model's images are found out."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -7501,7 +7503,7 @@ def read_providers(path):
     unknown = sorted(set(data) - {"local", "claude_code", "defaults"})
     if unknown:
         raise ValueError(f"unknown setting: {unknown[0]}")
-    endpoints = []
+    endpoints, old_images = [], []
     for item in data.get("local") or []:
         if not isinstance(item, dict):
             raise ValueError("each local server needs name, address, and type")
@@ -7514,17 +7516,23 @@ def read_providers(path):
             raise ValueError(f"{name}: address is missing")
         if item.get("type") not in LOCAL_ENDPOINT_TYPES:
             raise ValueError(f"{name}: type is {' or '.join(LOCAL_ENDPOINT_TYPES)}")
-        if not isinstance(item.get("images", False), bool):
-            raise ValueError(f"{name}: images is true or false")
         overrides = item.get("reads_images") or {}
         if not isinstance(overrides, dict) or not all(
                 isinstance(model, str) and model and isinstance(value, bool) for model, value in overrides.items()):
             raise ValueError(f"{name}: reads_images maps a model to true or false")
+        if "images" in item:
+            if not isinstance(item["images"], bool):
+                raise ValueError(f"{name}: images is true or false")
+            old_images.append(name)
         conflict = local_endpoint_conflict(endpoints, name, server)
         if conflict:
             raise ValueError(conflict)
         endpoints.append({"name": name, "server": server, "provider": LOCAL_ENDPOINT_TYPES[item["type"]],
                           "reads_images": dict(overrides)})
+    if old_images:
+        print(f"{path}: images: on the local server{'s' if len(old_images) > 1 else ''} {', '.join(old_images)} "
+              "is ignored (each model's images are found out by itself) and goes when the file is next saved",
+              file=sys.stderr)
     claude_code = data.get("claude_code", True)
     if not isinstance(claude_code, bool):
         raise ValueError("claude_code is true or false")
@@ -7757,11 +7765,6 @@ def local_server_option(value):
         raise argparse.ArgumentTypeError(
             f"use PROVIDER=URL with PROVIDER {' or '.join(LOCAL_MODEL_PROVIDERS)}, "
             "such as lm-studio=http://127.0.0.1:8000"
-        )
-    if "," in address:
-        raise argparse.ArgumentTypeError(
-            "give only PROVIDER=URL: whether each model reads images is found out automatically "
-            "(Settings › Providers › Edit can set it by hand)"
         )
     try:
         server = normalize_local_server(address)
@@ -18384,7 +18387,7 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
    narrated sentence is out of sight. */
 .back-to-listening { position:sticky; bottom:calc(16px + var(--dock-h, 0px)); z-index:6; display:block;
                      margin:12px auto 0; box-shadow:0 6px 20px rgba(0,0,0,.5); }
-/* The side panel: beside the text on a wide screen, a bottom sheet below 1200px. */
+/* The side panel: beside the text on a wide screen, a bottom sheet below 900px. */
 .side-panel { position:fixed; z-index:20; top:0; right:0; bottom:0; display:flex;
               flex-direction:column; width:var(--panel-w); background:var(--surface);
               border-left:1px solid var(--line); overscroll-behavior:contain; }
@@ -18393,9 +18396,13 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .panel-resize:hover, .panel-resize:focus-visible { background:linear-gradient(90deg,
   transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
 .sheet-grabber, .panel-backdrop { display:none; }
-.panel-head { display:flex; flex:none; align-items:center; gap:8px; min-height:44px; padding:0 8px 0 16px;
-              border-bottom:1px solid var(--line); }
-.panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
+/* One row: the tabs, Ask Hilde's model box and ⋯ (with Ask Hilde shown), ×. In a panel narrower than 420 px
+   (.narrow-head: a phone's sheet, a narrow window) or with other tabs, the model box takes a line of its own under
+   them, still in the header, Runs on then with its word too. */
+.panel-head { display:flex; flex:none; align-items:center; gap:4px 6px; min-height:44px;
+              padding:4px 8px 4px 16px; border-bottom:1px solid var(--line); }
+.panel-tabs { display:flex; flex:0 1 auto; gap:4px; min-width:0; overflow-x:auto; }
+.panel-head:not(.has-tabs) .panel-tabs { flex-shrink:0; }
 .panel-tabs [role=tab] { display:inline-flex; align-items:center; gap:8px; min-height:36px; padding:4px 10px;
                          border:0; border-radius:8px; background:transparent; color:var(--dim); font-size:16px;
                          white-space:nowrap; box-shadow:none; }
@@ -18407,26 +18414,57 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .panel-tabs #panel-tab-chat:not([aria-selected=true]) { padding-left:10px; }
 .panel-close { min-width:36px; min-height:36px; margin-left:auto; padding:0 8px; border-color:transparent;
                background:transparent; box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
+.chat-menu-wrap:not(.hidden) + .panel-close { margin-left:0; }
 .panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
 .panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
-/* Ask Hilde's settings in one compact, muted block under the header. Where the panel is short (a phone's sheet),
-   it and the problem line give way (scrolling) before the button row and the question box do. */
-.chat-head { display:grid; flex:0 1 auto; grid-auto-rows:max-content; gap:4px; min-height:0; overflow:auto;
-             padding:6px 16px 8px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
-.chat-where { min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* Ask Hilde's model box in the header: the shared picker, small, its labels for screen readers only. Runs on shows
+   its icon (Local or Cloud) and the model box the model's name, cut with … when long, then its badge: the kind
+   (Local, Cloud) in sight, without the icon Runs on already shows, and the rest (the server, the provider and how
+   it is reached) in its accessible name. The model's notes (red when unreachable, other models, Add local) show
+   under the header. */
+.chat-model-pick { display:flex; flex:0 1 auto; align-items:center; min-width:0; margin-left:auto; }
+.chat-model-pick .picker-boxes { flex-wrap:nowrap; align-items:center; gap:4px; }
+.chat-model-pick .picker-field { display:flex; }
+.chat-model-pick .picker-label, .chat-model-pick .badge-detail { position:absolute; width:1px; height:1px;
+  overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.chat-model-pick .picker-box { min-height:32px; padding:2px 6px 2px 8px; gap:4px; font-size:13px;
+                               border-color:var(--line); }
+.chat-model-pick .picker-kind .kind-value { gap:0; font-size:0; }
+.chat-model-pick .picker-box .picker-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-model-pick .picker-change { display:none; }
+.chat-model-pick .badge { padding:1px 6px; font-size:12px; }
+.chat-model-pick .badge svg { display:none; }
+.chat-model-pick .chevron { width:12px; height:12px; }
+/* The header is Ask Hilde's teal, never blue: the box hovered or open shows a teal border. */
+.chat-model-pick button.picker-box:hover:not(:disabled),
+.chat-model-pick button.picker-box[aria-expanded=true] { border-color:var(--ask); }
+.chat-more { min-width:36px; min-height:36px; padding:0 8px; border-color:transparent; background:transparent;
+             box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
+.chat-model-notes { display:grid; flex:0 1 auto; gap:6px; min-height:0; overflow:auto; padding:8px 16px;
+                    border-bottom:1px solid var(--line); font-size:13px; }
+.chat-model-notes:not(:has(> :not(.hidden))) { display:none; }
+.chat-model-notes > * { margin:0; }
+/* The ⋯ menu under its button, at the header's right: what the conversation is about as a muted line, then its
+   items. Read answers aloud shows its state as a box, ticked when on. */
+.chat-menu-wrap .menu { position:absolute; top:calc(100% + 6px); right:0; bottom:auto; left:auto;
+                        max-width:min(320px, calc(100vw - 16px)); }
+.panel-head:is(.has-tabs, .narrow-head) { flex-wrap:wrap; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick { order:1; flex:1 1 100%; margin:0 0 4px; }
+.panel-head:is(.has-tabs, .narrow-head) .picker-kind .kind-value { gap:6px; font-size:inherit; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-menu-wrap { margin-left:auto; }
+.keyboard-open .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick { display:none; }
+.menu .menu-notes { margin:0 0 4px; padding:6px 12px 8px; border-bottom:1px solid var(--line); color:var(--dim);
+                    font-size:13px; line-height:1.4; white-space:normal; overflow-wrap:anywhere; }
+.menu .menu-notes p { margin:0; }
+.menu .menu-notes p + p { margin-top:4px; }
 .chat-section:not(:empty)::before { content:" · "; }
-.chat-options { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:12px; }
-.chat-options button.link { min-height:28px; padding:0; font-size:12px; color:var(--dim); }
-#chat-new { margin-left:auto; }
-.chat-options .model-pick { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
-.chat-options .picker-boxes { gap:6px; }
-.chat-options .picker-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0);
-                              white-space:nowrap; }
-.chat-options .picker-box { min-height:28px; padding:2px 8px; gap:6px; font-size:13px; border-color:var(--line); }
-.chat-options .picker-box .picker-name { -webkit-line-clamp:1; }
-.chat-options .picker-change { display:none; }
-.chat-options .model-reason, .chat-options .picker-none, .chat-options .alternatives { flex:0 0 100%; margin:0; }
-.chat-options .check { font-size:12px; }
+.menu [role=menuitemcheckbox] { display:flex; align-items:center; gap:10px; }
+.menu [role=menuitemcheckbox]::before { content:""; display:grid; flex:none; place-items:center; width:16px;
+  height:16px; box-sizing:border-box; border:1.5px solid var(--dim); border-radius:4px; font-size:12px;
+  font-weight:700; line-height:1; }
+.menu [role=menuitemcheckbox][aria-checked=true]::before { content:"✓"; border-color:var(--accent);
+                                                           background:var(--accent); color:#fff; }
+.menu [role=menuitemcheckbox][aria-checked=true]::after { content:none; }
 /* A badge: tinted (15%) with its colour's text, an icon with Local and API. */
 .badge { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:999px;
          color:var(--dim); background:color-mix(in srgb, var(--dim) 15%, transparent);
@@ -18435,7 +18473,7 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .badge.local { color:color-mix(in srgb, var(--local) 70%, #fff); background:color-mix(in srgb, var(--local) 15%, transparent); }
 .badge.cloud { color:color-mix(in srgb, var(--cloud) 70%, #fff); background:color-mix(in srgb, var(--cloud) 15%, transparent); }
 .badge:empty { display:none; }
-.chat-options .badge { font-size:12px; }
+.chat-model-notes .badge { font-size:12px; }
 .chat-problem { display:grid; flex:0 1 auto; gap:8px; min-height:0; overflow:auto; padding:10px 16px;
                 border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
@@ -18618,14 +18656,14 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .shortcut-table kbd { padding:1px 6px; border:1px solid var(--line); border-radius:4px;
                       background:var(--field); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
 /* With the panel open on a wide screen, the text and the player move left to make room. */
-@media (min-width:1200px) {
+@media (min-width:900px) {
   .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
   .listen-workspace.panel-open .player-dock { right:var(--panel-w); }
 }
 /* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
    grabber, 60% of the visible viewport high, the book dimmed above it (a tap there closes it). With the keyboard
    open it takes the whole visible viewport, so the box and Send stay in sight. */
-@media (max-width:1199.98px) {
+@media (max-width:899.98px) {
   .side-panel { right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2)); bottom:auto;
                 top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) * .4); width:auto;
                 height:calc(var(--vv-height, 100dvh) * .6); border:1px solid var(--line); border-bottom:0;
@@ -18776,9 +18814,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 /* Listen on a phone or a touch screen: every control 44px or more. */
 @media (max-width:767.98px), (pointer:coarse) {
   .book-top button, .book-controls button, .player-bar button, .chip-head button, .panel-head button,
-  .menu button, .selection-ask, .chat-options button, .chat-voice button, .panel-actions button,
+  .menu button, .selection-ask, .chat-model-notes button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
-  .player-speed, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
+  .player-speed, .chip-head button, .panel-close, .chat-more, .page-nav button { min-width:44px; }
   .player-bar .ask-hilde { height:44px; }
   /* The speed pill keeps its small look; an invisible frame around it makes the target at least 44 × 44. */
   .player-bar .player-speed { min-width:0; min-height:0; }
@@ -18791,11 +18829,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .player-bar { padding-top:13px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
-  .chat-options button.link, .chat-options .picker-box, button.chat-action, .chat-compose button { min-height:44px; }
+  .chat-model-notes button.link, .chat-model-pick .picker-box, button.chat-action, .chat-compose button { min-height:44px; }
   button.chat-action { -webkit-tap-highlight-color:transparent; }
-  /* Typing on a phone: the book line, the model picker and the no-model notice step aside, so the box and Send
-     stay in view; a send without a usable model says why in the hint above the box. */
-  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem { display:none; }
+  /* Typing on a phone: the model's notes and the no-model notice step aside (and, on a phone's sheet, the model
+     box's own line: see above), so the box and Send stay in view; a send without a usable model says why in the
+     hint above the box. */
+  .keyboard-open .chat-model-notes, .keyboard-open .chat-problem { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
@@ -19442,9 +19481,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
         <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
           aria-label="Panel width" aria-valuemin="400" tabindex="0"></div>
-        <!-- Below 1200px the panel is a bottom sheet: its grabber, and the book dimmed above it. -->
+        <!-- Below 900px the panel is a bottom sheet: its grabber, and the book dimmed above it. -->
         <div class="sheet-grabber" aria-hidden="true"></div>
-        <div class="panel-head">
+        <!-- The header: the tabs (Ask Hilde's sparkle and name as its title), then, with Ask Hilde shown, its model
+             box (the shared picker, small: Runs on and Model with the model's badge) and ⋯, the conversation's
+             menu; ×. Where the panel is narrow (a phone) or other tabs show, the model box takes a line of its own. -->
+        <div id="panel-head" class="panel-head">
           <div id="panel-tabs" class="panel-tabs" role="tablist" aria-label="Panel">
             <button id="panel-tab-chat" type="button" role="tab" aria-controls="chat-pane"
               onclick="showPanelView('chat')"><svg class="ask-icon"
@@ -19455,26 +19497,32 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <button id="panel-tab-page" class="hidden" type="button" role="tab"
               aria-controls="page-view" onclick="showPanelView('page')"></button>
           </div>
+          <div id="chat-model-pick" class="model-pick chat-model-pick" data-picker="chat"></div>
+          <div id="chat-menu-wrap" class="menu-wrap chat-menu-wrap">
+            <button id="chat-more" class="chat-more" type="button" aria-label="Ask Hilde: more" aria-haspopup="menu"
+              aria-expanded="false" aria-controls="chat-menu" onclick="toggleChatMenu()">⋯</button>
+            <!-- What the conversation is about (a line, not a control), Web search when the server has it, then
+                 Read answers aloud (checkable, when the server can narrate) and New conversation. -->
+            <div id="chat-menu" class="menu hidden" role="menu" aria-label="Ask Hilde">
+              <div class="menu-notes" role="none">
+                <p class="menu-note chat-where"><span id="chat-book" class="chat-book"></span><span
+                  id="chat-section" class="chat-section"></span></p>
+                <p id="chat-web" class="menu-note hidden">Web search on: Hilde may search the web and read public
+                  pages for an answer.</p>
+              </div>
+              <button id="chat-speak" class="hidden" type="button" role="menuitemcheckbox"
+                aria-checked="false">Read answers aloud</button>
+              <button id="chat-new" type="button" role="menuitem"
+                onclick="toggleChatMenu(false); $('chat-more').focus(); newChat()">New conversation</button>
+            </div>
+          </div>
           <button class="panel-close" type="button" aria-label="Close the panel"
             onclick="closePanel()">×</button>
         </div>
         <section id="chat-pane" class="panel-view" role="tabpanel" aria-labelledby="panel-tab-chat">
-          <!-- One compact muted block under the header: the book and section asked about, then where questions
-               go (Runs on, Model: the shared picker, small) and New conversation; Read answers aloud and Web
-               search on when the server has them; an unreachable model's red line and alternatives under it. -->
-          <div class="chat-head">
-            <p class="chat-where">
-              <span id="chat-book" class="chat-book"></span><span id="chat-section" class="chat-section"></span>
-            </p>
-            <div class="chat-options">
-              <div class="model-pick" data-picker="chat"></div>
-              <span id="chat-web" class="badge hidden"
-                title="Hilde may search the web and read public pages for an answer">Web search on</span>
-              <label id="chat-speak-toggle" class="check note hidden"><input id="chat-speak"
-                type="checkbox"> Read answers aloud</label>
-              <button id="chat-new" class="link" type="button" onclick="newChat()">New conversation</button>
-            </div>
-          </div>
+          <!-- Under the header, only when needed: why the model can't be used (red when unreachable), other
+               models to use, or Add local and Connect a provider (the picker's own lines, moved here). -->
+          <div id="chat-model-notes" class="chat-model-notes"></div>
           <div id="chat-problem" class="chat-problem hidden" role="status">
             <p id="chat-problem-text"></p>
             <div id="chat-add-model" class="line hidden">
@@ -21313,6 +21361,8 @@ function closeReaderMenus() {
 function closeMenus() {
   closeReaderMenus();
   $("row-menu").classList.add("hidden");
+  $("chat-menu").classList.add("hidden");
+  $("chat-more").setAttribute("aria-expanded", "false");
   if (rowMenuButton) { rowMenuButton.setAttribute("aria-expanded", "false"); rowMenuButton = null; }
 }
 function openShortcuts() { $("shortcuts-dialog").showModal(); }
@@ -21654,12 +21704,12 @@ function downloadSource() {
 
 // --- The side panel: Ask Hilde (chat), a figure, a source page ---------------
 // One panel beside the text on a wide screen (width kept in this browser),
-// the whole screen below 1200px. Each view keeps its state while another
+// a bottom sheet below 900px. Each view keeps its state while another
 // shows or the panel is closed: the draft, its context chip, the
 // conversation and its scroll position, and an answer still arriving.
 let panelOpen = false, panelView = "chat", figureShown = 0, pageShown = 0;
 let chatScroll = null;  // { top, atEnd } of the conversation while it is hidden
-function narrowScreen() { return !window.matchMedia("(min-width:1200px)").matches; }
+function narrowScreen() { return !window.matchMedia("(min-width:900px)").matches; }
 function chatShown() { return panelOpen && panelView === "chat"; }
 function renderPanel() {
   $("side-panel").classList.toggle("hidden", !panelOpen);
@@ -21674,6 +21724,10 @@ function renderPanel() {
   }
   $("panel-tab-figure").classList.toggle("hidden", !figureShown);
   $("panel-tab-page").classList.toggle("hidden", !pageShown);
+  // Ask Hilde's model box and ⋯ in the header only while Ask Hilde shows; with other tabs, the box takes a line.
+  $("chat-model-pick").classList.toggle("hidden", panelView !== "chat");
+  $("chat-menu-wrap").classList.toggle("hidden", panelView !== "chat");
+  $("panel-head").classList.toggle("has-tabs", !!(figureShown || pageShown));
   $("ask-hilde").setAttribute("aria-expanded", String(chatShown()));
 }
 function rememberChatScroll() {
@@ -21682,7 +21736,7 @@ function rememberChatScroll() {
 }
 function setPanel(open, view = panelView) {
   const wasChat = chatShown();
-  if (wasChat && (!open || view !== "chat")) rememberChatScroll();
+  if (wasChat && (!open || view !== "chat")) { rememberChatScroll(); toggleChatMenu(false); }
   keepPlace(() => { panelOpen = open; panelView = view; renderPanel(); });
   if (chatShown() && !wasChat && chatScroll) {
     const log = $("chat-log");
@@ -21696,19 +21750,41 @@ function closePanel() {
   stopSpeaking();
   $("ask-hilde").focus({ preventScroll:true });
 }
+// Ask Hilde's ⋯ menu: what the conversation is about, then Read answers
+// aloud and New conversation. Enter, Space, or ArrowDown on ⋯ opens it on
+// its first item (ArrowUp: on its last); arrows, Home and End move; Escape
+// closes it and returns to ⋯; Tab or a press elsewhere closes it.
+function chatMenuItems() {
+  return [...$("chat-menu").querySelectorAll("[role^=menuitem]")].filter((item) => shown(item) && !item.disabled);
+}
+function toggleChatMenu(open = $("chat-menu").classList.contains("hidden"), at = "first") {
+  closeMenus();
+  if (!open) return;
+  $("chat-menu").classList.remove("hidden");
+  $("chat-more").setAttribute("aria-expanded", "true");
+  const items = chatMenuItems();
+  (at === "last" ? items.at(-1) : items[0])?.focus({ preventScroll:true });
+}
+// The panel's width: 400 to 720 px, at most the window less 700 px for the
+// text; in a window under 1100 px (the side panel starts at 900) it may be
+// 360 px, so the reading column keeps about 48 characters a line at 900.
+// Kept in this browser; fitted again when the window changes.
 function setPanelWidth(width, save) {
-  const most = Math.max(400, Math.min(720, window.innerWidth - 700));
-  const value = Math.round(Math.min(most, Math.max(400, width)));
-  keepPlace(() => $("book-view").style.setProperty("--panel-w", `${value}px`));
+  const least = window.innerWidth < 1100 ? 360 : 400;
+  const most = Math.max(least, Math.min(720, window.innerWidth - 700));
+  const value = Math.round(Math.min(most, Math.max(least, width)));
+  if ($("book-view").style.getPropertyValue("--panel-w") !== `${value}px`)
+    keepPlace(() => $("book-view").style.setProperty("--panel-w", `${value}px`));
   const handle = $("panel-resize");
   handle.setAttribute("aria-valuenow", String(value));
+  handle.setAttribute("aria-valuemin", String(least));
   handle.setAttribute("aria-valuemax", String(most));
   if (save) store("panelWidth", value);
 }
 // A phone's keyboard shrinks only the visual viewport; the panel follows
 // it, and while the keyboard takes a quarter of the screen or more the chat
-// leaves out the book and section lines, the model picker, and the no-model
-// notice, so the message box and Send stay in sight.
+// leaves out the model's notes, the no-model notice, and on a phone's sheet
+// the model box's line, so the message box and Send stay in sight.
 function fitVisualViewport() {
   const viewport = window.visualViewport;
   if (!viewport) return;
@@ -21966,8 +22042,8 @@ function renderChatControls() {
     : "Type a question, or press Enter to explain this part";
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
-  $("chat-speak-toggle").classList.toggle("hidden", !chatData || chatData.speech !== "");
-  $("chat-speak").checked = state.player.chat_speak;
+  $("chat-speak").classList.toggle("hidden", !chatData || chatData.speech !== "");
+  $("chat-speak").setAttribute("aria-checked", String(!!state.player.chat_speak));
   // With the server's web search, a question's searches go out to the web too.
   $("chat-web").classList.toggle("hidden", !(chatData && chatData.web_search));
 }
@@ -23753,12 +23829,20 @@ const CHIP_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="
 const CLOUD_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 12.5h7.2a2.8 '
   + '2.8 0 0 0 .3-5.6 4 4 0 0 0-7.7-.6A3.1 3.1 0 0 0 4.5 12.5z" fill="none" stroke="currentColor" '
   + 'stroke-width="1.5" stroke-linejoin="round"/></svg>';
+// A badge: its kind (Local, Cloud) and the rest (" · <server>", ": <provider>
+// · <how>") in a span of its own, which a small place (Ask Hilde's header)
+// keeps for screen readers only.
 function badgeElement(text, title = "") {
   const badge = document.createElement("span");
   const kind = text.startsWith("Local") ? "local" : text.startsWith("Cloud") ? "cloud" : "";
   badge.className = `badge${kind ? ` ${kind}` : ""}`;
   if (kind) badge.insertAdjacentHTML("afterbegin", kind === "local" ? CHIP_ICON : CLOUD_ICON);
-  badge.append(text);
+  const cut = kind ? text.search(/ ·|:/) : -1;
+  if (cut > 0) {
+    const detail = document.createElement("span");
+    detail.className = "badge-detail"; detail.textContent = text.slice(cut);
+    badge.append(text.slice(0, cut), detail);
+  } else badge.append(text);
   if (title) badge.title = title;
   return badge;
 }
@@ -26644,6 +26728,10 @@ $("confirm-dialog").addEventListener("keydown", (event) => {
 // The model pickers (mountPicker()); a press outside the open list closes
 // it, and it follows its button when the page scrolls or resizes.
 for (const host of document.querySelectorAll("[data-picker]")) mountPicker(host);
+// Ask Hilde's model box is in the panel's header; its notes go under it, and
+// its list (fixed, placed under the box) hangs from the panel, not the header.
+$("chat-model-notes").append($("chat-model-reason"), $("chat-alternatives"), $("chat-picker-none"));
+$("side-panel").append($("chat-picker-pop"));
 document.addEventListener("pointerdown", (event) => {
   if (!openPicker || $(`${openPicker.name}-picker-pop`).contains(event.target)
       || pickerBox(openPicker).contains(event.target)) return;
@@ -26730,10 +26818,29 @@ $("chat-log").addEventListener("click", (event) => {
   event.preventDefault();
   jumpToPassage(Number(cite.dataset.passage));
 });
-$("chat-speak").addEventListener("change", (event) => {
-  state.player.chat_speak = event.target.checked;
+// Read answers aloud, a checkable item of the ⋯ menu: the menu stays open,
+// showing the new state.
+$("chat-speak").addEventListener("click", (event) => {
+  state.player.chat_speak = !state.player.chat_speak;
+  event.currentTarget.setAttribute("aria-checked", String(state.player.chat_speak));
   queueSync();
-  if (!event.target.checked) stopSpeaking();
+  if (!state.player.chat_speak) stopSpeaking();
+});
+$("chat-more").addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  toggleChatMenu(true, event.key === "ArrowUp" ? "last" : "first");
+});
+$("chat-menu").addEventListener("keydown", (event) => {
+  const items = chatMenuItems(), at = items.indexOf(document.activeElement), count = items.length;
+  const next = { ArrowDown:items[(at + 1) % count], ArrowUp:items[(at - 1 + count) % count],
+                 Home:items[0], End:items[count - 1] }[event.key];
+  if (next) { event.preventDefault(); next.focus(); return; }
+  if (event.key === "Escape") {
+    event.preventDefault(); event.stopPropagation();
+    toggleChatMenu(false);
+    $("chat-more").focus();
+  } else if (event.key === "Tab") toggleChatMenu(false);
 });
 
 // Listen: the player bar, the panel, Ask about this, and the reading position.
@@ -26771,6 +26878,9 @@ document.addEventListener("keydown", (event) => {
     const button = rowMenuButton;
     closeMenus(); event.preventDefault();
     button?.focus();
+  } else if (!$("chat-menu").classList.contains("hidden")) {
+    closeMenus(); event.preventDefault();
+    $("chat-more").focus();
   } else if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
     closeMenus(); event.preventDefault();
   } else if (!$("selection-ask").classList.contains("hidden")) hideSelectionAsk();
@@ -26842,10 +26952,14 @@ window.visualViewport?.addEventListener("resize", fitVisualViewport);
 window.visualViewport?.addEventListener("scroll", fitVisualViewport);
 window.addEventListener("resize", () => {
   fitVisualViewport(); fitDock();
+  setPanelWidth(Number(stored("panelWidth")) || 440, false);
   document.documentElement.classList.toggle(
     "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
+// Ask Hilde's model box takes a line of its own in a panel narrower than 420 px (a phone's sheet, a narrow window).
+new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side-panel").offsetWidth < 420))
+  .observe($("side-panel"));
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();

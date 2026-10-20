@@ -464,10 +464,14 @@ with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
 **Ask Hilde** opens the chat beside the book (on a phone or a window narrower
-than 1200 px, as a sheet rising from the bottom over about 60% of the screen,
+than 900 px, as a sheet rising from the bottom over about 60% of the screen,
 with a grabber and rounded top, the book dimmed above it: **×** or a tap on the
-book closes it; with the keyboard open it grows so **Send** stays in view). Its
-header is Hilde's sparkle and **Ask Hilde** in teal, with **×** at the right.
+book closes it; with the keyboard open it grows so **Send** stays in view). From
+900 px it is a panel at the right, 360 px wide in a window under 1100 px so the
+text keeps about 50 characters a line beside it. Its header is Hilde's sparkle
+and **Ask Hilde** in teal, then the chat's model box, **⋯**, and **×** at the
+right; in a panel under 420 px wide (a phone, a narrow window) the model box has
+a line of its own under them.
 It pauses the book, as **Ask about this** on selected words and **Ask about
 this figure** do; the book waits at that sentence until you press play in the
 player bar (the chat has no play button for the book); closing the chat never
@@ -481,17 +485,22 @@ paragraph it cites, such as ¶12,
 is a link that scrolls the book to it. When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what
-it used; those links open in a new tab, and the chat's header shows **Web
+it used; those links open in a new tab, and the chat's **⋯** menu says **Web
 search on**. Its answer streams in as it writes. The model is one of yours:
-pick it in the small line under the chat's header (the book and the section
-asked about above it), with the same model picker as on **Create** (see above),
-in a compact form (**Runs on** and **Model** boxes; the model box opens the
-list); a local model answers from the server that offers it. The picker shows
-**Local** or **Cloud: <Provider> · Subscription/API key**, so you see where your
-question goes before you send it, and remembers the model you used last; it
-never starts on a cloud model by itself. A model that does not answer shows in
-red under it, with others to use instead; **New conversation** is at the end of
-that line.
+pick it in the model box in the chat's header, with the same model picker as on
+**Create** (see above), in a compact form (a **Runs on** box showing Local or
+Cloud, and the **Model** box with the model's name and badge; the model box
+opens the list); a local model answers from the server that offers it. The
+badge shows **Local** or **Cloud**, so you see where your question goes before
+you send it (screen readers hear the server or the provider and how it is
+reached too, as the list shows them), and the picker remembers the model you
+used last; it never starts on a cloud model by itself. A model that does not
+answer shows in red under the header, with others to use instead.
+**⋯** next to the model box opens the chat's menu: the book and the section
+asked about, as a line of text, then **Read answers aloud** (a tick shows it is
+on; it stays open so you see the change) and **New conversation**. Enter,
+Space, or the down arrow opens it from the keyboard; the arrows, Home and End
+move; Escape closes it.
 With no model at all, the chat asks you to add one first, with a **Providers…**
 link that opens **Settings** at **Providers**. ChatGPT, the Anthropic, OpenAI, Google Gemini, and
 DeepSeek API keys, and local models can chat; Claude Code models cannot:
@@ -550,7 +559,7 @@ there by name); the answer stays plain text while it is read, kept in view.
 While it is read, pause it with the chat's bottom button (below), which then
 offers **Resume**; under a paused answer, **Start over** reads it from the
 beginning. Listening to another answer keeps
-this one's place too. **Read answers aloud**, in the chat's settings line,
+this one's place too. **Read answers aloud**, in the chat's **⋯** menu,
 reads each answer as soon as it is finished (not one you stopped). One sound
 plays at a time: reading an answer pauses the book, and when it ends the book
 stays paused; starting the book, or a voice preview, stops the others. The
