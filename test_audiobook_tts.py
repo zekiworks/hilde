@@ -8858,6 +8858,26 @@ class ChatTests(unittest.TestCase):
                       payload["conversation"][-1]["html"])
         self.assertEqual(payload["passages"], {"1": 0, "2": 1})
 
+    def test_a_stopped_turn_keeps_the_text_that_arrived_marked_stopped(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        turn = web.ChatTurn(self.storage, book, "Explain this part.", "lm-studio/fake", [])
+        turn.begin()
+        for delta in ("The encoder turns ", "each word into a vector, then"):
+            turn.on_text(delta)
+        turn.keep_stopped()
+        kept = web.read_chat(path)[-1]
+        self.assertEqual({key: kept[key] for key in ("role", "text", "stopped")},
+                         {"role": "assistant", "text": "The encoder turns each word into a vector, then", "stopped": True})
+        shown = web.chat_display_entry(kept)
+        self.assertTrue(shown["stopped"])
+        self.assertIn({"type": "message", "entry": shown}, turn.events)
+        self.assertEqual(turn.partial, "")
+        # An answer that ended by itself is not marked; a stop before any text says so in a notice.
+        self.assertNotIn("stopped", web.chat_display_entry({"role": "assistant", "text": "Done."}))
+        turn.keep_stopped()
+        self.assertEqual(web.read_chat(path)[-1]["role"], "notice")
+        self.assertEqual(web.read_chat(path)[-1]["text"], "Stopped.")
+
     def test_a_files_section_is_the_question_whose_turn_last_wrote_it(self):
         book, path = self.book(chat_narration("S."))
         passages = web.chat_book(self.storage, book)[2]

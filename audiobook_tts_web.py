@@ -12065,7 +12065,7 @@ class ChatTurn:
                     if changed:
                         self.publish({"type": "files", "files": chat_file_listing(path, entries)})
         except InterruptedError:
-            self.notice("Stopped.")
+            self.keep_stopped()
         except ChatTooLong as exc:
             print(f"Chat: a question didn't fit {self.selector}: {exc}", flush=True)
             self.notice(CHAT_TOO_LONG)
@@ -12076,6 +12076,21 @@ class ChatTurn:
                 self.done = True
                 self.events.append({"type": "done"})
                 self.condition.notify_all()
+
+    def keep_stopped(self):
+        """A turn stopped while the model wrote: the text that had arrived is
+        kept as the answer, marked stopped (the page shows it so); with none,
+        the notice says the turn stopped."""
+        with self.condition:
+            text = self.partial.strip()
+        if not text:
+            self.notice("Stopped.")
+            return
+        try:
+            self.keep(self.path, self.entries,
+                      {"role": "assistant", "text": text, "at": utc_timestamp(), "stopped": True})
+        except (OSError, ValueError):
+            self.notice("Stopped.")
 
     def notice(self, text):
         """Tell the listener what ended the turn; kept, never sent to a model."""
@@ -12105,7 +12120,11 @@ def chat_display_entry(entry):
             lambda match: f'<a href="#" class="chat-cite" data-passage="{match.group(1)}">{match.group(0)}</a>',
             html,
         )
-        return {"role": "assistant", "html": html, "text": entry.get("text") or ""}
+        shown = {"role": "assistant", "html": html, "text": entry.get("text") or ""}
+        # An answer stopped while it was being written: the page marks it "Stopped".
+        if entry.get("stopped"):
+            shown["stopped"] = True
+        return shown
     if role == "tool":
         return {"role": "tool", "text": entry.get("label") or entry.get("name") or "Tool"}
     return {"role": "notice", "text": entry.get("text", "")}
@@ -17056,10 +17075,11 @@ PAGE = r"""<!doctype html>
            blue: --accent, the fill of buttons and chosen things (Play/Pause
            too), white ink on it (5.5:1); --accent-light, selected items,
            links, the LED dot of a selected tab or a switch that is on, and
-           the reading highlight (6.6:1 on the ground);
-           teal --ask: Ask Hilde only: the player's Ask Hilde field (a 15%
-           tint, its border and icon), the chat panel's header, and the
-           Selected text card (6.6:1 on the ground; light mode, Phase 3:
+           the reading highlight (6.6:1 on the ground), never a button's fill;
+           teal --ask: Ask Hilde only: the player's Ask Hilde button (a 12%
+           tint, its border, text and sparkle), the chat panel's header, the
+           chat's Stop / Pause / Resume button (dark ink on it, 6.9:1), and
+           every Ask Hilde card (6.6:1 on the ground; light mode, Phase 3:
            #127a6e, 5.2:1 on white);
            green --local: the Local badge (with a chip) and Runs on Local;
            purple --cloud: the Cloud badge (with a cloud) and Runs on Cloud;
@@ -17593,66 +17613,58 @@ html:has(main.reading) { scrollbar-gutter:stable; }
 .reader-download { margin:0; font-size:12px; }
 .reader-download:empty { display:none; }
 /* The player: one bar docked at the bottom on every screen, inside the safe
-   area, under the reading column only (the side panel keeps its own height);
-   its controls line up with the text column (68ch of the reading font). The
-   page leaves its height (--dock-h, fitDock()) free beneath the text. Left to
-   right: Play, the Ask Hilde field, the seek bar (the rest), the time, speed,
-   12px apart. */
+   area, under the reading column only (the side panel keeps its own height).
+   Its background spans the width under a 1px top border; its controls sit in
+   one column, 560px at most and centred (16px from the screen's edges on a
+   phone), in two rows: the thin seek bar with the elapsed time at its left end
+   and the total at its right end; then Play/Pause (44px; 48px on a phone) and
+   the speed on the left and Ask Hilde on the right, 12px apart. The page
+   leaves its height (--dock-h, fitDock()) free beneath the text. */
 .reading-column > .player-dock { font-size:18px; }
-.player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0; container:dock / inline-size;
-               padding:0 12px env(safe-area-inset-bottom); background:var(--surface);
-               border-top:1px solid var(--line); box-shadow:0 -8px 24px rgba(0,0,0,.35); }
+.player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0;
+               padding:0 16px env(safe-area-inset-bottom); background:var(--surface);
+               border-top:1px solid var(--line); }
 body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
-.player-bar { display:flex; align-items:center; gap:12px; max-width:calc(68ch + 34px); margin:0 auto;
-              padding:8px 0; }
+.player-bar { display:grid; gap:8px; max-width:560px; margin:0 auto; padding:8px 0 12px; }
 .player-bar > * { font-size:15px; }
-.player-bar button { min-height:40px; padding:0 10px; }
-.player-play { display:grid; flex:none; place-items:center; width:48px; height:48px; padding:0 !important;
+.player-controls { display:flex; align-items:center; gap:12px; min-width:0; }
+.player-play { display:grid; flex:none; place-items:center; width:44px; height:44px; min-height:0; padding:0;
                border-radius:50%; background:var(--accent); border-color:var(--accent);
                color:var(--accent-ink); }
 .player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
-.player-play svg { width:20px; height:20px; fill:currentColor; }
-/* Ask Hilde reads as a field, short and easy to see, in Ask Hilde's own teal (--ask): a 15% teal tint, a 1px teal
-   border, a teal icon, the bold off-white label and a muted placeholder (both at least 4.5:1 on the tint); 340px (at
-   most 360px), never stretched. Text is never cut: where the long placeholder would be, the short one shows, and
-   where that would be too, none (fitAsk()). */
-.player-bar .ask-hilde { display:flex; flex:0 1 340px; align-items:center; gap:8px; max-width:360px; height:44px;
-                         padding:0 14px; border:1px solid var(--ask); border-radius:999px;
-                         background:color-mix(in srgb, var(--ask) 15%, var(--field)); box-shadow:none;
-                         color:var(--text); text-align:left; }
-.player-bar .ask-hilde:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 22%, var(--field)); }
-.ask-icon { flex:none; width:18px; height:18px; fill:var(--ask); }
-.ask-text { display:flex; flex:1 1 auto; align-items:baseline; gap:8px; min-width:0; }
-.ask-label { flex:none; font-weight:650; white-space:nowrap; }
-.ask-hint { flex:1 1 0; width:0; min-width:0; overflow:hidden; color:var(--dim); font-size:13px; font-weight:400;
-            white-space:nowrap; }
-.ask-hint-short, .ask-hilde.short .ask-hint-long, .ask-hilde.bare .ask-hint { display:none; }
-.ask-hilde.short .ask-hint-short { display:block; }
-.player-track { display:flex; flex:1; align-items:center; gap:6px; min-width:0; }
-.player-time { color:var(--dim); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+.player-play svg { width:18px; height:18px; fill:currentColor; }
+/* Ask Hilde: small, just the sparkle and "Ask Hilde", in Ask Hilde's own teal (--ask): a faint teal tint, teal
+   text (at least 4.5:1 on the tint) and a teal border (65% --ask: at least 3:1 on the bar). */
+.player-bar .ask-hilde { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:8px;
+                         min-width:140px; height:34px; min-height:0; margin-left:auto; padding:0 20px;
+                         border:1px solid color-mix(in srgb, var(--ask) 65%, var(--surface)); border-radius:999px;
+                         background:color-mix(in srgb, var(--ask) 12%, var(--surface)); box-shadow:none;
+                         color:var(--ask); white-space:nowrap; }
+.player-bar .ask-hilde:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 16%, var(--surface)); }
+/* The four-point sparkle, drawn in outline: Ask Hilde's mark in the bar and the panel's header. */
+.ask-icon { flex:none; width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.3;
+            stroke-linejoin:round; }
+.player-track { display:flex; align-items:center; gap:12px; min-width:0; height:18px; }
+.player-time { color:var(--text); font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
                font-variant-numeric:tabular-nums; white-space:nowrap; }
-.player-seek { flex:1; min-width:80px; margin:0 6px 0 0; accent-color:var(--accent-light); }
-.player-speed { min-width:64px; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
+/* The seek bar: a thin gray track, the part played lighter (--seek, renderPlayerTime()), a small light knob. */
+.player-seek { flex:1; min-width:0; height:18px; margin:0; padding:0; background:transparent; cursor:pointer;
+               -webkit-appearance:none; appearance:none; }
+.player-seek::-webkit-slider-runnable-track { height:4px; border-radius:2px;
+  background:linear-gradient(to right, var(--off) var(--seek, 0%), var(--line) var(--seek, 0%)); }
+.player-seek::-webkit-slider-thumb { width:12px; height:12px; margin-top:-4px; border:0; border-radius:50%;
+                                     background:var(--text); -webkit-appearance:none; appearance:none; }
+.player-seek::-moz-range-track { height:4px; border-radius:2px; background:var(--line); }
+.player-seek::-moz-range-progress { height:4px; border-radius:2px; background:var(--off); }
+.player-seek::-moz-range-thumb { width:12px; height:12px; border:0; border-radius:50%; background:var(--text); }
+/* The speed: a small outlined pill ("1.0×"), flat, smaller than Play. */
+.player-bar .player-speed { position:relative; min-width:0; height:24px; min-height:0; padding:0 8px;
+                            border:1px solid var(--line); border-radius:6px; background:transparent; box-shadow:none;
+                            color:var(--text); font-size:13px; }
+.player-bar .player-speed:hover:not(:disabled) { background:var(--hover); }
+.player-bar .player-speed:active:not(:disabled) { transform:none; filter:none; }
 /* Its speed menu opens upwards. */
 .player-bar .menu { top:auto; bottom:calc(100% + 6px); }
-/* A bar too narrow for one row (a phone, a narrow window): the thin seek bar on top, the elapsed time at its left
-   end and the total at its right end; under it a large Play on the left, the Ask Hilde field filling the space
-   left (its label over the placeholder), and a small speed button on the right. */
-@container dock (max-width:599.98px) {
-  .player-bar { display:grid; grid-template-columns:auto minmax(0,1fr) auto;
-                grid-template-areas:"track track track" "play ask speed"; gap:2px 12px; padding:0 0 8px; }
-  .player-track { grid-area:track; gap:12px; }
-  #player-elapsed { order:-1; }
-  .player-of { display:none; }
-  .player-seek { margin:0; }
-  .player-play { grid-area:play; width:56px; height:56px; }
-  .player-play svg { width:24px; height:24px; }
-  .player-bar .ask-hilde { grid-area:ask; max-width:none; height:56px; padding:0 16px; }
-  .ask-text { flex-direction:column; align-items:stretch; gap:1px; }
-  .ask-hint { flex:none; width:auto; }
-  .player-speed-wrap { grid-area:speed; }
-  .player-bar .player-speed { min-width:44px; padding:0 8px; }
-}
 .reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
 /* Files Hilde wrote for the book, under its title. */
@@ -17669,7 +17681,7 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
    narrated sentence is out of sight. */
 .back-to-listening { position:sticky; bottom:calc(16px + var(--dock-h, 0px)); z-index:6; display:block;
                      margin:12px auto 0; box-shadow:0 6px 20px rgba(0,0,0,.5); }
-/* The side panel: beside the text on a wide screen, the whole screen below. */
+/* The side panel: beside the text on a wide screen, a bottom sheet below 1200px. */
 .side-panel { position:fixed; z-index:20; top:0; right:0; bottom:0; display:flex;
               flex-direction:column; width:var(--panel-w); background:var(--surface);
               border-left:1px solid var(--line); overscroll-behavior:contain; }
@@ -17677,24 +17689,41 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
                 cursor:col-resize; touch-action:none; }
 .panel-resize:hover, .panel-resize:focus-visible { background:linear-gradient(90deg,
   transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
-.panel-head { display:flex; align-items:center; gap:8px; padding:8px 10px;
+.sheet-grabber, .panel-backdrop { display:none; }
+.panel-head { display:flex; flex:none; align-items:center; gap:8px; min-height:44px; padding:0 8px 0 16px;
               border-bottom:1px solid var(--line); }
-/* With the chat open, the panel's header is Ask Hilde's: a teal top edge and the Ask Hilde tab in teal. */
-.side-panel:has(#chat-pane:not(.hidden)) .panel-head { border-top:3px solid var(--ask); }
 .panel-tabs { display:flex; flex:1; gap:4px; min-width:0; overflow-x:auto; }
-.panel-tabs [role=tab] { min-height:36px; padding:4px 12px; border:0; border-radius:8px;
-                         background:transparent; color:var(--dim); white-space:nowrap; box-shadow:none; }
+.panel-tabs [role=tab] { display:inline-flex; align-items:center; gap:8px; min-height:36px; padding:4px 10px;
+                         border:0; border-radius:8px; background:transparent; color:var(--dim); font-size:16px;
+                         white-space:nowrap; box-shadow:none; }
 .panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
                                              box-shadow:inset 0 -2px 0 var(--accent-light); }
-.panel-tabs #panel-tab-chat[aria-selected=true] { color:var(--ask); box-shadow:inset 0 -2px 0 var(--ask); }
-.panel-close { min-width:40px; padding:0 10px; font-size:18px; }
+/* With the chat open, the header is Ask Hilde's: its sparkle and name in teal, as a title. */
+.panel-tabs #panel-tab-chat { padding-left:0; }
+.panel-tabs #panel-tab-chat[aria-selected=true] { background:transparent; color:var(--ask); box-shadow:none; }
+.panel-tabs #panel-tab-chat:not([aria-selected=true]) { padding-left:10px; }
+.panel-close { min-width:36px; min-height:36px; margin-left:auto; padding:0 8px; border-color:transparent;
+               background:transparent; box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
 .panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
 .panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
-.chat-head { display:grid; gap:6px; padding:10px 14px; border-bottom:1px solid var(--line); }
-.chat-where { display:grid; min-width:0; }
-.chat-book { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.chat-options { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; font-size:13px; }
-.chat-options button.link { padding:4px 0; font-size:13px; }
+/* Ask Hilde's settings in one compact, muted block under the header. Where the panel is short (a phone's sheet),
+   it and the problem line give way (scrolling) before the button row and the question box do. */
+.chat-head { display:grid; flex:0 1 auto; grid-auto-rows:max-content; gap:4px; min-height:0; overflow:auto;
+             padding:6px 16px 8px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+.chat-where { min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-section:not(:empty)::before { content:" · "; }
+.chat-options { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:12px; }
+.chat-options button.link { min-height:28px; padding:0; font-size:12px; color:var(--dim); }
+#chat-new { margin-left:auto; }
+.chat-options .model-pick { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+.chat-options .picker-boxes { gap:6px; }
+.chat-options .picker-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0);
+                              white-space:nowrap; }
+.chat-options .picker-box { min-height:28px; padding:2px 8px; gap:6px; font-size:13px; border-color:var(--line); }
+.chat-options .picker-box .picker-name { -webkit-line-clamp:1; }
+.chat-options .picker-change { display:none; }
+.chat-options .model-reason, .chat-options .picker-none, .chat-options .alternatives { flex:0 0 100%; margin:0; }
+.chat-options .check { font-size:12px; }
 /* A badge: tinted (15%) with its colour's text, an icon with Local and API. */
 .badge { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:999px;
          color:var(--dim); background:color-mix(in srgb, var(--dim) 15%, transparent);
@@ -17703,77 +17732,88 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .badge.local { color:color-mix(in srgb, var(--local) 70%, #fff); background:color-mix(in srgb, var(--local) 15%, transparent); }
 .badge.cloud { color:color-mix(in srgb, var(--cloud) 70%, #fff); background:color-mix(in srgb, var(--cloud) 15%, transparent); }
 .badge:empty { display:none; }
-.chat-problem { display:grid; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); }
+.chat-options .badge { font-size:12px; }
+.chat-problem { display:grid; flex:0 1 auto; gap:8px; min-height:0; overflow:auto; padding:10px 16px;
+                border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
-.chat-log { display:grid; flex:1; align-content:start; gap:10px; min-height:0; overflow:auto;
-            overscroll-behavior:contain; padding:12px 14px; }
-.chat-user { justify-self:end; display:grid; gap:6px; max-width:90%; margin:0; padding:8px 12px;
-             border-radius:12px; background:var(--raised); }
-.chat-user-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.chat-log { display:grid; flex:1; align-content:start; gap:14px; min-height:0; overflow:auto;
+            overscroll-behavior:contain; padding:16px; }
+/* A question: its card (what went with it) the panel's width, the words right-aligned in a bubble. */
+.chat-user { display:grid; gap:12px; margin:0; }
+.chat-user-text { justify-self:end; max-width:90%; margin:0; padding:4px 10px; border-radius:8px;
+                  background:var(--raised); white-space:pre-wrap; overflow-wrap:anywhere; }
 .chat-assistant { line-height:1.55; overflow-wrap:anywhere; }
 .chat-assistant.live { white-space:pre-wrap; }
 .chat-assistant > * { margin:0; }
 .chat-assistant > * + * { margin-top:.6em; }
 .chat-assistant table { border-collapse:collapse; }
 .chat-assistant th, .chat-assistant td { padding:4px 8px; border:1px solid var(--line); }
+/* An answer stopped while Hilde wrote it: the text that arrived, marked under it. */
+.chat-assistant > .chat-stopped { margin-top:6px; color:var(--dim); font-size:13px; white-space:normal; }
 .chat-cite { color:var(--accent-light); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
-/* Reading an answer aloud: a speech control, unlike the book's round player. */
+/* Under an answer: Read aloud starts it, Start over once it is paused; pausing and resuming are the panel's own
+   button. While it is read, nothing shows here, and the answer stays plain text (no fill on the part being read). */
 .chat-voice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:.7em; }
-button.chat-listen { min-height:36px; padding:0 14px; border-style:dashed; border-radius:999px;
-                     font-size:14px; }
-button.chat-listen[data-mode=pause] { border-style:solid; border-color:var(--accent-light); }
-.chat-restart { font-size:14px; }
-/* The block being read, in the book's spoken-word colors. */
-.chat-assistant .chat-speaking { color:var(--accent-ink); background:var(--accent);
-                                 box-shadow:0 0 0 3px var(--accent); border-radius:3px; }
+.chat-voice:not(:has(> :not(.hidden))) { display:none; }
+button.chat-listen { min-height:32px; padding:0 12px; border-style:dashed; border-radius:999px;
+                     font-size:13px; }
+.chat-restart { font-size:13px; }
 .chat-notice { font-style:italic; }
-/* The panel's Play/Pause: under the conversation, above the box, never scrolling with either; filled blue like
-   the player's Play/Pause, white icon and what it is for ("Pause answer"), at least 44 x 44. */
-.panel-play-row { display:flex; flex:none; padding:8px 14px; border-top:1px solid var(--line); }
-button.panel-play { display:inline-flex; align-items:center; gap:8px; min-width:44px; min-height:44px;
-                    padding:0 18px 0 14px; border-radius:999px; background:var(--accent); border-color:var(--accent);
-                    color:var(--accent-ink); font-size:14px; font-weight:600; }
-button.panel-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
-.panel-play-icon { display:grid; place-items:center; width:16px; height:16px; }
-.panel-play-icon svg { width:14px; height:14px; fill:currentColor; }
-.chat-compose { display:flex; align-items:flex-end; gap:8px; padding:10px 14px;
-                border-top:1px solid var(--line); }
-.chat-hint { margin:0; padding:8px 14px 0; border-top:1px solid var(--line); color:var(--dim); font-size:13px; }
-.chat-about { padding:8px 14px 0; border-top:1px solid var(--line); }
-.chat-hint:not(.hidden) + .chat-about, .chat-about + .chat-compose { border-top:0; }
+/* Under the conversation, never scrolling with it: the teal button for what Hilde is doing, with its short
+   status; the card attached to the next question; the question box. */
+.chat-foot { display:grid; flex:none; gap:10px; padding:12px 16px; border-top:1px solid var(--line); }
+.chat-action-row { display:flex; align-items:center; gap:10px; min-width:0; }
+button.chat-action { display:inline-flex; flex:none; align-items:center; gap:8px; min-height:30px; padding:0 16px 0 14px;
+                     border:0; border-radius:999px; background:var(--ask); box-shadow:none; color:#0e1a18;
+                     font-size:14px; font-weight:650; }
+button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
+.chat-action svg { width:12px; height:12px; fill:currentColor; }
+.chat-action-status { color:var(--dim); font-size:13px; white-space:nowrap; }
+.chat-hint { margin:0; color:var(--dim); font-size:13px; }
 /* A part just attached: a short teal glow (none with reduced motion) and an outline. */
 @keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
-.chat-about { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); }
+.chat-about { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); border-radius:8px; }
 .chat-about.attached { animation:chip-pulse 1.6s ease-out; }
 .chat-about.attached .chip { outline:2px solid var(--accent-light); outline-offset:0; }
 @media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
 .chip-failed-title { font-weight:600; color:var(--ask); }
 .chip-failed .chip-head { flex-wrap:wrap; }
-/* The box grows with its text (or a long hint) where the browser can size a field to its content. */
-.chat-compose textarea { flex:1; min-height:44px; max-height:160px; resize:vertical; field-sizing:content; }
-.chat-compose button { flex:0 0 auto; max-width:8.5em; white-space:normal; line-height:1.2; }
-/* The card of what a question is about: the section heading, a preview of
-   the selected text, and the collapsed Context details. Open, it scrolls
-   within a share of the visible viewport, so an on-screen keyboard leaves
-   the message box and Send in sight. Every card is Ask Hilde's (a selection,
-   a passage, a figure; Preparing, Couldn't attach, too long; past questions'
-   cards): its accents (left rule, the attached outline, the switch underline,
-   the details mark, focus outlines) and its title are teal. */
-.chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:8px 10px;
-        border:1px solid var(--line); border-left:3px solid var(--accent-light); border-radius:8px;
-        background:var(--field); font-size:13px; --accent-light:var(--ask); }
+/* The question box: one bordered field, the text and a small outlined Send inside it on the right ("Explain this
+   part" with a card attached and nothing typed). The box grows with its text where the browser can size a field
+   to its content. */
+.chat-compose { display:flex; align-items:flex-end; gap:8px; min-width:0; padding:5px 6px 5px 0;
+                background:var(--field); border:1px solid #5a5a5a; border-radius:8px; }
+.chat-compose:focus-within { border-color:var(--text); }
+.chat-compose textarea { flex:1; min-height:30px; max-height:160px; padding:5px 0 5px 12px; border:0;
+                         background:transparent; font-size:14px; resize:none; field-sizing:content; }
+.chat-compose textarea:focus-visible { outline:0; }
+.chat-compose button { flex:0 0 auto; align-self:center; min-height:26px; max-width:9em; padding:2px 10px;
+                       border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
+                       color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
+.chat-compose button:hover:not(:disabled) { background:var(--hover); }
+/* The card of what a question is about, in Ask Hilde's teal: a 1px teal border on a faint teal tint, the title
+   ("Selected text" for a selection, else the section heading) teal, then a preview of the text. The draft's card
+   also has Change and ×, the Word / Sentence / Paragraph switch and Listen from here (small, in one line), and
+   every card the collapsed Context details. Open, it scrolls within a share of the visible viewport, so an
+   on-screen keyboard leaves the message box and Send in sight. Every card is Ask Hilde's (a selection, a
+   passage, a figure; Preparing, Couldn't attach, too long; past questions' cards): its accents (the border, the
+   attached outline, the switch underline, the details mark, focus outlines) and its title are teal. */
+.chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:7px 12px;
+        border:1px solid color-mix(in srgb, var(--ask) 65%, var(--surface)); border-radius:8px;
+        background:color-mix(in srgb, var(--ask) 12%, var(--surface)); font-size:13px; --accent-light:var(--ask); }
 .chip-head { display:flex; align-items:center; gap:4px; }
-.chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
+.chip-section { flex:1; min-width:0; font-weight:500; overflow:hidden; text-overflow:ellipsis;
                 white-space:nowrap; color:var(--ask); }
-.chip-head button { min-height:24px; padding:0 6px; font-size:12px; }
+.chip-head button { min-height:22px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
-.chip-preview { color:var(--dim); overflow-wrap:anywhere; }
+.chip-head .chip-remove { border-color:transparent; background:transparent; box-shadow:none; color:var(--dim); }
+.chip-preview { color:var(--text); overflow-wrap:anywhere; }
 /* The card's focus: Word | Sentence | Paragraph, and Listen from here. */
-.chip-focus { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin:2px 0; }
-.chip-scope { display:flex; padding:2px; background:var(--surface); border:1px solid var(--line);
-              border-radius:8px; }
-.chip-scope button { min-height:24px; padding:0 10px; border:0; border-radius:6px; background:transparent;
+.chip-focus { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; margin:2px 0; }
+.chip-scope { display:flex; padding:1px; background:var(--surface); border:1px solid var(--line);
+              border-radius:7px; }
+.chip-scope button { min-height:22px; padding:0 8px; border:0; border-radius:6px; background:transparent;
                      color:var(--dim); box-shadow:none; font-size:12px; }
 .chip-scope button[aria-checked=true] { background:var(--raised); color:var(--text);
                                         box-shadow:inset 0 -2px 0 var(--accent-light); }
@@ -17786,7 +17826,6 @@ button.panel-play:hover:not(:disabled) { background:var(--accent); filter:bright
 .chip-where { color:var(--dim); font-size:12px; }
 .chip-piece p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .chip-note, .chip-image { padding-left:10px; color:var(--dim); }
-.chat-user .chip { background:var(--surface); }
 /* The figure and the source page, large. */
 .figure-view-title { margin-bottom:10px; font-size:16px; }
 .zoom-card { cursor:default; }
@@ -17879,15 +17918,21 @@ button.panel-play:hover:not(:disabled) { background:var(--accent); filter:bright
 @media (min-width:1200px) {
   .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
   .listen-workspace.panel-open .player-dock { right:var(--panel-w); }
-  .panel-back { display:none; }
 }
-/* Narrower, the panel takes the reading view's place, with a way back; it
-   fits the visible viewport, so an on-screen keyboard never covers Send. */
+/* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
+   grabber, 60% of the visible viewport high, the book dimmed above it (a tap there closes it). With the keyboard
+   open it takes the whole visible viewport, so the box and Send stay in sight. */
 @media (max-width:1199.98px) {
-  .side-panel { left:0; bottom:auto; top:var(--vv-top, 0px); width:auto;
-                height:var(--vv-height, 100dvh); border-left:0; }
+  .side-panel { right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2)); bottom:auto;
+                top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) * .4); width:auto;
+                height:calc(var(--vv-height, 100dvh) * .6); border:1px solid var(--line); border-bottom:0;
+                border-radius:16px 16px 0 0; }
+  html.keyboard-open .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
+  .sheet-grabber { display:block; flex:none; width:36px; height:4px; margin:8px auto 0; border-radius:2px;
+                   background:#5a5a5a; }
+  .panel-backdrop:not(.hidden) { display:block; position:fixed; z-index:19; inset:0; background:rgba(0,0,0,.5); }
   html.sheet-open { overflow:hidden; }
-  .panel-resize, .panel-close { display:none; }
+  .panel-resize { display:none; }
 }
 /* A phone: the text takes the width, and the view's controls scroll with it. */
 @media (max-width:767.98px) {
@@ -17903,9 +17948,10 @@ button.panel-play:hover:not(:disabled) { background:var(--accent); filter:bright
   .menu, .menu.row-menu, .player-bar .menu { position:fixed; right:8px; left:8px; top:auto;
                                              bottom:calc(var(--dock-h, 0px) + 8px); }
 }
-/* A phone's player dock: rounded at the top (its two rows: @container dock). */
-@media (max-width:479.98px) {
-  .player-dock { padding:0 10px env(safe-area-inset-bottom); border-radius:14px 14px 0 0; }
+/* A phone: the player's controls 16px from the screen's edges (the dock's padding), Play/Pause 48px. */
+@media (max-width:767.98px) {
+  .player-play { width:48px; height:48px; }
+  .player-play svg { width:20px; height:20px; }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
@@ -18006,14 +18052,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .menu button, .selection-ask, .chat-options button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-speed, .chip-head button, .panel-close, .page-nav button { min-width:44px; }
+  .player-bar .ask-hilde { height:44px; }
+  /* The speed pill keeps its small look; an invisible frame around it makes the target at least 44 × 44. */
+  .player-bar .player-speed { min-width:0; min-height:0; }
+  .player-bar .player-speed::before { content:""; position:absolute; inset:-11px -4px; }
   .chip-scope button, .chip-focus button.link { min-height:44px; }
-  .player-seek, .book-meta select { min-height:44px; }
+  .book-meta select { min-height:44px; }
+  /* The thin seek bar keeps its row's height; its input is taller, for a finger (the controls below sit over
+     its lower edge). */
+  .player-seek { height:44px; }
+  .player-bar { padding-top:13px; }
   .chip-details > summary { min-height:44px; padding:13px 0; }
   .panel-tabs [role=tab] { min-height:44px; }
-  /* Typing on a phone: the book line, the model picker, the no-model notice, and the panel's Play/Pause step
-     aside, so the box and Send stay in view; a send without a usable model says why in the hint above the box. */
-  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem,
-  .keyboard-open .panel-play-row { display:none; }
+  .chat-options button.link, .chat-options .picker-box, button.chat-action, .chat-compose button { min-height:44px; }
+  button.chat-action { -webkit-tap-highlight-color:transparent; }
+  /* Typing on a phone: the book line, the model picker and the no-model notice step aside, so the box and Send
+     stay in view; a send without a usable model says why in the hint above the box. */
+  .keyboard-open .chat-where, .keyboard-open .chat-options .model-pick, .keyboard-open .chat-problem { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
 </style>
@@ -18585,43 +18640,46 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </section>
         <button id="back-to-listening" class="back-to-listening hidden" type="button"
           onclick="backToListening()">Back to where you're listening</button>
+        <!-- The player: one bar docked at the bottom, two rows in one column (560px at most, centred on a wide
+             screen; 16px from the edges on a phone): the seek bar between the elapsed and total times, then
+             Play/Pause and speed on the left and Ask Hilde on the right. -->
         <div id="player-dock" class="player-dock">
           <div id="artifact-player" class="player-bar" role="group" aria-label="Player">
-            <button id="player-play" class="player-play" type="button" aria-label="Play"
-              onclick="togglePlayback()"></button>
-            <!-- Ask Hilde reads as a field: its name is the label; the placeholder (long, or short where the long
-                 one would be cut, fitAsk()) is only shown. -->
-            <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel"><svg class="ask-icon"
-              viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path fill-rule="evenodd"
-              d="M6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1
-              4 13.5v-8A2.5 2.5 0 0 1 6.5 3zM12 5.6l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg><span
-              class="ask-text"><span class="ask-label">Ask Hilde</span><span class="ask-hint ask-hint-long"
-              aria-hidden="true">Ask about what you're hearing…</span><span class="ask-hint ask-hint-short"
-              aria-hidden="true">Ask about this…</span></span></button>
             <div class="player-track">
+              <span id="player-elapsed" class="player-time">0:00</span>
               <input id="player-seek" class="player-seek" type="range" min="0" max="0" step="0.1" value="0"
                 aria-label="Position in the book">
-              <span id="player-elapsed" class="player-time">0:00</span>
-              <span class="player-time player-of" aria-hidden="true">/</span>
               <span id="player-total" class="player-time">0:00</span>
             </div>
-            <div class="menu-wrap player-speed-wrap">
-              <button id="player-speed" class="player-speed" type="button" aria-haspopup="menu"
-                aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1×</button>
-              <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
+            <div class="player-controls">
+              <button id="player-play" class="player-play" type="button" aria-label="Play"
+                onclick="togglePlayback()"></button>
+              <div class="menu-wrap player-speed-wrap">
+                <button id="player-speed" class="player-speed" type="button" aria-haspopup="menu"
+                  aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1.0×</button>
+                <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
+              </div>
+              <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel"><svg class="ask-icon"
+                viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
+                d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg><span
+                class="ask-label">Ask Hilde</span></button>
             </div>
             <span id="player-key-status" class="visually-hidden" aria-live="polite"></span>
           </div>
         </div>
       </div>
+      <div id="panel-backdrop" class="panel-backdrop hidden" aria-hidden="true" onclick="closePanel()"></div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
         <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
           aria-label="Panel width" aria-valuemin="400" tabindex="0"></div>
+        <!-- Below 1200px the panel is a bottom sheet: its grabber, and the book dimmed above it. -->
+        <div class="sheet-grabber" aria-hidden="true"></div>
         <div class="panel-head">
-          <button class="link panel-back" type="button" onclick="closePanel()">← Back to the book</button>
           <div id="panel-tabs" class="panel-tabs" role="tablist" aria-label="Panel">
             <button id="panel-tab-chat" type="button" role="tab" aria-controls="chat-pane"
-              onclick="showPanelView('chat')">Ask Hilde</button>
+              onclick="showPanelView('chat')"><svg class="ask-icon"
+                viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
+                d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg>Ask Hilde</button>
             <button id="panel-tab-figure" class="hidden" type="button" role="tab"
               aria-controls="figure-view" onclick="showPanelView('figure')"></button>
             <button id="panel-tab-page" class="hidden" type="button" role="tab"
@@ -18631,11 +18689,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             onclick="closePanel()">×</button>
         </div>
         <section id="chat-pane" class="panel-view" role="tabpanel" aria-labelledby="panel-tab-chat">
+          <!-- One compact muted block under the header: the book and section asked about, then where questions
+               go (Runs on, Model: the shared picker, small) and New conversation; Read answers aloud and Web
+               search on when the server has them; an unreachable model's red line and alternatives under it. -->
           <div class="chat-head">
-            <div class="chat-where">
-              <span id="chat-book" class="chat-book"></span>
-              <span id="chat-section" class="note"></span>
-            </div>
+            <p class="chat-where">
+              <span id="chat-book" class="chat-book"></span><span id="chat-section" class="chat-section"></span>
+            </p>
             <div class="chat-options">
               <div class="model-pick" data-picker="chat"></div>
               <span id="chat-web" class="badge hidden"
@@ -18652,20 +18712,22 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             </div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
-          <!-- Play/Pause for what plays now (the book or an answer read aloud), outside the conversation's scroll,
-               so it stays at the bottom while the conversation scrolls; renderPanelPlay() draws it. -->
-          <div class="panel-play-row">
-            <button id="panel-play" class="panel-play" type="button" onclick="togglePanelPlay()"></button>
+          <!-- Fixed under the conversation's scroll: one teal button for what Hilde is doing (Stop while she writes,
+               Pause while she reads an answer aloud, Resume once paused; hidden otherwise) with its status, the
+               card attached to the next question, and the question box (renderChatAction()). -->
+          <div class="chat-foot">
+            <p id="chat-hint" class="chat-hint hidden" role="status" aria-live="polite"></p>
+            <div id="chat-action-row" class="chat-action-row hidden">
+              <button id="chat-action" class="chat-action" type="button" onclick="chatAction()"></button>
+              <span id="chat-action-status" class="chat-action-status" role="status"></span>
+            </div>
+            <div id="chat-about" class="chat-about hidden" aria-live="polite"></div>
+            <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
+              <label for="chat-input" class="visually-hidden">Message</label>
+              <textarea id="chat-input" rows="1" maxlength="8000" placeholder="Type a question"></textarea>
+              <button id="chat-send" type="submit">Send</button>
+            </form>
           </div>
-          <p id="chat-hint" class="chat-hint hidden" role="status" aria-live="polite"></p>
-          <div id="chat-about" class="chat-about hidden" aria-live="polite"></div>
-          <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
-            <label for="chat-input" class="visually-hidden">Message</label>
-            <textarea id="chat-input" rows="2" maxlength="8000"
-              placeholder="Ask about this book, or ask Hilde to write a summary file"></textarea>
-            <button id="chat-send" class="primary" type="submit">Send</button>
-            <button id="chat-stop" class="hidden" type="button" onclick="stopChat()">Stop</button>
-          </form>
         </section>
         <section id="figure-view" class="panel-view hidden" role="tabpanel" aria-labelledby="panel-tab-figure">
           <div id="figure-scroll" class="panel-scroll">
@@ -20285,7 +20347,8 @@ function setTextView(view) {
 
 // --- The player bar -----------------------------------------------------------
 const SPEED_CHOICES = [0.75, 1, 1.25, 1.5, 1.75, 2];
-function formatSpeed(speed) { return `${Number(speed.toFixed(2))}×`; }
+// "1.0×", "1.25×": the speed with at least one decimal.
+function formatSpeed(speed) { return `${Number.isInteger(Number(speed.toFixed(2))) ? speed.toFixed(1) : Number(speed.toFixed(2))}×`; }
 function formatClock(seconds) {
   const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const hours = Math.floor(total / 3600), minutes = Math.floor(total / 60) % 60;
@@ -20303,7 +20366,13 @@ function renderPlayerTime() {
   const seek = $("player-seek");
   seek.max = String(duration);
   if (!seekDragging) seek.value = String(time);
+  paintSeek();
   seek.setAttribute("aria-valuetext", `${formatClock(time)} of ${formatClock(duration)}`);
+}
+// The seek bar's played part, lighter (the --seek stop of its track).
+function paintSeek() {
+  const seek = $("player-seek"), most = Number(seek.max);
+  seek.style.setProperty("--seek", `${most > 0 ? Math.min(100, Number(seek.value) / most * 100) : 0}%`);
 }
 function renderPlayer() {
   const audio = readerAudio, playing = !!audio && !audio.paused;
@@ -20316,7 +20385,6 @@ function renderPlayer() {
   for (const item of $("speed-menu").children)
     item.setAttribute("aria-checked", String(Math.abs(Number(item.dataset.speed) - speed) < 1e-9));
   renderPlayerTime();
-  renderPanelPlay();
 }
 function togglePlayback() {
   if (!readerAudio) return;
@@ -20699,6 +20767,7 @@ function narrowScreen() { return !window.matchMedia("(min-width:1200px)").matche
 function chatShown() { return panelOpen && panelView === "chat"; }
 function renderPanel() {
   $("side-panel").classList.toggle("hidden", !panelOpen);
+  $("panel-backdrop").classList.toggle("hidden", !panelOpen);
   $("book-view").classList.toggle("panel-open", panelOpen);
   document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
   for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"]]) {
@@ -20754,15 +20823,6 @@ function fitVisualViewport() {
 // The docked player's height, which the page leaves free beneath the text.
 function fitDock() {
   document.documentElement.style.setProperty("--dock-h", `${$("player-dock").offsetHeight}px`);
-}
-// Ask Hilde's placeholder: the long one, else the short one where the long one would be cut, else none, so its
-// text is never cut. It runs whenever the field's size changes (and once the fonts are in).
-function fitAsk() {
-  const ask = $("ask-hilde"), cut = (hint) => hint.scrollWidth > hint.clientWidth;
-  ask.classList.remove("short", "bare");
-  if (!cut(ask.querySelector(".ask-hint-long"))) return;
-  ask.classList.add("short");
-  if (cut(ask.querySelector(".ask-hint-short"))) ask.classList.replace("short", "bare");
 }
 
 // A figure, large: the picture as the PDF lays it out, the paper's caption
@@ -20866,13 +20926,25 @@ async function loadChat() {
 }
 function applyChat(data) {
   chatData = data;
+  if (!data.running) chatStopping = false;
   renderChatFiles(data.files || []);
   const log = $("chat-log");
   log.replaceChildren(...data.conversation.map(chatEntryElement).filter(Boolean));
   chatLive = null;
-  if (data.partial) chatLiveElement().textContent = data.partial;
+  if (data.partial) {
+    chatLiveElement().textContent = data.partial;
+    if (chatStopping) markStopped(chatLive);
+  }
   scrollChat();
   renderChatControls();
+}
+// An answer stopped while Hilde wrote it keeps the text that arrived, marked "Stopped" under it.
+function markStopped(node) {
+  if (node.querySelector(".chat-stopped")) return;
+  const mark = document.createElement("p");
+  mark.className = "chat-stopped";
+  mark.textContent = "Stopped";
+  node.append(mark);
 }
 function chatEntryElement(entry) {
   if (entry.role === "assistant" && !entry.text) return null;
@@ -20885,6 +20957,7 @@ function chatEntryElement(entry) {
     for (const link of node.querySelectorAll("a:not(.chat-cite)")) {
       link.target = "_blank"; link.rel = "noopener noreferrer";
     }
+    if (entry.stopped) markStopped(node);
   } else if (entry.role === "user") {
     // A past question shows what went with it, as its chip did.
     if (entry.context) node.append(chipElement(entry.context));
@@ -20910,6 +20983,7 @@ function chatEntryElement(entry) {
     const listen = document.createElement("button");
     listen.type = "button";
     listen.className = "chat-listen";
+    listen.textContent = "🔈 Read aloud";
     const restart = document.createElement("button");
     restart.type = "button";
     restart.className = "link chat-restart hidden";
@@ -20985,8 +21059,7 @@ function renderChatControls() {
   $("chat-problem").classList.toggle("hidden", !problem);
   $("chat-problem-text").textContent = problem;
   $("chat-add-model").classList.toggle("hidden", !problem || !!(chatData && chatData.problem));
-  $("chat-send").classList.toggle("hidden", running);
-  $("chat-stop").classList.toggle("hidden", !running);
+  renderChatAction();
   renderSendButton();
   $("chat-send").disabled = chatSending || !!(chatData && chatData.problem);
   // The box stays the listener's own; with a part attached, Enter on an
@@ -21012,22 +21085,22 @@ function renderSendButton() {
 }
 
 // Reading answers aloud: one audio element plays an answer's clips in turn,
-// fetching the next while one plays, and marks the block each clip reads.
+// fetching the next while one plays, and keeps the block each clip reads in
+// view (`.chat-speaking`, unstyled: the answer stays plain text).
 // Pause keeps the answer's place (clip and time); Resume goes on from it.
-// A tap (Listen, or Send with Read answers aloud on) starts it, so a phone
-// lets an answer finished later play too.
+// A tap (Read aloud, or Send with Read answers aloud on) starts it, so a
+// phone lets an answer finished later play too.
 const chatVoice = new Audio();
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 let chatSpeaking = null;  // { node, button, number, next, url }
-const VOICE_LABELS = {
-  listen:"🔈 Read aloud", starting:"Starting…", pause:"❚❚ Pause reading", resume:"🔈 Resume reading",
-};
+// Under an answer: Read aloud to start it, or Start over once it is paused;
+// pausing and resuming are the panel's own button (renderChatAction()).
 function setVoiceButton(node, mode) {
   const button = node.querySelector(".chat-listen");
-  button.textContent = VOICE_LABELS[mode];
   button.dataset.mode = mode;
-  node.querySelector(".chat-restart").classList.toggle("hidden", mode === "listen" || mode === "starting");
-  renderPanelPlay();
+  button.classList.toggle("hidden", mode !== "listen");
+  node.querySelector(".chat-restart").classList.toggle("hidden", mode !== "resume");
+  renderChatAction();
 }
 
 // One sound at a time: whatever starts playing (the book, a voice preview or
@@ -21044,35 +21117,41 @@ function pauseOtherSounds(playing) {
     if (media === chatVoice && chatSpeaking) stopSpeaking();
     else media.pause();
   }
-  // The book playing again: the panel's Play/Pause is the book's.
+  // The book playing again: an answer paused partway is no longer offered to resume.
   if (playing === readerAudio) panelAnswer = null;
-  renderPanelPlay();
+  renderChatAction();
 }
-// The Ask Hilde panel's Play/Pause, fixed at its bottom: it plays or pauses
-// what plays now, else what played last: an answer read aloud (while it is
-// read, or paused partway), else the book. An answer that ends gives it back
-// to the book, which waits (paused) for Play book.
+// The Ask Hilde panel's one button, fixed under the conversation, with a
+// short status beside it: Stop while Hilde writes an answer ("Writing…"),
+// Pause while she reads one aloud ("Reading aloud"), Resume once that is
+// paused ("Paused"); hidden otherwise. The book is the player bar's alone.
 let panelAnswer = null;  // the answer read aloud last, until it ends or the book plays
-function panelSource() {
-  return chatSpeaking || (panelAnswer && panelAnswer.isConnected && panelAnswer.chatPlace) ? "answer" : "book";
+let chatStopping = false;  // Stop pressed, the turn not ended yet
+const STOP_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3z"/></svg>';
+const CHAT_ACTIONS = {
+  stop:["Stop", STOP_ICON, "Writing…"], pause:["Pause", PAUSE_ICON, "Reading aloud"],
+  resume:["Resume", PLAY_ICON, "Paused"],
+};
+function chatActionMode() {
+  if (chatData && chatData.running && !chatStopping) return "stop";
+  if (chatSpeaking) return "pause";
+  return panelAnswer && panelAnswer.isConnected && panelAnswer.chatPlace ? "resume" : "";
 }
-function renderPanelPlay() {
-  const button = $("panel-play"), source = panelSource();
-  const playing = source === "answer" ? !!chatSpeaking : !!readerAudio && !readerAudio.paused;
-  const label = `${playing ? "Pause" : "Play"} ${source}`;
-  if (button.getAttribute("aria-label") === label && button.firstChild) return;
-  button.innerHTML = `<span class="panel-play-icon">${playing ? PAUSE_ICON : PLAY_ICON}</span>`;
+function renderChatAction() {
+  const mode = chatActionMode(), button = $("chat-action");
+  $("chat-action-row").classList.toggle("hidden", !mode);
+  if ((button.dataset.mode || "") === mode) return;
+  button.dataset.mode = mode;
+  const [label, icon, status] = CHAT_ACTIONS[mode] || ["", "", ""];
+  button.innerHTML = icon;
   button.append(label);
-  button.setAttribute("aria-label", label);
-  button.dataset.mode = playing ? "pause" : "play";
+  $("chat-action-status").textContent = status;
 }
-function togglePanelPlay() {
-  if (panelSource() === "answer") {
-    if (chatSpeaking) stopSpeaking();
-    else speakAnswer(panelAnswer.querySelector(".chat-listen"));
-  } else if (readerAudio) {
-    if (readerAudio.paused) readerAudio.play().catch(() => {}); else readerAudio.pause();
-  }
+function chatAction() {
+  const mode = chatActionMode();
+  if (mode === "stop") stopChat();
+  else if (mode === "pause") stopSpeaking();
+  else if (mode === "resume") speakAnswer(panelAnswer.querySelector(".chat-listen"));
 }
 function unlockChatVoice() {
   if (chatSpeaking) return;
@@ -21105,7 +21184,7 @@ function markChatBlock(node, block) {
 function stopSpeaking(finished = false) {
   const speaking = chatSpeaking;
   chatSpeaking = null;
-  if (!speaking) { chatVoice.pause(); renderPanelPlay(); return; }
+  if (!speaking) { chatVoice.pause(); renderChatAction(); return; }
   if (!finished && speaking.number) {
     speaking.node.chatPlace = { number:speaking.number, time:chatVoice.currentTime };
   }
@@ -21115,7 +21194,7 @@ function stopSpeaking(finished = false) {
   setVoiceButton(speaking.node, speaking.node.chatPlace ? "resume" : "listen");
   if (speaking.url) URL.revokeObjectURL(speaking.url);
   speaking.next?.then((url) => URL.revokeObjectURL(url), () => {});
-  renderPanelPlay();
+  renderChatAction();
 }
 async function speakAnswer(button, { restart = false } = {}) {
   const node = button.closest(".chat-assistant");
@@ -21170,7 +21249,8 @@ function speakLatestAnswer() {
   const nodes = [...$("chat-log").children];
   const asked = nodes.findLastIndex((node) => node.classList.contains("chat-user"));
   const answer = nodes.slice(asked + 1).reverse().find((node) => node.classList.contains("chat-assistant"));
-  const button = answer && answer.querySelector(".chat-listen");
+  // An answer stopped partway is not read by itself; its Read aloud still can.
+  const button = answer && !answer.querySelector(".chat-stopped") && answer.querySelector(".chat-listen");
   if (button) speakAnswer(button);
 }
 
@@ -21200,7 +21280,7 @@ function renderChatHeader() {
 // question goes without it, saying so. An empty box with a part attached
 // asks Hilde to explain that part (Send reads "Explain this part").
 const DEFAULT_QUESTION = "Explain this part.";
-const CHAT_PLACEHOLDER = "Ask about this book, or ask Hilde to write a summary file";
+const CHAT_PLACEHOLDER = "Type a question";
 let chatQueued = false, chatSending = false;
 function chatHint(message = "", problem = false) {
   const hint = $("chat-hint");
@@ -21286,8 +21366,9 @@ function connectChat(from) {
   source.onmessage = (message) => {
     if (chatStream !== source) return;
     const event = JSON.parse(message.data);
-    if (event.type === "text") chatLiveElement().textContent += event.delta;
-    else if (event.type === "reset") { if (chatLive) chatLive.textContent = ""; }
+    // After Stop, what was still on its way is not shown; the server keeps what it had.
+    if (event.type === "text") { if (!chatStopping) chatLiveElement().textContent += event.delta; }
+    else if (event.type === "reset") { if (chatLive && !chatStopping) chatLive.textContent = ""; }
     else if (event.type === "message") {
       if (chatLive) { chatLive.remove(); chatLive = null; }
       const node = chatEntryElement(event.entry);
@@ -21312,13 +21393,24 @@ function stopChatStream() {
   if (chatStream) chatStream.close();
   chatStream = null;
 }
+// Stop ends the answer being written: the button and its status go at once,
+// the text that arrived stays, marked "Stopped" (the server keeps it so).
 async function stopChat() {
+  if (!chatData || !chatData.running || chatStopping) return;
+  chatStopping = true;
+  if (chatLive) markStopped(chatLive);
+  renderChatControls();
   try {
     await jsonRequest("/api/chat/stop", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ book:state.player.book }),
     });
-  } catch (error) { setStatus(error.message, true); }
+  } catch (error) {
+    chatStopping = false;
+    chatLive?.querySelector(".chat-stopped")?.remove();
+    renderChatControls();
+    setStatus(error.message, true);
+  }
 }
 async function newChat() {
   const book = bookById(state.player.book);
@@ -25305,6 +25397,7 @@ $("player-seek").addEventListener("pointerdown", () => { seekDragging = true; })
 $("player-seek").addEventListener("pointerup", () => { seekDragging = false; });
 $("player-seek").addEventListener("input", (event) => {
   if (readerAudio) readerAudio.currentTime = Number(event.target.value);
+  paintSeek();
 });
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".menu-wrap, #row-menu, .row-more")) closeMenus();
@@ -25390,8 +25483,6 @@ window.addEventListener("resize", () => {
     "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
-new ResizeObserver(fitAsk).observe($("ask-hilde"));
-document.fonts.ready.then(fitAsk);
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();

@@ -801,33 +801,37 @@ A small **by Zeki Works** signature with `assets/zeki.jpg` closes the page. No m
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
 six colours, each in one role, used only through tokens: blue `--accent`
-(#2a5fe0) fills primary buttons, the Play/Pause buttons (the player bar's and
-the chat panel's), the active step marker, and a pressed preview, with white
-ink (`--accent-ink`, 5.5:1); `--accent-light`
+(#2a5fe0) fills primary buttons, the player bar's Play/Pause, the active step
+marker, and a pressed preview, with white ink (`--accent-ink`, 5.5:1); `--accent-light`
 (#5aa2ff, 6.6:1 on the #1b1b1b ground) draws selected states (tab and switch
 underlines, the focus outline, links, indicators, a card's border, the LED
-dots, the reading highlight); `--accent-soft` mixes 16% of it; teal `--ask`
+dots, the reading highlight) and never fills a button; `--accent-soft` mixes
+16% of it; teal `--ask`
 (#2bb3a3; its light-mode value #127a6e is recorded beside it for Phase 3) only
-Ask Hilde: the player's **Ask Hilde** field (a 15% tint over `--field`, a 1 px
-border, the icon), the chat panel's header while the chat is shown (a 3 px top
-edge and the **Ask Hilde** tab's text and underline), and every Ask Hilde card
+Ask Hilde: the player's **Ask Hilde** button (a 12% tint over `--surface`, a
+1 px border of 65% `--ask`, teal text and sparkle), the chat panel's header
+while the chat is shown (the sparkle and **Ask Hilde** in teal), the chat's
+Stop / Pause / Resume button (`#chat-action`: a solid `--ask` fill with dark
+ink #0e1a18), and every Ask Hilde card
 (`.chip`: a selection, a passage, a figure, Preparing, Couldn't attach, a
-selection too long to attach, and the collapsed cards of past questions; the
-card sets `--accent-light` to `--ask`, so its left rule, attached outline,
+selection too long to attach, and the collapsed cards of past questions: a
+1 px border of 65% `--ask` on a 12% tint; the
+card sets `--accent-light` to `--ask`, so its attached outline,
 scope-switch underline, details mark, and focus outlines are teal, and so is
 its title; `#chat-about`'s attach glow is 16% `--ask`); green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
-running" items, red `--bad` (#e5534b) errors and destructive actions, always
-with an icon and text. Contrast of `--ask`, dark: the field's off-white label
-12.4:1 and muted placeholder 5.7:1 on its tint (10.8:1 and 4.9:1 on the hover
-tint), its border 6.0:1 on the bar and icon 5.5:1 on the tint, the tab text
-5.2:1 on `--raised`, a card's title 7.0:1 on `--field` (6.0:1 on `--surface`, a past question's card); light (#127a6e on
+running" items and the played part of the seek bar, red `--bad` (#e5534b) errors and destructive actions, always
+with an icon and text. Contrast of `--ask`, dark: the Ask Hilde button's teal
+text and sparkle 4.9:1 on its tint (4.6:1 on the 16% hover tint), its border
+3.3:1 on the bar; the header's teal 6.0:1 on `--surface`; a card's border
+3.3:1 and title 4.9:1 on its tint; the dark ink of Stop / Pause / Resume 6.9:1
+on `--ask`; its gray status (`--dim`) 6.1:1 on `--surface`; light (#127a6e on
 white): border, icon, and title 5.2:1, icon 4.2:1 on its 15% tint, dark text
 14:1 on that tint. Selected text (`::selection`) is a neutral gray fill
 (#5c5c5c). No orange is left; no glow stays lit (the LED dots
-are flat); an answer being read aloud (`.chat-speaking`) is white on
-`--accent`; danger buttons are dark ink (`var(--bg)`) on `--bad`.
+are flat); an answer being read aloud stays plain text (no fill); danger buttons are dark ink (`var(--bg)`) on
+`--bad`.
 
 Buttons are raised: a 1 px top highlight (inset white 10%) and a 2 px shadow
 below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
@@ -1312,18 +1316,20 @@ visually hidden step states).
 
 Listen below 768 px: the text takes the full width, the view's controls
 (`#listen-bar`, `display: contents`) scroll with it, and menus dock above the
-player (`narrowLayout()`); the chat, a figure, and a source page open as
-full-screen sheets. Below 600 px of dock width the player bar takes the phone
-layout (see Reader). Below 1200 px the side panel always
-replaces the reading view (`.side-panel` fixed over it, `html.sheet-open`
-stopping the page from scrolling beneath), with **← Back to the book**. Its
-height follows the visual viewport (`fitVisualViewport()` sets `--vv-height`
-and `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of
-the screen leaves out the chat's book and section lines, the model picker, and
-the no-model notice (`#chat-problem`; a send then says why in `#chat-hint`), and a context card scrolls
-within a quarter of the visible height), so the message box and **Send** stay
-visible with an on-screen keyboard. Every Listen control is at least 44 px on
-phones and coarse pointers.
+player (`narrowLayout()`). Below 1200 px the side panel (the chat, a figure, a
+source page) is a bottom sheet: fixed at the foot of the visual viewport, the
+full width up to 720 px (centred beyond), 60% of the visible height
+(`--vv-height`), rounded at the top with a grabber (`.sheet-grabber`), the book
+dimmed above it by `#panel-backdrop` (50% black; a tap there closes the
+panel), and `html.sheet-open` stopping the page from scrolling beneath; **×**
+closes it as on a wide screen. `fitVisualViewport()` sets `--vv-height` and
+`--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of the
+screen makes the sheet the whole visual viewport and leaves out the chat's
+book and section line, the model picker, and the no-model notice
+(`#chat-problem`; a send then says why in `#chat-hint`), and a context card
+scrolls within a quarter of the visible height, so the message box and
+**Send** stay visible with an on-screen keyboard. Every Listen control is at
+least 44 px on phones and coarse pointers.
 
 ### Voice previews
 
@@ -1699,24 +1705,27 @@ description was checked.
 
 The player bar is the page's own, one bar docked at the bottom of every
 screen (`#player-dock`, `position: fixed`, inside
-`env(safe-area-inset-bottom)`); with the side panel open beside the text
+`env(safe-area-inset-bottom)`, its `--surface` background the full width
+under a 1 px `--line` top border); with the side panel open beside the text
 (1200 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
-stays under the reading column. Its controls keep to the text column's
-width (`68ch` of the reading font, centred), 12 px apart: from left to right a
-large play/pause (48 px), **Ask Hilde**, the seek bar (it takes the rest), elapsed
-and total time, and a speed button showing the speed ("1.25×") that opens 0.75×
-to 2× upwards. **Ask Hilde** is the same button, drawn as a field so it is easy
-to see: 340 px (`flex: 0 1 340px`, at most 360 px, never stretched), in Ask
-Hilde's teal: a 15% `--ask` tint over `--field`, a 1 px `--ask` border, a teal chat icon, the bold
-label and a muted placeholder (`aria-hidden`, so its name stays "Ask Hilde"):
-"Ask about what you're hearing…", or "Ask about this…" where that would be cut,
-or none (`fitAsk()`, on a `ResizeObserver` of the button), so its text is never
-cut. When the dock (`container: dock`) is narrower than 600 px, `.player-bar`
-becomes a grid: the seek bar takes a full-width row between the elapsed time
-(left end) and the total (right end), and under it come play/pause on the left
-(56 × 56 px), **Ask Hilde** filling the space left (56 px tall, the label over
-the placeholder), and the speed on the right (at least 44 × 44 px); every target
-is at least 44 × 44 px. There is no mute button
+stays under the reading column. Its controls sit in one column
+(`.player-bar`, at most 560 px and centred; on a phone the dock's 16 px
+padding leaves them 16 px from the screen's edges), in two rows 8 px apart,
+on every size: `.player-track`, the thin seek bar between the elapsed time
+(left end) and the total (right end), 12 px apart; then `.player-controls`:
+play/pause (44 px, 48 px below 768 px), 12 px later the speed button showing
+the speed with at least one decimal ("1.0×", "1.25×"; `formatSpeed()`),
+(a small flat outlined pill, 24 px tall, no raised shadow) which opens 0.75×
+to 2× upwards, and **Ask Hilde** at the right end. The seek
+bar is a styled range: a 4 px `--line` track, the part played `--off`
+(`--seek`, set by `paintSeek()`), a 12 px knob in `--text`. **Ask Hilde** is
+small, just wide enough for the sparkle and its name (`min-width: 140px`, 34 px
+tall), in Ask Hilde's teal (see the palette). On phones and coarse pointers
+every target is at least 44 × 44 px: **Ask Hilde** grows to 44 px, the speed
+pill keeps its size inside an invisible 44 px frame (its `::before`), and the
+seek input is 44 px tall over its 18 px row (the controls
+row sits over its lower edge; the bar's top padding grows so it stays inside
+the bar). There is no mute button
 or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
 bar's height, on a `ResizeObserver`; the page's bottom padding
 (`body:has(main.reading)`) is that height, so the last paragraph ends above
@@ -1759,20 +1768,31 @@ about this figure** pause it the same way; a click in the text never asks
 attached; else, with no card and no draft, the passage playing at the press
 is (a figure passage as a figure). `selectedPassages()` takes only passages
 the selection takes words from, so a triple-click ending at offset 0 of the
-next paragraph does not attach it. The chat's head shows the book, the
-section of the card (else of the passage playing), the shared model picker
-(the `chat` picker of Create step 3's component; `chatModel()` is its usable
-choice, kept as `player.chat_model` once used; first use follows the same
-rules as the text model, and an unreachable model is never replaced silently),
-**Read answers aloud**, and **New conversation**; then the
+next paragraph does not attach it. The panel's header (`.panel-head`) is the
+tablist, whose **Ask Hilde** tab carries the sparkle (`.ask-icon`, the bar
+button's own) and reads as a teal title while the chat is shown, and **×**
+(`closePanel()`) at the right on every size. Under it the chat's compact,
+muted settings block (`.chat-head`): one line with the book and the section of
+the card (else of the passage playing), then the shared model picker in a
+small form (the `chat` picker of Create step 3's component, its **Runs on** and
+**Model** labels visually hidden, its **Change** left out as the model box
+opens the same list; `chatModel()` is its usable choice, kept as
+`player.chat_model` once used; first use follows the same rules as the text
+model, and an unreachable model is never replaced silently: its red line and
+alternatives wrap under it), **Read answers aloud** when the server reads
+aloud, and **New conversation** at the end; then the
 problem line (an old book's `CHAT_OLD_BOOK`, or no models, offering
-one **Providers…** link, `openProvidersPanel()`), the conversation, the hint line
-(`#chat-hint`, `chatHint()`), the context card, and directly under it the
-compose box, empty for the listener's own question, whose placeholder says
-what Enter does: "Type a question, or press Enter to explain the selection"
-(or "… the figure", "… this part"), and with nothing attached "Ask about this
-book, or ask Hilde to write a summary file". Enter sends, Shift+Enter breaks
-the line, **Stop** replaces **Send** while Hilde answers.
+one **Providers…** link, `openProvidersPanel()`), the conversation (a past
+question: its card the panel's width, its words right-aligned in a bubble),
+and, outside the conversation's scroll (`.chat-foot`), the hint line
+(`#chat-hint`, `chatHint()`), the panel's one button row
+(`#chat-action-row`, below), the context card, and directly under it the
+compose box: one bordered field (`#chat-compose`) holding the text box and a
+small outlined **Send**, empty for the listener's own question, whose
+placeholder says what Enter does: "Type a question, or press Enter to explain
+the selection" (or "… the figure", "… this part"), and with nothing attached
+"Type a question". Enter sends, Shift+Enter breaks the line; while Hilde
+answers, the button row's **Stop** ends the answer.
 
 The context card (`attachAbout()`) is the `about` of the question, frozen when
 attached: playback moving on never changes it. The page asks
@@ -2018,12 +2038,13 @@ The page plays clips through one `Audio` element, fetching the next while
 one plays (7 to 9 ms between clips). `/api/chat/speak` returns each clip's
 block; `chatBlocks()` finds the page's blocks in the same order (`p`,
 `h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and the playing one
-takes the book's spoken-word colors (`.chat-speaking`) and scrolls into view.
-The pill under an answer (dashed, unlike the book's round play button) reads
-**🔈 Read aloud**, **❚❚ Pause reading** while it plays, and **🔈 Resume
-reading** once paused: a pause, or another sound starting, keeps the answer's
-place (`chatPlace`: clip and time) and **Start over** shows; Resume asks the
-server for that clip, which it kept, and seeks to the time. A tap starts it:
+is marked `.chat-speaking` (unstyled: the answer stays plain text) and
+scrolls into view. Under an answer, `setVoiceButton()` shows only the dashed
+**🔈 Read aloud** pill (unlike the book's round play button) while the answer
+is not being read, or only **Start over** once it is paused partway; pausing
+and resuming are the panel's button (below). A pause, or another sound
+starting, keeps the answer's place (`chatPlace`: clip and time); Resume asks
+the server for that clip, which it kept, and seeks to the time. A tap starts it:
 **Read aloud**, or **Send** with Read answers aloud on, which plays a silent
 clip so a phone allows the answer that finishes later to play (the silent
 clip pauses nothing). An answer starting to play pauses the book
@@ -2031,22 +2052,35 @@ clip pauses nothing). An answer starting to play pauses the book
 Closing the panel and another book stop it. With Read answers aloud on, the
 last answer of a finished turn is read.
 
-The chat pane's Play/Pause (`#panel-play`, in `.panel-play-row` between
-`#chat-log` and the hint, chip, and question box) is outside the
-conversation's scroll, so it stays at the bottom of the panel and of the phone
-sheet while the conversation scrolls and covers neither the conversation nor
-the box. `panelSource()` says what it is for: the answer while one is read
-(`chatSpeaking`, also while starting) or paused partway (`panelAnswer`, the
-answer read last, with its `chatPlace`), else the book; `panelAnswer` is
-cleared when the book plays, and an answer that ends (`stopSpeaking(true)`)
-clears its place, so the control is the book's again. `renderPanelPlay()`
-(from `renderPlayer()`, `pauseOtherSounds()`, `setVoiceButton()`, and
-`stopSpeaking()`) draws a play or pause icon and the label, white on a filled `--accent` button, also its
-`aria-label`: "Pause book", "Play book", "Pause answer", or "Play answer";
-`togglePanelPlay()` pauses or plays that source (`stopSpeaking()` keeps the
-answer's place; `speakAnswer()` goes on from it). It is at least 44 × 44 px;
-with a phone's keyboard open (`.keyboard-open`) it is hidden so the box and
-Send stay in view. It replaces the former per-answer **▶ Resume book**.
+The chat pane's one button (`#chat-action`, with its gray status
+`#chat-action-status`, in `#chat-action-row` inside `.chat-foot`, just above
+the context card and question box) is outside the conversation's scroll, so it
+stays at the bottom of the panel and of the phone's sheet while the
+conversation scrolls. It is for what Hilde is doing, never the book (the book
+is the player bar's alone). `chatActionMode()`: **■ Stop** with "Writing…"
+while the turn runs (`chatData.running`) and Stop was not pressed
+(`chatStopping`); else **❚❚ Pause** with "Reading aloud" while an answer is
+read (`chatSpeaking`, also while starting); else **▶ Resume** with "Paused"
+for the answer read last (`panelAnswer`) paused partway (its `chatPlace`);
+else the row is hidden. `panelAnswer` is cleared when the book plays, and an
+answer that ends (`stopSpeaking(true)`) clears its place. `renderChatAction()`
+(from `renderChatControls()`, `pauseOtherSounds()`, `setVoiceButton()`, and
+`stopSpeaking()`) draws the icon and label, dark ink on a solid `--ask` pill;
+`chatAction()` stops the turn (`stopChat()`), pauses the answer
+(`stopSpeaking()` keeps its place), or goes on (`speakAnswer()`). The
+per-answer **🔈 Read aloud** starts reading an answer, and **Start over** reads
+a paused one from its beginning. It is at least 44 px tall on phones and coarse pointers.
+
+`stopChat()` sets `chatStopping`, so the button and status go at once and the
+answer arriving (`chatLive`) is marked **Stopped** (`markStopped()`, a muted
+`.chat-stopped` line under it; later text events are not shown), then asks
+`POST /api/chat/stop`. The server's turn, interrupted, keeps the text that had
+arrived (`ChatTurn.keep_stopped()`: the partial reply saved and published as
+the assistant's entry with `"stopped": true`, which `chat_display_entry()`
+passes on; with no text yet, the notice "Stopped." as before), then ends;
+`applyChat()` clears `chatStopping` once the turn is no longer running. An
+answer marked stopped is drawn with the same mark after a reload and is not
+read aloud by **Read answers aloud**.
 
 ## HTTP routes
 

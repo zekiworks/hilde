@@ -336,19 +336,19 @@ voice picker in that line. Above the text, and staying on screen while it
 scrolls (on a phone, it scrolls away with the text), are **Follow along**,
 the **Narration text | Source text** switch, and **⋯** (More). The player is
 one bar docked at the bottom of the screen, on a computer and on a phone alike,
-and stays there while you scroll: from left to right a large play/pause
-button, **Ask Hilde**, the seek bar, the elapsed and total time, and the speed
-(it shows, for example, **1.25×**; click it to choose 0.75× to 2×). **Ask
-Hilde** looks like a short teal field (teal is Ask Hilde's own colour): a teal chat icon, **Ask
-Hilde**, and "Ask about what you're hearing…" (shorter, "Ask about this…",
-where there is less room). On a phone, or any window too narrow for one row
-(under about 620 px), the seek bar takes a thin row of its own, the elapsed time
-at its left end and the total at its right, and below it a large play/pause on
-the left, **Ask Hilde** filling the middle, and the speed on the right; the bar
-keeps clear of the phone's home indicator. The bar never covers the text: the page
-leaves room for it below the last paragraph. The text runs in a comfortable
-reading column; on a wide screen the panel for the chat, a figure, or a source
-page opens beside it, and the player bar then stays under the text.
+and stays there while you scroll; its background spans the width under a thin
+line. It has two rows: the thin seek bar, with the elapsed time at its left end
+and the total at its right end; then the round blue play/pause button and the
+speed, a small outlined pill, on the left (it shows, for example, **1.0×** or
+**1.25×**; click it to choose 0.75× to 2×), and **Ask Hilde** on the right: a small teal button (teal
+is Ask Hilde's own colour) with Hilde's sparkle and the words **Ask Hilde**. On
+a computer both rows sit in one centred column at most 560 px wide; on a phone
+they run the full width, 16 px from the screen's edges, with a larger
+play/pause. The bar keeps clear of the phone's home indicator. The bar never
+covers the text: the page leaves room for it below the last paragraph. The
+text runs in a comfortable reading column; on a wide screen the panel for the
+chat, a figure, or a source page opens beside it, and the player bar then
+stays under the text.
 
 **⋯** holds **Download MP3** (the voice being played; the button reads
 **Download started** for a few seconds), **Download source** (the document the
@@ -395,8 +395,8 @@ select it: on a phone, long-press a word (its handles stretch the selection);
 on a computer, drag over any span. Hilde's **Ask about this** button then
 appears next to the selection (your phone's own Copy menu may appear too).
 Nothing opens until you press **Ask about this** (or **Ask Hilde** in the
-player): then the book pauses and the chat opens (on a phone, as a full-screen
-sheet) with a card headed **Selected text**: your words in quotes, and under
+player): then the book pauses and the chat opens (on a phone, as a sheet from
+the bottom) with a card headed **Selected text**: your words in quotes, and under
 **Context details** the section they are in, all of your selection, and the
 sentence around it as context. The card's **Word | Sentence | Paragraph**
 switch widens what you ask about, and the book marks it in gray; **Listen from
@@ -427,12 +427,15 @@ panel of the source figure". Click a figure to see it large beside the text
 with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
-**Ask Hilde** opens the chat beside the book (on a phone or a narrow window,
-in its place, with **← Back to the book**; its header has a teal top edge and a teal **Ask Hilde** tab) and pauses the book, as **Ask
-about this** on selected words and **Ask about this figure** do;
-it waits at that sentence until you press play (in the player bar, or **Play
-book** at the bottom of the chat); closing the
-chat never starts it. Ask
+**Ask Hilde** opens the chat beside the book (on a phone or a window narrower
+than 1200 px, as a sheet rising from the bottom over about 60% of the screen,
+with a grabber and rounded top, the book dimmed above it: **×** or a tap on the
+book closes it; with the keyboard open it grows so **Send** stays in view). Its
+header is Hilde's sparkle and **Ask Hilde** in teal, with **×** at the right.
+It pauses the book, as **Ask about this** on selected words and **Ask about
+this figure** do; the book waits at that sentence until you press play in the
+player bar (the chat has no play button for the book); closing the chat never
+starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees a one-line summary of every paragraph and reads
 the paragraphs it needs before answering. For a long book on a model with a
@@ -443,12 +446,16 @@ is a link that scrolls the book to it. When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's header shows **Web
-search on**. Its answer streams in as it writes;
-**Stop** ends it. The model is one of yours: pick it at the top of the chat
-with the same model picker as on **Create** (see above); a local model
-answers from the server that offers it. The picker shows **Local** or **Cloud:
-<Provider> · Subscription/API key**, so you see where your question goes before you send it, and
-remembers the model you used last; it never starts on a cloud model by itself.
+search on**. Its answer streams in as it writes. The model is one of yours:
+pick it in the small line under the chat's header (the book and the section
+asked about above it), with the same model picker as on **Create** (see above),
+in a compact form (**Runs on** and **Model** boxes; the model box opens the
+list); a local model answers from the server that offers it. The picker shows
+**Local** or **Cloud: <Provider> · Subscription/API key**, so you see where your
+question goes before you send it, and remembers the model you used last; it
+never starts on a cloud model by itself. A model that does not answer shows in
+red under it, with others to use instead; **New conversation** is at the end of
+that line.
 With no model at all, the chat asks you to add one first, with a **Providers…**
 link that opens **Settings** at **Providers**. ChatGPT, the Anthropic, OpenAI, Google Gemini, and
 DeepSeek API keys, and local models can chat; Claude Code models cannot:
@@ -489,12 +496,13 @@ motion). It reads **Preparing…** while Hilde gathers it; **Send** then reads
 as the part is ready. If gathering takes longer than 10 seconds or fails, the
 part reads **Couldn't attach: Retry · Remove**: **Retry** asks for the same
 part again, **Remove** drops it. A question sent then goes without it, and the
-chat says **Sent without the selected text**. The box stays empty for your own
-question; its hint says what Enter does, for example "Type a question, or
-press Enter to explain the selection" (or the figure, or this part), and with
-nothing attached "Ask about this book, or ask Hilde to write a summary file".
-With a part attached and nothing typed, the button reads **Explain this part**
-and it, or Enter, sends "Explain this part."; once you type it reads **Send**.
+chat says **Sent without the selected text**. The question box is one bordered
+field with a small outlined button inside it on the right. The box stays empty
+for your own question; its hint says what Enter does, for example "Type a
+question, or press Enter to explain the selection" (or the figure, or this
+part), and with nothing attached "Type a question". With a part attached and
+nothing typed, the button reads **Explain this part** and it, or Enter, sends
+"Explain this part."; once you type it reads **Send**.
 Your question stays in the box until Hilde has it: if
 sending fails, the chat says why above the box and the text is still there.
 The chat also says why when nothing can go yet: an empty box, models still
@@ -502,27 +510,28 @@ loading or none added, or Hilde still answering.
 
 **🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
 own voice (or, when the Hilde voice is gone from **Voices**, the first voice
-there by name), marking the paragraph or list item being read. **❚❚ Pause
-reading** stops at the word; **🔈 Resume reading** goes on from there, and
-**Start over** reads from the beginning. Listening to another answer keeps
-this one's place too. **Read answers aloud**, in the chat's header, reads each
-answer as soon as it is finished. One sound plays at a time: reading an
-answer pauses the book, and when it ends the book stays paused; starting the
-book, or a voice preview, stops the others. The first answer after a while
-takes a few seconds longer while the narration model loads; it stays loaded for
-five minutes after the last answer read, then frees its GPU. Code, web
-addresses, and Markdown are not read; a citation such as ¶12 is read as
-"paragraph 12". Reading aloud needs the server's own narration model
-(`--voice-clone-model`); without it, neither shows.
+there by name); the answer stays plain text while it is read, kept in view.
+While it is read, pause it with the chat's bottom button (below), which then
+offers **Resume**; under a paused answer, **Start over** reads it from the
+beginning. Listening to another answer keeps
+this one's place too. **Read answers aloud**, in the chat's settings line,
+reads each answer as soon as it is finished (not one you stopped). One sound
+plays at a time: reading an answer pauses the book, and when it ends the book
+stays paused; starting the book, or a voice preview, stops the others. The
+first answer after a while takes a few seconds longer while the narration
+model loads; it stays loaded for five minutes after the last answer read, then
+frees its GPU. Code, web addresses, and Markdown are not read; a citation such
+as ¶12 is read as "paragraph 12". Reading aloud needs the server's own
+narration model (`--voice-clone-model`); without it, neither shows.
 
-At the bottom of the chat, under the conversation and above the question box,
-one blue Play/Pause button stays in place while the conversation scrolls (on a phone
-too, at the bottom of the full-screen chat). It plays or pauses whatever plays
-now and says which: **Pause book** while the book plays, **Pause answer** while
-an answer is read aloud, **Play answer** for an answer paused partway, and
-**Play book** otherwise, so once an answer ends it starts the book again where
-it stopped. While you type on a phone it steps aside, so the box and **Send**
-stay in view.
+At the bottom of the chat, just above the question box, one teal button with a
+short gray note beside it says what Hilde is doing and stays in place while
+the conversation scrolls (on a phone too, at the bottom of the sheet): **■
+Stop** with "Writing…" while an answer arrives, **❚❚ Pause** with "Reading
+aloud" while Hilde reads an answer aloud, and **▶ Resume** with "Paused" once
+you paused it. When Hilde is neither writing nor reading, it is gone and only
+the question box stays. **Stop** ends the answer: the text that had arrived
+stays in the conversation, marked **Stopped** under it (also after a reload).
 
 Notes Hilde writes are listed under the book's title in **Notes Hilde
 wrote**. Each shows its file name, the book, the section you asked about when
