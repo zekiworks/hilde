@@ -618,18 +618,28 @@ that does not establish that the generated file is silent.
 
 ## Voices
 
-**Voices** lists every saved voice in a compact table: a preview button,
-**Voice name**, **Voice description**, **Modified** (when its sample,
-transcript, or description last changed; hidden on a phone), and **Select**,
-50 rows at a time. Each description shows one line; **Full description** under
-it opens the whole text in place, and **Show less** closes it, without
-selecting the voice. The preview plays in place; playing another stops the
-first, and a preview never changes which voice is selected.
+**Voices** lists every saved voice in a table: a green play button, **Name**,
+**Voice description**, **Modified** (the date its sample, transcript, or
+description last changed, the exact time in its tooltip; hidden on a phone),
+and **Select**, 50 rows at a time. The selected voice comes first, on a faint
+green row, then every other voice A–Z by name, ignoring upper and lower case,
+with letters such as Ö, Ş, and Ü where your browser's language sorts them.
+
+Each description shows as pink tags, one per comma-separated part, in its own
+order and wording; the saved description itself is unchanged. A voice without
+a description says "No description". On a wide screen every tag shows,
+wrapping as needed; on a phone they stay on one line that fades out at the
+right, and a tap on the row shows them all (another tap folds them).
+
+The play button plays the voice's preview in place: while it plays, the circle
+is filled and "Playing preview" shows under the name. Playing another stops
+the first, and a preview never changes which voice is selected.
 
 **Select** chooses the voice for your next audiobook: the same choice as the
-voice step on **Create**. The chosen voice shows **✓ Selected** instead, and a
-line says it is selected, with **Back to Create**. **⋯** on a row holds
-**Edit**, **Rename…**, and **Delete…**:
+voice step on **Create**. The chosen voice moves to the top and shows
+**✓ Selected** instead, the one chosen before returns to its place, and a line
+says it is selected, with **Back to Create**. **⋯** on a row holds **Edit**,
+**Rename…**, and **Delete…**:
 
 - **Delete** removes a voice after a confirmation naming it; audiobooks made
   with it keep their audio, and a job already queued keeps its own copy.
@@ -641,9 +651,14 @@ line says it is selected, with **Back to Create**. **⋯** on a row holds
 
 Search looks only at descriptions: every word you type must begin a word of
 the description, in any order, ignoring case and accents, so
-`warm british female` finds voices whose description contains all three. When
-none matches, the page says "No voice description contains all of: warm,
-british, female." with **Clear search**.
+`warm british female` finds voices whose description contains all three.
+Tags that contain a word you typed are filled, and under the list a count
+says how many voices match ("1 of 9 voices"). A click on a tag adds its words
+to the search; a click on a filled tag takes its words out again; **×** in the
+search box empties it. A preview keeps playing while you search, and the
+selected voice stays selected even when the search hides it. When none
+matches, the page says "No voice description contains all of: warm, british,
+female." with **Clear search**.
 
 A new library comes with eight stock voices, each with its description:
 Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun

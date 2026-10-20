@@ -822,7 +822,9 @@ its title; `#chat-about`'s attach glow is 16% `--ask`); green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items and the played part of the seek bar, red `--bad` (#e5534b) errors and destructive actions, always
-with an icon and text. Contrast of `--ask`, dark: the Ask Hilde button's teal
+with an icon and text. Like Create's steps, the Voices list sets its own colours on `#page-voice` (Part C):
+`--play` (#3fb950) for its play circles and the selected voice, `--tag` (#d66bc6) for description tags, and
+`--gray-line` (#707070, 3.5:1) for the search box and Select outlines (see **Voices** below). Contrast of `--ask`, dark: the Ask Hilde button's teal
 text and sparkle 4.9:1 on its tint (4.6:1 on the 16% hover tint), its border
 3.3:1 on the bar; the header's teal 6.0:1 on `--surface`; a card's border
 3.3:1 and title 4.9:1 on its tint; the dark ink of Stop / Pause / Resume 6.9:1
@@ -1168,22 +1170,42 @@ Each page:
   longer has this job's log." once it is gone), and **Dismiss**, which adds
   `<id>@<finished_at>` to `hilde.dismissedJobs`. A server restart empties
   `recent`; the followed run's "The server restarted…" notice stays.
-- **Voices** is a compact table (`voiceRow()`): a preview button, Voice name,
-  Voice description, Modified (hidden on phones), and **Select**, 50 rows at a
-  time with **Show more**. The description is the VoiceDesign prompt saved as
-  `description.txt`; it shows one line until **Full description** (an
-  `aria-expanded` toggle, kept across re-renders in `expandedVoices`) opens the
-  whole text in place, and **Show less** closes it; neither selects the voice
-  nor opens the editor. Search (placeholder "Search voice descriptions, e.g.
-  warm british female") reads descriptions only: every typed word must begin a
-  description word (AND, any order, case- and accent-insensitive, so `male`
-  does not match `female`); no match reads "No voice description contains all
-  of: <terms>." with **Clear search**. One shared player previews in place,
-  ignoring clips replaced before they start; a second preview stops the first,
-  and a preview never changes the selection. **Select** (`chooseVoice()`) sets
-  `audiobook.voice`, the state Create's step 2 uses; that voice's row shows
-  "✓ Selected" instead, and a banner offers **Back to Create**. Each row's
-  **⋯** (`rowMoreButton()`, one shared `#row-menu`) holds **Edit** (opens the
+- **Voices** is a table (`voiceRow()`, each row `tr[data-voice]`): a preview
+  button (a #3fb950 outline circle; filled, with "Playing preview" under the
+  name, while its clip plays), Name, Voice description, Modified (local
+  YYYY-MM-DD in monospace, the exact time in its tooltip; hidden on phones),
+  and **Select**, 50 rows at a time with **Show more**. Order: the selected
+  voice (`audiobook.voice`, unless a clone server narrates) first on a 10%
+  green row, then the rest A–Z by `compareVoiceNames()` (an `Intl.Collator`
+  of the browser's locale, sensitivity `base`); `refreshVoices()` sorts once
+  and `renderVoiceTable()` moves the selected match to the top. The
+  description is the VoiceDesign prompt saved as `description.txt`, shown as
+  tags (`descriptionTags()`: its comma-separated parts, trimmed, empty parts
+  skipped; display only, the file is never rewritten) in #d66bc6 on an opaque
+  14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour, ≥ 3:1 on the
+  green row); no description reads "No description". A wide screen wraps
+  every tag; a phone keeps one line fading out at the right, and a tap on the
+  row (not on a button) toggles `is-open`, kept across re-renders in
+  `expandedVoices`, which shows them all; while a phone row's preview plays,
+  "Playing preview" takes the tags' line. Search (placeholder "Search voice
+  descriptions, e.g. warm british female") reads descriptions only: every
+  typed word must begin a description word (AND, any order, case- and
+  accent-insensitive, so `male` does not match `female`); a tag is filled
+  (`aria-pressed`) when a search word begins one of its words. A click on a
+  tag (`toggleVoiceTag()`) adds its words not yet searched to the box, or, on
+  a filled tag, removes the typed words that fill it; **×**
+  (`#voice-search-clear`, shown while the box has text) and **Clear search**
+  empty it. Each keystroke rebuilds only `#voice-rows`, never the box, so its
+  text and cursor stay; `#voice-count` under the list reads "N voices" or "N
+  of M voices"; no match reads "No voice description contains all of:
+  <terms>." with **Clear search**. One shared player (`previewAudio`)
+  previews in place, so filtering never stops it, ignoring clips replaced
+  before they start; a second preview stops the first, and a preview never
+  changes the selection. **Select** (`chooseVoice()`) sets `audiobook.voice`,
+  the state Create's step 2 uses; that voice moves to the top and shows
+  "✓ Selected" (solid green, dark text) instead, and a banner offers **Back
+  to Create**; a search that hides it leaves it selected. Each row's **⋯**
+  (`rowMoreButton()`, one shared `#row-menu`) holds **Edit** (opens the
   editor on that voice, titled "Edit <name>"), **Rename…**, and **Delete…**.
   Rename (a confirm dialog with a name field, then `POST /api/voices/rename`)
   moves the voice to its new name and carries the browser's selected voice,

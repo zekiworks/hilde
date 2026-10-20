@@ -17110,7 +17110,8 @@ PAGE = r"""<!doctype html>
            gray --off: disabled and "not running" items (the selection
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
-           and text. No orange anywhere; no glow stays lit. */
+           and text. No orange anywhere; no glow stays lit. Create's steps
+           and the Voices list (#page-voice: --play, --tag) set their own. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
@@ -17613,15 +17614,73 @@ legend ~ * { clear:both; }
 .data-table td { padding:10px 12px; border-bottom:1px solid var(--surface);
                  vertical-align:middle; }
 .data-table tbody tr:hover { background:var(--surface); }
-.data-table tr.is-selected { background:var(--accent-soft); }
+/* Voices (Part C, 20 Oct): white names; green (#3fb950) play circles, the
+   selected voice's faint green row and its solid "✓ Selected"; each
+   description as pink-purple tags (#d66bc6) that fill the search box; Select,
+   ⋯ and the search box gray. Tags sit on an opaque tint so their text keeps
+   4.5:1 on any row (5.1:1, 4.6:1 hovered), their border 3:1 on the green row. */
+#page-voice { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
+              --tag-line:color-mix(in srgb, var(--tag) 80%, #111); --gray-line:#707070; }
+.voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
+                  text-transform:none; }
 .voice-table .preview { width:64px; }
-.voice-table .name { width:18%; font-weight:600; overflow-wrap:anywhere; }
-/* A description is one line until its own control shows it whole, in place. */
+.voice-table .name { width:13%; overflow-wrap:anywhere; }
+.voice-table .voice-name { display:block; color:var(--text); font-weight:600; }
+.voice-table .voice-playing { display:block; color:var(--play); font-size:13px; }
+.voice-table tr.is-selected > td { background:color-mix(in srgb, var(--play) 10%, transparent); }
+.voice-table tr.is-selected > td:first-child { border-radius:10px 0 0 10px; }
+.voice-table tr.is-selected > td:last-child { border-radius:0 10px 10px 0; }
+.voice-table .preview-button { background:transparent; border:1.5px solid var(--play);
+                               color:var(--play); box-shadow:none; }
+.voice-table .preview-button svg { width:14px; height:14px; }
+.voice-table .preview-button:hover:not(:disabled) {
+  background:color-mix(in srgb, var(--play) 12%, transparent); }
+.voice-table .preview-button[aria-pressed=true],
+.voice-table .preview-button[aria-pressed=true]:hover:not(:disabled) {
+  background:var(--play); border-color:var(--play); color:var(--play-ink); }
+/* Desktop: every tag shows, wrapping; a tag longer than the column wraps inside. */
 .voice-table .description { min-width:0; }
-.description-text { overflow-wrap:anywhere; }
-.description-text.collapsed { display:-webkit-box; overflow:hidden; -webkit-line-clamp:1;
-                              -webkit-box-orient:vertical; }
-button.description-toggle { padding:2px 0; min-height:0; color:var(--dim); font-size:13px; }
+.voice-tags { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.voice-table button.voice-tag { max-width:100%; min-height:0; padding:1px 10px; border:1px solid var(--tag-line);
+  border-radius:12px; background:color-mix(in srgb, var(--tag) 14%, #111); color:var(--tag); box-shadow:none;
+  font-size:13px; line-height:20px; text-align:left; overflow-wrap:anywhere; }
+.voice-table button.voice-tag:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 20%, #111); }
+.voice-table button.voice-tag[aria-pressed=true],
+.voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled) {
+  background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
+.voice-no-description { color:var(--dim); font-size:13px; }
+.voice-table td.modified { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+@media (min-width:768px) {
+  /* A wide screen tops every cell, lined up with the first line of tags, so a
+     tall row of tags reads on from its name. */
+  .voice-table td { vertical-align:top; }
+  .voice-table .voice-name { padding-top:9px; }
+  .voice-table .voice-tags { padding-top:8px; }
+  .voice-table .voice-no-description { display:block; padding-top:10px; }
+  .voice-table td.modified { padding-top:21px; }
+  .voice-count { padding-left:12px; }
+}
+.voice-table button.voice-select { min-width:120px; background:transparent; border-color:var(--gray-line);
+                                   box-shadow:none; }
+.voice-table button.voice-select:hover:not(:disabled) { background:var(--hover); }
+.voice-table .selected-badge { display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  min-width:120px; min-height:40px; padding:0 16px; vertical-align:middle; border-radius:8px;
+  background:var(--play); color:var(--play-ink); font-weight:650; white-space:nowrap; }
+.voice-table .selected-badge svg { width:14px; height:14px; fill:currentColor; }
+.voice-table button.row-more { background:transparent; border-color:transparent; box-shadow:none;
+                               color:var(--dim); }
+.voice-table button.row-more:hover:not(:disabled) { background:var(--hover); }
+.voice-search-field { position:relative; display:flex; flex:1 1 280px; min-width:0; }
+.voice-search-field .search-icon { position:absolute; top:0; bottom:0; left:14px; width:16px; height:16px;
+                                   margin:auto 0; color:var(--dim); pointer-events:none; }
+.search .voice-search-field input { flex:1 1 auto; width:100%; padding-left:40px; padding-right:44px;
+                                    border-color:var(--gray-line); }
+#voice-search::-webkit-search-cancel-button { -webkit-appearance:none; appearance:none; display:none; }
+button#voice-search-clear { position:absolute; top:0; bottom:0; right:4px; width:36px; height:36px;
+  min-height:0; margin:auto 0; padding:0; background:none; border:0; box-shadow:none;
+  color:var(--dim); font-size:20px; line-height:1; }
+button#voice-search-clear:hover:not(:disabled) { background:none; color:var(--text); }
+.voice-count { margin-top:12px; }
 .voice-table .select, .book-table .action { width:1%; text-align:right; white-space:nowrap; }
 .voice-table .select > * + *, .book-table .action > * + * { margin-left:4px; }
 .book-table .duration, .book-table .position { color:var(--dim); white-space:nowrap;
@@ -17632,9 +17691,6 @@ button.description-toggle { padding:2px 0; min-height:0; color:var(--dim); font-
 .data-table .modified { width:1%; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
 .book-title { font-weight:600; }
-.selected-badge { display:inline-flex; align-items:center; gap:6px; padding:0 8px;
-                  color:var(--accent-light); font-weight:650; white-space:nowrap; }
-.selected-badge svg { width:14px; height:14px; fill:currentColor; }
 button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1; }
 .more { display:block; margin:14px auto 0; }
 .empty { padding:40px 20px; background:var(--surface); border-radius:var(--radius);
@@ -18137,17 +18193,33 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
                    border-bottom:1px solid var(--surface); }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
-  /* A voice: preview, name, and Select with ⋯ on one line; the description,
-     one line until its control opens it, under them. */
-  .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; }
-  .voice-table .preview { grid-column:1; grid-row:1 / span 2; align-self:start; }
+  /* A voice: preview, then the name over its tags (one line, fading out at
+     the right), then Select with ⋯; a tap on the row shows every tag. */
+  .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; cursor:pointer; }
+  .voice-table tr.is-selected { background:color-mix(in srgb, var(--play) 10%, transparent);
+                                border-radius:12px; }
+  .voice-table tr.is-selected > td { background:none; }
+  .voice-table .preview { grid-column:1; grid-row:1 / span 2; align-self:center; }
   .voice-table .name { grid-column:2; grid-row:1; }
-  .voice-table .description { grid-column:2 / span 2; grid-row:2; color:var(--dim); font-size:14px; }
+  .voice-table .description { grid-column:2; grid-row:2; }
+  .voice-tags { flex-wrap:nowrap; overflow:hidden;
+                -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
+                mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+  .voice-table button.voice-tag { flex:0 0 auto; max-width:none; white-space:nowrap; }
+  .voice-table tr.is-open .preview { align-self:start; }
+  .voice-table tr.is-open .description { grid-column:2 / span 2; }
+  .voice-table tr.is-open .voice-tags { flex-wrap:wrap; overflow:visible; -webkit-mask-image:none; mask-image:none; }
+  .voice-table tr.is-open button.voice-tag { flex:0 1 auto; max-width:100%; white-space:normal; }
+  /* While a preview plays, "Playing preview" takes the tags' line. */
+  .voice-table tr.is-playing:not(.is-open) .description { display:none; }
   /* The phone leaves out when a voice changed. */
   .voice-table .modified { display:none !important; }
   .data-table .modified { font-size:13px; }
-  .voice-table .select { grid-column:3; grid-row:1; display:flex; flex-wrap:nowrap;
+  .voice-table .select { grid-column:3; grid-row:1 / span 2; display:flex; flex-wrap:nowrap;
                          align-items:center; gap:6px; }
+  .voice-table tr.is-open .select { grid-row:1; }
+  .voice-table button.voice-select { min-width:0; }
+  .voice-table .selected-badge { min-width:0; min-height:44px; padding:0 12px; }
   .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
   .book-table .title, .book-table .duration, .book-table .source, .book-table .voice,
   .book-table .position { grid-column:1; }
@@ -18160,7 +18232,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
   button, .tab-list [role=tab], .tabs .settings-button, button.link, .job-row button,
-  button.description-toggle, button.row-more, .toast button, .note-item a, .note-item button.link,
+  button.row-more, .toast button, .note-item a, .note-item button.link,
   input[type=text], input[type=search], input[type=number], select, label.check {
     min-height:44px;
   }
@@ -18662,14 +18734,19 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
     </section>
     <div class="search">
-      <label for="voice-search" class="visually-hidden">Search voice descriptions</label>
-      <input id="voice-search" type="search" autocomplete="off"
-        placeholder="Search voice descriptions, e.g. warm british female">
-      <span id="voice-count" class="note" aria-live="polite"></span>
+      <div class="voice-search-field">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+          stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
+        <label for="voice-search" class="visually-hidden">Search voice descriptions</label>
+        <input id="voice-search" type="search" autocomplete="off"
+          placeholder="Search voice descriptions, e.g. warm british female">
+        <button id="voice-search-clear" class="hidden" type="button" aria-label="Clear search"
+          onclick="clearVoiceSearch()">×</button>
+      </div>
     </div>
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
-      <thead><tr><th scope="col">Preview</th><th scope="col">Voice name</th>
+      <thead><tr><th scope="col"><span class="visually-hidden">Preview</span></th><th scope="col">Name</th>
         <th scope="col">Voice description</th><th scope="col" class="modified">Modified</th>
         <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
@@ -18678,6 +18755,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <p id="voice-none-text"></p>
       <button id="voice-clear" class="hidden" type="button" onclick="clearVoiceSearch()">Clear search</button>
     </div>
+    <p id="voice-count" class="note voice-count" aria-live="polite"></p>
     <button id="voice-more" class="more hidden" type="button"
       onclick="showMoreVoices()">Show more</button>
   </section>
@@ -19264,7 +19342,7 @@ let runHistory = null, recentLog = [], resultInfo = null;
 // A draft is the clip a preview made; Save stores exactly that clip, once heard.
 let voiceResult = null, voiceDraft = null, draftPrompt = null, queueSignature = "";
 let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
-// Voices whose whole description shows in place.
+// Voices whose whole description a phone shows (a tap on the row).
 const expandedVoices = new Set();
 // The current stage's first and latest real counts; the estimate is their average pace.
 let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
@@ -20713,9 +20791,8 @@ function bindReaderAudio(audio) {
   oneSoundAtATime(audio);
 }
 
-const MODIFIED_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short" });
-// When a voice or book last changed, from the server's file times, in this
-// browser's own date format; the exact time is in the tooltip.
+// When a voice last changed, from the server's file times: the local date as
+// YYYY-MM-DD (small, monospace); the exact time is in the tooltip.
 function modifiedCell(seconds) {
   const node = cell("modified", "Modified");
   if (!Number.isFinite(seconds)) { node.textContent = "Unknown"; return node; }
@@ -20723,7 +20800,8 @@ function modifiedCell(seconds) {
   const time = document.createElement("time");
   time.dateTime = date.toISOString();
   time.title = date.toString();
-  time.textContent = MODIFIED_FORMAT.format(date);
+  const two = (value) => String(value).padStart(2, "0");
+  time.textContent = `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`;
   node.append(time);
   return node;
 }
@@ -22219,7 +22297,7 @@ async function refreshVoices() {
     const answer = await jsonRequest("/api/voices");
     voices = (answer.voices || []).map(
       (voice) => ({...voice, words: searchWords(voice.description)})
-    );
+    ).sort(compareVoiceNames);
   } catch (error) {
     setStatus(error.message, true);
     return;
@@ -22228,10 +22306,25 @@ async function refreshVoices() {
 }
 function voiceByName(name) { return voices.find((voice) => voice.name === name) || null; }
 
+// Voices list A–Z by the browser's locale comparison, case and accents
+// aside (Özge after Oscar, Şule before Sven, Ümit after Ulla).
+const VOICE_COLLATOR = new Intl.Collator(undefined, { sensitivity:"base" });
+function compareVoiceNames(a, b) {
+  return VOICE_COLLATOR.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+}
+// The search (unchanged: every typed word begins a description word) keeps
+// that order, the selected voice first when it matches. Only the rows are
+// rebuilt: the search box keeps its text and cursor, and the one shared
+// preview player keeps playing.
 function renderVoiceTable() {
-  const terms = searchWords($("voice-search").value);
+  const query = $("voice-search").value;
+  const terms = searchWords(query);
+  const chosen = facts.clone_server ? "" : state.audiobook.voice;
   const matches = voices.filter((voice) => matchesAll(voice.words, terms));
-  $("voice-rows").replaceChildren(...matches.slice(0, voiceLimit).map(voiceRow));
+  const at = matches.findIndex((voice) => voice.name === chosen);
+  if (at > 0) matches.unshift(...matches.splice(at, 1));
+  $("voice-rows").replaceChildren(...matches.slice(0, voiceLimit).map((voice) => voiceRow(voice, terms)));
+  $("voice-search-clear").classList.toggle("hidden", !query);
   $("voice-table").classList.toggle("hidden", matches.length === 0);
   $("voice-none").classList.toggle("hidden", matches.length > 0);
   $("voice-none-text").textContent = !voices.length
@@ -22252,39 +22345,71 @@ function clearVoiceSearch() {
   $("voice-search").focus();
 }
 
-function voiceRow(voice, index) {
+// A description shows as tags: its comma-separated parts, trimmed, in order;
+// the stored description stays as it is.
+function descriptionTags(description) {
+  return String(description || "").split(",").map((part) => part.trim()).filter(Boolean);
+}
+function tagMatches(words, terms) {
+  return terms.some((term) => words.some((word) => word.startsWith(term)));
+}
+// A tag fills the search box: its words are added (every word must match, as
+// typed ones do). A filled tag, one a search word begins a word of, takes its
+// words out again.
+function toggleVoiceTag(text, voiceName, index) {
+  const input = $("voice-search"), words = searchWords(text);
+  const focused = document.activeElement && document.activeElement.classList.contains("voice-tag");
+  let tokens = input.value.split(/\s+/).filter(Boolean);
+  if (tagMatches(words, searchWords(input.value))) {
+    tokens = tokens.filter((token) => !tagMatches(words, searchWords(token)));
+  } else {
+    const have = new Set(searchWords(input.value));
+    for (const word of text.split(/[^\p{L}\p{N}]+/u)) {
+      const term = searchWords(word)[0];
+      if (term && !have.has(term)) { tokens.push(word); have.add(term); }
+    }
+  }
+  input.value = tokens.join(" ");
+  voiceLimit = PAGE_SIZE; renderVoiceTable();
+  if (!focused) return;
+  const row = [...$("voice-rows").rows].find((item) => item.dataset.voice === voiceName);
+  (row ? row.querySelectorAll(".voice-tag")[index] : null)?.focus({ preventScroll:true });
+}
+function voiceTag(text, terms, voiceName, index) {
+  const tag = document.createElement("button");
+  tag.type = "button"; tag.className = "voice-tag";
+  tag.textContent = text;
+  tag.setAttribute("aria-pressed", String(tagMatches(searchWords(text), terms)));
+  tag.addEventListener("click", () => toggleVoiceTag(text, voiceName, index));
+  return tag;
+}
+
+function voiceRow(voice, terms) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
-  if (selected) row.className = "is-selected";
+  row.dataset.voice = voice.name;
+  row.classList.toggle("is-selected", selected);
+  row.classList.toggle("is-open", expandedVoices.has(voice.name));
   const preview = cell("preview");
-  preview.append(previewButton(voice));
+  const play = previewButton(voice);
+  preview.append(play);
   const name = cell("name");
-  name.textContent = voice.name;
-  // One line until its own control shows the whole description in place:
-  // reading it neither selects the voice nor opens the editor.
+  const title = document.createElement("span");
+  title.className = "voice-name";
+  title.textContent = voice.name;
+  name.append(title);
   const description = cell("description");
-  const text = document.createElement("div");
-  const expanded = expandedVoices.has(voice.name);
-  text.id = `voice-description-${index}`;
-  text.className = `description-text${expanded ? "" : " collapsed"}${voice.description ? "" : " note"}`;
-  text.textContent = voice.description || "No description saved";
-  description.append(text);
-  if (voice.description) {
-    const toggle = document.createElement("button");
-    toggle.type = "button"; toggle.className = "link description-toggle";
-    toggle.textContent = expanded ? "Show less" : "Full description";
-    toggle.setAttribute("aria-expanded", String(expanded));
-    toggle.setAttribute("aria-controls", text.id);
-    toggle.setAttribute("aria-label", `${expanded ? "Show less of" : "Full description of"} ${voice.name}`);
-    toggle.addEventListener("click", () => {
-      const open = !expandedVoices.has(voice.name);
-      if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
-      text.classList.toggle("collapsed", !open);
-      toggle.textContent = open ? "Show less" : "Full description";
-      toggle.setAttribute("aria-expanded", String(open));
-      toggle.setAttribute("aria-label", `${open ? "Show less of" : "Full description of"} ${voice.name}`);
-    });
-    description.append(toggle);
+  const parts = descriptionTags(voice.description);
+  if (parts.length) {
+    const tags = document.createElement("div");
+    tags.className = "voice-tags";
+    tags.append(...parts.map((part, index) => voiceTag(part, terms, voice.name, index)));
+    description.append(tags);
+  } else {
+    const none = document.createElement("span");
+    none.className = "voice-no-description";
+    none.textContent = "No description";
+    description.append(none);
   }
   if (!voice.comparable) {
     const older = document.createElement("div");
@@ -22302,7 +22427,7 @@ function voiceRow(voice, index) {
     select.append(badge);
   } else if (!facts.clone_server) {
     const choose = document.createElement("button");
-    choose.type = "button"; choose.textContent = "Select";
+    choose.type = "button"; choose.className = "voice-select"; choose.textContent = "Select";
     choose.setAttribute("aria-label", `Select ${voice.name} for the next audiobook`);
     choose.addEventListener("click", () => chooseVoice(voice.name));
     select.append(choose);
@@ -22313,6 +22438,17 @@ function voiceRow(voice, index) {
     { label:"Delete…", run:(button) => deleteVoice(voice.name, button) },
   ]));
   row.append(preview, name, description, modifiedCell(voice.modified), select);
+  setPreviewButton(play);
+  // On a phone the tags are one line; a tap on the row (not on one of its
+  // buttons) shows them all, and another folds them.
+  row.addEventListener("click", (event) => {
+    // The path as dispatched: a preview button redraws its icon while the click is under way.
+    if (!narrowLayout() || String(window.getSelection())
+        || event.composedPath().some((node) => node instanceof Element && node.matches("button, a, input"))) return;
+    const open = !expandedVoices.has(voice.name);
+    if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
+    row.classList.toggle("is-open", open);
+  });
   return row;
 }
 // The same choice as Create step 2's dropdown, and the same state.
@@ -22352,6 +22488,19 @@ function setPreviewButton(button) {
   const playing = button.dataset.voice === previewing && !previewAudio.paused;
   button.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
   button.setAttribute("aria-pressed", String(playing));
+  // A Voices row says "Playing preview" under the name while its clip plays.
+  const row = button.closest("tr[data-voice]");
+  if (!row) return;
+  row.classList.toggle("is-playing", playing);
+  const label = row.querySelector(".voice-playing");
+  if (playing && !label) {
+    const note = document.createElement("span");
+    note.className = "voice-playing";
+    note.textContent = "Playing preview";
+    row.querySelector("td.name").append(note);
+  } else if (!playing && label) {
+    label.remove();
+  }
 }
 function syncPreviewButtons() {
   for (const button of document.querySelectorAll(".preview-button")) setPreviewButton(button);
