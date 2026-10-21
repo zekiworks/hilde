@@ -197,7 +197,11 @@ each browser changes only its own settings, under **Settings**.
 - [narration workers](docs/configuration.md#narration-workers): every GPU the
   server sees, plus the GPUs of [other machines](docs/ssh-workers.md), added
   under **Settings**;
-- [batch size](docs/configuration.md#batch-size) and GPU memory.
+- [batch size](docs/configuration.md#batch-size) and GPU memory;
+- [suggested models](docs/configuration.md#suggested-models): the ratings file
+  `~/.hilde/ratings.json`, written by `qa/rate_models.py` from Hilde's own
+  checks, from which every model picker suggests at most three models for its
+  job.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a
 document for listening: a local model server, ChatGPT, Claude Code, or an
@@ -258,7 +262,9 @@ device must install again.
 The page has three main tabs. **Create** turns a document into an audiobook in
 three steps (an arXiv link brings the paper's PDF and shows its title),
 showing before you start which model prepares the text and
-whether it runs locally or in the cloud. **Voices** lists your narrators, each
+whether it runs locally or in the cloud; with a ratings file, every model
+picker suggests a few models for its job (best, fastest, a good balance), from
+Hilde's own checks. **Voices** lists your narrators, each
 on two lines (its name with its tags, then its description), searchable by tag
 and description, offers the tags Hilde suggests from each description for you
 to review one voice at a time, and designs new voices from tags. Tags live in
@@ -270,8 +276,8 @@ printed in the PDF; **Ask Hilde** answers questions about what you are hearing
 and writes Markdown notes, in a panel beside the text from 900 px wide (below
 that, a sheet rising from the bottom) with its model in the header and a **⋯**
 menu for **Read answers aloud** and **New conversation**. A **Progress** tab, there while audiobooks are being
-made or one stopped or failed, follows them, and the blue gear button after
-the tabs opens **Settings**, which holds the
+made or one stopped or failed, follows them, and the blue **Settings** tab with a
+gear at the right end of the tabs opens **Settings**, which holds the
 narration, text preparation, and machine settings: see [Web UI](docs/web-ui.md).
 
 ## Command line

@@ -1,0 +1,46 @@
+# Fixed passages for the narration check of qa/rate_models.py: each narration model reads all of them with one
+# reference voice, a speech-to-text model that already runs writes them back, and the wrong or missing words are
+# counted. They are sentences of the QA papers (papers.yaml) as Hilde narrates them, chosen for numbers, units, dates
+# and technical names. Keep every value as the paper prints it; `source` says where.
+# Rules for a new passage: write a number the way the paper does ("3.5 days", "128,000 tokens"); avoid four-digit
+# numbers that are not years (rate_models.py reads 1900 to 2099 as a year, "twenty fourteen"), and avoid units glued
+# to a number ("800M"): write "800 million".
+passages:
+  - id: attention-bleu
+    paper: attention
+    source: Abstract; §6.1, Table 2
+    text: >-
+      On the WMT 2014 English-to-German translation task, the big Transformer reaches a BLEU score of 28.4,
+      more than 2 BLEU above the best previously reported models, including ensembles.
+  - id: attention-training
+    paper: attention
+    source: §5.2
+    text: >-
+      We trained the base models for a total of 100,000 steps, or 12 hours, on one machine with 8 NVIDIA P100
+      GPUs. The big models were trained for 300,000 steps, which took 3.5 days.
+  - id: attention-dates
+    paper: attention
+    source: arXiv 1706.03762 v1 (12 June 2017); §5.3
+    text: >-
+      Attention Is All You Need was first posted in June 2017. The optimizer is Adam, with beta one at 0.9,
+      beta two at 0.98, and 4,000 warmup steps.
+  - id: bert-model
+    paper: bert
+    source: §3, model architecture
+    text: >-
+      BERT Base has 12 layers, a hidden size of 768 and 12 attention heads, with 110 million parameters in all.
+      BERT Large has 24 layers, a hidden size of 1,024 and 16 heads, with 340 million parameters.
+  - id: bert-data
+    paper: bert
+    source: §3.1; Appendix A.2
+    text: >-
+      For the pre-training corpus we use the BooksCorpus, with 800 million words, and English Wikipedia, with
+      2,500 million words. We train with a batch size of 256 sequences, or 128,000 tokens per batch, for
+      1,000,000 steps.
+  - id: bert-results
+    paper: bert
+    source: Abstract; Appendix A.2; arXiv 1810.04805 v1 (11 October 2018)
+    text: >-
+      BERT pushes the GLUE score to 80.5 percent, MultiNLI accuracy to 86.7 percent, and SQuAD version 1.1 test
+      F1 to 93.2. Training of BERT Large ran on 16 Cloud TPUs and took 4 days. The paper was first posted in
+      October 2018.

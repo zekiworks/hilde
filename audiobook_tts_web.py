@@ -40,6 +40,7 @@ import html
 import html.parser
 import http.client
 import ipaddress
+import math
 import mimetypes
 import mmap
 import os
@@ -7914,7 +7915,8 @@ def paper_model_catalog(local_servers=(), refresh=False):
     a local server that does not answer listed when it last did, disabled,
     and each provider not connected; the server's default models
     (default_model_entries()) and what a choice left open starts with
-    (first_use_models()); and each local server as Settings › Providers lists
+    (first_use_models()); the pickers' suggested models (model_suggestions());
+    and each local server as Settings › Providers lists
     it ("endpoints"): name, address, whether it answered, and whether it was
     set at startup ("from_flag"), which the page offers no Delete for."""
     local_models, cloud_models, local_errors, local_status = [], [], [], []
@@ -8088,6 +8090,9 @@ def paper_model_catalog(local_servers=(), refresh=False):
         # what a browser that has chosen nothing yet starts with.
         "defaults": defaults,
         "first_use": first_use_models(models, defaults),
+        # The pickers' Suggested sections, from the ratings file (None
+        # without one): only models listed here, fit for the job.
+        "suggestions": model_suggestions(models),
         "local_error": local_error,
         "endpoints": local_status,
         "openai_error": openai_error,
@@ -8179,6 +8184,239 @@ def first_use_models(models, defaults):
     )
     figure = default("image") or {"selector": "", "how": "same", "unreachable": False}
     return {"text": text, "figure": figure}
+
+
+# Suggested models (the pickers' "Suggested for <job>" section): Hilde's own
+# checks of each model per job, in ratings.json beside this server's
+# providers (qa/rate_models.py writes it; voice design's entries are added by
+# hand). No model is named here: every suggestion comes from that file.
+RATINGS_FILE = "ratings.json"
+RATING_STAGES = ("prepare_text", "figures", "check", "ask", "narration", "voice_design")
+# The jobs a model picker chooses for (the text-model catalog's). Narration
+# and voice design are set at startup and have no picker, so their ratings
+# are kept in the file but suggested nowhere yet.
+PICKER_STAGES = ("prepare_text", "figures", "check", "ask")
+# "Fastest": a model scoring at least this share of the best score...
+FASTEST_SHARE = 0.95
+# ...and at least this many times as fast as the one it is compared with
+# (likewise "Good balance" against the best and the fastest).
+CLEARLY_FASTER = 1.1
+SUGGESTIONS_SHOWN = 3
+# The reason under "Best for this job", by job, when no other model's score
+# is within run-to-run noise of it.
+BEST_REASONS = {
+    "prepare_text": "Fewest errors on Hilde's paper checks",
+    "figures": "Most figure facts right on Hilde's checks",
+    "check": "Catches the most errors on Hilde's checks",
+    "ask": "Most answers right on Hilde's checks",
+    "narration": "Fewest wrong words on Hilde's listening checks",
+    "voice_design": "Rated best by ear",
+}
+# The ratings file's last problem logged, so a bad file is said once.
+_RATINGS_PROBLEM = None
+
+
+def ratings_path():
+    return HILDE_HOME / RATINGS_FILE
+
+
+def _rating_number(entry, field, required, low=0.0, high=None):
+    value = entry.get(field)
+    if value is None and not required:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or value < low or (high is not None and value > high):
+        bounds = f"from {low:g} to {high:g}" if high is not None else f"at least {low:g}"
+        raise ValueError(f"{field} must be a number {bounds}")
+    return float(value)
+
+
+def parse_ratings(data):
+    """The ratings file checked against its schema (ARCHITECTURE.md,
+    "Suggested models"): {generated: "YYYY-MM-DD…", machine, papers, stages:
+    {stage: [{model_id, provider, score (0–100), errors, speed, runs, noise?,
+    tiebreak?}]}}. Returns it normalized; raises ValueError saying what is
+    wrong. Fields an entry does not define are ignored."""
+    if not isinstance(data, dict):
+        raise ValueError("the file is not a JSON object")
+    generated = data.get("generated")
+    if not isinstance(generated, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[T ].*)?", generated):
+        raise ValueError("generated must be a date, YYYY-MM-DD")
+    try:
+        datetime.date.fromisoformat(generated[:10])
+    except ValueError:
+        raise ValueError("generated must be a date, YYYY-MM-DD") from None
+    machine = data.get("machine")
+    if not isinstance(machine, str) or not machine.strip():
+        raise ValueError("machine must name the machine the checks ran on")
+    papers = data.get("papers")
+    if isinstance(papers, bool) or not isinstance(papers, int) or papers < 0:
+        raise ValueError("papers must be a whole number")
+    stages = data.get("stages")
+    if not isinstance(stages, dict):
+        raise ValueError("stages must be an object")
+    parsed = {}
+    for stage, entries in stages.items():
+        if stage not in RATING_STAGES:
+            raise ValueError(f"unknown stage {stage!r}")
+        if not isinstance(entries, list):
+            raise ValueError(f"{stage} must be a list")
+        seen, rows = set(), []
+        for number, entry in enumerate(entries, 1):
+            where = f"{stage} entry {number}"
+            if not isinstance(entry, dict):
+                raise ValueError(f"{where} is not an object")
+            model_id, provider = entry.get("model_id"), entry.get("provider")
+            if not isinstance(model_id, str) or not model_id.strip() \
+                    or not isinstance(provider, str) or not provider.strip() or "/" in provider:
+                raise ValueError(f"{where}: model_id and provider must be names")
+            if (provider, model_id) in seen:
+                raise ValueError(f"{where}: {provider}/{model_id} is listed twice")
+            seen.add((provider, model_id))
+            runs = entry.get("runs")
+            if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
+                raise ValueError(f"{where}: runs must be a whole number of at least 1")
+            try:
+                rows.append({
+                    "model_id": model_id, "provider": provider, "runs": runs,
+                    "score": _rating_number(entry, "score", True, high=100.0),
+                    "errors": _rating_number(entry, "errors", False),
+                    "speed": _rating_number(entry, "speed", False),
+                    "noise": _rating_number(entry, "noise", False),
+                    "tiebreak": _rating_number(entry, "tiebreak", False, low=-math.inf),
+                })
+            except ValueError as exc:
+                raise ValueError(f"{where}: {exc}") from None
+        parsed[stage] = rows
+    return {"generated": generated[:10], "machine": machine.strip(), "papers": papers, "stages": parsed}
+
+
+def read_ratings():
+    """The ratings file parsed, or None: missing quietly, unreadable or
+    invalid with one log line (again only when the problem changes)."""
+    global _RATINGS_PROBLEM
+    path = ratings_path()
+    try:
+        ratings = parse_ratings(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        _RATINGS_PROBLEM = None
+        return None
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        problem = f"Suggested models are off: {path} can't be used ({exc})."
+        if problem != _RATINGS_PROBLEM:
+            _RATINGS_PROBLEM = problem
+            print(problem, flush=True)
+        return None
+    _RATINGS_PROBLEM = None
+    return ratings
+
+
+def similar_scores(first, second):
+    """Whether two ratings' scores are within run-to-run noise of each other:
+    they differ by at most the sum of their own spreads (noise, the standard
+    deviation of each model's per-run scores; none recorded counts as 0)."""
+    return abs(first["score"] - second["score"]) <= (first["noise"] or 0) + (second["noise"] or 0)
+
+
+def times_faster(ratio):
+    """'2×', '1.5×': a speed ratio as a reason says it."""
+    shown = round(ratio) if ratio >= 2 else round(ratio, 1)
+    return f"{shown:g}×"
+
+
+def _by_tiebreak(tied):
+    """Tied ratings in order of their tiebreak (higher first), only when
+    every one of them has one; else as they came."""
+    if len(tied) > 1 and all(entry["tiebreak"] is not None for entry in tied):
+        return sorted(tied, key=lambda entry: -entry["tiebreak"])
+    return tied
+
+
+def _first(entries, key):
+    """The entry with the smallest key; a full tie goes to the tiebreak
+    (Zeki Works' benchmarks), then to provider and model ID."""
+    entries = sorted(entries, key=lambda entry: (key(entry), entry["provider"], entry["model_id"]))
+    tied = [entry for entry in entries if key(entry) == key(entries[0])]
+    return _by_tiebreak(tied)[0]
+
+
+def choose_suggestions(entries, stage):
+    """At most three of `entries` (ratings of models usable for `stage` on
+    one Runs on tab) with their label and reason, best first:
+    - "best": the highest score (ties: fewer errors, then faster; never the
+      tiebreak);
+    - "fastest": the fastest other model scoring at least FASTEST_SHARE of
+      the best and CLEARLY_FASTER than it (ties: higher score, then the
+      tiebreak);
+    - "balance": only with a fastest, another model clearly between them:
+      more accurate than the fastest beyond noise and at most the best's
+      score, CLEARLY_FASTER than the best and the fastest CLEARLY_FASTER than
+      it (the most accurate such; ties: faster, then the tiebreak).
+    A reason says "Similar accuracy" where scores are within noise
+    (similar_scores()) instead of claiming one is better."""
+    if not entries:
+        return []
+    best = sorted(entries, key=lambda entry: (
+        -entry["score"], math.inf if entry["errors"] is None else entry["errors"],
+        -(entry["speed"] or 0), entry["provider"], entry["model_id"]))[0]
+    others = [entry for entry in entries if entry is not best]
+    level = ("Similar accuracy, top score on Hilde's checks"
+             if any(similar_scores(best, entry) for entry in others) else BEST_REASONS[stage])
+    chosen = [(best, "best", level)]
+    if not best["speed"]:
+        return chosen
+    quick = [entry for entry in others if entry["speed"] and entry["speed"] >= best["speed"] * CLEARLY_FASTER
+             and entry["score"] >= best["score"] * FASTEST_SHARE]
+    if not quick:
+        return chosen
+    fastest = _first(quick, lambda entry: (-entry["speed"], -entry["score"]))
+    between = [entry for entry in quick if entry is not fastest
+               and entry["score"] > fastest["score"] and not similar_scores(entry, fastest)
+               and entry["speed"] * CLEARLY_FASTER <= fastest["speed"]]
+    if between:
+        balance = _first(between, lambda entry: (-entry["score"], -entry["speed"]))
+        faster = times_faster(balance["speed"] / best["speed"])
+        chosen.append((balance, "balance", f"Similar accuracy, about {faster} faster here"
+                       if similar_scores(balance, best)
+                       else f"More accurate than the fastest, about {faster} faster than the best"))
+    faster = times_faster(fastest["speed"] / best["speed"])
+    chosen.append((fastest, "fastest", f"{'Similar accuracy' if similar_scores(fastest, best) else 'Almost as accurate'}"
+                                      f", about {faster} faster here"))
+    return chosen[:SUGGESTIONS_SHOWN]
+
+
+def model_suggestions(models, ratings=None):
+    """The pickers' suggestions from the ratings file (read_ratings()), or
+    None without a usable file: {source: {generated, machine, papers},
+    stages: {stage: {"local"|"cloud": [{selector, label, reason}]}}} for
+    PICKER_STAGES. A rating matches the catalog model whose selector is
+    "<provider>/<model_id>"; a rated model the live catalog does not list
+    (unreachable, not connected, unknown) is skipped, and for figures one
+    not known to read images too. A stage or tab with nothing left is left
+    out, so its picker shows no section."""
+    ratings = read_ratings() if ratings is None else ratings
+    if ratings is None:
+        return None
+    listed = {model["selector"]: model for model in models}
+    stages = {}
+    for stage in PICKER_STAGES:
+        by_kind = {}
+        for entry in ratings["stages"].get(stage, ()):
+            model = listed.get(f"{entry['provider']}/{entry['model_id']}")
+            if model is None or (stage == "figures" and model.get("images") is not True):
+                continue
+            by_kind.setdefault(model["kind"], []).append(entry)
+        shown = {
+            kind: [{"selector": f"{entry['provider']}/{entry['model_id']}", "label": label, "reason": reason}
+                   for entry, label, reason in choose_suggestions(entries, stage)]
+            for kind, entries in by_kind.items()
+        }
+        if shown:
+            stages[stage] = shown
+    if not stages:
+        return None
+    return {"source": {key: ratings[key] for key in ("generated", "machine", "papers")}, "stages": stages}
+
 
 
 # The providers a picker offers to connect, by their name under Providers;
@@ -17804,42 +18042,53 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .tab-list [role=tab][aria-selected=true] {
   padding-top:7px; color:var(--text); font-weight:650; background:var(--bg); border-bottom-color:var(--bg);
   box-shadow:inset 0 3px 0 var(--accent-light); }
-/* Settings (its own page, not one of the tablist's): a solid blue rounded
-   square with a white gear, right after the last tab; on a phone at the row's
-   right end. Open, a ring in the light accent goes round it. */
+/* Settings (its own page, not one of the tablist's): a tab like the others, the
+   same height, padding, top-rounded corners and baseline, with a white gear on
+   the blue accent, at the row's right end: its right edge as far in from the
+   row's end as Create's left edge is from its start. Closed it stands raised
+   like an inactive tab; open it is pressed flush and opens into the page
+   below like the selected tab, its cue a white bar along the top (the tabs'
+   light blue bar would not show on blue). Its gear is 1.5em, the tabs' line
+   height, so it follows their type when they tighten. */
 .tabs .settings-button { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
-  width:44px; height:44px; min-height:44px; margin:0 0 3px 8px; padding:0; border:0; border-radius:10px;
-  background:var(--accent); color:#fff; box-shadow:none; transition:box-shadow .12s, filter .12s; }
+  min-width:44px; min-height:0; margin:0 0 -1px auto; padding:10px clamp(14px,3vw,22px) 7px;
+  border:1px solid var(--accent); border-radius:9px 9px 0 0; background:var(--accent); color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22), 0 -3px 6px -2px rgba(0,0,0,.6); transition:filter .12s; }
 .tabs .settings-button:hover:not(:disabled) { background:var(--accent); filter:brightness(1.12); }
-.tabs .settings-button[aria-pressed=true] { box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--accent-light); }
-.settings-button .gear { flex:0 0 auto; width:22px; height:22px; color:#fff; fill:none; stroke:currentColor;
+.tabs .settings-button[aria-pressed=true] { padding-top:7px; box-shadow:inset 0 3px 0 #fff; }
+.settings-button .gear { flex:0 0 auto; width:1.5em; height:1.5em; color:#fff; fill:none; stroke:currentColor;
   stroke-width:1.7; stroke-linejoin:round; }
-@media (max-width:767.98px) {
-  .tabs .settings-button { margin-left:auto; }
+/* Narrower still: in a row under 310px (a 332–341px phone) Settings narrows to 44px and sits 4px from Listen, so the
+   row never scrolls with the tabs as they are; under 300 and 290px (phones under 332 and 322px) the tabs tighten too. */
+@container (max-width:309.98px) {
+  .tab-list { margin-right:-2px; }
+  .tabs .settings-button { padding-left:8px; padding-right:8px; }
 }
-/* Narrower still (a 320px phone): the tabs a little tighter, so the gear keeps clear of Listen and the row never
-   scrolls; tighter again in a row under 290px (a phone under 318px). */
 @container (max-width:299.98px) {
-  .tab-list [role=tab] { padding-left:11px; padding-right:11px; }
+  .tab-list [role=tab], .tabs .settings-button { padding-left:11px; padding-right:11px; }
 }
 @container (max-width:289.98px) {
-  .tab-list [role=tab] { padding-left:8px; padding-right:8px; }
+  .tab-list [role=tab], .tabs .settings-button { padding-left:8px; padding-right:8px; }
 }
 /* With the Progress tab shown, four tabs and the gear share the row. Below 410px, 350px, 310px and 290px the tabs'
    sides and then their type tighten. Measured from 296 to 760px wide, every 2px, with and without Progress, with
    Create, Progress or Settings selected: one row, no sideways scroll, every tab and the gear at least 44px wide. */
 @container (max-width:409.98px) {
   .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { min-width:44px; padding-left:8px; padding-right:8px; }
+  .tabs:has(#tab-progress:not(.hidden)) .settings-button { padding-left:8px; padding-right:8px; }
 }
 @container (max-width:349.98px) {
   .tab-list:has(> #tab-progress:not(.hidden)) { gap:2px; }
   .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:7px; padding-right:7px; font-size:13px; }
+  .tabs:has(#tab-progress:not(.hidden)) .settings-button { padding-left:7px; padding-right:7px; font-size:13px; }
 }
 @container (max-width:309.98px) {
   .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:4px; padding-right:4px; }
+  .tabs:has(#tab-progress:not(.hidden)) .settings-button { padding-left:4px; padding-right:4px; }
 }
 @container (max-width:289.98px) {
   .tab-list:has(> #tab-progress:not(.hidden)) [role=tab] { padding-left:3px; padding-right:3px; font-size:12px; }
+  .tabs:has(#tab-progress:not(.hidden)) .settings-button { padding-left:3px; padding-right:3px; font-size:12px; }
 }
 .notice { margin-top:16px; padding:10px 14px; background:var(--surface); border-radius:8px; }
 .notice:empty { display:none; }
@@ -18067,6 +18316,28 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
        line-height:1.4; white-space:nowrap; }
 .picker-action { padding:1px 10px; border:1px solid var(--accent-light); border-radius:999px;
                  color:var(--accent-light); font-size:13px; white-space:nowrap; }
+/* Suggested for <job> (Part H): a heading with a blue star, then each
+   suggestion as a card with its reason and one label; the chosen one blue
+   with a tick. A rule parts them from the whole list; the foot says where
+   they come from. */
+.picker-group-title.suggest-title { display:flex; align-items:center; gap:8px; color:var(--text); font-size:14px; }
+.suggest-star { color:var(--accent-light); }
+.picker-option.suggested { margin:4px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; }
+.picker-option.suggested[aria-selected=true] { box-shadow:none; border-color:var(--accent-light);
+  background:color-mix(in srgb, var(--accent-light) 12%, var(--surface)); }
+.picker-option.suggested[aria-selected=true].active,
+.picker-option.suggested[aria-selected=true]:hover { background:color-mix(in srgb, var(--accent-light) 20%, var(--surface)); }
+.picker-tick { flex:0 0 16px; color:var(--accent-light); visibility:hidden; }
+.picker-option.suggested[aria-selected=true] .picker-tick { visibility:visible; }
+.suggest-label { padding:1px 10px; border:1px solid #6a6a6a; border-radius:999px; color:var(--text); font-size:13px;
+                 white-space:nowrap; }
+.suggest-label.best { border-color:var(--accent-light); color:var(--accent-light); }
+.suggest-rule { margin:6px 0 4px; border-top:1px solid var(--line); }
+.suggest-foot { flex:0 0 auto; display:grid; gap:6px; padding:6px 8px 2px; border-top:1px solid var(--line);
+                color:var(--dim); font-size:13px; }
+.suggest-source { display:flex; align-items:flex-start; justify-content:space-between; gap:4px 16px; margin:0; }
+.suggest-source button.link { flex:0 0 auto; font-size:13px; color:var(--accent-light); }
+.suggest-how { margin:0; max-height:40vh; overflow-y:auto; color:var(--text); line-height:1.45; }
 .option-line { padding-left:28px; color:var(--dim); overflow-wrap:anywhere; }
 .option-line.small { font-size:13px; }
 .more-details { padding-left:28px; }
@@ -19057,7 +19328,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
         onclick="setTab('progress')">Progress</button>
     </div>
-    <!-- Settings: a page of its own, not a tab; a blue gear button right after the tabs. -->
+    <!-- Settings: a page of its own, not one of the tablist's; a blue tab with a gear at the row's right end. -->
     <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
       aria-label="Settings" aria-pressed="false" onclick="toggleSettings()"><svg class="gear" viewBox="0 0 24 24"
       width="22" height="22" aria-hidden="true" focusable="false"><path d="M9.6 4.4 10.2 1.7 13.8 1.7 14.4 4.4 15.7 4.9
@@ -24597,26 +24868,42 @@ const PICKER_SEARCH_FROM = 10;
 const IMAGES_ONLY_NOTE = "Only models that can read images are listed.";
 const PICKERS = {
   book:{ field:["audiobook", "model"], label:"Model for this book", title:"Adapt the text for listening",
-         why:"Where the document's text goes", short:"Text", flag:"adapt" },
+         why:"Where the document's text goes", short:"Text", flag:"adapt", stage:"prepare_text" },
   figure:{ field:["audiobook", "figure_model"], label:"Figure model", title:"Interpret and narrate figures/charts",
-           why:"Where the figure pictures go", same:true, images:true, short:"Figures", flag:"paper-interpret" },
+           why:"Where the figure pictures go", same:true, images:true, short:"Figures", flag:"paper-interpret",
+           stage:"figures" },
   verify:{ field:["audiobook", "verify_model"], label:"Checking model", title:"Check and correct descriptions",
-           why:"Where the descriptions go to be checked", same:true, short:"Checking", flag:"paper-verify" },
-  chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go" },
+           why:"Where the descriptions go to be checked", same:true, short:"Checking", flag:"paper-verify",
+           stage:"check" },
+  chat:{ field:["player", "chat_model"], label:"Ask Hilde's model", why:"Where your question and its context go",
+         stage:"ask" },
   // Settings' server-wide defaults (`server`: the catalog's defaults field),
   // set by a browser that may manage (caps.manage_providers) and read-only
   // elsewhere. They assign only (assign): no Add local / Connect a provider
   // beside them, and box 2 always opens the list; adding lives in Settings ›
   // Providers. Image narration lists only models that read images.
-  "default-text":{ server:"text", label:"Default text narration", assign:true,
+  "default-text":{ server:"text", label:"Default text narration", assign:true, stage:"prepare_text",
                    why:"The model that prepares the text, for every browser on this server" },
-  "default-image":{ server:"image", label:"Default image narration", assign:true, images:true,
+  "default-image":{ server:"image", label:"Default image narration", assign:true, images:true, stage:"figures",
                     why:"The model that reads figures, for every browser on this server" },
 };
 const MODEL_KINDS = {
   local:{ label:"Local", detail:"Open models on your own machines", all:"All local models" },
   cloud:{ label:"Cloud", detail:"Cloud providers, and open models a cloud host serves", all:"All cloud models" },
 };
+// Each picker's job (PICKERS[name].stage), as its Suggested section names it.
+const SUGGESTION_STAGES = {
+  prepare_text:"preparing the text", figures:"describing figures", check:"checking the text",
+  ask:"answering questions",
+};
+// A suggestion's one label (model_suggestions() on the server).
+const SUGGESTION_LABELS = { best:"Best for this job", fastest:"Fastest", balance:"Good balance" };
+const SUGGESTIONS_HOW = "Hilde gives each model the same test papers several times and counts the facts it gets "
+  + "right (for figures, the facts in figures; for checking, the errors it catches). Best for this job has the "
+  + "highest score. Fastest is the quickest model within 95% of the best. Good balance is clearly in between. "
+  + "Similar accuracy means the difference is within what changes from run to run. Speeds were measured on the "
+  + "machine named above. Only models you can use now, and that can do the job, are suggested. Nothing changes "
+  + "until you choose.";
 const MODEL_SOURCES = {
   "openai-codex":"ChatGPT sign-in", "claude-code":"Claude Code subscription", "anthropic":"Anthropic API",
   "openai":"OpenAI API", "gemini":"Gemini API", "deepseek":"DeepSeek API",
@@ -24848,6 +25135,19 @@ function mountPicker(host) {
     if (option && option.getAttribute("aria-disabled") !== "true") choosePickerOption(name, option);
   });
   pop.addEventListener("keydown", (event) => {
+    // A list with suggestions ends with How this works: Tab reaches it,
+    // Shift+Tab goes back to the list, Tab from it or Escape closes.
+    const how = $(`${name}-suggest-how-link`);
+    if (how && event.target === how) {
+      if (event.key === "Tab" && event.shiftKey) {
+        event.preventDefault();
+        const search = $(`${name}-picker-search`);
+        (search.classList.contains("hidden") ? list : search).focus();
+      } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePicker(true); }
+      else if (event.key === "Tab") closePicker(false);
+      return;
+    }
+    if (how && event.key === "Tab" && !event.shiftKey) { event.preventDefault(); how.focus(); return; }
     const options = pickerOptions(name), at = options.indexOf(list.querySelector(".picker-option.active"));
     const next = {
       ArrowDown:options[Math.min(options.length - 1, at + 1)], ArrowUp:options[Math.max(0, at - 1)],
@@ -24994,7 +25294,8 @@ function modelSource(model) {
 function pickerOption(name, index, item) {
   const option = document.createElement("div");
   option.id = `${name}-option-${index}`;
-  option.className = `picker-option${item.offer ? " offer" : ""}${item.link ? " link-row" : ""}`;
+  option.className = `picker-option${item.offer ? " offer" : ""}${item.link ? " link-row" : ""}`
+    + `${item.label ? " suggested" : ""}`;
   option.setAttribute("role", "option");
   option.setAttribute("aria-selected", String(!!item.selected));
   if (item.disabled) option.setAttribute("aria-disabled", "true");
@@ -25022,6 +25323,15 @@ function pickerOption(name, index, item) {
   const marks = document.createElement("span");
   marks.className = "picker-marks";
   if (item.badge) marks.append(badgeElement(item.badge));
+  // A suggestion's label, and its tick while chosen (the mockups' look).
+  if (item.label) {
+    const tick = document.createElement("span");
+    tick.className = "picker-tick"; tick.textContent = "✓"; tick.setAttribute("aria-hidden", "true");
+    option.prepend(tick);
+    const label = document.createElement("span");
+    label.className = `suggest-label ${item.label}`; label.textContent = SUGGESTION_LABELS[item.label];
+    marks.append(label);
+  }
   if (item.actionText) {
     const action = document.createElement("span");
     action.className = "picker-action"; action.textContent = item.actionText;
@@ -25035,6 +25345,49 @@ function pickerHeading(name, id, text) {
   head.id = `${name}-${id}`; head.className = "picker-group-title"; head.textContent = text;
   head.setAttribute("role", "presentation");
   return head;
+}
+// The catalog's suggestions for this picker's job on the `kind` tab (the
+// server's model_suggestions()): at most three, each a model of this list
+// (`models`: in an image picker, those that read images) with its label and
+// reason; none without a ratings file or ratings for this job and tab.
+function pickerSuggestions(name, kind, models) {
+  const stages = (paperCatalog.suggestions || {}).stages || {};
+  return (((stages[PICKERS[name].stage] || {})[kind]) || []).slice(0, 3)
+    .map((row) => ({ ...row, model:models.find((model) => model.selector === row.selector) }))
+    .filter((row) => row.model && SUGGESTION_LABELS[row.label]);
+}
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// "20 Oct", with the year when it is not this year's.
+function ratingsDate(text) {
+  const [year, month, day] = text.split("-").map(Number);
+  return `${day} ${SHORT_MONTHS[month - 1]}${year !== new Date().getFullYear() ? ` ${year}` : ""}`;
+}
+// Under a list with suggestions, one grey line on where they come from and
+// How this works, which opens a short explanation in place. Without
+// suggestions it is not there at all, so the list is as it always was.
+function renderSuggestFoot(name, source) {
+  let foot = $(`${name}-suggest-foot`);
+  if (!source) { foot?.remove(); return; }
+  if (!foot) {
+    foot = document.createElement("div");
+    foot.id = `${name}-suggest-foot`; foot.className = "suggest-foot";
+    foot.innerHTML = `<p class="suggest-source"><span id="${name}-suggest-source"></span><button
+        id="${name}-suggest-how-link" class="link" type="button" aria-expanded="false"
+        aria-controls="${name}-suggest-how">How this works</button></p>
+      <p id="${name}-suggest-how" class="suggest-how hidden"></p>`;
+    const link = foot.querySelector("button"), how = foot.querySelector(".suggest-how");
+    how.textContent = SUGGESTIONS_HOW;
+    link.addEventListener("click", () => {
+      const open = how.classList.contains("hidden");
+      how.classList.toggle("hidden", !open);
+      link.setAttribute("aria-expanded", String(open));
+      placePicker();
+    });
+    $(`${name}-picker-pop`).append(foot);
+  }
+  const papers = `${source.papers} paper${source.papers === 1 ? "" : "s"}`;
+  foot.querySelector(".suggest-source span").textContent = `Suggestions come from Hilde's own checks on ${papers}, `
+    + `run on ${source.machine} on ${ratingsDate(source.generated)}.`;
 }
 // The open list, drawn again only when what it shows changed, so the
 // two-second repaint keeps the highlighted entry.
@@ -25054,7 +25407,7 @@ function renderPickerList(name, typed = false) {
   if (!searching) search.value = "";
   const query = search.value.trim().toLowerCase();
   const signature = JSON.stringify([mode, kind, models, rows, pickerValue(name), pickerValue("book"),
-    paperCatalog.first_use, paperCatalog.defaults, perOptionModels, query]);
+    paperCatalog.first_use, paperCatalog.defaults, paperCatalog.suggestions, perOptionModels, query]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${MODEL_KINDS[kind].label} models`);
@@ -25062,6 +25415,7 @@ function renderPickerList(name, typed = false) {
   const nodes = [];
   let index = 0;
   if (mode === "kind") {
+    renderSuggestFoot(name, null);
     for (const [value, { label, detail }] of Object.entries(MODEL_KINDS))
       nodes.push(pickerOption(name, index++, { key:`kind:${value}`, kind:value, icon:value, text:label, sub:detail,
                                                selected:value === kind }));
@@ -25072,13 +25426,32 @@ function renderPickerList(name, typed = false) {
       nodes.push(pickerHeading(name, "no-images", "No model here is known to read images yet: models are "
         + "checked automatically, or set one under Settings › Providers › Edit."));
     const { same, model:chosen } = pickerChoice(name);
+    const tags = (model, extra = []) => [...extra, ...(model.images ? ["reads images"] : []),
+                                         ...(model.loaded === false ? ["loads on first use"] : [])];
     // A local model by its name and its server's ("<model> · <server name>").
-    const option = (model, tags = []) => pickerOption(name, index++, { key:model.selector, value:model.selector,
+    const option = (model, extra = []) => pickerOption(name, index++, { key:model.selector, value:model.selector,
       text:model.endpoint ? `${model.name} · ${model.endpoint}` : model.name,
-      tags:[...tags, ...(model.images ? ["reads images"] : []),
-            ...(model.loaded === false ? ["loads on first use"] : [])], title:model.selector,
+      tags:tags(model, extra), title:model.selector,
       sub:modelSource(model), badge:model.badge,
       selected:!same && !!chosen && chosen.selector === model.selector });
+    // Suggested for this job on this tab, above the whole list, which still
+    // holds them; none while searching. Their keys and IDs are their own, so
+    // the list below is as without suggestions.
+    const suggested = query ? [] : pickerSuggestions(name, kind, models);
+    if (suggested.length) {
+      const head = pickerHeading(name, "suggested", `Suggested for ${SUGGESTION_STAGES[picker.stage]}`);
+      head.classList.add("suggest-title");
+      const star = document.createElement("span");
+      star.className = "suggest-star"; star.textContent = "★"; star.setAttribute("aria-hidden", "true");
+      head.prepend(star);
+      nodes.push(head, ...suggested.map(({ model, label, reason }, at) => pickerOption(name, `suggested-${at}`, {
+        key:`suggested:${model.selector}`, value:model.selector, text:model.name, tags:tags(model), title:model.selector,
+        sub:reason, label, selected:!same && !!chosen && chosen.selector === model.selector })));
+      const rule = document.createElement("div");
+      rule.className = "suggest-rule"; rule.setAttribute("role", "presentation");
+      nodes.push(rule);
+    }
+    renderSuggestFoot(name, suggested.length ? paperCatalog.suggestions.source : null);
     // "Same as the text model": in a figure list only while the text model reads images.
     const text = picker.same ? pickerChoice("book").model : null;
     if (text && text.selector && modelKind(text.selector) === kind && (!imagesOnly || text.images === true)

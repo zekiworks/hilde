@@ -29,15 +29,15 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
 | `prompts/PAPER-VERIFY.md`, `prompts/PAPER-REPAIR.md`, `prompts/PAPER-RECHECK.md` | Error correction's plain-text prompts: the check of a description against its source, the note asking for a corrected description (`{issues}` and `{draft}` are filled in), and the check of the correction. A job with error correction reads them when it starts. |
 | `prompts/PAPER-FIGURE-KIND.md` | The plain-text question that decides whether a figure is a chart, described from its caption and the author's text. Each adapting job reads it when it starts. |
-| `qa/` | The QA records reviewers and the fixer share: bug classes, findings, runs, papers, decisions, open questions, golden assertions per paper (`golden/<paper>.yaml`), fact sets per test paper (`facts/<paper>.yaml`, format in `facts/README.md`), `qa.py` (`validate`, `check`, `report`, `next`, and `facts`, which scores fact sets over several runs and against a baseline's), and `describe.py`, which makes descriptions-only runs: `PaperRun(descriptions_only=True)` sends only figure, table, and equation batches to the model, with every request, check, and second request a book gets, keeps prose as printed, and writes each run's `narration.json` and a `book.json` stamp; the flag is part of the scratch identity, so such a run is never reused for a book. `qa/AGENTS.md` is its protocol. Golden checks and fact sets run only here, on an output; the app never reads `qa/`. Output texts under `qa/outputs/` stay out of git. |
+| `qa/` | The QA records reviewers and the fixer share: bug classes, findings, runs, papers, decisions, open questions, golden assertions per paper (`golden/<paper>.yaml`), fact sets per test paper (`facts/<paper>.yaml`, format in `facts/README.md`), `qa.py` (`validate`, `check`, `report`, `next`, and `facts`, which scores fact sets over several runs and against a baseline's), and `describe.py`, which makes descriptions-only runs: `PaperRun(descriptions_only=True)` sends only figure, table, and equation batches to the model, with every request, check, and second request a book gets, keeps prose as printed, and writes each run's `narration.json` and a `book.json` stamp; the flag is part of the scratch identity, so such a run is never reused for a book. `rate_models.py` rates the available models job by job on those fact sets (and the fixed passages of `narration_passages.yaml` for narration) and writes the ratings file the pickers' suggestions read (`qa/README.md`, [Suggested models](#suggested-models)). `qa/AGENTS.md` is its protocol. Golden checks and fact sets run only here, on an output; the app never reads `qa/`. Output texts under `qa/outputs/` stay out of git. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | Where earlier versions kept the library; still ignored by git. The server refuses to start an empty `~/.hilde/library` while it holds voices or books (`library_left_behind()`). |
-| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, voice tags (validation, the tag file, suggestions and their match spans, what waits for review and the dropped tags saving remembers, composition, routes), and preview rendering. |
+| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, voice tags (validation, the tag file, suggestions and their match spans, what waits for review and the dropped tags saving remembers, composition, routes), suggested models (the ratings file, labels and reasons, matching), `qa/rate_models.py` with stubs, and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
 | `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. **Set up** in **Add narration workers** pipes it to a node over SSH. |
 | `README.md` | User guide: what Hilde does, how it reads a paper, measured results, a two-command quickstart through `install.sh`, known limitations, access and security, and License. Short summaries link to the guides below. |
 | `docs/installation.md` | User guide to installing: the one-command installer and its settings, then by hand: environment, PyTorch/TorchAudio builds, dependencies, FlashAttention 2, and model downloads. |
-| `docs/configuration.md` | User reference for the web server: starting it and its options, storage, speech models, narration workers, and batch size. |
+| `docs/configuration.md` | User reference for the web server: starting it and its options, default models, suggested models (the ratings file), storage, speech models, narration workers, and batch size. |
 | `docs/text-adaptation.md` | User guide to text adaptation: what it changes, models and providers, local servers and images, workers, and what the job log reports. |
 | `docs/web-ui.md` | User guide to the page: header and navigation, creating an audiobook and following its progress, the Library and the Listen reader, Voices and new voices, Settings, confirmation dialogs, and browser state. The README links to it. |
 | `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
@@ -934,21 +934,32 @@ shows, form an ARIA tablist of folder tabs on a baseline (Arrow, Home, and End
 keys move between them, Progress included while it shows).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
 an `--accent-light` top edge and opens into the page below. After the tablist,
-outside it, right after its last shown tab (Progress while it shows, else
-Listen), sits **Settings** (`#settings-button`): a button (`aria-pressed`,
-`aria-label="Settings"`, no visible label), not one of the tablist's tabs, drawn
-as a solid `--accent` rounded square (44 × 44 px, radius 10 px) with a white
-outline gear (inline SVG, `stroke: currentColor`), as the mockups have it. On a
-phone (`narrowLayout()`'s 768 px) `margin-left: auto` puts it at the row's right
-end. Open (`aria-pressed="true"`), a ring goes round it: a 2 px gap in `--bg`,
-then 2 px of `--accent-light` (`box-shadow`). A tab never wraps its label.
-`.tabs` is an inline-size container: below 300 and 290 px the tabs' side padding
-shrinks (11, then 8 px) so the gear keeps clear of Listen and the row never
-scrolls. With Progress shown (`.tab-list:has(> #tab-progress:not(.hidden))`),
-four tabs and the gear share the row: below 410, 350, 310, and 290 px the side
-padding (8, 7, 4, 3 px) and then the type (13, 12 px) tighten, each tab at least
-44 px wide; measured from 296 to 760 px with and without Progress, with Create,
-Progress, or Settings selected, the row stays one line and never scrolls. One
+outside it, at the row's right end (`margin-left: auto`), sits **Settings**
+(`#settings-button`): a button (`aria-pressed`, `aria-label="Settings"`, no
+visible label), not one of the tablist's tabs, drawn as a tab: the tabs'
+padding (10 / 7 px, sides `clamp(14px,3vw,22px)`), 9 px top corners, square
+bottom, `margin-bottom: -1px` onto the row's line, at least 44 px wide, filled
+`--accent` with a white outline gear (inline SVG, `stroke: currentColor`, 1.5em,
+the tabs' line height, so it is as tall as a tab and follows their type when
+they tighten). Its right edge is as far in from the row's end as Create's left
+edge is from its start (the row's own padding, 8 px, 2 px on a phone). Closed
+it stands raised like an inactive tab (the same bevel and shadow); open
+(`aria-pressed="true"`) it shows selection as the selected tab does, pressed
+flush (top padding 7 px) and joined to the page, with a 3 px white bar along
+its top (`box-shadow: inset 0 3px 0 #fff`; the tabs' `--accent-light` bar would
+not show on blue). Before 21 Oct it was a 44 px blue square right after the
+last tab with a ring when open. A tab never wraps its label.
+`.tabs` is an inline-size container: below 310 px Settings' side padding drops
+to 8 px (44 px wide) and the tab list's right margin to −2 px, the tabs as they
+are; below 300 and 290 px the tabs' and Settings' side padding shrinks (11,
+then 8 px) so the row never scrolls. With
+Progress shown (`.tab-list:has(> #tab-progress:not(.hidden))`, and
+`.tabs:has(#tab-progress:not(.hidden)) .settings-button` for Settings), four
+tabs and Settings share the row: below 410, 350, 310, and 290 px the side
+padding (8, 7, 4, 3 px) and then the type (13, 12 px) tighten, each tab and
+Settings at least 44 px wide; measured from 296 to 760 px every 2 px with and
+without Progress, with Create selected or Settings open, the row stays one line
+on one baseline and never scrolls, Settings at the right end. One
 more view is not in the tablist:
 
 - The **progress view** (`#page-progress`, tab `progress` in state, the
@@ -1110,7 +1121,11 @@ Each page:
      provider})`; Anthropic's covers Claude Code); in a browser without
      `manage_providers` both open `openProvidersPanel()` instead; a search box above `PICKER_SEARCH_FROM` (10)
      models. Arrow keys, Home, End, Enter, and Escape (focus back to the box)
-     work in the list; the player's shortcuts skip `[role=listbox]`. A
+     work in the list; the player's shortcuts skip `[role=listbox]`. With
+     ratings for the picker's job (`PICKERS[name].stage`) on the open tab,
+     the list starts with its **Suggested for <job>** section (see
+     [Suggested models](#suggested-models)); the rest of the list is
+     unchanged. A
      choice is stored in the option's cookie field, the browser's last used;
      `""` means first use: the catalog's `first_use` (`first_use_models()`:
      the server's default text narration model (`how: "default"`, said as
@@ -1690,6 +1705,80 @@ still shows `running`, and the job's log names it. Voice design runs on the
 GPU with the most free memory (`roomiest_cuda_device()` reads the same
 `gpu_free_mebibytes()` as the narration coordinator), else MPS, else CPU.
 **Download MP3** retrieves an exact retained audiobook name.
+
+### Suggested models
+
+Part H (21 Oct). Every model picker's list can start with "★ Suggested for
+<job>": at most three rated models of the open Runs on tab, each with a
+label, chosen by the server from one file and never by name in code.
+
+- **The file**: `ratings_path()`, `HILDE_HOME / RATINGS_FILE`
+  (`~/.hilde/ratings.json`; tests patch `HILDE_HOME`). `read_ratings()` reads
+  it on every catalog request: missing is quiet; unreadable or invalid
+  (`parse_ratings()` raises `ValueError` with the reason) is one printed line
+  "Suggested models are off: <path> can't be used (<reason>).", printed again
+  only when the problem changes (`_RATINGS_PROBLEM`). Either way the catalog's
+  `suggestions` is `None` and the pickers are exactly as before.
+  `parse_ratings()`: an object with `generated` (`YYYY-MM-DD`, a time after it
+  dropped), `machine` (non-empty), `papers` (a whole number), and `stages`,
+  whose keys must be in `RATING_STAGES` (`prepare_text`, `figures`, `check`,
+  `ask`, `narration`, `voice_design`), each a list of `{model_id, provider
+  (no "/"), score (0–100), runs (≥ 1), errors?, speed?, noise?, tiebreak?}`;
+  numbers finite (`errors`, `speed`, `noise` ≥ 0), no `(provider, model_id)`
+  twice in a stage, other fields ignored. The user reference is
+  docs/configuration.md "Suggested models".
+- **Matching** (`model_suggestions(models)`, `paper_model_catalog()`'s
+  `suggestions`): for each of `PICKER_STAGES` (`prepare_text`, `figures`,
+  `check`, `ask`; narration and voice design have no picker, their models set
+  at startup and shown read-only in Settings), a rating belongs to the live
+  catalog model whose selector is `"<provider>/<model_id>"`; one the catalog
+  does not list (offline rows included) is skipped, and for `figures` one
+  whose `images` is not `True`. The rest are grouped by the model's `kind`
+  and `choose_suggestions()` picks per kind; a stage or kind with none is left
+  out. The answer is `{source: {generated, machine, papers}, stages: {stage:
+  {local|cloud: [{selector, label: best|fastest|balance, reason}]}}}`, or
+  `None` when nothing is left anywhere.
+- **Labels** (`choose_suggestions(entries, stage)`, best first, then
+  balance, then fastest): `best` the highest score (ties: fewer errors, then
+  faster, then provider and model ID, never `tiebreak`); `fastest` the
+  fastest other entry with a speed at least `CLEARLY_FASTER` (1.1) times the
+  best's and a score at least `FASTEST_SHARE` (0.95) of it (ties in speed:
+  higher score, then `tiebreak` when every tied entry has one, `_first()` /
+  `_by_tiebreak()`); `balance` only with a fastest: the most accurate other
+  entry of those candidates whose score is above the fastest's and not
+  `similar_scores()` to it, with the fastest at least `CLEARLY_FASTER` times
+  its speed. A best without a speed gets neither. `similar_scores()`: the
+  difference is at most the sum of the two entries' `noise` (missing counts
+  as 0). Reasons: the best's `BEST_REASONS[stage]`, or "Similar accuracy, top
+  score on Hilde's checks" when any other entry is similar to it; the
+  fastest's "Almost as accurate" or "Similar accuracy", then ", about N×
+  faster here" (`times_faster()`: whole numbers from 2, one decimal below);
+  the balance's "More accurate than the fastest, about N× faster than the
+  best", or "Similar accuracy, about N× faster here" when similar to the best.
+- **The page**: `renderPickerList()` asks `pickerSuggestions(name, kind,
+  models)` (the catalog's rows for the picker's stage and kind, at most three,
+  each still a model of the list it draws, so an image picker's only models
+  that read images), except while the search box has text. It draws the
+  heading `#<name>-suggested` (`.suggest-title`, a `★` in `--accent-light`,
+  "Suggested for " and `SUGGESTION_STAGES[stage]`), one `pickerOption()` per
+  suggestion (`.picker-option.suggested`, ID `<name>-option-suggested-<n>`,
+  key `suggested:<selector>`, value the selector: the model's name, its tags,
+  the reason as its second line, `.suggest-label` with
+  `SUGGESTION_LABELS[label]`, `.best` blue, and a `.picker-tick` shown while
+  it is the chosen model), and a `.suggest-rule`, then the list exactly as
+  without suggestions (its IDs and keys untouched; the suggested models stay
+  in it). `renderSuggestFoot()` adds `#<name>-suggest-foot` to the list
+  popover only while there are suggestions: the grey line "Suggestions come
+  from Hilde's own checks on N papers, run on <machine> on <date>."
+  (`ratingsDate()`: "20 Oct", with the year when not this year's) and **How
+  this works** (`#<name>-suggest-how-link`, `aria-expanded`), which shows
+  `SUGGESTIONS_HOW` in place. Tab from the list or search box focuses it,
+  Shift+Tab goes back, Tab or Escape from it closes the list. A suggestion
+  is chosen as any option (`choosePickerOption()` → `setPickerModel()`;
+  in Settings that saves the default, as a row there does); nothing is chosen
+  or saved by drawing them.
+- **The rating run**: `qa/rate_models.py` (see `qa/README.md`) writes the file
+  atomically after Hilde's own checks; Hilde never writes it.
 
 ### Reader
 

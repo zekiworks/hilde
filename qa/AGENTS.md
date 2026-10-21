@@ -17,6 +17,7 @@ Write in English. Keep every record self-contained: another agent must be able t
 | `questions.yaml` | Open questions for humans (Q01…) | Anyone asks; humans answer |
 | `voices.yaml` | Narrator recipes and their status | Can |
 | `qa.py` | `validate`, `check`, `report`, `next` | Fixer |
+| `rate_models.py`, `narration_passages.yaml` | Rates the available models per job on the fact sets (and the fixed narration passages) and writes the pickers' ratings file; only with Can's go (`README.md`) | Fixer writes; Can runs |
 | `outputs/` | Legacy: copied follow-along text from runs before book folders | Whoever produced the run |
 
 ## IDs

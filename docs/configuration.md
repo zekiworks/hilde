@@ -132,6 +132,94 @@ answering during a book, the job pauses with the parts finished so far kept;
 sends only the remaining parts to the model you click. The book records which
 model wrote which parts.
 
+## Suggested models
+
+Every model picker (Create's text, figure, and checking models, Ask Hilde,
+and Settings' two defaults) can show a short "Suggested for <job>" section
+(see [Web UI](web-ui.md#create-an-audiobook)). The suggestions come only
+from one file, `~/.hilde/ratings.json` (beside `providers.yaml`, outside the
+library; it follows the server user's home, not `--storage-root`), which
+`qa/rate_models.py` writes after rating the models on Hilde's own checks (see
+`qa/README.md`). Hilde only reads it, on every model list request, so a new
+file shows on the next page load. Without the file the pickers are exactly as
+before; a file Hilde can't read or that breaks the schema is ignored as a
+whole, with one line in the server's log ("Suggested models are off: … can't
+be used (…)"), said again only when the problem changes.
+
+```json
+{
+  "generated": "2026-10-20",
+  "machine": "spark",
+  "papers": 5,
+  "stages": {
+    "prepare_text": [
+      {"model_id": "google/gemma-4-31b-it", "provider": "lm-studio", "score": 91.2, "errors": 6.3,
+       "speed": 2.4, "runs": 3, "noise": 0.8}
+    ],
+    "figures": [], "check": [], "ask": [], "narration": [],
+    "voice_design": [{"model_id": "Qwen3-TTS-12Hz-1.7B-VoiceDesign", "provider": "hilde", "score": 80, "runs": 2}]
+  }
+}
+```
+
+- `generated`: the date of the rating (`YYYY-MM-DD`, a time after it is
+  allowed and ignored); `machine`: the label of the machine the checks ran
+  on; `papers`: how many test papers they used. The pickers' grey line names
+  all three.
+- `stages`: any of `prepare_text`, `figures`, `check`, `ask`, `narration`,
+  `voice_design` (another name makes the file invalid), each a list of
+  ratings:
+  - `model_id` and `provider` (required): a rating belongs to the model whose
+    selector in Hilde's live model list is exactly `<provider>/<model_id>`:
+    `lm-studio` or `ollama` with the model's name on its server, or a cloud
+    provider (`openai-codex`, `claude-code`, `anthropic`, `openai`, `gemini`,
+    `deepseek`, `xai`, `xai-api`) with its model. The same model through
+    another provider is another rating. A rated model the live list does not
+    hold right now (its server down, its provider not connected, unknown) is
+    skipped; a provider may not contain `/`; a model listed twice in one stage
+    makes the file invalid. Narration and voice design use `hilde` (Hilde's
+    own workers) or `speech-server`, with the model's name as Settings shows
+    it.
+  - `score` (required, 0 to 100, higher is better): the share of the checks
+    passed, averaged over the runs; `runs` (required, at least 1).
+  - `errors` (optional, at least 0): the mean count of errors per run;
+    `speed` (optional, more is faster): measured on `machine`, pages of the
+    test papers per minute for the text jobs, seconds of audio per second of
+    work for narration; `noise` (optional): the standard deviation of the
+    model's per-run scores; `tiebreak` (optional, higher is better): a score
+    from Zeki Works' other benchmarks, only for models that appear in them.
+    Other fields (such as the check's `found`) are kept and ignored.
+- Only `prepare_text`, `figures`, `check`, and `ask` have pickers; narration
+  and voice design are set when Hilde starts, so their ratings are kept in
+  the file and suggested nowhere yet. Voice design has no automatic score:
+  Can or Ümit add the models they rated by ear by hand, and a rating run keeps
+  those entries (and every stage it did not rate).
+
+On each Runs on tab a picker suggests, from the rated models it can use now
+(listed live; for figures only those known to read images):
+
+- **Best for this job**: the highest score; a tie goes to fewer errors, then
+  the faster, never to the tiebreak.
+- **Fastest**: the fastest other model that scores at least 95% of the best
+  and is at least 1.1 times as fast as it; a tie in speed goes to the higher
+  score, then the tiebreak (only when every tied model has one).
+- **Good balance**: only with a Fastest, the most accurate other model that
+  is clearly in between: its score above the Fastest's by more than their
+  noise, it at least 1.1 times as fast as the Best, and the Fastest at least
+  1.1 times as fast as it.
+
+Two scores are within run-to-run noise when they differ by no more than the
+sum of the two models' `noise` (none counts as 0, so then only equal scores).
+A reason then says "Similar accuracy" instead of claiming one is better (for
+the Best, when any other usable model on that tab is within its noise). The
+reasons are written from the numbers: the Best's says what it does best for
+the job ("Fewest errors on Hilde's paper checks", "Most figure facts right on
+Hilde's checks", "Catches the most errors on Hilde's checks", "Most answers
+right on Hilde's checks"); the Fastest's "Almost as accurate, about 2× faster
+here"; the Good balance's "More accurate than the fastest, about 1.5× faster
+than the best". A suggestion never chooses a model or changes a default by
+itself.
+
 ## Web search for Chat
 
 Ask Hilde can search the web and read pages when the server knows a

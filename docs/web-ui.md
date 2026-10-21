@@ -19,13 +19,16 @@ server, from any browser, and after an audiobook stopped or failed until you
 dismiss it. It opens the [progress view](#following-an-audiobook-being-made);
 once nothing is left it goes, and if you were on it you are back on **Create**.
 
-Right after the last tab (**Progress** when it shows, else **Listen**) is
-**Settings**: a blue square button with a white gear, named "Settings" for
-screen readers; on a phone it sits at the right end of the tab row. It opens
-the settings in place of the page; while they are open, a light blue ring goes
-round the button (and no tab is selected). **Settings** again, **Close
-settings**, or any tab closes them. On the narrowest phones the tabs tighten
-so the row never scrolls sideways. See [Settings](#settings).
+At the right end of the tab row is **Settings**: a tab like the others (the
+same height and rounded top corners, standing on the same line), blue with a
+white gear, named "Settings" for screen readers; its right edge is as far in
+from the row's end as **Create**'s left edge is from its start, on a wide
+screen and on a phone. It opens the settings in place of the page; while they
+are open it shows as the selected tab does, pressed down and joined to the
+page below, with a white bar along its top (and no other tab is selected).
+**Settings** again, **Close settings**, or any tab closes them. On the
+narrowest phones the tabs tighten so the row never scrolls sideways. See
+[Settings](#settings).
 
 ## Create an audiobook
 
@@ -163,6 +166,28 @@ a greyed row keeps a model of a local server that does not answer):
 - With more than ten models a search box at the top filters the list. Arrow
   keys, Home, and End move through it, Enter chooses, and Escape closes it and
   returns to its box.
+- **Suggested for <job>**: above the list, when Hilde has ratings of the
+  models for this job on this tab (**Local** or **Cloud**), a short section
+  "★ Suggested for preparing the text" (or describing figures, checking the
+  text, answering questions) lists at most three of them, each with its short
+  name, its tags (such as **reads images**), one line of reason, and one
+  label: **Best for this job** (the highest score on Hilde's own checks),
+  **Fastest** (the quickest that scores at least 95% of the best), or **Good
+  balance** (only when a third model is clearly in between). When two scores
+  are within what varies from run to run, the reason says "Similar accuracy"
+  instead of claiming one is better. Only models you can use right now and
+  that can do the job are suggested; for figures only models that read
+  images. A click chooses the model like any row (in Settings, as there, it
+  sets the default); nothing is chosen or changed by the suggestions
+  themselves, and the suggested models stay in the full list below. Under the
+  list a grey line says where the suggestions come from ("Suggestions come
+  from Hilde's own checks on 5 papers, run on spark on 20 Oct.") with **How
+  this works**, which opens a short explanation in place (Tab reaches it from
+  the list). Without ratings for the job and tab there is no section at all,
+  and without a ratings file the pickers are exactly as before (see
+  [Suggested models](configuration.md#suggested-models)). Narration and voice
+  design are set when Hilde starts and have no picker, so they show no
+  suggestions.
 
 Each picker, for text and for figures separately, preselects: the model this
 browser used last, if it is reachable; on first use, the server's default
@@ -824,7 +849,7 @@ saved have none; give them tags with **Edit** to make them searchable.
 
 ## Settings
 
-**Settings**, the blue gear button after the tabs, replaces the
+**Settings**, the blue tab with the gear at the right end of the tabs, replaces the
 page until you choose **Settings** again, **Close settings**, or a tab. Each
 group of settings ends with one note on when it takes effect: "Applies to the
 next audiobook" or "Applies now". The groups:

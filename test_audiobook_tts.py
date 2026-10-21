@@ -4975,7 +4975,6 @@ class LocalPaperProviderTests(unittest.TestCase):
         models = [{"selector": "lm-studio/plain", "name": "Plain", "images": False},
                   {"selector": "openai-codex/gpt-a", "name": "GPT A", "images": True}]
         web.load_providers([])
-        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
         self.assertEqual(web.read_providers(path)[2], {"text": "", "image": ""})
         web.save_default_models({"text": "lm-studio/plain", "image": "openai-codex/gpt-a"}, models)
         # Owner-only, in providers.yaml's defaults block; read again at the next start.
@@ -5003,7 +5002,6 @@ class LocalPaperProviderTests(unittest.TestCase):
         self.assertEqual(yaml.safe_load(path.read_text(encoding="utf-8"))["defaults"], {"text": "lm-studio/plain"})
         web.save_default_models({"text": ""}, models)
         self.assertNotIn("defaults", yaml.safe_load(path.read_text(encoding="utf-8")))
-        self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
         # A defaults block that is not what Hilde writes is refused.
         for text in ("defaults: [lm-studio/a]", "defaults: {figure: lm-studio/a}", "defaults: {text: nowhere/a}",
                      "defaults: {text: 7}"):
@@ -10494,8 +10492,7 @@ class WorkerNodeTests(unittest.TestCase):
                 self.assertEqual(self.request(origin, "/api/models/defaults", body),
                                  (403, {"error": web.DEFAULTS_LOCAL_ONLY}))
                 self.assertFalse((home / "providers.yaml").exists())
-                self.assertEqual(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""})
-                # The browser is told it can't set them.
+                        # The browser is told it can't set them.
                 self.assertFalse(self.request(origin, "/api/state")[1]["capabilities"]["manage_providers"])
             # A browser on the server's machine sets both; the answer is the catalog.
             status, answer = self.request(origin, "/api/models/defaults", body)
@@ -11185,6 +11182,527 @@ class RememberedLocalModelsTests(unittest.TestCase):
         catalog = self.catalog({self.SPARK: [self.QWEN]})
         self.assertEqual(self.offline(catalog), [])
         self.assertEqual([row["label"] for row in catalog["rows"] if row["row"] == "not-running"], ["Bariton"])
+
+
+def rating(model_id, score, speed=None, errors=None, noise=None, tiebreak=None, provider="lm-studio", runs=3):
+    """One model's rating as parse_ratings() gives it."""
+    return {"model_id": model_id, "provider": provider, "score": float(score), "runs": runs,
+            "errors": errors, "speed": speed, "noise": noise, "tiebreak": tiebreak}
+
+
+class ModelSuggestionTests(unittest.TestCase):
+    """The pickers' Suggested section (Part H): the ratings file, its labels
+    and reasons, and which rated models a picker may suggest."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name) / ".hilde"
+        patch = mock.patch.object(web, "HILDE_HOME", self.home)
+        patch.start()
+        self.addCleanup(patch.stop)
+        web._RATINGS_PROBLEM = None
+
+    @staticmethod
+    def labels(entries, stage="prepare_text"):
+        return [(entry["model_id"], label, reason) for entry, label, reason in web.choose_suggestions(entries, stage)]
+
+    def file(self, **stages):
+        return {"generated": "2026-10-20", "machine": "spark", "papers": 5, "stages": stages}
+
+    def write(self, data):
+        self.home.mkdir(parents=True, exist_ok=True)
+        text = data if isinstance(data, str) else json.dumps(data)
+        web.ratings_path().write_text(text, encoding="utf-8")
+
+    # --- the file -------------------------------------------------------
+    def test_the_ratings_file_lives_in_hildes_config_folder(self):
+        self.assertEqual(web.ratings_path(), self.home / "ratings.json")
+
+    def test_a_valid_file_is_parsed_with_optional_fields_empty(self):
+        parsed = web.parse_ratings({
+            "generated": "2026-10-20T14:03:00Z", "machine": " spark ", "papers": 5, "comment": "kept out",
+            "stages": {"figures": [{"model_id": "gemma", "provider": "lm-studio", "score": 81.5, "errors": 7,
+                                    "speed": 3.2, "runs": 3, "noise": 1.2, "tiebreak": 1510, "found": 4}],
+                       "voice_design": [{"model_id": "Qwen/VoiceDesign", "provider": "hilde", "score": 80, "runs": 2}]}})
+        self.assertEqual(parsed["generated"], "2026-10-20")
+        self.assertEqual(parsed["machine"], "spark")
+        self.assertEqual(parsed["stages"]["figures"], [rating("gemma", 81.5, 3.2, 7.0, 1.2, 1510.0)])
+        self.assertEqual(parsed["stages"]["voice_design"],
+                         [rating("Qwen/VoiceDesign", 80, provider="hilde", runs=2)])
+
+    def test_a_file_that_breaks_the_schema_is_refused_with_its_reason(self):
+        good = {"model_id": "m", "provider": "ollama", "score": 90, "errors": 1, "speed": 10, "runs": 3}
+        cases = {
+            "not a JSON object": [],
+            "generated": {**self.file(), "generated": "20 Oct"},
+            "machine": {**self.file(), "machine": ""},
+            "papers": {**self.file(), "papers": True},
+            "unknown stage 'prepare'": self.file(prepare=[good]),
+            "must be a list": self.file(figures={"m": good}),
+            "score": self.file(figures=[{**good, "score": 101}]),
+            "speed": self.file(figures=[{**good, "speed": -1}]),
+            "runs": self.file(figures=[{**good, "runs": 0}]),
+            "model_id and provider": self.file(figures=[{**good, "provider": "lm-studio/x"}]),
+            "listed twice": self.file(figures=[good, dict(good)]),
+        }
+        for said, data in cases.items():
+            with self.subTest(said), self.assertRaises(ValueError) as caught:
+                web.parse_ratings(data)
+            self.assertIn(said, str(caught.exception))
+
+    def test_a_missing_file_gives_no_suggestions_and_no_log(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertIsNone(web.read_ratings())
+            self.assertIsNone(web.model_suggestions([{"selector": "ollama/m", "kind": "local", "images": True}]))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_an_invalid_or_unreadable_file_is_logged_once_and_gives_no_suggestions(self):
+        self.write("{not json")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            for _ in range(3):
+                self.assertIsNone(web.model_suggestions([{"selector": "ollama/m", "kind": "local", "images": True}]))
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Suggested models are off", lines[0])
+        self.assertIn("ratings.json", lines[0])
+        # Another problem is said again; a good file says nothing.
+        self.write(self.file(figures=[{"model_id": "m", "provider": "ollama", "score": "high", "runs": 1}]))
+        with redirect_stdout(output):
+            web.read_ratings()
+            web.read_ratings()
+        self.assertEqual(len(output.getvalue().splitlines()), 2)
+        web.ratings_path().write_bytes(b"\xff\xfe\x00")
+        with redirect_stdout(output):
+            self.assertIsNone(web.read_ratings())
+        self.assertEqual(len(output.getvalue().splitlines()), 3)
+
+    # --- labels and reasons ---------------------------------------------
+    def test_no_rated_model_gives_nothing_and_one_gives_best_only(self):
+        self.assertEqual(web.choose_suggestions([], "figures"), [])
+        self.assertEqual(self.labels([rating("a", 80, speed=10)], "figures"),
+                         [("a", "best", "Most figure facts right on Hilde's checks")])
+        for stage, reason in web.BEST_REASONS.items():
+            with self.subTest(stage):
+                self.assertEqual(self.labels([rating("a", 80)], stage), [("a", "best", reason)])
+
+    def test_fastest_is_the_quickest_model_within_95_percent_of_the_best(self):
+        entries = [rating("best", 90, speed=10, noise=0.5), rating("quick", 86, speed=20, noise=0.5),
+                   rating("quicker-but-worse", 85, speed=40, noise=0.5)]
+        # 85 < 0.95 × 90 = 85.5: too far behind to be Fastest.
+        self.assertEqual(self.labels(entries), [
+            ("best", "best", "Fewest errors on Hilde's paper checks"),
+            ("quick", "fastest", "Almost as accurate, about 2× faster here")])
+        # Exactly 95% counts.
+        self.assertEqual(self.labels([rating("best", 80, speed=10), rating("q", 76, speed=31)])[1],
+                         ("q", "fastest", "Almost as accurate, about 3× faster here"))
+
+    def test_fastest_must_be_clearly_faster_than_the_best(self):
+        entries = [rating("best", 90, speed=10), rating("barely", 89, speed=10.5)]
+        self.assertEqual([label for _, label, _ in self.labels(entries)], ["best"])
+        entries = [rating("best", 90, speed=10), rating("some", 89, speed=12)]
+        self.assertEqual(self.labels(entries)[1], ("some", "fastest", "Almost as accurate, about 1.2× faster here"))
+
+    def test_scores_within_run_to_run_noise_say_similar_accuracy(self):
+        entries = [rating("best", 90, speed=10, noise=1.0), rating("quick", 89, speed=15, noise=0.5)]
+        self.assertEqual(self.labels(entries), [
+            ("best", "best", "Similar accuracy, top score on Hilde's checks"),
+            ("quick", "fastest", "Similar accuracy, about 1.5× faster here")])
+        # Just beyond the two spreads: one is better.
+        entries = [rating("best", 90, speed=10, noise=0.4), rating("quick", 89, speed=15, noise=0.5)]
+        self.assertEqual(self.labels(entries)[1][2], "Almost as accurate, about 1.5× faster here")
+        self.assertEqual(self.labels(entries)[0][2], "Fewest errors on Hilde's paper checks")
+
+    def test_the_best_hedges_even_against_a_model_not_shown(self):
+        # "slow" is within noise of the best but neither faster nor shown.
+        entries = [rating("best", 90, speed=10, noise=1), rating("slow", 89.5, speed=5, noise=1)]
+        self.assertEqual(self.labels(entries), [("best", "best", "Similar accuracy, top score on Hilde's checks")])
+
+    def test_without_noise_only_equal_scores_are_similar(self):
+        self.assertTrue(web.similar_scores(rating("a", 90), rating("b", 90)))
+        self.assertFalse(web.similar_scores(rating("a", 90), rating("b", 89.9)))
+        self.assertTrue(web.similar_scores(rating("a", 90, noise=0.05), rating("b", 89.9, noise=0.05)))
+
+    def test_good_balance_only_for_a_model_clearly_between_best_and_fastest(self):
+        best, fastest = rating("best", 92, speed=10, noise=0.5), rating("fastest", 88, speed=40, noise=0.5)
+        middle = rating("middle", 90.5, speed=20, noise=0.5)
+        self.assertEqual(self.labels([fastest, middle, best]), [
+            ("best", "best", "Fewest errors on Hilde's paper checks"),
+            ("middle", "balance", "More accurate than the fastest, about 2× faster than the best"),
+            ("fastest", "fastest", "Almost as accurate, about 4× faster here")])
+        # Within noise of the fastest: not clearly more accurate.
+        near = rating("middle", 88.9, speed=20, noise=0.5)
+        self.assertEqual([label for _, label, _ in self.labels([best, fastest, near])], ["best", "fastest"])
+        # Not clearly slower than the fastest.
+        quick = rating("middle", 90.5, speed=37, noise=0.5)
+        self.assertEqual([label for _, label, _ in self.labels([best, fastest, quick])], ["best", "fastest"])
+        # Not clearly faster than the best.
+        slow = rating("middle", 90.5, speed=10.5, noise=0.5)
+        self.assertEqual([label for _, label, _ in self.labels([best, fastest, slow])], ["best", "fastest"])
+        # Within noise of the best: it says so.
+        close = rating("middle", 91.6, speed=20, noise=0.5)
+        self.assertEqual(self.labels([best, fastest, close])[1],
+                         ("middle", "balance", "Similar accuracy, about 2× faster here"))
+        # Of two models between, the more accurate.
+        other = rating("other", 90, speed=25, noise=0.5)
+        self.assertEqual(self.labels([best, fastest, middle, other])[1][0], "middle")
+
+    def test_at_most_three_and_never_more_than_one_label_each(self):
+        entries = [rating(f"m{n}", 100 - n * 0.6, speed=10 + n * 5) for n in range(8)]
+        chosen = self.labels(entries)
+        self.assertLessEqual(len(chosen), 3)
+        self.assertEqual(len({model for model, _, _ in chosen}), len(chosen))
+        self.assertEqual([label for _, label, _ in chosen], ["best", "balance", "fastest"])
+
+    def test_ties_for_best_go_to_fewer_errors_then_speed_never_the_tiebreak(self):
+        entries = [rating("a", 90, speed=10, errors=5, tiebreak=2000), rating("b", 90, speed=10, errors=3)]
+        self.assertEqual(self.labels(entries)[0][0], "b")
+        entries = [rating("a", 90, speed=10, errors=3, tiebreak=2000), rating("b", 90, speed=12, errors=3)]
+        self.assertEqual(self.labels(entries)[0][0], "b")
+        # A full tie: by provider and model ID, not the tiebreak.
+        entries = [rating("z", 90, speed=10, tiebreak=9999), rating("a", 90, speed=10, tiebreak=1)]
+        self.assertEqual(self.labels(entries)[0][0], "a")
+
+    def test_the_tiebreak_settles_a_tie_for_fastest_only_when_every_tied_model_has_one(self):
+        best = rating("best", 90, speed=10)
+        tied = [rating("x", 88, speed=20, tiebreak=1200), rating("y", 88, speed=20, tiebreak=1500)]
+        self.assertEqual(self.labels([best, *tied])[-1][0], "y")
+        # "y" has no tiebreak: the tie goes by model ID.
+        tied = [rating("x", 88, speed=20, tiebreak=1200), rating("y", 88, speed=20)]
+        self.assertEqual(self.labels([best, *tied])[-1][0], "x")
+        # Not a tie: the tiebreak changes nothing.
+        tied = [rating("x", 88, speed=21, tiebreak=1), rating("y", 88, speed=20, tiebreak=9999)]
+        self.assertEqual(self.labels([best, *tied])[-1][0], "x")
+
+    def test_a_best_without_a_speed_has_no_fastest(self):
+        entries = [rating("best", 90), rating("quick", 89, speed=50)]
+        self.assertEqual([label for _, label, _ in self.labels(entries, "voice_design")], ["best"])
+
+    # --- which models a picker may suggest ------------------------------
+    MODELS = [
+        {"selector": "lm-studio/gemma-31b", "kind": "local", "images": True},
+        {"selector": "lm-studio/qwen-35b", "kind": "local", "images": False},
+        {"selector": "ollama/llava", "kind": "local", "images": None},
+        {"selector": "openai-codex/gpt-x", "kind": "cloud", "images": True},
+        {"selector": "deepseek/deepseek-pro", "kind": "cloud", "images": False},
+    ]
+
+    def ratings(self, **stages):
+        return web.parse_ratings(self.file(**{
+            stage: [{"model_id": model_id, "provider": provider, "score": score, "speed": speed, "runs": 3}
+                    for provider, model_id, score, speed in entries]
+            for stage, entries in stages.items()}))
+
+    def test_ratings_match_the_live_list_by_provider_and_model_id_per_tab(self):
+        ratings = self.ratings(prepare_text=[
+            ("lm-studio", "gemma-31b", 90, 10), ("lm-studio", "qwen-35b", 88, 20),
+            ("ollama", "qwen-35b", 99, 99),            # same name, another provider: not listed
+            ("lm-studio", "not-installed", 100, 50),   # not in the live list
+            ("openai-codex", "gpt-x", 95, 30)])
+        shown = web.model_suggestions(self.MODELS, ratings)
+        self.assertEqual(shown["source"], {"generated": "2026-10-20", "machine": "spark", "papers": 5})
+        self.assertEqual(shown["stages"]["prepare_text"], {
+            "local": [{"selector": "lm-studio/gemma-31b", "label": "best", "reason": "Fewest errors on Hilde's paper checks"},
+                      {"selector": "lm-studio/qwen-35b", "label": "fastest",
+                       "reason": "Almost as accurate, about 2× faster here"}],
+            "cloud": [{"selector": "openai-codex/gpt-x", "label": "best",
+                       "reason": "Fewest errors on Hilde's paper checks"}]})
+        self.assertEqual(sorted(shown["stages"]), ["prepare_text"])
+
+    def test_figures_suggest_only_models_known_to_read_images(self):
+        ratings = self.ratings(figures=[
+            ("lm-studio", "qwen-35b", 99, 50), ("ollama", "llava", 98, 50), ("lm-studio", "gemma-31b", 80, 10),
+            ("deepseek", "deepseek-pro", 99, 50), ("openai-codex", "gpt-x", 70, 5)])
+        stages = web.model_suggestions(self.MODELS, ratings)["stages"]
+        self.assertEqual({kind: [row["selector"] for row in rows] for kind, rows in stages["figures"].items()},
+                         {"local": ["lm-studio/gemma-31b"], "cloud": ["openai-codex/gpt-x"]})
+        # Text-only models in other jobs are fine.
+        ratings = self.ratings(check=[("lm-studio", "qwen-35b", 99, 50)])
+        self.assertEqual(web.model_suggestions(self.MODELS, ratings)["stages"]["check"]["local"][0]["selector"],
+                         "lm-studio/qwen-35b")
+
+    def test_figures_without_an_image_reader_and_all_filtered_out_give_no_section(self):
+        ratings = self.ratings(figures=[("lm-studio", "qwen-35b", 99, 50), ("ollama", "llava", 98, 50)],
+                               ask=[("lm-studio", "gone", 90, 10)])
+        self.assertIsNone(web.model_suggestions(self.MODELS, ratings))
+        # One tab only: the other has no section.
+        ratings = self.ratings(ask=[("openai-codex", "gpt-x", 90, 10)])
+        self.assertEqual(list(web.model_suggestions(self.MODELS, ratings)["stages"]["ask"]), ["cloud"])
+
+    def test_narration_and_voice_design_have_no_picker_and_are_never_suggested(self):
+        ratings = self.ratings(narration=[("lm-studio", "gemma-31b", 90, 10)],
+                               voice_design=[("lm-studio", "gemma-31b", 90, None)])
+        self.assertIsNone(web.model_suggestions(self.MODELS, ratings))
+
+    def test_the_catalog_carries_suggestions_from_the_file_and_none_without(self):
+        def catalog():
+            with mock.patch.object(web, "read_openai_credentials", return_value=None), \
+                    mock.patch.object(web, "read_anthropic_key", return_value=None), \
+                    mock.patch.object(web, "read_openai_api_key", return_value=None), \
+                    mock.patch.object(web, "read_gemini_key", return_value=None), \
+                    mock.patch.object(web, "read_deepseek_key", return_value=None), \
+                    mock.patch.object(web, "read_xai_credentials", return_value=None), \
+                    mock.patch.object(web, "read_xai_api_key", return_value=None), \
+                    mock.patch.object(web, "claude_code_status", return_value=(False, "")), \
+                    mock.patch.object(web, "local_model_names", return_value=("alpha", "beta")), \
+                    mock.patch.object(web, "local_loaded_names", return_value=None), \
+                    mock.patch.object(web.IMAGE_CHECKS, "want"), \
+                    mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}):
+                return web.paper_model_catalog([{"name": "Box", "server": "http://127.0.0.1:9", "provider": "lm-studio",
+                                                 "reads_images": {"alpha": True}}])
+        before = catalog()
+        self.assertIsNone(before["suggestions"])
+        self.write(self.file(prepare_text=[{"model_id": "beta", "provider": "lm-studio", "score": 90, "runs": 3}],
+                             figures=[{"model_id": "beta", "provider": "lm-studio", "score": 90, "runs": 3}]))
+        after = catalog()
+        self.assertEqual(after["suggestions"]["stages"], {"prepare_text": {"local": [
+            {"selector": "lm-studio/beta", "label": "best", "reason": "Fewest errors on Hilde's paper checks"}]}})
+        # Nothing else in the catalog changes, and no default is set.
+        self.assertEqual({key: value for key, value in after.items() if key != "suggestions"},
+                         {key: value for key, value in before.items() if key != "suggestions"})
+
+
+
+def load_rate_models():
+    """qa/rate_models.py as a module (it is a script, not a package)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("rate_models", Path(__file__).resolve().parent / "qa" / "rate_models.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class RateModelsScriptTests(unittest.TestCase):
+    """qa/rate_models.py with stubs only: no model, server, or speech-to-text
+    call is ever made here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rm = load_rate_models()
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.home = self.root / ".hilde"
+        patch = mock.patch.object(web, "HILDE_HOME", self.home)
+        patch.start()
+        self.addCleanup(patch.stop)
+        # Any network call fails the test unless a test stubs it.
+        fetch = mock.patch.object(self.rm, "fetch_json", side_effect=AssertionError("no server may be asked"))
+        self.fetch = fetch.start()
+        self.addCleanup(fetch.stop)
+        self.catalog = self.root / "catalog.json"
+        self.catalog.write_text(json.dumps({"models": [
+            {"selector": "lm-studio/seeing", "provider": "lm-studio", "kind": "local", "server": "http://127.0.0.1:9",
+             "images": True},
+            {"selector": "lm-studio/text-only", "provider": "lm-studio", "kind": "local", "server": "http://127.0.0.1:9",
+             "images": False},
+            {"selector": "openai-codex/gpt-x", "provider": "openai-codex", "kind": "cloud", "images": True},
+        ], "endpoints": [{"name": "Box", "server": "http://127.0.0.1:9", "provider": "lm-studio"}]}))
+        self.pdf = self.root / "bert.pdf"
+        self.pdf.write_bytes(b"%PDF-1.4 test copy")
+        self.out = self.home / "ratings.json"
+
+    def argv(self, *extra):
+        return ["--catalog", str(self.catalog), "--papers", "bert", "--pdf-dir", str(self.root), "--runs", "2",
+                "--work", str(self.root / "work"), "--out", str(self.out), "--machine", "testbox", *extra]
+
+    def run_main(self, *extra):
+        output = io.StringIO()
+        with mock.patch.object(self.rm, "find_pdfs", return_value={"bert": self.pdf}), redirect_stdout(output):
+            code = self.rm.main(self.argv(*extra))
+        return code, output.getvalue()
+
+    # --- words heard ----------------------------------------------------
+    def test_numbers_units_and_years_compare_as_they_are_spoken(self):
+        rm = self.rm
+        self.assertEqual(rm.spoken_words("WMT 2014: 28.4 BLEU, 3.5 days"),
+                         "wmt twenty fourteen twenty eight point four bleu three point five days".split())
+        self.assertEqual(rm.spoken_words("128,000 tokens; 80.5%"),
+                         "one hundred twenty eight thousand tokens eighty point five percent".split())
+        self.assertEqual(rm.spoken_words("English-to-German in 2009 and 1900"),
+                         "english to german in two thousand nine and nineteen hundred".split())
+        self.assertEqual(rm.spoken_words("4,000 warmup steps, 1,000,000 steps"),
+                         "four thousand warmup steps one million steps".split())
+        heard = "WMT twenty-fourteen: twenty eight point four BLEU, three point five days"
+        self.assertEqual(rm.word_errors(rm.spoken_words("WMT 2014: 28.4 BLEU, 3.5 days"), rm.spoken_words(heard)), 0)
+
+    def test_word_errors_count_wrong_missing_and_extra_words(self):
+        reference = "the big model took three days".split()
+        self.assertEqual(self.rm.word_errors(reference, "the big model took three days".split()), 0)
+        self.assertEqual(self.rm.word_errors(reference, "the bag model took three days".split()), 1)
+        self.assertEqual(self.rm.word_errors(reference, "the model took three days".split()), 1)
+        self.assertEqual(self.rm.word_errors(reference, "the big big model took three days ok".split()), 2)
+        self.assertEqual(self.rm.word_errors(reference, []), 6)
+
+    def test_the_fixed_passages_hold_numbers_units_dates_and_names_and_read_without_error(self):
+        passages = self.rm.load_passages()
+        self.assertGreaterEqual(len(passages), 5)
+        text = " ".join(passage["text"] for passage in passages)
+        for needed in ("2017", "2018", "3.5 days", "12 hours", "BLEU", "BooksCorpus", "Cloud TPUs", "percent"):
+            self.assertIn(needed, text)
+        for passage in passages:
+            self.assertTrue(passage["paper"] and passage["source"])
+            # A four-digit number without a comma is a year (read "twenty fourteen").
+            for number in re.findall(r"(?<![\d,.])\d{4}(?![\d,.])", passage["text"]):
+                self.assertTrue(1900 <= int(number) <= 2099, number)
+            self.assertTrue(self.rm.spoken_words(passage["text"]))
+
+    # --- jobs and stops ---------------------------------------------------
+    def test_busy_jobs_names_what_runs_or_waits(self):
+        self.assertEqual(self.rm.busy_jobs({"runs": [], "queue": [{"title": "Old", "status": "done"}]}), "")
+        self.assertEqual(self.rm.busy_jobs({"runs": [{"title": "BERT", "stage": "narrating"}], "queue": []}),
+                         "BERT (narrating)")
+        self.assertEqual(self.rm.busy_jobs({"runs": [], "queue": [{"title": "CLM", "status": "queued"}]}),
+                         "CLM (queued)")
+
+    def test_it_refuses_to_start_while_a_narration_job_runs(self):
+        self.fetch.side_effect = lambda url, timeout=30: {"runs": [{"title": "BERT", "stage": "narrating"}], "queue": []}
+        with mock.patch.object(self.rm, "text_run") as text_run, self.assertRaises(self.rm.Refused) as caught:
+            self.run_main("--stages", "prepare_text")
+        self.assertIn("BERT (narrating)", str(caught.exception))
+        text_run.assert_not_called()
+        self.assertFalse(self.out.exists())
+        self.assertEqual([call.args[0] for call in self.fetch.call_args_list], ["http://127.0.0.1:8800/api/jobs"])
+
+    def test_it_refuses_when_it_cannot_tell_whether_a_job_runs(self):
+        self.fetch.side_effect = OSError("connection refused")
+        with mock.patch.object(self.rm, "text_run") as text_run, self.assertRaises(self.rm.Refused) as caught:
+            self.run_main("--stages", "prepare_text")
+        self.assertIn("Can't tell whether a narration job runs", str(caught.exception))
+        text_run.assert_not_called()
+
+    def test_a_job_starting_mid_rating_stops_it_before_the_next_run_and_writes_nothing(self):
+        answers = iter([{"runs": [], "queue": []}] * 2 + [{"runs": [], "queue": [{"title": "New", "status": "queued"}]}])
+        self.fetch.side_effect = lambda url, timeout=30: next(answers)
+        outcome = {"statuses": {"F1": "right"}, "seconds": 60, "pages": 10}
+        with mock.patch.object(self.rm, "text_run", return_value=outcome) as text_run, \
+                self.assertRaises(self.rm.Refused):
+            self.run_main("--stages", "prepare_text")
+        self.assertEqual(text_run.call_count, 1)
+        self.assertFalse(self.out.exists())
+
+    def test_without_a_speech_to_text_server_narration_stops_and_asks_can(self):
+        with mock.patch.dict(os.environ, {"HILDE_STT_URL": ""}), mock.patch.object(self.rm, "text_run") as text_run, \
+                self.assertRaises(self.rm.Refused) as caught:
+            self.run_main("--stages", "narration", "--narration-model", "Qwen/Base", "--voice", "Eir")
+        self.assertIn("Ask Can", str(caught.exception))
+        text_run.assert_not_called()
+        self.fetch.assert_not_called()
+
+    def test_a_speech_to_text_server_that_does_not_answer_stops_too(self):
+        self.fetch.side_effect = OSError("refused")
+        with self.assertRaises(self.rm.Refused) as caught:
+            self.rm.ensure_stt("http://127.0.0.1:9")
+        self.assertIn("Ask Can", str(caught.exception))
+
+    # --- the dry run ------------------------------------------------------
+    def test_the_dry_run_lists_the_plan_and_runs_nothing(self):
+        with mock.patch.dict(os.environ, {"HILDE_STT_URL": ""}), mock.patch.object(self.rm, "text_run") as text_run, \
+                mock.patch.object(self.rm, "narration_run") as narration_run, \
+                mock.patch.object(self.rm.web, "PaperRun") as paper_run:
+            code, output = self.run_main("--dry-run")
+        self.assertEqual(code, 0)
+        for call in (text_run, narration_run, paper_run, self.fetch):
+            call.assert_not_called()
+        self.assertFalse(self.out.exists())
+        self.assertFalse((self.root / "work").exists())
+        self.assertIn("prepare_text: 3 models × 1 paper × 2 runs = 6 runs", output)
+        self.assertIn("figures: 2 models × 1 paper × 2 runs = 4 runs", output)
+        self.assertIn("left out: lm-studio/text-only (does not read images)", output)
+        self.assertIn("check: left out: no --check-text-model", output)
+        self.assertIn("ask: left out: Hilde has no question set", output)
+        self.assertIn("voice_design: no automatic score", output)
+        self.assertIn("A real run would stop here: Narration needs a speech-to-text model", output)
+
+    # --- scores and the file ----------------------------------------------
+    def test_a_full_stub_run_writes_the_ratings_file_atomically_and_keeps_hand_entries(self):
+        self.home.mkdir(parents=True)
+        hand = {"model_id": "VoiceDesign-1.7B", "provider": "hilde", "score": 85, "runs": 4}
+        self.out.write_text(json.dumps({"generated": "2026-10-01", "machine": "old", "papers": 9,
+                                        "stages": {"voice_design": [hand], "figures": [hand | {"provider": "x"}]}}))
+        self.fetch.side_effect = lambda url, timeout=30: {"runs": [], "queue": []}
+
+        def text_run(stage, model, paper, number, pdf, work, servers, check_text_model=""):
+            self.assertTrue(str(pdf).startswith(str(self.root / "work" / "papers")))   # a test copy
+            self.assertEqual(servers, [{"name": "Box", "server": "http://127.0.0.1:9", "provider": "lm-studio",
+                                        "reads_images": {"seeing": True, "text-only": False}}])
+            right = {"lm-studio/seeing": 9, "lm-studio/text-only": 8, "openai-codex/gpt-x": 10}[model] - (number - 1)
+            statuses = {f"F{n}": "right" if n < right else "missing" for n in range(10)}
+            return {"statuses": statuses, "seconds": 60.0 * number, "pages": 10}
+        with mock.patch.object(self.rm, "text_run", side_effect=text_run) as calls:
+            code, output = self.run_main("--stages", "prepare_text,figures")
+        self.assertEqual(code, 0)
+        # Figures ran only the models that read images.
+        figures = {call.args[1] for call in calls.call_args_list if call.args[0] == "figures"}
+        self.assertEqual(figures, {"lm-studio/seeing", "openai-codex/gpt-x"})
+        data = json.loads(self.out.read_text())
+        self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o600)
+        self.assertEqual([path.name for path in self.home.iterdir()], ["ratings.json"])   # no temporary left
+        self.assertEqual((data["machine"], data["papers"], data["generated"]), ("testbox", 1, datetime.date.today().isoformat()))
+        self.assertEqual(data["stages"]["voice_design"], [hand])        # kept
+        seeing = next(entry for entry in data["stages"]["prepare_text"] if entry["model_id"] == "seeing")
+        # Runs right 9 then 8 of 10; 1 then 2 missing; 10 pages in 1 then 2 minutes.
+        self.assertEqual(seeing, {"model_id": "seeing", "provider": "lm-studio", "score": 85.0, "errors": 1.5,
+                                  "speed": 7.5, "runs": 2, "noise": 7.07})
+        self.assertEqual([entry["model_id"] for entry in data["stages"]["figures"]], ["seeing", "gpt-x"])
+        self.assertEqual(web.parse_ratings(data)["machine"], "testbox")
+        with mock.patch.object(web, "HILDE_HOME", self.home):
+            self.assertIsNotNone(web.read_ratings())
+
+    def test_check_counts_errors_found_and_missed_against_the_text_models_own_runs(self):
+        rm = self.rm
+        baseline = [{"statuses": {"A": "wrong", "B": "wrong", "C": "right"}},
+                    {"statuses": {"A": "wrong", "B": "right", "C": "right"}},
+                    {"statuses": {"A": "wrong", "B": "wrong", "C": "wrong"}}]
+        self.assertEqual(rm.baseline_wrong(baseline), {"A", "B"})
+        checked = {"bert": {"statuses": {"A": "right", "B": "wrong", "C": "wrong"}, "seconds": 30, "pages": 5}}
+        totals = rm.run_totals(checked, {"bert": {"A", "B"}})
+        self.assertEqual((totals["found"], totals["errors"], totals["right"], totals["counted"]), (1, 2, 1, 3))
+        entry = rm.text_entry("check", {"selector": "ollama/checker"}, [totals, totals])
+        self.assertEqual((entry["provider"], entry["model_id"], entry["found"], entry["errors"], entry["speed"]),
+                         ("ollama", "checker", 1, 2, 10.0))
+
+    def test_figures_count_only_facts_of_figures(self):
+        facts = [{"id": "F1", "in": "Figure 1", "status": "right", "open": None},
+                 {"id": "T1", "in": "Table 1", "status": "wrong", "open": None},
+                 {"id": "F2", "in": "Figure 2", "status": "skipped", "open": None},
+                 {"id": "F3", "in": "Figure 3", "status": "missing", "open": "Q04"}]
+        with mock.patch.object(self.rm.qa, "load_facts", return_value={}), \
+                mock.patch.object(self.rm.qa, "Target"), \
+                mock.patch.object(self.rm.qa, "score_facts", return_value=(facts, [])):
+            self.assertEqual(self.rm.fact_statuses(self.root, "bert", figures_only=True), {"F1": "right"})
+            self.assertEqual(self.rm.fact_statuses(self.root, "bert"), {"F1": "right", "T1": "wrong"})
+
+    def test_narration_scores_words_right_and_speed_as_audio_per_work_second(self):
+        entry = self.rm.narration_entry("/models/Qwen3-TTS-12Hz-1.7B-Base", [
+            {"errors": 2, "words": 100, "audio": 60.0, "seconds": 30.0},
+            {"errors": 4, "words": 100, "audio": 60.0, "seconds": 20.0}])
+        self.assertEqual(entry, {"model_id": "Qwen3-TTS-12Hz-1.7B-Base", "provider": "hilde", "score": 97.0,
+                                 "errors": 3.0, "speed": 2.5, "runs": 2, "noise": 1.41})
+
+    def test_a_stub_narration_run_counts_words_from_the_transcript(self):
+        args = self.rm.parse_args(self.argv("--stt-url", "http://127.0.0.1:9", "--device", "cpu"))
+        voice = self.root / "voice"
+        voice.mkdir()
+        script = "\n\n".join(" ".join(passage["text"].split()) for passage in self.rm.load_passages())
+        heard = script.replace("28.4", "twenty eight point four").replace("BooksCorpus", "Books Corpus")
+
+        def narrate(command, stdout, stderr, check):
+            output = Path(command[command.index("--output") + 1])
+            sf.write(str(output), np.zeros(24000 * 3, dtype="float32"), 24000)
+        with mock.patch.object(self.rm.subprocess, "run", side_effect=narrate) as run, \
+                mock.patch.object(self.rm, "transcribe", return_value=heard):
+            outcome = self.rm.narration_run(args, "/models/Base", 1, voice, self.root / "work")
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--voice-dir") + 1], str(voice))
+        self.assertEqual(command[command.index("--device") + 1], "cpu")
+        # "Books Corpus" for "BooksCorpus": one word wrong and one extra.
+        self.assertEqual(outcome["errors"], 2)
+        self.assertEqual(outcome["audio"], 3.0)
 
 
 _TEST_HOME = None
