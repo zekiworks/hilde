@@ -258,9 +258,11 @@ device must install again.
 The page has three main tabs. **Create** turns a document into an audiobook in
 three steps (an arXiv link brings the paper's PDF and shows its title),
 showing before you start which model prepares the text and
-whether it runs locally or in the cloud. **Voices** lists your narrators with
-their tags, searchable by tag and description, and designs new ones from tags.
-Tags live in `voice-tags.json` in the library, never in a voice's folder.
+whether it runs locally or in the cloud. **Voices** lists your narrators, each
+on two lines (its name with its tags, then its description), searchable by tag
+and description, offers the tags Hilde suggests from each description for you
+to review one voice at a time, and designs new voices from tags. Tags live in
+`voice-tags.json` in the library, never in a voice's folder.
 **Listen** opens the
 **Library**, where each book shows its last position on this device, and
 plays a book with its synchronized text, its source text, and its figures as

@@ -648,12 +648,20 @@ that does not establish that the generated file is silent.
 
 ## Voices
 
-**Voices** lists every saved voice in a table: a green play button, **Name**,
-**Tags and description**, **Modified** (the date its sample, transcript, or
+**Voices** lists every saved voice, 50 rows at a time: a green play button,
+the voice (two lines, below), **Modified** (the date its sample, transcript, or
 description last changed, the exact time in its tooltip; hidden on a phone),
-and **Select**, 50 rows at a time. The selected voice comes first, on a faint
-green row, then every other voice A–Z by name, ignoring upper and lower case,
-with letters such as Ö, Ş, and Ü where your browser's language sorts them.
+and **Select**. The selected voice comes first, on a faint green row, then
+every other voice A–Z by name, ignoring upper and lower case, with letters
+such as Ö, Ş, and Ü where your browser's language sorts them.
+
+Each voice is two lines. The first is its name, then its tags as pink chips:
+at most four on a wide screen and one on a phone, then "+N" for the rest. The
+second is one line of plain gray text that ends in "…" when it is longer: the
+voice's description, or, for a voice made from tags, its **More details**. A
+click on that text (on a phone, a tap anywhere on the row) opens the row: the
+whole saved description and every tag; another click folds it. A voice
+without a description says "No description".
 
 ### Voice tags
 
@@ -673,36 +681,65 @@ groups:
 You can add your own (**Yours**). A tag is at most 32 characters, on one line,
 without commas; a voice has at most 12.
 
-Each row shows its tags as pink chips on one line, then one line of text that
-ends in "…" when it is longer: the voice's description, or, for a voice made
-from tags, its **More details**. **Full description** (on a wide screen) shows
-the whole saved description and every chip, and becomes **Show less**; on a
-phone a tap on the row does the same (another tap folds it). A voice without a
-description or tags says "No description".
+The list shows only the tags you have confirmed. When Hilde has **suggested**
+tags for a voice, its first line ends in one dashed pink pill instead, "4
+suggested · Review" ("4 to review" on a phone, in place of the tags), and a
+banner above the list says "Hilde suggested tags for **3 voices**. Nothing
+changes until you confirm." (on a phone just the first sentence). **Later**
+hides the banner until your next visit, which here means this browser tab: a
+reload keeps it hidden, a new tab or a restarted browser shows it again. It is
+gone for good once no suggestions are left.
 
-A voice you have not tagged yet shows the tags Hilde **suggests** from its
-description, with a dashed outline and **Suggested — confirm**. Confirm keeps
-them; **Edit** changes them first. A suggestion is a tag whose word appears in
-the description as a whole word (or a few related words, such as "low pitch"
-for **low-pitched**, "warmth" for **warm**, "older" for **mature**,
-"narration" for **narrator**, "research" for **academic**), but not in what the
-description rules out: words after "without", "not", "never", "rather than",
-or "instead of" in the same sentence, or a sentence that starts with "Avoid".
-No model is asked.
+A suggestion is a tag whose word appears in the description as a whole word
+(or a few related words, such as "low pitch" or "middle register" for a pitch,
+"warmth" for **warm**, "older" for **mature**, "narration" for **narrator**,
+"research" for **academic**), but not in what the description rules out:
+words after "without", "not", "never", "rather than", or "instead of" in the
+same sentence, or a sentence that starts with "Avoid". No model is asked. A
+tag of your own that the description uses is suggested too, also for a voice
+you have already reviewed.
+
+#### Review tags
+
+**Review tags** (on the banner) or a voice's pill opens one voice at a time, in
+a dialog (on a phone, a sheet that fills the screen): the play button, the
+name, and "Voice 2 of 5". The pill starts at its voice, the banner at the
+first waiting voice in the list; either goes on through the rest.
+
+- The full description, read only, with the words Hilde matched highlighted.
+- **Suggested by Hilde**: the suggested tags, each kept (filled, with a check).
+  A click drops one (dashed); another click keeps it again.
+- **Add your own**: **+ Add a tag** opens a box that finds tags from the list
+  as you type, under small group headings, or adds the word you typed as a tag
+  of your own (**Add "…" as a new tag**; it joins **Yours**). Arrow keys move,
+  Enter picks, Escape closes the box. Next to it, two or three dashed ideas
+  from the list: for **Suited to** and then **Manner**, the tags after the
+  last one the voice keeps in that group (from the group's start when it keeps
+  none), never one already in the dialog. A click adds one.
+- **Skip this voice** leaves it waiting; **Save and next** keeps the voice's
+  tags (its confirmed ones, the kept suggestions and the ones you added) and
+  shows the next voice. After the last voice the dialog closes. Escape or ×
+  closes it at any time, and the keyboard focus goes back where it was.
+
+"Tags only help you find and describe voices. They never change how a voice
+sounds." Saving writes only the tag file, never the voice's folder. A
+suggestion you dropped is remembered, so Hilde does not suggest it again; add
+it back with **+ Add a tag** if you change your mind.
 
 Tags are kept in one file, `voice-tags.json` in the library folder beside
 `Voices/` (readable only by you); a voice's own folder never changes when you
 tag it. Renaming a voice carries its tags along, and deleting it removes them.
 
 The play button plays the voice's preview in place: while it plays, the circle
-is filled and "Playing preview" shows under the name. Playing another stops
+is filled and "Playing preview" shows under the name, in place of the text.
+Playing another stops
 the first, and a preview never changes which voice is selected.
 
 **Select** chooses the voice for your next audiobook: the same choice as the
 voice step on **Create**. The chosen voice moves to the top and shows
 **✓ Selected** instead, the one chosen before returns to its place, and a line
-says it is selected, with **Back to Create**. **⋯** on a row holds **Edit**,
-**Rename…**, and **Delete…**:
+says it is selected, with **Back to Create**. **⋯** on a row holds **Edit
+tags**, **Rename…**, and **Delete…**:
 
 - **Delete** removes a voice after a confirmation naming it; audiobooks made
   with it keep their audio, and a job already queued keeps its own copy.
@@ -710,24 +747,23 @@ says it is selected, with **Back to Create**. **⋯** on a row holds **Edit**,
   sample, transcript, description, and tags stay as they are, and the
   audiobooks it read show the new name too. It waits while an audiobook is
   being made with the voice, and refuses a name another voice already has.
-- **Edit** opens the voice's tags: every group with the voice's tags on (the
-  suggested ones until you save), **Add your own tag**, and the saved
-  description, which stays as it is. "Tags help you find this voice. They
-  don't change how it sounds." **Save tags** keeps them; nothing in the voice's
-  folder changes. **Make a new voice from these tags** opens **New voice** with
-  the same tags on. Under **Yours**, **×** takes a tag of your own off the
-  list; voices that have it keep it.
+- **Edit tags** opens the same dialog for that one voice: its tags as kept
+  chips (a click drops one), any suggestions waiting under **Suggested by
+  Hilde**, and **Add your own**. **Save tags** keeps them, **Cancel** changes
+  nothing, and **Make a new voice from these tags** opens **New voice** with
+  the same tags on.
 
-Search looks at descriptions and tags: every word you type must begin a word
-of the description or of a tag, in any order, ignoring case and accents, so
-`warm calm female` finds voices that have all three. Tags only add to what the
-description alone finds. Chips whose words you typed are filled and come first
-in their row, and under the list a count says how many voices match ("1 of 9
-voices"). A click on a chip adds its tag to the search; a click on a filled
-chip takes it out again; **×** in the search box empties it. A preview keeps
-playing while you search, and the selected voice stays selected even when the
-search hides it. When none matches, the page says "No voice matches all of:
-warm, british, zzqx." with **Clear search**.
+Search (**Search voices by tag or description**) looks at descriptions and
+confirmed tags: every word you type must begin a word of the description or
+of a tag, in any order, ignoring case and accents, so `warm calm female` finds
+voices that have all three. Tags only add to what the description alone finds;
+a suggestion counts once you keep it. Chips whose words you typed are filled
+and come first in their row, and under the list a count says how many voices
+match ("1 of 9 voices"). A click on a chip adds its tag to the search; a click
+on a filled chip takes it out again; **×** in the search box empties it. A
+preview keeps playing while you search, and the selected voice stays selected
+even when the search hides it. When none matches, the page says "No voice
+matches all of: warm, british, zzqx." with **Clear search**.
 
 A new library comes with eight stock voices, each with its description:
 Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun

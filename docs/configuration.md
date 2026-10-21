@@ -222,10 +222,11 @@ alone. The server creates and owns this fixed layout:
 - **in_progress** contains durable source snapshots, extraction checkpoints,
   narration chunks, and the job's model history (`history.jsonl`) for
   unfinished jobs. It is removed for a job only after its book is published.
-- **voice-tags.json**, present once you confirm or edit a voice's tags, save a
-  new voice, or add a tag of your own, holds each tagged voice's tags (and, for
-  a voice made from tags, its **More details**) and your own tags, readable
-  only by you. It is
+- **voice-tags.json**, present once you save a voice's tags (Review tags or
+  Edit tags), save a new voice, or add a tag of your own, holds each tagged
+  voice's tags, the suggestions you dropped (so they are not suggested again),
+  and, for a voice made from tags, its **More details**, plus your own tags,
+  readable only by you. It is
   the only file tagging writes: the voice folders never change. Renaming a
   voice moves its tags; deleting it removes them. See
   [Voice tags](web-ui.md#voice-tags).

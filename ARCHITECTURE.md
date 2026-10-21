@@ -32,7 +32,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `qa/` | The QA records reviewers and the fixer share: bug classes, findings, runs, papers, decisions, open questions, golden assertions per paper (`golden/<paper>.yaml`), fact sets per test paper (`facts/<paper>.yaml`, format in `facts/README.md`), `qa.py` (`validate`, `check`, `report`, `next`, and `facts`, which scores fact sets over several runs and against a baseline's), and `describe.py`, which makes descriptions-only runs: `PaperRun(descriptions_only=True)` sends only figure, table, and equation batches to the model, with every request, check, and second request a book gets, keeps prose as printed, and writes each run's `narration.json` and a `book.json` stamp; the flag is part of the scratch identity, so such a run is never reused for a book. `qa/AGENTS.md` is its protocol. Golden checks and fact sets run only here, on an output; the app never reads `qa/`. Output texts under `qa/outputs/` stay out of git. |
 | `voices/` | Stock voices: each a VoiceDesign reference clip reading the fixed preview passage, its transcript, and its prompt as `description.txt`. A new library starts with a copy; the CLI can use them directly with `--voice-dir`. |
 | `User/` | Where earlier versions kept the library; still ignored by git. The server refuses to start an empty `~/.hilde/library` while it holds voices or books (`library_left_behind()`). |
-| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, voice tags (validation, the tag file, suggestions, composition, routes), and preview rendering. |
+| `test_audiobook_tts.py` | Dependency-light `unittest` regressions for persistence, storage/version rules, resume, unified workflows, events, document adaptation, endpoints, batching, voice/library catalogs, voice tags (validation, the tag file, suggestions and their match spans, what waits for review and the dropped tags saving remembers, composition, routes), and preview rendering. |
 | `requirements.txt` | Platform-neutral runtime dependencies. PyTorch/TorchAudio are installed separately for the target CPU/CUDA build. |
 | `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. **Set up** in **Add narration workers** pipes it to a node over SSH. |
 | `README.md` | User guide: what Hilde does, how it reads a paper, measured results, a two-command quickstart through `install.sh`, known limitations, access and security, and License. Short summaries link to the guides below. |
@@ -240,14 +240,16 @@ byte-identical:
 ```json
 {"schema": 1,
  "vocabulary": ["late-night radio"],
- "voices": {"Eir": {"tags": ["female", "adult", "warm"], "confirmed": true},
-            "Tagtest": {"tags": ["male", "warm"], "details": "Reads like a radio host.", "confirmed": true}}}
+ "voices": {"Eir": {"tags": ["female", "adult", "warm"], "dropped": ["gentle"], "confirmed": true},
+            "Tagtest": {"tags": ["male", "warm"], "details": "Reads like a radio host.", "dropped": [], "confirmed": true}}}
 ```
 
 `vocabulary` holds the user's own tags (the page's **Yours** group);
 Hilde's are `VOICE_TAG_GROUPS` in code (Voice, Pitch, Texture, Pace, Manner,
 Suited to: 40 tags), each with the phrases a description may use for it.
-`details` is a voice made from tags' **More details**. `write_voice_tags()`
+`details` is a voice made from tags' **More details**. `dropped` lists the
+suggestions the user did not keep, so they are not suggested again.
+`write_voice_tags()`
 writes a hidden temporary file opened `0600`, fsyncs it, and renames it into
 place; `update_voice_tags()` reads (strictly: an unreadable file raises, so it is
 never written over), changes, and writes under `_VOICE_TAGS_LOCK`.
@@ -257,20 +259,34 @@ list still shows. `rename_voice()` moves a voice's entry (`move_voice_tags()`),
 replaces it after the voice is saved; a voice without an entry writes nothing.
 Removing a tag from `vocabulary` leaves the voices that use it as they are.
 
+What waits for review (`voice_catalog()`'s `suggested`): a voice without an
+entry, every tag its description suggests; a voice with an entry, those it
+neither has nor dropped (so a tag of the user's own that its description uses
+waits even for a reviewed voice); an entry without `dropped` (written before
+Part G of 21 Oct) has nothing waiting, as before. At most 12.
+`set_voice_tags(storage, name, tags, details=None)` stores the confirmed tags
+and makes `dropped` the earlier `dropped` plus every tag the description
+suggests, less the tags kept (case aside); with `details` (a new voice,
+`save_voice_draft()`) the earlier list is not carried over, so a voice made
+from tags has nothing waiting.
+
 - `clean_voice_tag()`: trimmed, inner runs of spaces made one, 1 to 32
   characters (`VOICE_TAG_MAX_LENGTH`), printable (no line break, tab, or control
   character), no comma; one of Hilde's tags in its own spelling.
   `clean_voice_tags()`: a list, repeats (any case) dropped, at most 12
   (`VOICE_TAG_MAX_COUNT`), Hilde's tags in vocabulary order, then the user's own
   as given. Both raise `ValueError` with the reason the page shows.
-- `suggest_voice_tags(description, custom)`: for a voice without an entry, the
-  tags (Hilde's, then the user's own) whose text or one of its phrases occurs in
-  the description as whole words in order (`voice_tag_words()`: lower case; a
-  hyphen or apostrophe inside a word keeps it one word, so "soft-edged" is not
-  "soft"), ignoring words from a negation (`VOICE_TAG_NEGATIONS`: without, not,
-  never, no, nor, avoid…, and the pairs rather than, instead of) to the end of
-  its sentence (`. ! ? ; :` or a line break), so a sentence starting with
-  "Avoid" suggests nothing. No model is asked; at most 12.
+- `voice_tag_matches(description, custom)`: each tag (Hilde's, then the user's
+  own) whose text or one of its phrases occurs in the description as whole
+  words in order (`voice_tag_words()`: lower case; a hyphen or apostrophe
+  inside a word keeps it one word, so "soft-edged" is not "soft"), ignoring
+  words from a negation (`VOICE_TAG_NEGATIONS`: without, not, never, no, nor,
+  avoid…, and the pairs rather than, instead of) to the end of its sentence
+  (`. ! ? ; :` or a line break), so a sentence starting with "Avoid" suggests
+  nothing; for each, the `[start, end)` spans of the matched words (first to
+  last word of a phrase, so "middle register" is one span) in the description
+  as the page shows it (`" ".join(description.split())`), in code points. No
+  model is asked. `suggest_voice_tags()` is its tags, at most 12.
 - `compose_voice_instruct(tags, details)`: the request a new voice is designed
   from and its `description.txt`: "A|An <Manner>, <yours>, <Texture>, <Pitch>
   <age> <gender> voice." (An before a vowel letter; left out without such tags),
@@ -1255,68 +1271,110 @@ Each page:
   `<id>@<finished_at>` to `hilde.dismissedJobs`. A server restart empties
   `recent`; the followed run's "The server restarted…" notice stays.
 - **Voices** is a table (`voiceRow()`, each row `tr[data-voice]`): a preview
-  button (a #3fb950 outline circle; filled, with "Playing preview" under the
-  name, while its clip plays), Name, Tags and description, Modified (local
-  YYYY-MM-DD in monospace, the exact time in its tooltip; hidden on phones),
-  and **Select**, 50 rows at a time with **Show more**. Order: the selected
-  voice (`audiobook.voice`, unless a clone server narrates) first on a 10%
-  green row, then the rest A–Z by `compareVoiceNames()` (an `Intl.Collator`
+  button (a #3fb950 outline circle; filled, with "Playing preview" in place of
+  the text line, while its clip plays), Voice (`td.name`, two lines), Modified
+  (local YYYY-MM-DD in monospace, the exact time in its tooltip; hidden on
+  phones), and **Select**, 50 rows at a time with **Show more**. Order: the
+  selected voice (`audiobook.voice`, unless a clone server narrates) first on a
+  10% green row, then the rest A–Z by `compareVoiceNames()` (an `Intl.Collator`
   of the browser's locale, sensitivity `base`); `takeVoices()` sorts once
   (from `GET /api/voices` or a tag route's answer, the same shape) and
-  `renderVoiceTable()` moves the selected match to the top. A row shows the
-  voice's tags (`voiceTags()`: the confirmed ones, else the suggested ones,
-  `.is-suggested`, a dashed border) as `button.voice-tag` chips in #d66bc6 on
+  `renderVoiceTable()` moves the selected match to the top. Line 1
+  (`.voice-head`, one line): the name (whole up to 9em, then "…"), the voice's
+  confirmed tags only (`voice.tags`) as `button.voice-tag` chips in #d66bc6 on
   an opaque 14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour,
-  ≥ 3:1 on the green row) on one line (`.voice-tags`, no wrapping, fading out
-  where cut: `is-cut`, always on a phone), with `button.voice-confirm`
-  ("Suggested — confirm", `POST /api/voices/tags` with the suggestions) while
-  suggested; then `.voice-text`, one line ending in "…" (`text-overflow`):
-  More details for a voice made from tags, else the description
-  (`description.txt`, whitespace collapsed). No tags and no description read
-  "No description". On a wide screen `button.voice-full` ("Full description",
-  `aria-expanded`) is there when `fitVoiceRow()` measures the text or the
-  chips cut, or the text shown is not the whole description; it
-  (`toggleVoiceRow()`) sets `is-open`: every chip wrapping and the whole stored
-  description, and reads "Show less". `fitVoiceRows()` runs after each render
-  and, through a `ResizeObserver` on `#voice-table`, on every new width. The
-  cell has `width: 100%` and its two lines `contain: inline-size`, so nothing
-  widens the table. A phone has no button: a tap on the row (not on a button)
-  toggles `is-open`; open rows are kept across re-renders in
-  `expandedVoices`. While a phone row's preview plays, "Playing preview"
-  takes the chips' lines. Search (placeholder "Search tags and descriptions,
-  e.g. warm calm female"): every typed word must begin a word of the
-  description or of the voice's tags (`voice.words`, AND, any order, case-
-  and accent-insensitive, so `male` does not match `female`), so tags only
-  add to what the description alone finds. A chip is filled (`aria-pressed`,
+  ≥ 3:1 on the green row), at most `VOICE_TAGS_WIDE` (4) on a wide screen and
+  `VOICE_TAGS_NARROW` (1) up to 640 px (the stylesheet hides the rest of a
+  closed row's chips), then `span.voice-tag-more` "+N" (one per width, the
+  hidden tags in its tooltip); chips that still run past the cell fade out
+  (`is-cut`, `fitVoiceRow()`, also through a `ResizeObserver` on
+  `#voice-table`). While suggestions wait (`voice.suggested`, row class
+  `has-waiting`), one dashed `button.voice-review` follows: "N suggested ·
+  Review", up to 640 px "N to review" in place of the chips; it opens Review
+  tags at that voice. Nothing else is in the list: no suggested chips, no
+  confirm button, no explanation. Line 2: `button.voice-text`, plain gray, one
+  line ending in "…" (`text-overflow`): More details for a voice made from
+  tags, else the description (`description.txt`, whitespace collapsed); no
+  text reads "No description". The text (`aria-expanded`), or on a phone a tap
+  on the row (not on a button), toggles `is-open` (`toggleVoiceRow()`): every
+  chip, wrapping, and the whole stored description; open rows are kept across
+  re-renders in `expandedVoices`. The cell has `width: 100%` and its two
+  lines `contain: inline-size`, so nothing widens the table. Up to 400 px the
+  columns and buttons are a little tighter, so a name and its pill fit. Search
+  (placeholder "Search voices by tag or description"): every typed word must
+  begin a word of the description or of the voice's confirmed tags
+  (`voice.words`, AND, any order, case- and accent-insensitive, so `male` does
+  not match `female`), so tags only add to what the description alone finds,
+  and a suggestion counts once kept. A chip is filled (`aria-pressed`,
   `tagFilled()`) when each of its tag's words begins with a search word, so
   `mid-pitched` fills `mid-pitched` but not `low-pitched`; filled chips come
-  first in their row. A click on a chip (`toggleVoiceTag()`) appends its tag
-  as typed, or, on a filled chip, removes the typed words that fill it; **×**
-  (`#voice-search-clear`, shown while the box has text) and **Clear search**
-  empty it. Each keystroke rebuilds only `#voice-rows`, never the box, so its
-  text and cursor stay; `#voice-count` under the list reads "N voices" or "N
-  of M voices"; no match reads "No voice matches all of: <terms>." with
-  **Clear search**. One shared player (`previewAudio`)
-  previews in place, so filtering never stops it, ignoring clips replaced
-  before they start; a second preview stops the first, and a preview never
-  changes the selection. **Select** (`chooseVoice()`) sets `audiobook.voice`,
-  the state Create's step 2 uses (its `#selected-voice` card,
-  `renderSelectedVoice()`, shows the same chips as `span.voice-tag`, on one
-  line, and one `.voice-text` line); that voice moves to the top and shows
-  "✓ Selected" (solid green, dark text) instead, and a banner offers **Back
-  to Create**; a search that hides it leaves it selected. Each row's **⋯**
-  (`rowMoreButton()`, one shared `#row-menu`) holds **Edit**, **Rename…**,
-  and **Delete…**. **Edit** (`editVoice()`) opens `#voice-edit`, "Edit
-  <name>": "Tags help you find this voice. They don't change how it sounds.",
-  a note while the tags are suggestions, the tag picker (`#voice-edit-picker`,
-  `editTags`), and the stored description, read only. **Save tags**
-  (`saveVoiceTags()`, `POST /api/voices/tags`) writes only the tag file; **Make
-  a new voice from these tags** (`newVoiceFromTags()`) opens New voice with
-  them on. Rename (a confirm dialog with a name field, then `POST
-  /api/voices/rename`) moves the voice to its new name and carries the
-  browser's selected voice, open book's voice, editor names, and open row
-  along.
-- The tag picker (`renderTagPicker()`, New voice and Edit): one
+  first in their row (so a match is never behind "+N"). A click on a chip
+  (`toggleVoiceTag()`) appends its tag as typed, or, on a filled chip, removes
+  the typed words that fill it; **×** (`#voice-search-clear`, shown while the
+  box has text) and **Clear search** empty it. Each keystroke rebuilds only
+  `#voice-rows`, never the box, so its text and cursor stay; `#voice-count`
+  under the list reads "N voices" or "N of M voices"; no match reads "No voice
+  matches all of: <terms>." with **Clear search**. One shared player
+  (`previewAudio`) previews in place, so filtering never stops it, ignoring
+  clips replaced before they start; a second preview stops the first, and a
+  preview never changes the selection. **Select** (`chooseVoice()`) sets
+  `audiobook.voice`, the state Create's step 2 uses (its `#selected-voice`
+  card, `renderSelectedVoice()`, shows the same confirmed tags as
+  `span.voice-tag`, on one line, and one `.voice-text` line); that voice moves
+  to the top and shows "✓ Selected" (solid green, dark text) instead, and a
+  banner offers **Back to Create**; a search that hides it leaves it selected.
+  Each row's **⋯** (`rowMoreButton()`, one shared `#row-menu`) holds **Edit
+  tags** (`editVoiceTags()`), **Rename…**, and **Delete…**. Rename (a confirm
+  dialog with a name field, then `POST /api/voices/rename`) moves the voice to
+  its new name and carries the browser's selected voice, open book's voice,
+  editor names, and open row along.
+- `#tag-banner` (`renderTagBanner()`), between the search box and the list,
+  shows while any voice has suggestions waiting: "Hilde suggested tags for
+  **N voices**. Nothing changes until you confirm." (the second sentence,
+  `.tag-banner-more`, hidden up to 640 px), **Later** (`laterTagReview()`:
+  sessionStorage `hilde.tagReviewLater`, see Browser storage), and **Review
+  tags** (`openTagReview()`), filled #d66bc6 with #160d15 text (6.2:1).
+- Review tags (`dialog#tag-review`, modal; up to 640 px a sheet filling the
+  screen, its head and buttons fixed and the rest scrolling): `tagReview`
+  holds the queue, the voice at hand and its chips. `openTagReview(start,
+  opener)` queues `voicesWaiting()` (list order, the selected voice first)
+  from `start` round to the one before it (the banner: from the first);
+  `editVoiceTags()` queues one voice in edit mode. The head: the green preview
+  button (`previewButton()`), the name (`h2`), "Voice X of N" (not in edit
+  mode), and × (`closeTagReview()`). Then the description read only, the
+  words matched for the dialog's tags marked (`renderReviewDescription()`:
+  the server's `matches` spans merged into `mark`s, by code point); edit mode
+  only: the confirmed tags as kept chips ("Tags: click to keep (filled) or
+  drop (dashed)"); "Suggested by Hilde: click to keep (filled) or drop
+  (dashed)" with `voice.suggested` as `button.review-chip`, kept (filled, ✓,
+  `aria-pressed=true`) until clicked (`is-dropped`, dashed), a click again
+  keeps it; "Add your own": the added tags as the same chips, **+ Add a tag**
+  (`toggleTagPick()`) and up to three dashed `button.review-idea`s with "from
+  the tag list" (`tagIdeas()`: for Suited to, then Manner, the group's tags
+  after the last one kept, round the group, from its start when none is kept,
+  never one in the dialog; taken in turn). The picker
+  (`#tag-review-picker`): `input` `role=combobox` over `#tag-review-options`
+  (`role=listbox`), the vocabulary's groups and Yours each in a
+  `role=group` under a small `.tag-pick-group` heading (headings appear only
+  here), filtered by the typed text (substring, case aside), tags already on
+  left out, then, unless the text is a known tag, `Add “<text>” as a new tag`
+  (`POST /api/voices/vocabulary` `add`; the server's refusal shows in
+  `#tag-review-problem`). ArrowUp/Down move (`aria-activedescendant`), Enter
+  picks (`pickReviewTag()`: a tag in the dialog is kept again, else added),
+  Escape closes the picker only. The foot: **Skip this voice**
+  (`skipTagReview()`; leaves it waiting), the note "Tags only help you find
+  and describe voices. They never change how a voice sounds.", and **Save and
+  next** (`saveTagReview()`, `POST /api/voices/tags` with `reviewTags()`: the
+  confirmed tags in review mode, the kept chips and the added ones, in
+  vocabulary order); the next waiting voice follows, and after the last the
+  dialog closes. In edit mode they read **Cancel** and **Save tags**, and
+  **Make a new voice from these tags** (`newVoiceFromReview()`) closes it and
+  opens New voice with them on. Tab and Shift+Tab go round the dialog's
+  controls; Escape closes it (the picker first); on close focus returns to the
+  opener or, once the list was redrawn, that voice's pill or ⋯
+  (`#tag-banner-review` or the search box otherwise), and a preview of that
+  voice stops.
+- The tag picker (`renderTagPicker()`, New voice): one
   `fieldset.tag-group` per vocabulary group (`legend`, `button.tag-option`
   toggles with `aria-pressed` and `data-tag`), then **Yours**: the user's own
   tags, each with `button.tag-remove` ("Remove <tag> from your tags", `POST
@@ -1478,6 +1536,11 @@ the server:
 - `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
   Settings → Reading (`setHighlightStyle()`, applied at startup as
   `<html data-highlight>`; anything else is A).
+
+One `sessionStorage` key (raw, not JSON), so it lasts for this browser tab
+only: `hilde.tagReviewLater` is `"1"` once **Later** hid the Voices banner of
+suggested tags (`laterTagReview()`); a reload keeps the banner hidden, a new
+tab shows it again.
 
 Phones (up to 640 px) keep the tagline, smaller, and turn the tables, step
 heads, and summary into stacked rows; grid and flex children may shrink
@@ -2294,8 +2357,8 @@ read aloud by **Read answers aloud**.
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
-| `GET /api/voices` | `voices`: saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), `tags` (the confirmed ones, else empty), `suggested` (`suggest_voice_tags()` while the voice has no entry, else empty), `confirmed`, `details` (More details of a voice made from tags), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later or a tag change is not a change. `vocabulary`: `groups` (each `name` and `tags`, Hilde's) and `yours`, the user's own tags. |
-| `POST /api/voices/tags` | Store JSON `tags` as the confirmed tags of the saved voice `name` (`set_voice_tags()`; its `details` are kept); only `voice-tags.json` is written. A bad tag or list returns HTTP 400 with the reason, an unknown voice 404. Answers as `GET /api/voices`. |
+| `GET /api/voices` | `voices`: saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), `tags` (the confirmed ones, else empty), `suggested` (the suggestions waiting for Review tags: see [Voice tags](#voice-tags)), `matches` (for each confirmed or waiting tag the description matched, its `[start, end]` spans in the collapsed description, `voice_tag_matches()`), `confirmed`, `details` (More details of a voice made from tags), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later or a tag change is not a change. `vocabulary`: `groups` (each `name` and `tags`, Hilde's) and `yours`, the user's own tags. |
+| `POST /api/voices/tags` | Store JSON `tags` as the confirmed tags of the saved voice `name` (`set_voice_tags()`; its `details` are kept, and every suggestion of its description not among `tags` joins its `dropped`); only `voice-tags.json` is written. A bad tag or list returns HTTP 400 with the reason, an unknown voice 404. Answers as `GET /api/voices`. |
 | `POST /api/voices/vocabulary` | JSON `add` adds a tag of the user's own (cleaned; one of Hilde's tags or a repeat changes nothing), `remove` takes one off the list; voices that use it keep it. A bad tag, or neither or both keys, returns HTTP 400. Answers as `GET /api/voices`. |
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so the editor can play it before it is saved. |
@@ -2351,7 +2414,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.
 - **Generate preview** never changes a saved voice; **Save voice** stores exactly the draft clip that was heard, with the prompt that made it: the tags and details Save sends must compose to the draft's `description.txt`, else HTTP 409 and nothing is written.
-- Voice tags live only in `<root>/voice-tags.json` (0600, replaced atomically); no tag route writes inside `Voices/`, and an unreadable tag file is never written over. Tags only add to what the Voices search finds: a voice's search words are its description's plus its tags'.
+- Voice tags live only in `<root>/voice-tags.json` (0600, replaced atomically); no tag route writes inside `Voices/`, and an unreadable tag file is never written over. Hilde's suggestions change nothing until the user saves them. Tags only add to what the Voices search finds: a voice's search words are its description's plus its confirmed tags'.
 - A resumable narration never mixes checkpoints from different text/chunk/voice/inference identities.
 - A local narration worker starts only on a GPU measured to have room, and measuring never opens a CUDA context; a local worker that runs out of GPU memory returns its chunks to the queue instead of failing the book.
 - Public audiobook job identity contains only the document content version and voice version.

@@ -7417,7 +7417,7 @@ class VoiceAndLibraryCatalogTests(unittest.TestCase):
         # The tag entry follows the voice, outside its folder.
         self.assertEqual(
             web.read_voice_tags(self.storage)["voices"]["Freyja"],
-            {"tags": ["calm"], "details": "New prompt.", "confirmed": True},
+            {"tags": ["calm"], "details": "New prompt.", "confirmed": True, "dropped": []},
         )
         self.assertEqual(sorted(path.name for path in freyja.iterdir() if not path.name.startswith(".")),
                          ["description.txt", "reference.wav", "transcript.txt"])
@@ -7530,6 +7530,48 @@ class VoiceTagTests(unittest.TestCase):
                          ["warm", "late-night radio"])
         self.assertEqual(suggest(""), [])
 
+    def test_matches_mark_the_words_as_the_page_shows_the_description(self):
+        matches = web.voice_tag_matches
+        text = "  A warm voice in a middle\n  register.  Middle   register, calmly read;\tnot deep. Ölçülü radio."
+        shown = " ".join(text.split())
+        found = matches(text, ["radio", "absent"])
+        # Spans index the collapsed text; a phrase spans its words and the space between them, nothing more.
+        self.assertEqual({tag: [shown[a:b] for a, b in spans] for tag, spans in found.items()},
+                         {"mid-pitched": ["Middle register"], "warm": ["warm"], "calm": ["calmly"], "radio": ["radio"]})
+        # "middle\n register" is two sentences (a line break ends one), "deep" is ruled out by "not".
+        self.assertEqual(list(found), ["mid-pitched", "warm", "calm", "radio"])
+        self.assertEqual(web.suggest_voice_tags(text, ["radio"]), list(found))
+        self.assertEqual(matches(""), {})
+
+    def test_what_waits_for_review_and_what_saving_remembers(self):
+        self.add_voice("Eir", web.VOICE_REFERENCE_TEXT, "An adult female voice, warm and gentle.")
+        self.add_voice("Old", web.VOICE_REFERENCE_TEXT, "A calm male voice.")
+        web.write_voice_tags(self.storage, {"schema": 1, "vocabulary": [], "voices": {
+            "Old": {"tags": ["calm"], "confirmed": True}}})
+
+        def listed():
+            return {voice["name"]: voice for voice in web.voice_catalog(self.storage)}
+
+        # No entry: every suggestion waits; an entry from before dropped tags were kept: none.
+        self.assertEqual(listed()["Eir"]["suggested"], ["female", "adult", "warm", "gentle"])
+        self.assertEqual(listed()["Old"]["suggested"], [])
+        self.assertEqual(listed()["Eir"]["matches"]["warm"], [(23, 27)])
+        entry = web.set_voice_tags(self.storage, "Eir", ["warm", "gentle", "late-night radio"])
+        # What the description suggests and the voice does not keep is remembered, so it does not wait again.
+        self.assertEqual(entry, {"tags": ["warm", "gentle", "late-night radio"], "confirmed": True,
+                                 "dropped": ["female", "adult"]})
+        self.assertEqual(listed()["Eir"]["suggested"], [])
+        self.assertEqual(sorted(listed()["Eir"]["matches"]), ["gentle", "warm"])
+        # A tag of your own the description uses waits for a reviewed voice too; adding a dropped one back keeps it.
+        web.change_voice_vocabulary(self.storage, add="and gentle")
+        self.assertEqual(listed()["Eir"]["suggested"], ["and gentle"])
+        entry = web.set_voice_tags(self.storage, "Eir", ["adult", "warm"])
+        self.assertEqual(entry["dropped"], ["female", "gentle", "and gentle"])
+        self.assertEqual(listed()["Eir"]["suggested"], [])
+        # A new voice's entry (details given) starts its dropped list afresh.
+        entry = web.set_voice_tags(self.storage, "Eir", ["warm"], details="")
+        self.assertEqual(entry["dropped"], ["female", "adult", "gentle", "and gentle"])
+
     def test_composition_is_the_documented_sentence(self):
         compose = web.compose_voice_instruct
         self.assertEqual(
@@ -7557,7 +7599,7 @@ class VoiceTagTests(unittest.TestCase):
 
         entry = web.set_voice_tags(self.storage, "Eir", ["gentle", "warm"])
 
-        self.assertEqual(entry, {"tags": ["warm", "gentle"], "confirmed": True})
+        self.assertEqual(entry, {"tags": ["warm", "gentle"], "confirmed": True, "dropped": ["female", "adult"]})
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["voices"]["Eir"], entry)
         self.assertEqual(self.folder_hashes(), before)

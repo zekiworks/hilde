@@ -2094,11 +2094,15 @@ def voice_preview(voice_dir):
 #   {"schema": 1,
 #    "vocabulary": ["late-night radio", ...],          the user's own tags
 #    "voices": {"<voice name>": {"tags": [...], "confirmed": true,
+#                                "dropped": [...],    suggestions not kept
 #                                "details": "..."}}}   details: voices made from tags
 #
-# A voice without an entry shows the tags suggest_voice_tags() finds in its
-# description until the user confirms or edits them. A new voice's request to
-# the voice model is compose_voice_instruct(tags, details), its description.txt.
+# Hilde suggests the tags suggest_voice_tags() finds in a voice's description
+# that the voice does not have and the user has not dropped; they wait for the
+# Review tags dialog. A voice without an entry has nothing dropped yet; an
+# entry written before dropped tags were kept (no "dropped") has nothing
+# waiting. A new voice's request to the voice model is
+# compose_voice_instruct(tags, details), its description.txt.
 
 # Each tag with the other words a description may use for it (a phrase matches
 # whole words in order; a hyphenated word is one word).
@@ -2163,9 +2167,12 @@ VOICE_TAG_NEGATION_PAIRS = frozenset({("rather", "than"), ("instead", "of")})
 _VOICE_TAGS_LOCK = threading.Lock()
 
 
+_VOICE_TAG_WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+
+
 def voice_tag_words(text):
     """Lower-case words; a hyphen or apostrophe inside a word keeps it one word."""
-    return re.findall(r"[^\W_]+(?:['’-][^\W_]+)*", str(text).casefold().replace("’", "'"))
+    return _VOICE_TAG_WORD.findall(str(text).casefold().replace("’", "'"))
 
 
 def clean_voice_tag(value):
@@ -2203,35 +2210,66 @@ def clean_voice_tags(values):
     return known + [tag for tag in tags if tag not in VOICE_TAG_ORDER]
 
 
-def suggest_voice_tags(description, custom=()):
-    """The tags whose words a description uses, in vocabulary order (then the
-    user's own): the tag itself or one of its phrases, as whole words in order,
-    case aside. Words after a negation (VOICE_TAG_NEGATIONS, "rather than",
-    "instead of") up to the end of their sentence (. ! ? ; : or a line break)
-    do not count. No model is asked."""
+def voice_tag_matches(description, custom=()):
+    """Each tag a description uses, in vocabulary order (then the user's own),
+    with the [start, end) spans of the words that matched it: the tag itself or
+    one of its phrases, as whole words in order, case aside. Words after a
+    negation (VOICE_TAG_NEGATIONS, "rather than", "instead of") up to the end of
+    their sentence (. ! ? ; : or a line break) do not count. The spans index the
+    description as the page shows it, its whitespace runs made single spaces
+    (" ".join(description.split())), in code points. No model is asked."""
+    text = str(description or "")
+    # Where each character lands once whitespace runs are collapsed.
+    place, at, gap = [0] * len(text), 0, False
+    for index, char in enumerate(text):
+        if char.isspace():
+            gap = at > 0
+            continue
+        if gap:
+            at, gap = at + 1, False
+        place[index] = at
+        at += 1
     clauses = []
-    for sentence in re.split(r"[.!?;:\n]+", str(description or "")):
-        words = voice_tag_words(sentence)
+    for sentence in re.finditer(r"[^.!?;:\n]+", text):
+        found = list(_VOICE_TAG_WORD.finditer(sentence.group()))
+        words = [match.group().casefold().replace("’", "'") for match in found]
         for index, word in enumerate(words):
             if word in VOICE_TAG_NEGATIONS or tuple(words[index:index + 2]) in VOICE_TAG_NEGATION_PAIRS:
-                words = words[:index]
+                words, found = words[:index], found[:index]
                 break
         if words:
-            clauses.append(words)
+            spans = [(sentence.start() + match.start(), sentence.start() + match.end()) for match in found]
+            clauses.append((words, spans))
 
-    def used(phrase):
-        want = voice_tag_words(phrase)
-        return bool(want) and any(
-            words[at:at + len(want)] == want
-            for words in clauses for at in range(len(words) - len(want) + 1)
-        )
+    def spans_of(phrases):
+        spans = set()
+        for phrase in phrases:
+            want = voice_tag_words(phrase)
+            for words, places in clauses if want else ():
+                for start in range(len(words) - len(want) + 1):
+                    if words[start:start + len(want)] == want:
+                        first, last = places[start][0], places[start + len(want) - 1][1] - 1
+                        spans.add((place[first], place[last] + 1))
+        return sorted(spans)
 
-    found = [
-        tag for _, tags in VOICE_TAG_GROUPS for tag, phrases in tags
-        if any(used(phrase) for phrase in (tag, *phrases))
-    ]
-    found += [tag for tag in custom if tag.casefold() not in {f.casefold() for f in found} and used(tag)]
-    return found[:VOICE_TAG_MAX_COUNT]
+    matches = {}
+    for _, tags in VOICE_TAG_GROUPS:
+        for tag, phrases in tags:
+            spans = spans_of((tag, *phrases))
+            if spans:
+                matches[tag] = spans
+    for tag in custom:
+        if tag.casefold() not in {known.casefold() for known in matches}:
+            spans = spans_of((tag,))
+            if spans:
+                matches[tag] = spans
+    return matches
+
+
+def suggest_voice_tags(description, custom=()):
+    """The tags a description uses (voice_tag_matches()), at most
+    VOICE_TAG_MAX_COUNT."""
+    return list(voice_tag_matches(description, custom))[:VOICE_TAG_MAX_COUNT]
 
 
 def compose_voice_instruct(tags, details=""):
@@ -2299,6 +2337,7 @@ def read_voice_tags(storage, strict=False):
             entries[name] = {
                 "tags": [str(tag) for tag in entry["tags"]],
                 "confirmed": bool(entry.get("confirmed")),
+                **({"dropped": [str(tag) for tag in entry["dropped"]]} if isinstance(entry.get("dropped"), list) else {}),
                 **({"details": str(entry["details"])} if entry.get("details") else {}),
             }
     return {"schema": 1, "vocabulary": [str(tag) for tag in vocabulary], "voices": entries}
@@ -2328,20 +2367,40 @@ def update_voice_tags(storage, change):
         return result
 
 
+def read_voice_description(voice_dir):
+    """A saved voice's description.txt as stored; none or unreadable: empty."""
+    try:
+        return (Path(voice_dir) / VOICE_DESCRIPTION_FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+
+
 def set_voice_tags(storage, name, tags, details=None):
     """Store a saved voice's tags as confirmed (and a new voice's details);
-    nothing else is written. Raises ValueError, FileNotFoundError."""
+    nothing else is written. Every tag its description suggests that it does
+    not keep is remembered as dropped, so it is not suggested again (a new
+    voice, `details` given, starts its list afresh). Raises ValueError,
+    FileNotFoundError."""
     tags = clean_voice_tags(tags)
     voice_dir = resolve_asset(storage.voices, name)
     if not is_saved_voice(voice_dir):
         raise FileNotFoundError("no such voice")
     name = voice_dir.name
+    description = read_voice_description(voice_dir)
 
     def change(data):
+        old = data["voices"].get(name, {})
         entry = {"tags": tags, "confirmed": True}
-        kept = details if details is not None else data["voices"].get(name, {}).get("details")
+        kept = details if details is not None else old.get("details")
         if kept:
             entry["details"] = kept
+        held, dropped = {tag.casefold() for tag in tags}, []
+        earlier = old.get("dropped", []) if details is None else []
+        for tag in (*earlier, *voice_tag_matches(description, data["vocabulary"])):
+            if tag.casefold() not in held:
+                held.add(tag.casefold())
+                dropped.append(tag)
+        entry["dropped"] = dropped
         data["voices"][name] = entry
         return entry
 
@@ -2385,28 +2444,36 @@ def voice_vocabulary(tag_file):
 
 
 def voice_catalog(storage):
-    """List saved voices with descriptions, tags, and preview versions for searching."""
+    """List saved voices with descriptions, tags, the suggestions waiting for
+    review with where the description matched, and preview versions."""
     tag_file = read_voice_tags(storage)
     voices = []
     for path in sorted(storage.voices.iterdir(), key=lambda item: item.name.casefold()):
         if not path.is_dir() or not is_saved_voice(path):
             continue
-        try:
-            description = (path / VOICE_DESCRIPTION_FILE).read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            description = ""
+        description = read_voice_description(path)
         preview, comparable = voice_preview(path)
         try:
             version = f"{preview.stat().st_mtime_ns:x}"
         except OSError:
             continue
         entry = tag_file["voices"].get(path.name)
+        tags = entry["tags"] if entry else []
+        matches = voice_tag_matches(description, tag_file["vocabulary"])
+        if entry and "dropped" not in entry:
+            waiting = []
+        else:
+            held = {tag.casefold() for tag in (*tags, *(entry or {}).get("dropped", ()))}
+            waiting = [tag for tag in matches if tag.casefold() not in held][:VOICE_TAG_MAX_COUNT]
+        shown = {tag.casefold() for tag in (*tags, *waiting)}
         voices.append({
             "name": path.name,
             "description": " ".join(description.split()),
-            # Confirmed tags; until then the ones the description suggests.
-            "tags": entry["tags"] if entry else [],
-            "suggested": [] if entry else suggest_voice_tags(description, tag_file["vocabulary"]),
+            # Confirmed tags, and Hilde's suggestions waiting for Review tags.
+            "tags": tags,
+            "suggested": waiting,
+            # Where the description (as shown) matched each of those tags.
+            "matches": {tag: spans for tag, spans in matches.items() if tag.casefold() in shown},
             "confirmed": bool(entry and entry["confirmed"]),
             "details": entry.get("details", "") if entry else "",
             "comparable": comparable,
@@ -18132,14 +18199,16 @@ legend ~ * { clear:both; }
    tags as pink-purple chips (#d66bc6) that fill the search box; Select, ⋯ and
    the search box gray. Chips sit on an opaque tint so their text keeps 4.5:1
    on any row (5.1:1, 4.6:1 hovered), their border 3:1 on the green row. */
-#page-voice, #selected-voice { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
+#page-voice, #selected-voice, #tag-review { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
               --tag-line:color-mix(in srgb, var(--tag) 80%, #111); --gray-line:#707070; }
 .voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
                   text-transform:none; }
 .voice-table .preview { width:64px; }
-.voice-table .name { width:13%; overflow-wrap:anywhere; }
-.voice-table .voice-name { display:block; color:var(--text); font-weight:600; }
-.voice-table .voice-playing { display:block; color:var(--play); font-size:13px; }
+/* The name keeps its one line, whole up to 9em (longer ones end in "…"); the tags give way first (fading out),
+   then the pill's text. */
+.voice-table .voice-name { flex:0 0 auto; max-width:9em; overflow:hidden; color:var(--text); font-weight:600;
+  white-space:nowrap; text-overflow:ellipsis; }
+.voice-table .voice-playing { display:block; color:var(--play); font-size:13px; line-height:20px; margin-top:2px; }
 .voice-table tr.is-selected > td { background:color-mix(in srgb, var(--play) 10%, transparent); }
 .voice-table tr.is-selected > td:first-child { border-radius:10px 0 0 10px; }
 .voice-table tr.is-selected > td:last-child { border-radius:0 10px 10px 0; }
@@ -18151,57 +18220,147 @@ legend ~ * { clear:both; }
 .voice-table .preview-button[aria-pressed=true],
 .voice-table .preview-button[aria-pressed=true]:hover:not(:disabled) {
   background:var(--play); border-color:var(--play); color:var(--play-ink); }
-/* Voice tags (20 Oct): a row's chips on one line (fading out where they run
-   past the column), then its free text on one line ending in "…"; "Full
-   description" (wide screens) or a tap on the row (phones) shows the whole
-   stored description and every chip. Suggested chips are dashed until
-   confirmed. */
-.voice-table .description { min-width:0; }
-.voice-tag-line, .voice-text-line { display:flex; align-items:center; gap:8px; min-width:0; }
-.voice-text-line { margin-top:4px; }
-.voice-tags { display:flex; flex:1 1 auto; flex-wrap:nowrap; gap:6px; min-width:0; overflow:hidden; }
+/* Voices list (Part G, 21 Oct): a row is two lines. Line 1: the name, its
+   confirmed tags (at most 4 on a wide screen, 1 on a phone, then "+N"; open,
+   every tag, wrapping) and, while Hilde's suggestions wait, one dashed pill
+   that opens Review tags. Line 2: the text, plain gray on one line ending in
+   "…"; it is a button that opens the row (the whole stored description and
+   every tag). Nothing else: suggestions never show as chips in the list. */
+.voice-table td.name { width:100%; min-width:0; }
+.voice-head, .voice-text-line { display:flex; align-items:center; gap:6px 10px; min-width:0; contain:inline-size; }
+.voice-text-line { margin-top:2px; }
+.voice-tags { display:flex; flex:0 1 auto; flex-wrap:nowrap; gap:6px; min-width:0; overflow:hidden; }
+.voice-table tr:not(.is-open) .voice-tags > .voice-tag:nth-child(n+5) { display:none; }
 .voice-tags.is-cut, .voice-card .voice-tags {
   -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
   mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.voice-tag-more { flex:0 0 auto; color:var(--dim); font-size:13px; line-height:20px; white-space:nowrap; }
+.voice-tag-more.narrow, .voice-table tr.is-open .voice-tag-more { display:none; }
+.voice-table button.voice-review { position:relative; display:inline-flex; flex:0 1 auto; min-width:0; min-height:0;
+  padding:1px 10px; border:1px dashed var(--tag-line); border-radius:12px; background:transparent; color:var(--tag);
+  box-shadow:none; font-size:13px; font-weight:400; line-height:20px; white-space:nowrap; }
+.voice-table button.voice-review:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 14%, #111); }
+.voice-review > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.voice-review .narrow { display:none; }
 .voice-text { flex:1 1 auto; min-width:0; overflow:hidden; color:var(--dim); font-size:13px; line-height:20px;
               white-space:nowrap; text-overflow:ellipsis; }
+.voice-table button.voice-text { display:block; min-height:0; padding:0; border:0; border-radius:0;
+  background:transparent; box-shadow:none; font-weight:400; text-align:left; cursor:pointer; }
+.voice-table button.voice-text:hover:not(:disabled) { background:transparent; color:var(--text); }
+.voice-table tr.is-open .voice-head { flex-wrap:wrap; }
+.voice-table tr.is-open .voice-name { max-width:none; white-space:normal; overflow-wrap:anywhere; }
 .voice-table tr.is-open .voice-tags { flex-wrap:wrap; overflow:visible; -webkit-mask-image:none; mask-image:none; }
-.voice-table tr.is-open .voice-text-line { align-items:flex-start; flex-wrap:wrap; }
-.voice-table tr.is-open .voice-text { flex-basis:100%; white-space:normal; overflow-wrap:anywhere; }
-@media (min-width:768px) {
-  /* The text never widens the table: the description takes the room the
-     other columns leave, and its lines are cut to it. */
-  .voice-table td.description { width:100%; }
-  .voice-table .voice-tag-line, .voice-table .voice-text-line { contain:inline-size; }
-}
+.voice-table tr.is-open .voice-text { white-space:normal; overflow-wrap:anywhere; }
+/* While a preview plays, "Playing preview" takes the text's line. */
+.voice-table tr.is-playing:not(.is-open) .voice-text-line { display:none; }
 .voice-tag { flex:0 0 auto; max-width:none; min-height:0; padding:1px 10px; border:1px solid var(--tag-line);
   border-radius:12px; background:color-mix(in srgb, var(--tag) 14%, #111); color:var(--tag); box-shadow:none;
   font-size:13px; line-height:20px; text-align:left; white-space:nowrap; }
-.voice-tag.is-suggested { border-style:dashed; }
 .voice-table tr.is-open .voice-tag { flex:0 1 auto; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
 .voice-table button.voice-tag:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 20%, #111); }
 .voice-table button.voice-tag[aria-pressed=true],
 .voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled) {
   background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
-.voice-table button.voice-confirm, .voice-table button.voice-full { position:relative; flex:0 0 auto;
-  min-height:0; padding:1px 8px; border:1px dashed var(--tag-line); border-radius:12px; background:transparent;
-  color:var(--text); box-shadow:none; font-size:13px; line-height:20px; white-space:nowrap; }
-.voice-table button.voice-full { border:1px solid var(--line); color:var(--accent-light); }
-.voice-table button.voice-confirm:hover:not(:disabled), .voice-table button.voice-full:hover:not(:disabled) {
-  background:var(--hover); }
-.voice-no-description { color:var(--dim); font-size:13px; }
+.voice-no-description { display:block; margin-top:2px; color:var(--dim); font-size:13px; line-height:20px; }
 .voice-table td.modified { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-@media (min-width:768px) {
-  /* A wide screen tops every cell, lined up with the chips, so the text reads
-     on from its name. */
-  .voice-table td { vertical-align:top; }
-  .voice-table .voice-name { padding-top:9px; }
-  .voice-table .voice-tag-line { padding-top:8px; }
-  .voice-table .voice-no-description { display:block; padding-top:10px; }
-  .voice-table td.modified { padding-top:21px; }
+@media (min-width:641px) {
+  /* A wide screen centres the play button, the date and Select on the row's
+     two lines; an open row keeps them at its top. */
+  .voice-table td { vertical-align:middle; }
+  .voice-table tr.is-open > td { vertical-align:top; }
   .voice-count { padding-left:12px; }
 }
-/* The tag picker (New voice, Edit): a group's tags as toggle chips; Yours
+/* "Hilde suggested tags for N voices": above the list while suggestions wait. */
+.tag-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px; margin:0 0 14px;
+  padding:12px 12px 12px 20px; border:1px solid color-mix(in srgb, var(--tag) 45%, var(--bg));
+  border-radius:10px; background:color-mix(in srgb, var(--tag) 7%, var(--bg)); }
+.tag-banner-text { flex:0 1 auto; min-width:0; margin:0; }
+.tag-banner-text b { font-weight:700; }
+.tag-banner button.link { flex:0 0 auto; color:var(--dim); text-decoration:none; }
+.tag-banner button.link:hover:not(:disabled) { color:var(--text); }
+/* Review tags: filled #d66bc6 with dark text, 6.2:1. */
+button.tag-review-open { flex:0 0 auto; margin-left:auto; border-color:var(--tag); background:var(--tag);
+  color:var(--tag-ink); box-shadow:none; font-weight:650; }
+button.tag-review-open:hover:not(:disabled) { border-color:#e183d3; background:#e183d3; }
+@media (max-width:640px) {
+  .tag-banner { flex-wrap:nowrap; padding:12px 12px 12px 16px; gap:8px 12px; }
+  .tag-banner-more { display:none; }
+}
+/* Review tags (also Edit tags): a dialog of one voice; on a phone a sheet
+   that fills the screen, its head and buttons fixed, the rest scrolling. */
+#tag-review { width:min(960px, calc(100vw - 48px)); max-height:calc(100dvh - 48px); padding:0;
+  border-radius:16px; }
+#tag-review[open] { display:flex; flex-direction:column; }
+.tag-review-head { display:flex; align-items:center; gap:16px; padding:28px 32px 6px; }
+.tag-review-head h2 { flex:1 1 auto; min-width:0; margin:0; font-size:20px; font-weight:600; overflow-wrap:anywhere; }
+.tag-review-count { flex:0 0 auto; color:var(--dim); font-size:14px; }
+#tag-review .preview-button { width:48px; height:48px; background:transparent; border:1.5px solid var(--play);
+  color:var(--play); box-shadow:none; }
+#tag-review .preview-button svg { width:14px; height:14px; }
+#tag-review .preview-button:hover:not(:disabled) { background:color-mix(in srgb, var(--play) 12%, transparent); }
+#tag-review .preview-button[aria-pressed=true],
+#tag-review .preview-button[aria-pressed=true]:hover:not(:disabled) {
+  background:var(--play); border-color:var(--play); color:var(--play-ink); }
+button.tag-review-close { flex:0 0 auto; min-width:36px; padding:0 8px; border-color:transparent;
+  background:transparent; box-shadow:none; color:var(--dim); font-size:20px; }
+button.tag-review-close:hover:not(:disabled) { background:var(--hover); color:var(--text); }
+.tag-review-body { flex:1 1 auto; min-height:0; overflow:auto; padding:6px 32px 4px; }
+.tag-review-label { margin:18px 0 8px; color:var(--dim); font-size:14px; }
+.tag-review-description { margin:0; padding:14px 18px; border:1px solid var(--line); border-radius:10px;
+  background:var(--field); color:var(--text); font-size:15px; line-height:1.75; overflow-wrap:anywhere; }
+.tag-review-description.is-empty { color:var(--dim); }
+.tag-review-description mark { padding:1px 3px; border-radius:4px; color:var(--text);
+  background:color-mix(in srgb, var(--tag) 30%, var(--field)); }
+.tag-review-chips { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
+.tag-review-inline { display:contents; }
+#tag-review button.review-chip, #tag-review button.review-idea, #tag-review button.tag-review-add {
+  display:inline-flex; align-items:center; gap:6px; min-height:32px; max-width:100%; padding:3px 14px;
+  border:1px solid var(--tag); border-radius:16px; box-shadow:none; font-size:15px; line-height:20px;
+  overflow-wrap:anywhere; }
+#tag-review button.review-chip { background:var(--tag); color:var(--tag-ink); font-weight:650; }
+#tag-review button.review-chip:hover:not(:disabled) { border-color:#e183d3; background:#e183d3; }
+#tag-review button.review-chip svg { flex:0 0 auto; width:13px; height:13px; fill:currentColor; }
+#tag-review button.review-chip.is-dropped, #tag-review button.review-idea {
+  border:1px dashed var(--tag-line); background:transparent; color:var(--tag); font-weight:400; }
+#tag-review button.review-chip.is-dropped:hover:not(:disabled), #tag-review button.review-idea:hover:not(:disabled) {
+  background:color-mix(in srgb, var(--tag) 14%, #111); }
+#tag-review button.tag-review-add { border-color:var(--gray-line); background:transparent; color:var(--dim);
+  font-weight:400; }
+#tag-review button.tag-review-add:hover:not(:disabled), #tag-review button.tag-review-add[aria-expanded=true] {
+  background:var(--hover); color:var(--text); }
+.tag-review-from { color:var(--dim); font-size:14px; }
+.tag-review-picker { display:grid; gap:6px; max-width:420px; margin-top:10px; padding:10px;
+  border:1px solid var(--line); border-radius:10px; background:var(--raised); }
+.tag-review-picker.hidden { display:none; }
+.tag-review-options { max-height:240px; overflow:auto; }
+.tag-pick-group { padding:8px 8px 2px; color:var(--dim); font-size:12px; font-weight:600; }
+.tag-pick-option { padding:6px 10px; border-radius:6px; cursor:pointer; overflow-wrap:anywhere; }
+.tag-pick-option:hover, .tag-pick-option[aria-selected=true] { background:var(--hover); }
+.tag-pick-option[data-new] { color:var(--tag); }
+.tag-pick-none { margin:6px 8px; color:var(--dim); font-size:13px; }
+#tag-review-save-problem { margin:12px 0 0; }
+.tag-review-foot { display:flex; align-items:center; gap:12px 18px; padding:18px 32px 26px; }
+.tag-review-note { flex:1 1 auto; margin:0; color:var(--dim); font-size:13px; }
+#tag-review-new { flex-basis:100%; justify-content:flex-start; order:3; }
+@media (max-width:640px) {
+  #tag-review { width:100vw; height:100dvh; max-width:100vw; max-height:100dvh; min-width:0; margin:0;
+    border:0; border-radius:0; }
+  .tag-review-head { gap:12px; padding:14px 14px 4px 16px; }
+  .tag-review-head h2 { font-size:18px; }
+  .tag-review-count { font-size:13px; }
+  .tag-review-body { padding:4px 16px 8px; }
+  .tag-review-label { margin:14px 0 6px; font-size:13px; }
+  .tag-review-description { padding:12px 14px; font-size:15px; line-height:1.6; }
+  #tag-review button.review-chip, #tag-review button.review-idea, #tag-review button.tag-review-add { min-height:44px; }
+  .tag-review-picker { max-width:none; }
+  .tag-pick-option { min-height:44px; display:flex; align-items:center; }
+  /* The buttons stay at the bottom of the screen, the note above them. */
+  .tag-review-foot { flex-wrap:wrap; padding:10px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top:1px solid var(--line); }
+  .tag-review-note { flex-basis:100%; order:-1; }
+  #tag-review-skip, #tag-review-save { flex:1 1 0; }
+}
+/* The tag picker (New voice): a group's tags as toggle chips; Yours
    holds the user's own tags, each removable, and the field that adds one. */
 .field > .field-label { color:var(--dim); font-size:13px; }
 .tag-picker { display:grid; gap:12px; min-width:0; }
@@ -18797,24 +18956,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
                    border-bottom:1px solid var(--surface); }
   .data-table td { display:block; width:auto !important; padding:0; border:0; }
-  /* A voice: preview, the name, then Select with ⋯; under them its chips (one
-     line, fading out at the right) and its text on one line; a tap on the row
-     shows the whole description and every chip. */
+  /* A voice: preview, its two lines (the name with one tag and "+N", or "N to
+     review" while suggestions wait; the text), then Select with ⋯; a tap on
+     the row shows the whole description and every tag. */
   .voice-table tr { grid-template-columns:auto minmax(0,1fr) auto; align-items:center; cursor:pointer; }
+  .voice-table tr.is-open { align-items:start; }
   .voice-table tr.is-selected { background:color-mix(in srgb, var(--play) 10%, transparent);
                                 border-radius:12px; }
   .voice-table tr.is-selected > td { background:none; }
-  .voice-table .preview { grid-column:1; grid-row:1 / span 2; align-self:center; }
+  .voice-table .preview { grid-column:1; grid-row:1; }
   .voice-table .name { grid-column:2; grid-row:1; }
-  .voice-table .description { grid-column:2 / span 2; grid-row:2; }
-  .voice-tags { -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent);
-                mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
-  .voice-table tr.is-open .preview { align-self:start; }
-  .voice-table button.voice-full { display:none; }
-  /* "Suggested — confirm" looks small and takes a 44 px tall touch. */
-  .voice-table button.voice-confirm::after { content:""; position:absolute; inset:-11px -2px; }
-  /* While a preview plays, "Playing preview" takes the tags' line. */
-  .voice-table tr.is-playing:not(.is-open) .description { display:none; }
+  .voice-table tr:not(.is-open) .voice-tags > .voice-tag:nth-child(n+2) { display:none; }
+  .voice-table .voice-tag-more.wide, .voice-table .voice-review .wide { display:none; }
+  .voice-table .voice-tag-more.narrow, .voice-table .voice-review .narrow { display:inline; }
+  .voice-table tr.is-open .voice-tag-more.narrow { display:none; }
+  .voice-table tr.has-waiting:not(.is-open) :is(.voice-tags, .voice-tag-more) { display:none; }
+  /* The pill looks small and takes a 44 px tall touch. */
+  .voice-table button.voice-review::after { content:""; position:absolute; inset:-11px -2px; }
   /* The phone leaves out when a voice changed. */
   .voice-table .modified { display:none !important; }
   .data-table .modified { font-size:13px; }
@@ -18830,6 +18988,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .book-table .action { grid-column:2; grid-row:1 / span 5; align-self:center; }
   .book-table .action { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
   .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
+}
+@media (max-width:400px) {
+  /* The narrowest phones give the name's line a little more room. */
+  .voice-table tr { column-gap:8px; }
+  .voice-head { column-gap:8px; }
+  .voice-table button.voice-select { padding:0 12px; }
+  .voice-table .selected-badge { padding:0 10px; }
+  .voice-table button.voice-review { padding:1px 8px; }
 }
 @media (max-width:640px), (pointer:coarse) {
   /* Touch targets stay at least 44px tall. */
@@ -19343,44 +19509,29 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <p id="voice-save-note" class="note"></p>
       </div>
     </section>
-    <section id="voice-edit" class="card hidden" aria-labelledby="voice-edit-title">
-      <div class="stack">
-        <h3 id="voice-edit-title">Edit</h3>
-        <p class="note">Tags help you find this voice. They don't change how it sounds.</p>
-        <p id="voice-edit-suggested" class="note hidden">Hilde suggested the tags that are on from the
-          description. Save tags keeps them; change them first if you like.</p>
-        <div class="field">
-          <span class="field-label" id="voice-edit-tags-label">Tags</span>
-          <div id="voice-edit-picker" class="tag-picker" role="group" aria-labelledby="voice-edit-tags-label"></div>
-        </div>
-        <div class="field">
-          <span class="field-label" id="voice-edit-description-label">Description (what the voice was made
-            from; it stays as it is)</span>
-          <p id="voice-edit-description" class="stored-description" aria-labelledby="voice-edit-description-label"></p>
-        </div>
-        <div class="actions">
-          <button id="voice-edit-save" class="primary" type="button" onclick="saveVoiceTags(this)">Save tags</button>
-          <button id="voice-edit-new" type="button" onclick="newVoiceFromTags()">Make a new voice from these
-            tags</button>
-          <button id="voice-edit-close" class="link" type="button" onclick="closeVoiceEdit()">Close</button>
-        </div>
-      </div>
-    </section>
     <div class="search">
       <div class="voice-search-field">
         <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
           stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/></svg>
-        <label for="voice-search" class="visually-hidden">Search voice tags and descriptions</label>
+        <label for="voice-search" class="visually-hidden">Search voices by tag or description</label>
         <input id="voice-search" type="search" autocomplete="off"
-          placeholder="Search tags and descriptions, e.g. warm calm female">
+          placeholder="Search voices by tag or description">
         <button id="voice-search-clear" class="hidden" type="button" aria-label="Clear search"
           onclick="clearVoiceSearch()">×</button>
       </div>
     </div>
+    <!-- While Hilde's suggested tags wait: one banner; Later hides it for this browser session. -->
+    <div id="tag-banner" class="tag-banner hidden" role="region" aria-label="Suggested tags">
+      <p class="tag-banner-text"><span>Hilde suggested tags for <b id="tag-banner-count"></b>.</span>
+        <span class="tag-banner-more">Nothing changes until you confirm.</span></p>
+      <button id="tag-banner-later" class="link" type="button" onclick="laterTagReview()">Later</button>
+      <button id="tag-banner-review" class="tag-review-open" type="button"
+        onclick="openTagReview()">Review tags</button>
+    </div>
     <table id="voice-table" class="data-table voice-table">
       <caption class="visually-hidden">Voices</caption>
-      <thead><tr><th scope="col"><span class="visually-hidden">Preview</span></th><th scope="col">Name</th>
-        <th scope="col">Tags and description</th><th scope="col" class="modified">Modified</th>
+      <thead><tr><th scope="col"><span class="visually-hidden">Preview</span></th><th scope="col">Voice</th>
+        <th scope="col" class="modified">Modified</th>
         <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
       <tbody id="voice-rows"></tbody>
     </table>
@@ -19644,6 +19795,57 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="confirm-ok" type="submit" value="ok"></button>
     </div>
   </form>
+</dialog>
+
+<!-- Review tags: one voice at a time, its description (Hilde's matches marked) and the tags to keep, drop or
+     add; Save writes only the library's tag file. Edit tags opens it for one voice. -->
+<dialog id="tag-review" class="tag-review" aria-labelledby="tag-review-name">
+  <div class="tag-review-head">
+    <span id="tag-review-play" class="tag-review-play"></span>
+    <h2 id="tag-review-name"></h2>
+    <span id="tag-review-count" class="tag-review-count"></span>
+    <button id="tag-review-close" class="tag-review-close" type="button" aria-label="Close"
+      onclick="closeTagReview()">×</button>
+  </div>
+  <div class="tag-review-body">
+    <p id="tag-review-description-label" class="tag-review-label"></p>
+    <p id="tag-review-description" class="tag-review-description" aria-labelledby="tag-review-description-label"></p>
+    <div id="tag-review-kept-part" class="tag-review-part">
+      <p id="tag-review-kept-label" class="tag-review-label">Tags: click to keep (filled) or drop (dashed)</p>
+      <div id="tag-review-kept" class="tag-review-chips" role="group" aria-labelledby="tag-review-kept-label"></div>
+    </div>
+    <div id="tag-review-suggested-part" class="tag-review-part">
+      <p id="tag-review-suggested-label" class="tag-review-label">Suggested by Hilde: click to keep (filled) or drop
+        (dashed)</p>
+      <div id="tag-review-suggested" class="tag-review-chips" role="group"
+        aria-labelledby="tag-review-suggested-label"></div>
+    </div>
+    <div class="tag-review-part">
+      <p id="tag-review-add-label" class="tag-review-label">Add your own</p>
+      <div class="tag-review-chips" role="group" aria-labelledby="tag-review-add-label">
+        <span id="tag-review-added" class="tag-review-inline"></span>
+        <button id="tag-review-add" class="tag-review-add" type="button" aria-expanded="false"
+          aria-controls="tag-review-picker" onclick="toggleTagPick()">+ Add a tag</button>
+        <span id="tag-review-ideas" class="tag-review-inline"></span>
+      </div>
+      <div id="tag-review-picker" class="tag-review-picker hidden">
+        <label for="tag-review-input" class="visually-hidden">Find a tag or type a new one</label>
+        <input id="tag-review-input" type="text" autocomplete="off" maxlength="32" role="combobox"
+          aria-autocomplete="list" aria-expanded="true" aria-controls="tag-review-options"
+          placeholder="Type to find a tag, or a new word">
+        <div id="tag-review-options" class="tag-review-options" role="listbox" aria-label="Tags"></div>
+        <p id="tag-review-problem" class="problem hidden" role="alert"></p>
+      </div>
+    </div>
+    <p id="tag-review-save-problem" class="problem hidden" role="alert"></p>
+  </div>
+  <div class="tag-review-foot">
+    <button id="tag-review-skip" type="button" onclick="skipTagReview()">Skip this voice</button>
+    <p class="tag-review-note">Tags only help you find and describe voices. They never change how a voice sounds.</p>
+    <button id="tag-review-save" class="primary" type="button" onclick="saveTagReview(this)">Save and next</button>
+    <button id="tag-review-new" class="link hidden" type="button" onclick="newVoiceFromReview()">Make a new voice
+      from these tags</button>
+  </div>
 </dialog>
 
 <dialog id="change-voice-dialog" aria-labelledby="change-voice-title">
@@ -19990,8 +20192,9 @@ let voiceLimit = PAGE_SIZE, bookLimit = PAGE_SIZE;
 const expandedVoices = new Set();
 // Hilde's tag vocabulary by group and the user's own tags (GET /api/voices).
 let vocabulary = { groups:[], yours:[] };
-// Edit: the voice whose tags are being edited, and the tags on in its picker.
-let editingVoice = "", editTags = [];
+// Review tags (the dialog, also Edit tags): the voices to go through, the one
+// open, its chips, and what had focus before it opened; null while closed.
+let tagReview = null;
 // The current stage's first and latest real counts; the estimate is their average pace.
 let etaSample = null, etaStart = null, etaDeadline = null, etaTimer = null;
 let readerAudio = null, readerCues = [], readerWordCues = [], readerSampleRate = 0;
@@ -22995,13 +23198,14 @@ function openRowMenu(button, label, items) {
 }
 
 // The voices and the vocabulary, from GET /api/voices or a route that changed
-// tags (the same answer). A voice is found by its description and its tags.
+// tags (the same answer). A voice is found by its description and its
+// confirmed tags (Hilde's suggestions, until kept, are not searched).
 function takeVoices(answer) {
   vocabulary = answer.vocabulary || vocabulary;
   voices = (answer.voices || []).map((voice) => ({
-    ...voice, words: searchWords(`${voice.description} ${voiceTags(voice).join(" ")}`),
+    ...voice, words: searchWords(`${voice.description} ${voice.tags.join(" ")}`),
   })).sort(compareVoiceNames);
-  renderVoiceTable(); renderSelectedVoice(); renderVoiceForm(); renderVoiceEdit();
+  renderVoiceTable(); renderSelectedVoice(); renderVoiceForm();
 }
 async function refreshVoices() {
   let answer;
@@ -23014,10 +23218,15 @@ async function refreshVoices() {
   takeVoices(answer);
 }
 function voiceByName(name) { return voices.find((voice) => voice.name === name) || null; }
-// A voice's tags as shown: the confirmed ones, else those Hilde suggests from
-// its description (dashed until confirmed).
-function voiceTags(voice) { return voice.confirmed ? voice.tags : voice.suggested; }
-function voiceSuggested(voice) { return !voice.confirmed && voice.suggested.length > 0; }
+// Voices whose suggested tags wait for Review tags, in the list's order (the
+// selected voice first, then A–Z), whatever the search shows.
+function voicesWaiting() {
+  const chosen = facts.clone_server ? "" : state.audiobook.voice;
+  const waiting = voices.filter((voice) => voice.suggested.length > 0);
+  const at = waiting.findIndex((voice) => voice.name === chosen);
+  if (at > 0) waiting.unshift(...waiting.splice(at, 1));
+  return waiting;
+}
 // Hilde's tags in vocabulary order, then the user's own as given; no repeats.
 function vocabularyOrder() { return vocabulary.groups.flatMap((group) => group.tags); }
 function canonicalTags(tags) {
@@ -23065,6 +23274,7 @@ function renderVoiceTable() {
     ? `${matches.length} of ${plural(voices.length, "voice")}`
     : plural(voices.length, "voice");
   fitVoiceRows();
+  renderTagBanner();
 }
 function showMoreVoices() { voiceLimit += PAGE_SIZE; renderVoiceTable(); }
 function clearVoiceSearch() {
@@ -23102,44 +23312,26 @@ function toggleVoiceTag(tag, voiceName) {
 function voiceTag(tag, filled, voice) {
   const chip = document.createElement("button");
   chip.type = "button"; chip.className = "voice-tag";
-  chip.classList.toggle("is-suggested", !voice.confirmed);
   chip.textContent = tag;
-  chip.title = voice.confirmed ? tag : `${tag} (suggested by Hilde)`;
   chip.setAttribute("aria-pressed", String(filled));
   chip.addEventListener("click", () => toggleVoiceTag(tag, voice.name));
   return chip;
 }
-// "Suggested — confirm" keeps Hilde's suggestions as the voice's tags.
-async function confirmVoiceTags(name, button) {
-  const voice = voiceByName(name);
-  if (!voice) return;
-  button.disabled = true;
-  try {
-    const answer = await jsonRequest("/api/voices/tags", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ name, tags:voice.suggested }),
-    });
-    takeVoices(answer);
-    setStatus(`Saved the tags of ${name}.`);
-  } catch (error) {
-    button.disabled = false;
-    setStatus(error.message, true);
-  }
-}
 
-// A row shows its chips on one line and its free text (More details, else
-// the description) on one line; open, the whole stored description and every
-// chip. "Full description" is there on a wide screen when something is cut,
-// or the text shown is not the whole description; measured as drawn, so it
-// follows the width of the window.
+// A row is two lines: the name with its confirmed tags (at most 4 on a wide
+// screen, 1 on a phone, then "+N"; the stylesheet picks by width) and, while
+// Hilde's suggestions wait, one pill that opens Review tags at this voice
+// ("N suggested · Review", a phone's "N to review" in place of the tags); then
+// its free text (More details, else the description) on one line. The text is
+// a button: it opens the row, showing the whole stored description and every
+// tag, and folds it again; a phone's tap on the row does the same.
+const VOICE_TAGS_WIDE = 4, VOICE_TAGS_NARROW = 1;
 function setVoiceRowOpen(row, voice, open) {
   row.classList.toggle("is-open", open);
-  const text = row.querySelector(".voice-text"), full = row.querySelector(".voice-full");
-  if (text) text.textContent = open ? voice.description || voice.details : voice.details || voice.description;
-  if (full) {
-    full.textContent = open ? "Show less" : "Full description";
-    full.setAttribute("aria-expanded", String(open));
-  }
+  const text = row.querySelector(".voice-text");
+  if (!text) return;
+  text.textContent = open ? voice.description || voice.details : voice.details || voice.description;
+  text.setAttribute("aria-expanded", String(open));
 }
 function toggleVoiceRow(row, voice) {
   const open = !expandedVoices.has(voice.name);
@@ -23151,18 +23343,12 @@ function fitVoiceRows() {
   if (!$("voice-table").getClientRects().length) return;
   for (const row of $("voice-rows").rows) fitVoiceRow(row);
 }
+// Chips that still run past the cell (long tags of your own) fade out there.
 function fitVoiceRow(row) {
-  const voice = voiceByName(row.dataset.voice);
-  if (!voice) return;
-  const chips = row.querySelector(".voice-tags"), text = row.querySelector(".voice-text");
-  const full = row.querySelector(".voice-full"), open = row.classList.contains("is-open");
-  const chipsCut = () => !!chips && chips.scrollWidth > chips.clientWidth + 1;
-  if (chips) chips.classList.toggle("is-cut", !open && chipsCut());
-  if (!full) return;
-  if (narrowLayout() || open) { full.hidden = narrowLayout(); return; }
-  full.hidden = true;
-  const textCut = !!text && text.scrollWidth > text.clientWidth + 1;
-  full.hidden = !(textCut || chipsCut() || (voice.details && voice.details !== voice.description));
+  const chips = row.querySelector(".voice-tags");
+  if (!chips) return;
+  chips.classList.remove("is-cut");
+  chips.classList.toggle("is-cut", !row.classList.contains("is-open") && chips.scrollWidth > chips.clientWidth + 1);
 }
 // A new width (the window, or the table shown again) measures the rows anew.
 let voiceFitWidth = -1;
@@ -23172,64 +23358,74 @@ new ResizeObserver((entries) => {
   voiceFitWidth = width;
   requestAnimationFrame(fitVoiceRows);
 }).observe($("voice-table"));
+function tagsMore(count, limit, kind, tags) {
+  const more = document.createElement("span");
+  more.className = `voice-tag-more ${kind}`;
+  more.textContent = `+${count - limit}`;
+  more.title = tags.slice(limit).join(", ");
+  return more;
+}
 function voiceRow(voice, terms) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
   row.dataset.voice = voice.name;
   row.classList.toggle("is-selected", selected);
+  row.classList.toggle("has-waiting", voice.suggested.length > 0);
   const preview = cell("preview");
   const play = previewButton(voice);
   preview.append(play);
   const name = cell("name");
+  const head = document.createElement("div");
+  head.className = "voice-head";
   const title = document.createElement("span");
   title.className = "voice-name";
   title.textContent = voice.name;
-  name.append(title);
-  const description = cell("description");
-  const tags = voiceTags(voice), text = voice.details || voice.description;
-  if (tags.length) {
-    const line = document.createElement("div");
-    line.className = "voice-tag-line";
+  head.append(title);
+  const text = voice.details || voice.description;
+  if (voice.tags.length) {
     const chips = document.createElement("div");
     chips.className = "voice-tags";
-    // During a search the filled chips come first, so a match never fades out.
-    const shown = tags.map((tag) => ({ tag, filled:tagFilled(searchWords(tag), terms) }));
+    // During a search the filled chips come first, so a match is never behind "+N".
+    const shown = voice.tags.map((tag) => ({ tag, filled:tagFilled(searchWords(tag), terms) }));
     shown.sort((a, b) => Number(b.filled) - Number(a.filled));
     chips.append(...shown.map(({ tag, filled }) => voiceTag(tag, filled, voice)));
-    line.append(chips);
-    if (voiceSuggested(voice)) {
-      const confirm = document.createElement("button");
-      confirm.type = "button"; confirm.className = "voice-confirm";
-      confirm.textContent = "Suggested — confirm";
-      confirm.title = "Hilde suggested these tags from the description. Confirm keeps them; Edit changes them.";
-      confirm.setAttribute("aria-label", `Confirm the suggested tags of ${voice.name}`);
-      confirm.addEventListener("click", () => confirmVoiceTags(voice.name, confirm));
-      line.append(confirm);
-    }
-    description.append(line);
+    head.append(chips);
+    const order = shown.map(({ tag }) => tag);
+    if (order.length > VOICE_TAGS_WIDE) head.append(tagsMore(order.length, VOICE_TAGS_WIDE, "wide", order));
+    if (order.length > VOICE_TAGS_NARROW) head.append(tagsMore(order.length, VOICE_TAGS_NARROW, "narrow", order));
   }
+  if (voice.suggested.length) {
+    const count = voice.suggested.length;
+    const pill = document.createElement("button");
+    pill.type = "button"; pill.className = "voice-review";
+    pill.innerHTML = '<span class="wide"></span><span class="narrow"></span><span class="visually-hidden"></span>';
+    pill.children[0].textContent = `${count} suggested · Review`;
+    pill.children[1].textContent = `${count} to review`;
+    pill.children[2].textContent = ` tags of ${voice.name}`;
+    pill.addEventListener("click", () => openTagReview(voice.name, pill));
+    head.append(pill);
+  }
+  name.append(head);
   if (text) {
     const line = document.createElement("div");
     line.className = "voice-text-line";
-    const words = document.createElement("span");
-    words.className = "voice-text";
-    const full = document.createElement("button");
-    full.type = "button"; full.className = "voice-full"; full.hidden = true;
-    full.addEventListener("click", () => { toggleVoiceRow(row, voice); full.focus(); });
-    line.append(words, full);
-    description.append(line);
-  }
-  if (!tags.length && !text) {
+    const words = document.createElement("button");
+    words.type = "button"; words.className = "voice-text";
+    words.title = "Show or hide the full description";
+    words.addEventListener("click", () => toggleVoiceRow(row, voice));
+    line.append(words);
+    name.append(line);
+  } else {
     const none = document.createElement("span");
     none.className = "voice-no-description";
     none.textContent = "No description";
-    description.append(none);
+    name.append(none);
   }
   if (!voice.comparable) {
     const older = document.createElement("div");
     older.className = "note";
     older.textContent = "Preview reads an older passage";
-    description.append(older);
+    name.append(older);
   }
   // Select chooses the voice Create uses next; the chosen one says so instead.
   const select = cell("select");
@@ -23247,15 +23443,15 @@ function voiceRow(voice, terms) {
     select.append(choose);
   }
   select.append(rowMoreButton(`More for ${voice.name}`, () => [
-    { label:"Edit", run:() => editVoice(voice) },
+    { label:"Edit tags", run:(button) => editVoiceTags(voice.name, button) },
     { label:"Rename…", run:(button) => renameVoice(voice.name, button) },
     { label:"Delete…", run:(button) => deleteVoice(voice.name, button) },
   ]));
-  row.append(preview, name, description, modifiedCell(voice.modified), select);
+  row.append(preview, name, modifiedCell(voice.modified), select);
   setVoiceRowOpen(row, voice, expandedVoices.has(voice.name));
   setPreviewButton(play);
   // On a phone a tap on the row (not on one of its buttons) shows the whole
-  // description and every chip, and another folds them.
+  // description and every tag, and another folds them.
   row.addEventListener("click", (event) => {
     // The path as dispatched: a preview button redraws its icon while the click is under way.
     if (!narrowLayout() || String(window.getSelection())
@@ -23359,7 +23555,6 @@ async function deleteVoice(name, button) {
   if (!answer) return;
   if (previewing === name) stopPreview();
   if (voiceResult && voiceResult.saved === name) voiceResult = null;
-  if (editingVoice === name) { editingVoice = ""; editTags = []; }
   expandedVoices.delete(name);
   assets = answer.assets || assets;
   if (state.audiobook.voice === name) state.audiobook.voice = "";
@@ -23387,7 +23582,6 @@ async function renameVoice(name, button) {
     if (previewing === name) stopPreview();
     if (voiceResult && voiceResult.saved === name) voiceResult.saved = answer.name;
     if (state.voice.name === name) { state.voice.name = answer.name; $("voice-name").value = answer.name; }
-    if (editingVoice === name) editingVoice = answer.name;
     if (expandedVoices.delete(name)) expandedVoices.add(answer.name);
     if (state.audiobook.voice === name) state.audiobook.voice = answer.name;
     if (state.player.voice === name) state.player.voice = answer.name;
@@ -23435,53 +23629,383 @@ async function deleteDocument(name, button) {
   $("document").focus();
 }
 
-// Edit (an existing voice): its tags in the picker and its stored description,
-// read only. Save tags writes only the library's tag file.
-function editVoice(voice) {
-  stopPreview();
-  voiceFormOpen = false; voiceDraft = null; voiceResult = null;
-  editingVoice = voice.name; editTags = [...voiceTags(voice)];
-  render(); renderVoiceEdit();
-  $("voice-edit").scrollIntoView({ block:"start" });
-  $("voice-edit-title").setAttribute("tabindex", "-1");
-  $("voice-edit-title").focus({ preventScroll:true });
+// --- Review tags ---------------------------------------------------------
+// The banner shows while any voice has suggestions waiting. Later hides it
+// for this browser session (sessionStorage, so a reload in the same tab keeps
+// it hidden and a new tab or a restarted browser shows it again).
+const TAG_REVIEW_LATER = "hilde.tagReviewLater";
+function renderTagBanner() {
+  const count = voices.filter((voice) => voice.suggested.length > 0).length;
+  let later = false;
+  try { later = sessionStorage.getItem(TAG_REVIEW_LATER) === "1"; } catch { /* storage off: always shown */ }
+  $("tag-banner").classList.toggle("hidden", !count || later);
+  $("tag-banner-count").textContent = plural(count, "voice");
 }
-function closeVoiceEdit() {
-  editingVoice = ""; editTags = [];
-  renderVoiceEdit();
-  $("new-voice").focus();
+function laterTagReview() {
+  try { sessionStorage.setItem(TAG_REVIEW_LATER, "1"); } catch { /* storage off */ }
+  renderTagBanner();
+  $("voice-search").focus({ preventScroll:true });
 }
-function renderVoiceEdit() {
-  const voice = editingVoice ? voiceByName(editingVoice) : null;
-  $("voice-edit").classList.toggle("hidden", !voice);
+
+// Review tags: the voices with suggestions waiting, one at a time, from the
+// one asked for (the banner: the first in the list) round to the one before
+// it. Each shows its description with Hilde's matches marked, the suggested
+// tags kept until clicked (dropped, dashed; another click keeps them), and
+// tags of your own. Save writes only the tag file (the server remembers the
+// suggestions not kept as dropped); Skip leaves the voice waiting. Edit tags
+// opens it for one voice, its confirmed tags as kept chips.
+function openTagReview(start = "", opener = document.activeElement) {
+  const queue = voicesWaiting().map((voice) => voice.name);
+  if (!queue.length) return;
+  const at = Math.max(0, queue.indexOf(start));
+  showTagReview({ queue:[...queue.slice(at), ...queue.slice(0, at)], edit:false, opener,
+                  back:start ? ".voice-review" : "" });
+}
+function editVoiceTags(name, opener) {
+  showTagReview({ queue:[name], edit:true, opener, back:".row-more" });
+}
+function showTagReview(review) {
+  closeMenus();
+  tagReview = { ...review, at:0, voice:"", kept:[], suggested:[], added:[], returnFocus:true };
+  if (!loadTagReviewVoice()) { tagReview = null; return; }
+  const dialog = $("tag-review");
+  if (!dialog.open) dialog.showModal();
+  focusTagReview();
+}
+function focusTagReview() {
+  ($("tag-review-suggested").querySelector("button") || $("tag-review-kept").querySelector("button")
+    || $("tag-review-add")).focus({ preventScroll:true });
+}
+// The voice at `tagReview.at`, or the next one still waiting; false when none is left.
+function loadTagReviewVoice() {
+  const review = tagReview;
+  for (; review.at < review.queue.length; review.at += 1) {
+    const voice = voiceByName(review.queue[review.at]);
+    if (!voice || (!review.edit && !voice.suggested.length)) continue;
+    if (previewing && previewing === review.voice) stopPreview();
+    review.voice = voice.name;
+    review.kept = review.edit ? voice.tags.map((tag) => ({ tag, on:true })) : [];
+    review.confirmed = review.edit ? [] : [...voice.tags];
+    review.suggested = voice.suggested.map((tag) => ({ tag, on:true }));
+    review.added = [];
+    closeTagPick(false);
+    $("tag-review-save-problem").classList.add("hidden");
+    renderTagReview();
+    return true;
+  }
+  return false;
+}
+function reviewChip(item) {
+  const chip = document.createElement("button");
+  chip.type = "button"; chip.className = "review-chip";
+  chip.classList.toggle("is-dropped", !item.on);
+  chip.setAttribute("aria-pressed", String(item.on));
+  if (item.on) chip.innerHTML = CHECK_ICON;
+  chip.append(item.tag);
+  chip.addEventListener("click", () => {
+    const list = chip.parentElement;
+    item.on = !item.on;
+    renderTagReview();
+    [...list.querySelectorAll("button.review-chip")].find((other) => other.textContent === item.tag)?.focus();
+  });
+  return chip;
+}
+// The tags the dialog would save: kept or confirmed, kept suggestions, added.
+function reviewTags() {
+  const review = tagReview;
+  return canonicalTags([...review.confirmed, ...[...review.kept, ...review.suggested, ...review.added]
+    .filter((item) => item.on).map((item) => item.tag)]);
+}
+function reviewItems() {
+  return [...tagReview.kept, ...tagReview.suggested, ...tagReview.added];
+}
+// Ideas from the tag list: same-group neighbours in the two groups a voice
+// can have several of (Suited to, then Manner): in each, the tags after the
+// last one this voice keeps, round the group (from its start when it keeps
+// none), never one already in the dialog; taken in turn, at most 3.
+function tagIdeas() {
+  const shown = new Set([...tagReview.confirmed, ...reviewItems().map((item) => item.tag)]
+    .map((tag) => tag.toLowerCase()));
+  const kept = new Set(reviewTags().map((tag) => tag.toLowerCase()));
+  const lists = ["Suited to", "Manner"].map((name) => {
+    const tags = (vocabulary.groups.find((group) => group.name === name) || { tags:[] }).tags;
+    const last = tags.reduce((found, tag, index) => kept.has(tag.toLowerCase()) ? index : found, -1);
+    return tags.map((_, step) => tags[(last + 1 + step) % tags.length])
+      .filter((tag) => !shown.has(tag.toLowerCase()));
+  });
+  const ideas = [];
+  for (let index = 0; ideas.length < 3 && lists.some((list) => index < list.length); index += 1)
+    for (const list of lists) if (index < list.length && ideas.length < 3) ideas.push(list[index]);
+  return ideas;
+}
+// The description as the list shows it, the words Hilde matched for the
+// tags in the dialog marked (the server's spans, in code points).
+function renderReviewDescription(voice) {
+  const box = $("tag-review-description");
+  const tags = new Set([...tagReview.kept, ...tagReview.suggested].map((item) => item.tag));
+  const spans = Object.entries(voice.matches || {}).filter(([tag]) => tags.has(tag))
+    .flatMap(([, list]) => list).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end); else merged.push([start, end]);
+  }
+  const chars = Array.from(voice.description || "");
+  const parts = [];
+  let at = 0;
+  for (const [start, end] of merged) {
+    if (start > at) parts.push(chars.slice(at, start).join(""));
+    const mark = document.createElement("mark");
+    mark.textContent = chars.slice(start, end).join("");
+    parts.push(mark);
+    at = end;
+  }
+  if (at < chars.length) parts.push(chars.slice(at).join(""));
+  box.replaceChildren(...(chars.length ? parts : ["No description"]));
+  box.classList.toggle("is-empty", !chars.length);
+  $("tag-review-description-label").textContent = merged.length
+    ? "Description (unchanged; Hilde found the highlighted words)" : "Description (unchanged)";
+}
+function renderTagReview() {
+  const review = tagReview, voice = voiceByName(review.voice);
   if (!voice) return;
-  $("voice-edit-title").textContent = `Edit ${voice.name}`;
-  $("voice-edit-suggested").classList.toggle("hidden", voice.confirmed);
-  $("voice-edit-description").textContent = voice.description || "No description";
-  renderTagPicker($("voice-edit-picker"), editTags, (tags) => { editTags = tags; renderVoiceEdit(); });
+  const play = $("tag-review-play").firstElementChild;
+  if (!play || play.dataset.voice !== voice.name) $("tag-review-play").replaceChildren(previewButton(voice));
+  $("tag-review-name").textContent = voice.name;
+  $("tag-review-count").textContent = review.edit ? "" : `Voice ${review.at + 1} of ${review.queue.length}`;
+  renderReviewDescription(voice);
+  $("tag-review-kept-part").classList.toggle("hidden", !review.kept.length);
+  $("tag-review-kept").replaceChildren(...review.kept.map(reviewChip));
+  $("tag-review-suggested-part").classList.toggle("hidden", !review.suggested.length);
+  $("tag-review-suggested").replaceChildren(...review.suggested.map(reviewChip));
+  $("tag-review-added").replaceChildren(...review.added.map(reviewChip));
+  const ideas = tagIdeas().map((tag) => {
+    const idea = document.createElement("button");
+    idea.type = "button"; idea.className = "review-idea";
+    idea.innerHTML = '<span class="visually-hidden">Add </span>';
+    idea.append(tag);
+    idea.addEventListener("click", () => { pickReviewTag(tag); $("tag-review-add").focus(); });
+    return idea;
+  });
+  if (ideas.length) {
+    const from = document.createElement("span");
+    from.className = "tag-review-from";
+    from.textContent = "from the tag list";
+    ideas.push(from);
+  }
+  $("tag-review-ideas").replaceChildren(...ideas);
+  $("tag-review-skip").textContent = review.edit ? "Cancel" : "Skip this voice";
+  $("tag-review-save").textContent = review.edit ? "Save tags" : "Save and next";
+  $("tag-review-new").classList.toggle("hidden", !review.edit);
+  $("tag-review").classList.toggle("is-edit", review.edit);
 }
-async function saveVoiceTags(button) {
-  const name = editingVoice;
+// A tag from the picker or an idea: kept again if it is in the dialog,
+// else added.
+function pickReviewTag(tag) {
+  const item = reviewItems().find((entry) => entry.tag.toLowerCase() === tag.toLowerCase());
+  if (item) item.on = true; else tagReview.added.push({ tag, on:true });
+  renderTagReview();
+}
+function skipTagReview() {
+  if (tagReview.edit) { closeTagReview(); return; }
+  nextTagReview();
+}
+function nextTagReview() {
+  tagReview.at += 1;
+  if (loadTagReviewVoice()) focusTagReview(); else closeTagReview();
+}
+async function saveTagReview(button) {
+  const review = tagReview, name = review.voice;
   button.disabled = true;
+  $("tag-review-save-problem").classList.add("hidden");
   try {
     const answer = await jsonRequest("/api/voices/tags", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ name, tags:editTags }),
+      body:JSON.stringify({ name, tags:reviewTags() }),
     });
-    editingVoice = ""; editTags = [];
     takeVoices(answer);
     setStatus(`Saved the tags of ${name}.`);
-    $("new-voice").focus();
+    if (tagReview !== review) return;
+    if (review.edit) closeTagReview(); else nextTagReview();
   } catch (error) {
-    setStatus(error.message, true);
+    $("tag-review-save-problem").textContent = error.message;
+    $("tag-review-save-problem").classList.remove("hidden");
   } finally {
     button.disabled = false;
   }
 }
-// New voice, with the tags on in Edit; the edited voice is not changed.
-function newVoiceFromTags() {
-  openVoiceForm(editTags);
+function closeTagReview() {
+  if ($("tag-review").open) $("tag-review").close();
 }
+// New voice with the tags on in Edit tags; the edited voice is not changed.
+function newVoiceFromReview() {
+  const tags = reviewTags();
+  tagReview.returnFocus = false;
+  closeTagReview();
+  openVoiceForm(tags);
+}
+// Closing (Escape, ×, Cancel, the last voice) gives focus back to what opened
+// it, or, once the list was redrawn, the same control of that voice's row.
+$("tag-review").addEventListener("close", () => {
+  const review = tagReview;
+  tagReview = null;
+  closeTagPick(false);
+  if (!review) return;
+  if (previewing && previewing === review.voice) stopPreview();
+  if (!review.returnFocus) return;
+  let target = review.opener && review.opener.isConnected && review.opener.getClientRects().length
+    ? review.opener : null;
+  if (!target && review.back) {
+    const row = [...$("voice-rows").rows].find((item) => item.dataset.voice === review.queue[0]);
+    target = row && (row.querySelector(review.back) || row.querySelector(".row-more"));
+  }
+  if (!target && !$("tag-banner").classList.contains("hidden")) target = $("tag-banner-review");
+  (target || $("voice-search")).focus({ preventScroll:true });
+});
+// Tab and Shift+Tab go round the dialog's controls; Escape closes the open
+// tag picker first, then the dialog.
+$("tag-review").addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("tag-review-picker").classList.contains("hidden")) {
+    event.preventDefault(); event.stopPropagation();
+    closeTagPick(true);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const controls = [...$("tag-review").querySelectorAll("input, button")]
+    .filter((control) => !control.disabled && control.getClientRects().length);
+  if (!controls.length) return;
+  const at = controls.indexOf(document.activeElement);
+  const next = at < 0 ? 0 : (at + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+  event.preventDefault();
+  controls[next].focus();
+});
+$("tag-review").addEventListener("cancel", (event) => {
+  if ($("tag-review-picker").classList.contains("hidden")) return;
+  event.preventDefault();
+  closeTagPick(true);
+});
+
+// "+ Add a tag": a box that finds tags of the list (Hilde's groups, then
+// Yours, each under its small heading; only here) as you type, or adds the
+// typed word as a tag of your own (the server checks it, as everywhere).
+// Arrow keys move, Enter picks, Escape closes it.
+let tagPickActive = -1;
+function toggleTagPick() {
+  if ($("tag-review-picker").classList.contains("hidden")) openTagPick(); else closeTagPick(true);
+}
+function openTagPick() {
+  $("tag-review-picker").classList.remove("hidden");
+  $("tag-review-add").setAttribute("aria-expanded", "true");
+  $("tag-review-input").value = "";
+  $("tag-review-problem").classList.add("hidden");
+  renderTagPick();
+  $("tag-review-input").focus();
+}
+function closeTagPick(focus) {
+  $("tag-review-picker").classList.add("hidden");
+  $("tag-review-add").setAttribute("aria-expanded", "false");
+  $("tag-review-input").removeAttribute("aria-activedescendant");
+  if (focus) $("tag-review-add").focus();
+}
+function tagPickOptions() {
+  return [...$("tag-review-options").querySelectorAll("[role=option]")];
+}
+function renderTagPick() {
+  const typed = $("tag-review-input").value.trim().replace(/ {2,}/g, " ");
+  const want = typed.toLowerCase();
+  const on = new Set(reviewTags().map((tag) => tag.toLowerCase()));
+  const groups = [...vocabulary.groups, { name:"Yours", tags:vocabulary.yours }];
+  const known = groups.flatMap((group) => group.tags);
+  const parts = [];
+  let count = 0;
+  groups.forEach((group, index) => {
+    const tags = group.tags.filter((tag) => !on.has(tag.toLowerCase()) && tag.toLowerCase().includes(want));
+    if (!tags.length) return;
+    const part = document.createElement("div");
+    part.setAttribute("role", "group");
+    part.setAttribute("aria-labelledby", `tag-pick-group-${index}`);
+    const heading = document.createElement("div");
+    heading.className = "tag-pick-group"; heading.id = `tag-pick-group-${index}`;
+    heading.textContent = group.name;
+    part.append(heading, ...tags.map((tag) => tagPickOption(tag, `tag-pick-${count++}`)));
+    parts.push(part);
+  });
+  if (typed && !known.some((tag) => tag.toLowerCase() === want)) {
+    const fresh = tagPickOption(typed, `tag-pick-${count++}`);
+    fresh.dataset.new = "true";
+    fresh.textContent = `Add “${typed}” as a new tag`;
+    parts.push(fresh);
+  }
+  if (!parts.length) {
+    const none = document.createElement("p");
+    none.className = "tag-pick-none";
+    none.textContent = "Every tag of the list is on.";
+    parts.push(none);
+  }
+  $("tag-review-options").replaceChildren(...parts);
+  setTagPickActive(typed ? 0 : -1);
+}
+function tagPickOption(tag, id) {
+  const option = document.createElement("div");
+  option.setAttribute("role", "option"); option.id = id;
+  option.className = "tag-pick-option"; option.dataset.tag = tag;
+  option.textContent = tag;
+  option.addEventListener("mousedown", (event) => event.preventDefault());
+  option.addEventListener("click", () => chooseTagPick(option));
+  return option;
+}
+function setTagPickActive(index) {
+  const options = tagPickOptions();
+  tagPickActive = options.length ? Math.max(-1, Math.min(index, options.length - 1)) : -1;
+  options.forEach((option, at) => option.setAttribute("aria-selected", String(at === tagPickActive)));
+  const active = options[tagPickActive];
+  if (active) {
+    $("tag-review-input").setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block:"nearest" });
+  } else {
+    $("tag-review-input").removeAttribute("aria-activedescendant");
+  }
+}
+async function chooseTagPick(option) {
+  const tag = option.dataset.tag;
+  if (option.dataset.new) {
+    let answer;
+    try {
+      answer = await jsonRequest("/api/voices/vocabulary", {
+        method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ add:tag }),
+      });
+    } catch (error) {
+      $("tag-review-problem").textContent = error.message;
+      $("tag-review-problem").classList.remove("hidden");
+      $("tag-review-input").focus();
+      return;
+    }
+    takeVoices(answer);
+    if (!tagReview) return;
+    pickReviewTag([...vocabularyOrder(), ...vocabulary.yours]
+      .find((item) => item.toLowerCase() === tag.toLowerCase()) || tag);
+  } else {
+    pickReviewTag(tag);
+  }
+  closeTagPick(true);
+}
+$("tag-review-input").addEventListener("input", () => {
+  $("tag-review-problem").classList.add("hidden");
+  renderTagPick();
+});
+$("tag-review-input").addEventListener("keydown", (event) => {
+  const options = tagPickOptions();
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!options.length) return;
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    setTagPickActive(tagPickActive < 0 ? (step > 0 ? 0 : options.length - 1)
+      : (tagPickActive + step + options.length) % options.length);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    if (options[tagPickActive]) chooseTagPick(options[tagPickActive]);
+  }
+});
 
 // The tag picker: each group's tags as toggle chips, then Yours: the user's
 // own tags (each removable from the list; voices that have one keep it), a
@@ -23604,26 +24128,24 @@ function renderSelectedVoice() {
   card.classList.toggle("hidden", !voice);
   // Rebuild only on change, so a focused preview button keeps its focus.
   const key = voice
-    ? JSON.stringify([voice.name, voice.preview, voice.description, voice.details, voiceTags(voice), voice.confirmed])
+    ? JSON.stringify([voice.name, voice.preview, voice.description, voice.details, voice.tags])
     : "";
   if (card.dataset.key === key) return;
   card.dataset.key = key;
   if (!voice) { card.replaceChildren(); return; }
-  // The same chips (dashed while suggested) and one cropped line of text as
-  // the Voices list; the chips here are not buttons.
+  // The same confirmed tags (Hilde's suggestions wait for Review tags) and one
+  // cropped line of text as the Voices list; the chips here are not buttons.
   const meta = document.createElement("div");
   meta.className = "voice-meta";
   const name = document.createElement("strong");
   name.textContent = voice.name;
   meta.append(name);
-  const tags = voiceTags(voice);
-  if (tags.length) {
+  if (voice.tags.length) {
     const chips = document.createElement("div");
     chips.className = "voice-tags";
-    chips.append(...tags.map((tag) => {
+    chips.append(...voice.tags.map((tag) => {
       const chip = document.createElement("span");
       chip.className = "voice-tag";
-      chip.classList.toggle("is-suggested", !voice.confirmed);
       chip.textContent = tag;
       return chip;
     }));
@@ -25070,15 +25592,14 @@ async function continueJob(entry) {
   startAudiobook();
 }
 
-// New voice: tags (`tags`, e.g. from Edit's "Make a new voice from these
+// New voice: tags (`tags`, e.g. from Edit tags' "Make a new voice from these
 // tags") and More details; the name starts empty.
 function openVoiceForm(tags) {
   stopPreview();
-  editingVoice = ""; editTags = [];
   state.voice.name = ""; state.voice.tags = canonicalTags(tags || []); state.voice.details = "";
   $("voice-name").value = ""; $("voice-details").value = "";
   voiceFormOpen = true; voiceDraft = null; voiceResult = null;
-  render(); renderVoiceEdit(); sync();
+  render(); sync();
   $("voice-form").scrollIntoView({ block:"start" });
   ($("voice-new-picker").querySelector("button.tag-option") || $("voice-details")).focus({ preventScroll:true });
 }
