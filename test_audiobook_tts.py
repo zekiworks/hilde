@@ -254,6 +254,40 @@ class PaperWorkflowTests(unittest.TestCase):
                 server.shutdown()
                 thread.join()
 
+    def test_hilde_reader_icons_and_manifest_are_served_and_the_old_logo_is_not(self):
+        assets = Path(web.__file__).resolve().parent / "assets"
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.daemon_threads = True
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            origin = f"http://127.0.0.1:{server.server_port}"
+            try:
+                # Each icon is served byte for byte from assets/, under its own name.
+                for name, kind in (("reader-emblem.svg", "image/svg+xml"), ("favicon-16.png", "image/png"),
+                                   ("favicon-32.png", "image/png"), ("apple-touch-icon-180.png", "image/png"),
+                                   ("icon-192.png", "image/png"), ("icon-512.png", "image/png")):
+                    with urllib.request.urlopen(f"{origin}/{name}") as response:
+                        self.assertEqual(response.headers["Content-Type"], kind, name)
+                        self.assertEqual(response.read(), (assets / name).read_bytes(), name)
+                with urllib.request.urlopen(f"{origin}/manifest.webmanifest") as response:
+                    self.assertEqual(response.headers["Content-Type"], "application/manifest+json")
+                    manifest = json.loads(response.read())
+                self.assertEqual((manifest["name"], manifest["short_name"]), ("Hilde Reader", "Hilde"))
+                self.assertEqual([(icon["src"], icon["sizes"]) for icon in manifest["icons"]],
+                                 [("/icon-192.png", "192x192"), ("/icon-512.png", "512x512")])
+                # The old logo stays in assets/ but is no longer shown or served.
+                self.assertTrue((assets / "hilde-dark.png").is_file())
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(f"{origin}/hilde-dark.png")
+                self.assertEqual(missing.exception.code, 404)
+            finally:
+                server.shutdown()
+                thread.join()
+        self.assertIn("<title>Hilde Reader</title>", web.PAGE)
+        self.assertIn('<h1 class="brand-name">Hilde<span> Reader</span></h1>', web.PAGE)
+        self.assertNotIn("hilde-dark", web.PAGE)
+
     def test_runtime_has_no_browser_controlled_device(self):
         self.assertNotIn("device", normalize({})["runtime"])
 

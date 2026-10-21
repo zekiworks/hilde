@@ -5,8 +5,11 @@ Open the address the server prints when it starts, for example
 
 ## Header and navigation
 
-The header shows Hilde's name and "Listen to your documents. Follow the text.
-Ask to understand." (smaller on a phone). Below it are the tabs: **Create**,
+The app is called **Hilde Reader**, and so is its browser tab. The header shows
+its emblem, a copper leaf, beside the name "Hilde Reader", and under the name
+"Listen to your documents. Follow the text. Ask to understand." (smaller on a
+phone). The same leaf is the tab's icon and, when you add the page to a phone's
+home screen, the icon there, labelled "Hilde". Below the header are the tabs: **Create**,
 **Voices**, and **Listen**, then **Progress** while there is a job to follow.
 **Listen** opens the **Library**, the list of your audiobooks, or the book you
 had open.

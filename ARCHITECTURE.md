@@ -7,7 +7,7 @@ Living description of the project as it currently exists. Keep synchronized with
 Hilde has two interfaces over the same speech pipeline:
 
 - `audiobook_tts.py` is a direct CLI for creating portable narrator references and narrating text into MP3 or WAV.
-- `audiobook_tts_web.py` is a shared-library web server serving the Hilde browser app. It stores voices, documents, completed audiobooks, and resumable work under one server-owned root and exposes one-click document preparation plus narration.
+- `audiobook_tts_web.py` is a shared-library web server serving the Hilde Reader browser app. It stores voices, documents, completed audiobooks, and resumable work under one server-owned root and exposes one-click document preparation plus narration.
 
 The speech backend for each role is selected when the web server starts. Voice creation can use a local Qwen3-TTS VoiceDesign model or an OpenAI-compatible speech endpoint. Narration can use a local Qwen3-TTS Base model, that model distributed across local/SSH workers, or an OpenAI-compatible endpoint.
 
@@ -22,7 +22,9 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `audiobook_tts.py` | CLI parsing, validation, voice persistence, chunking, local/SSH worker orchestration, OpenAI-compatible narration, batching with out-of-memory retries, and durable narration checkpoints. |
 | `audiobook_tts_web.py` | Shared storage, single-page UI, document preparation, narration-worker scheduling, CPU forced word alignment, the text-adaptation model clients with ChatGPT sign-in, the user's own Claude Code, and the Anthropic, OpenAI, Google Gemini, and DeepSeek API keys, workflow orchestration, SSE progress, exactly indexed reader audio, serving and download. |
 | `example_run.sh` | Example web-server launch: local Qwen3-TTS models, the default `~/.hilde/library` library, port 8800 on this machine only, and every GPU CUDA can open. Set its interpreter and model paths for your machine; extra arguments pass through, such as `--host 0.0.0.0` for other devices. |
-| `assets/hilde-dark.png` | Hilde logo: page header mark, browser favicon, and Apple touch icon. |
+| `assets/reader-emblem.svg` | Hilde Reader's emblem, the copper leaf on a navy rounded square: the page header's mark (`/reader-emblem.svg`). |
+| `assets/favicon-16.png`, `assets/favicon-32.png`, `assets/apple-touch-icon-180.png`, `assets/icon-192.png`, `assets/icon-512.png` | The copper leaf as icons, each served at its own name (`APP_ICONS`): the browser favicon (16, 32), the Apple touch icon (180), and the web app manifest's icons (192, 512). Used exactly as given; `icon-512.png` is 512 × 513 px as delivered. |
+| `assets/hilde-dark.png` | The old Hilde logo, kept byte-identical and no longer shown or served. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
 | `prompts/PAPER-VERIFY.md`, `prompts/PAPER-REPAIR.md`, `prompts/PAPER-RECHECK.md` | Error correction's plain-text prompts: the check of a description against its source, the note asking for a corrected description (`{issues}` and `{draft}` are filled in), and the check of the correction. A job with error correction reads them when it starts. |
@@ -848,9 +850,15 @@ The page resets ETA at every step: one series of progress reports with the same 
 
 ## UI contract
 
-The browser app is **Hilde**. The header holds the Hilde logo
-(`assets/hilde-dark.png`), the name, and the tagline "Listen to your
-documents. Follow the text. Ask to understand." (shown on phones too, smaller).
+The browser app is **Hilde Reader**: the tab title, the header, and the web
+app manifest (`GET /manifest.webmanifest`, `APP_MANIFEST`: name "Hilde
+Reader", short name "Hilde", the 192 and 512 icons, `--bg` as its theme and
+background colour, opening in the browser as before). The header holds the
+emblem (`assets/reader-emblem.svg`, 40 px), the name ("Hilde" semibold in
+`--text`, then " Reader" regular in #c9ccd2, one line, 24 px on every width),
+and the tagline "Listen to your documents. Follow the text. Ask to
+understand." (shown on phones too, smaller). Ask Hilde and the voice Hilde
+keep their names.
 A small **by Zeki Works** signature with `assets/zeki.jpg` closes the page. No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and

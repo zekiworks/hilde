@@ -1,6 +1,6 @@
 # Configuration
 
-`audiobook_tts_web.py` serves **Hilde**, a browser app over a shared
+`audiobook_tts_web.py` serves **Hilde Reader**, a browser app over a shared
 server-side library. Its configuration comes from command-line options when the
 server starts; browsers cannot replace that process-wide configuration.
 Settings each browser may change, such as precision, chunking, and batch size,

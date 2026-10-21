@@ -3,7 +3,7 @@
   <img width="400" height="400" alt="hilde-avatar-light" src="https://github.com/user-attachments/assets/22672d4b-1c01-4589-a6e0-70910e516fa4" />
 </p>
 
-<h1 align="center">Hilde</h1>
+<h1 align="center">Hilde Reader</h1>
 
 <p align="center"><strong>Turn papers into audiobooks, figures included.</strong><br>
 One narrator from start to finish, a synced reader, and every GPU in your house.</p>
@@ -109,7 +109,7 @@ by hand, Windows, local model folders, and FlashAttention.
 
 ## About
 
-An audiobook studio built on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS). The Hilde web app turns PDF, Markdown, or text documents into narrated MP3 audiobooks with a synchronized reader. Underneath it, the `audiobook_tts.py` command-line tool designs a voice from a written description, saves a portable reference, and turns narration-ready text into one MP3 or WAV file. Run locally on CPU or CUDA, with optional FlashAttention 2 and batched narration.
+An audiobook studio built on [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS). The Hilde Reader web app turns PDF, Markdown, or text documents into narrated MP3 audiobooks with a synchronized reader. Underneath it, the `audiobook_tts.py` command-line tool designs a voice from a written description, saves a portable reference, and turns narration-ready text into one MP3 or WAV file. Run locally on CPU or CUDA, with optional FlashAttention 2 and batched narration.
 
 Giving every text chunk the same voice description does **not** establish a shared speaker identity—even when those chunks are generated in one batch. Hilde therefore separates voice creation from narration: a **VoiceDesign** model generates a reference clip once and saves it with its exact transcript, and a **Base** model clones that saved reference for every chunk, across batches, books, and sessions. The speaker reference stays the same; pacing, expression, and sampled audio can still vary.
 

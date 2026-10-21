@@ -92,7 +92,27 @@ from audiobook_tts import (
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
-APP_ICON_PATH = ROOT / "assets" / "hilde-dark.png"
+# Hilde Reader's copper leaf, each file served at its own name: the header's
+# emblem, the favicons (16, 32), the Apple touch icon (180), and the web app
+# manifest's icons (192, 512).
+APP_ICONS = {f"/{name}": ROOT / "assets" / name for name in (
+    "reader-emblem.svg", "favicon-16.png", "favicon-32.png",
+    "apple-touch-icon-180.png", "icon-192.png", "icon-512.png",
+)}
+# /manifest.webmanifest: the name and icon a phone's home screen shows. Its
+# colours are the page's ground (--bg); it opens in the browser, as before.
+APP_MANIFEST = {
+    "name": "Hilde Reader",
+    "short_name": "Hilde",
+    "start_url": "/",
+    "display": "browser",
+    "background_color": "#1b1b1b",
+    "theme_color": "#1b1b1b",
+    "icons": [
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    ],
+}
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
 # A description of a figure, table, or equation is checked against its source,
 # corrected, and the correction checked again (PaperRun.check_description()).
@@ -16173,9 +16193,13 @@ class Handler(BaseHTTPRequestHandler):
                 "text/html; charset=utf-8",
                 extra=(("Cache-Control", "no-store"),),
             )
-        if route == "/hilde-dark.png":
+        if route in APP_ICONS:
             return self.send_file(
-                str(APP_ICON_PATH), False, allow_outside=True
+                str(APP_ICONS[route]), False, allow_outside=True
+            )
+        if route == "/manifest.webmanifest":
+            return self.reply(
+                HTTPStatus.OK, APP_MANIFEST, "application/manifest+json"
             )
         if route == "/zeki.jpg":
             return self.send_file(
@@ -17582,9 +17606,11 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Hilde</title>
-<link rel="icon" type="image/png" href="/hilde-dark.png">
-<link rel="apple-touch-icon" href="/hilde-dark.png">
+<title>Hilde Reader</title>
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <style>
 :root { color-scheme:dark;
         /* One charcoal ground, one neutral gray family, and six colours,
@@ -17641,9 +17667,12 @@ a { color:var(--accent-light); }
 /* While the server does not answer, what needs it is inert (setServerDown()). */
 body.server-down [inert] { opacity:.5; }
 .app-header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
-.brand-logo { width:48px; height:48px; border-radius:12px; flex:0 0 auto; }
+/* The emblem: the copper leaf on its own navy rounded square (the SVG). */
+.brand-logo { width:40px; height:40px; flex:0 0 auto; }
 .brand { flex:1 1 200px; min-width:0; }
-.brand-name { font-size:24px; }
+/* "Hilde" white semibold, then " Reader" regular in a light gray, one line. */
+.brand-name { font-size:24px; font-weight:600; white-space:nowrap; }
+.brand-name span { font-weight:400; color:#c9ccd2; }
 .brand-tagline { color:var(--dim); font-size:13px; }
 /* Inline, not flex: flex drops the spaces around the mark, so copied text
    read "byZeki Works". */
@@ -17895,7 +17924,7 @@ button.link.per-option { justify-self:start; font-size:13px; }
                gap:4px 12px; min-width:0; }
 .option-head .check { font-weight:650; }
 /* The shared model picker (renderPicker()): two dropdown boxes, "Runs on"
-   (Local green with a chip, API purple with a cloud) and "Model", each with
+   (Local green with a chip, Cloud purple with a cloud) and "Model", each with
    its label outside, a chevron, a hover state and a pointer; a small Change
    beside them. A list opens as a layer inside the screen (placePicker()). */
 .model-pick { display:grid; justify-items:start; gap:6px; min-width:0; max-width:100%; }
@@ -18465,13 +18494,16 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .menu [role=menuitemcheckbox][aria-checked=true]::before { content:"✓"; border-color:var(--accent);
                                                            background:var(--accent); color:#fff; }
 .menu [role=menuitemcheckbox][aria-checked=true]::after { content:none; }
-/* A badge: tinted (15%) with its colour's text, an icon with Local and API. */
+/* A badge: tinted (15%) with its colour's text, an icon with Local and Cloud. */
 .badge { display:inline-flex; align-items:center; gap:4px; padding:1px 8px; border-radius:999px;
          color:var(--dim); background:color-mix(in srgb, var(--dim) 15%, transparent);
          font-size:13px; font-weight:600; line-height:1.4; white-space:nowrap; }
 /* Badge text is its colour lightened by 30% white, so it keeps 4.5:1 on every ground it sits on. */
 .badge.local { color:color-mix(in srgb, var(--local) 70%, #fff); background:color-mix(in srgb, var(--local) 15%, transparent); }
 .badge.cloud { color:color-mix(in srgb, var(--cloud) 70%, #fff); background:color-mix(in srgb, var(--cloud) 15%, transparent); }
+/* "Cloud: <provider>": the colon follows the word, without the badge's gap ("Local · <server>" keeps it as
+   the space before its dot). */
+.badge.cloud .badge-detail { margin-left:-4px; }
 .badge:empty { display:none; }
 .chat-model-notes .badge { font-size:12px; }
 .chat-problem { display:grid; flex:0 1 auto; gap:8px; min-height:0; overflow:auto; padding:10px 16px;
@@ -18732,8 +18764,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 #paper-openai-code { user-select:all; -webkit-user-select:all; font-size:1.1em; }
 @media (max-width:640px) {
   main { padding:14px 14px 4px; }
-  .brand-logo { width:36px; height:36px; border-radius:9px; }
-  .brand-name { font-size:20px; }
   .brand-tagline { font-size:12px; line-height:1.3; }
   .tabs { gap:6px; margin-top:12px; padding:0 2px; }
   .page { padding-top:18px; }
@@ -18842,9 +18872,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <body>
 <main>
   <header class="app-header">
-    <img class="brand-logo" src="/hilde-dark.png" width="48" height="48" alt="">
+    <img class="brand-logo" src="/reader-emblem.svg" width="40" height="40" alt="">
     <div class="brand">
-      <h1 class="brand-name">Hilde</h1>
+      <h1 class="brand-name">Hilde<span> Reader</span></h1>
       <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
     </div>
   </header>
