@@ -17935,7 +17935,9 @@ PAGE = r"""<!doctype html>
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
            and text. No orange anywhere; no glow stays lit. Create's steps
-           and the Voices list (#page-voice: --play, --tag) set their own. */
+           (yellow --step-open for the open step, --local green for a
+           finished one) and the Voices list (#page-voice: --play, --tag) set
+           their own. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
@@ -17943,10 +17945,13 @@ PAGE = r"""<!doctype html>
         --ask:#2bb3a3; /* light mode: #127a6e */
         --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
         --bad:#e5534b; --radius:12px;
-        /* Create's step rows (Part B, 20 Oct): their own darker ground, on
-           which each step's colour clears 3:1 (#2a5fe0 3.2, #b3366a 3.1) and
-           a finished step 3's title 4.5:1 (#d6517f 4.5); thin row and card
-           lines; a gray circle for a step not reached (3.5:1). */
+        /* Create's step rows: their own darker ground, on which the open
+           step's yellow --step-open (11.1:1, dark number on it 11.8:1) and a
+           finished step's green --local (7.0:1) clear 3:1 and 4.5:1; thin row
+           and card lines; a gray circle for a step not reached (3.5:1). The
+           yellow (hue 55°, not amber) marks the open step only, never a
+           warning. */
+        --step-open:#ddd040;
         --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
         --popover:#1d1f23; --popover-line:#3a3d44; }
 * { box-sizing:border-box; }
@@ -18112,13 +18117,12 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .banner > span { flex:1 1 200px; }
 .steps { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:0; padding:0;
          list-style:none; }
-/* Create's steps: rows on one page, one colour per step. --step: the open
-   step's 2 px border and solid circle; --step-done: a finished step's check
-   ring and title; --step-ink: the number on the open circle. A step not
-   reached: a gray outline circle with its number and a gray title. */
-#step-book { --step:var(--accent); --step-done:var(--accent-light); --step-ink:var(--accent-ink); }
-#step-voice { --step:var(--local); --step-done:var(--local); --step-ink:#111111; }
-#step-create { --step:#b3366a; --step-done:#d6517f; --step-ink:#ffffff; }
+/* Create's steps: rows on one page, coloured by state, the same for every
+   step. Open: a 2 px yellow border and a solid yellow circle with a dark
+   number, a white bold title. Finished: a check in a green ring with a faint
+   green fill, a green title. Not reached: a gray outline circle with its
+   number and a gray title. */
+.step { --step:var(--step-open); --step-done:var(--local); --step-ink:#111111; }
 .step { min-width:0; padding:14px 19px; background:var(--step-bg); border:1px solid var(--step-line);
         border-radius:var(--radius); }
 .step.is-active { padding:18px 18px 20px; border:2px solid var(--step); }

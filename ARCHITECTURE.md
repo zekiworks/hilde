@@ -985,19 +985,21 @@ Each page:
 
 - **Create** shows three steps as rows on one page, one open at a time; a
   finished step collapses to one row, a later step opens only after the
-  earlier ones are complete, and going back resets nothing. Each step has its
-  colour (`#step-book/voice/create` set `--step`, `--step-done`,
-  `--step-ink`: blue `--accent`/`--accent-light`/white, green `--local` with
-  a dark number, burgundy-pink `#b3366a`/`#d6517f`/white) on the rows' own
-  ground `--step-bg` #17181b, where every border and circle clears 3:1 and
-  text 4.5:1. Open (`.is-active`): a 2 px border and a solid circle in
+  earlier ones are complete, and going back resets nothing. A step's colour
+  is its state, the same for all three (`.step` sets `--step` yellow
+  `--step-open` #ddd040, `--step-done` green `--local`, `--step-ink` #111111),
+  on the rows' own ground `--step-bg` #17181b: the yellow 11.1:1 with the dark
+  number on it 11.8:1, the green 7.0:1. The yellow (hue 55°, not amber, so the
+  page still has no orange) marks the open step only; no warning uses it.
+  Open (`.is-active`): a 2 px border and a solid circle in
   `--step`, a white bold title. Finished (`.is-done`, `renderCreate()`):
   `STEP_CHECK_ICON` in a `--step-done` ring with a 12% fill, the title in
   `--step-done` (a click on it calls `setStep()`), then `.step-summary`
   (`setSummary()`: the value cut with "…", a gray "· type"), then its
   `button.change` about 12 px after it (under it on a phone). Not reached
-  (`.is-upcoming`): a `--step-off` outline circle, `--off` title. The
-  visually hidden `.step-state` reads "(current step)", "(completed)" or
+  (`.is-upcoming`): a `--step-off` outline circle, `--off` title; so is step 3
+  when step 1 or 2 is reopened from it (it holds no value of its own).
+  The visually hidden `.step-state` reads "(current step)", "(completed)" or
   "(not reached yet)". Every Change on Create (`button.change`, the pickers'
   `button.picker-change`) is the quiet blue: `PENCIL_ICON` and the word in
   `--accent-light`, a thin blue border, no fill. Step 3 is never finished: a

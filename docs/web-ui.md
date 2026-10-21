@@ -34,13 +34,13 @@ narrowest phones the tabs tighten so the row never scrolls sideways. See
 
 **Create** walks through three steps, shown as rows on one page, one open at a
 time: **Add the source document**, **Choose a voice**, and **How Hilde prepares
-the text**. Each step has its own colour: blue for the document, green for the
-voice, burgundy-pink for preparing the text. The open step has a border and a
-filled circle with its number in that colour. A finished step folds into one
-row: a check in a circle and its title in the step's colour, then what you
-chose (the file name and its type, or the voice), then **Change** (a pencil and
-the word, in blue). On a phone, **Change** sits under what you chose. A step
-not reached yet is gray. A long file name is cut short with "…".
+the text**. A step's colour says where you are: the open step is yellow, with
+a yellow border and a filled yellow circle with its number. A finished step is
+green and folds into one row: a check in a green circle and its title in
+green, then what you chose (the file name and its type, or the voice), then
+**Change** (a pencil and the word, in blue). On a phone, **Change** sits under
+what you chose. A step not reached yet is gray, and so is step 3 while you
+have gone back to an earlier step. A long file name is cut short with "…".
 
 **Change**, or a click on a finished step's title, opens that step again;
 nothing in the other steps is cleared. **Continue** in a reopened step goes
