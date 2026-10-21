@@ -18736,9 +18736,15 @@ button.danger.with-icon svg { width:15px; height:15px; }
 #change-voice-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
 #change-voice-text { overflow-wrap:anywhere; }
 /* Listen with a book open: the workspace takes the screen, the text keeps a
-   reading width, and one side panel (chat, figure, source page) sits beside it. */
+   reading width, and one side panel (chat, figure, source page) sits beside it.
+   The header, the tab row, and the status lines under them stay in the
+   centred 960 px column (920 px inside main's 20 px sides) as on every other
+   page, so nothing above the workspace moves when a book opens. */
 main.reading { max-width:none; }
-html:has(main.reading) { scrollbar-gutter:stable; }
+main.reading > :is(.app-header, .tabs, #status, #server-down) { max-width:920px; margin-left:auto; margin-right:auto; }
+/* Every page keeps the scroll bar's room, so the column never shifts as a
+   page starts or stops scrolling (Create, Voices, a book). */
+html { scrollbar-gutter:stable; }
 .listen-workspace { --panel-w:440px; }
 .reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
 .reading-column > :not(.reader-panel) { font-size:15px; }

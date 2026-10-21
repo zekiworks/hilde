@@ -30,6 +30,12 @@ page below, with a white bar along its top (and no other tab is selected).
 narrowest phones the tabs tighten so the row never scrolls sideways. See
 [Settings](#settings).
 
+The header and the tab row sit in the same centred column on every page, and
+do not move when you change tab or open a book: only the book itself (its
+text, the side panel, and the player bar) uses the whole width of the window.
+The short status line under the tabs ("Added …", "Deleted …") stays in that
+column too.
+
 ## Create an audiobook
 
 **Create** walks through three steps, shown as rows on one page, one open at a

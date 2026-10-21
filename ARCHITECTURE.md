@@ -1786,8 +1786,15 @@ label, chosen by the server from one file and never by name in code.
 
 The **Listen** reader renders narration-ready Markdown, including structurally
 valid pipe tables and embedded PNG/JPEG/WebP/GIF visuals. Raw HTML is disabled.
-The book view gives the page the whole width (`main.reading`) and the text a
-reading column of `68ch` at 18 px with a 1.6 line height; the page scrolls,
+The book view gives the workspace the whole width (`main.reading`) and the text a
+reading column of `68ch` at 18 px with a 1.6 line height. The header, the tab
+row, `#status` and `#server-down` stay in the centred 960 px column of every
+other page (`main.reading > :is(.app-header, .tabs, #status, #server-down)`,
+920 px inside main's sides), and every page keeps the scroll bar's room
+(`html { scrollbar-gutter:stable }`), so nothing above the workspace moves
+when the tab changes, a book opens, or a page starts scrolling. The side
+panel, which runs the screen's full height, covers the right end of that
+column (the Settings tab included) while it is open, as before. The page scrolls,
 never an inner box. The view's controls stay pinned to the top of a wide
 screen while the text scrolls, and the player is docked at the bottom of
 every screen (see the player bar below). Newly generated audio has
