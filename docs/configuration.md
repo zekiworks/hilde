@@ -243,10 +243,55 @@ docker run -d --name hilde-searxng --restart unless-stopped \
 
 Then start Hilde with `--search-server http://127.0.0.1:8890`; the startup
 lines say `Web search for Chat:` and the address. SearXNG sends each search,
-with words from the conversation, to public engines such as Google and Bing;
+with the words Hilde chooses, to public engines such as Google and Bing;
 one engine that is rate-limited or asks for a CAPTCHA is left out of that
 search. Hilde reads only pages at public addresses: never this machine or the
-local network, also when a page redirects there.
+local network, also when a page redirects there. A long page (over
+`store_results_over_tokens`, below) is kept in the library's
+`.cache/chat-docs/`, so Hilde can read and search it paragraph by paragraph.
+
+## Ask Hilde settings
+
+Ask Hilde works without settings. To change how much it keeps in mind, put an
+`ask.yaml` beside `providers.yaml` in Hilde's config folder (`~/.hilde/`). It
+is read at every question; a file with an unknown setting, or a value that is
+not a positive number, is ignored as a whole and the server log says why once.
+Every key is optional; these are the defaults:
+
+```yaml
+# What a search of the book returns: the best matches whole (at most good_max,
+# each scoring at least good_share of the best), the next weak_max as summaries.
+search: {good_max: 5, good_share: 0.5, weak_max: 10}
+# A web page longer than this (in tokens) is stored and listed by paragraph.
+store_results_over_tokens: 1500
+# The book's abstract (or its opening) sent with every question, in tokens.
+abstract_tokens: 500
+# How many questions a result stays before it is due to be dropped. The
+# book's own paragraphs and file confirmations are never dropped by age.
+expiry_turns: {web_search: 3, document_search: 3, web_page: 5, help: 3, list_files: 3}
+# The hard cap: when reading the whole conversation from scratch would take
+# the model over trigger_seconds (or fill trigger_window_share of its window,
+# or pass its reliable_up_to), it is compacted to target_seconds,
+# target_window_share, and target_reliable_share of reliable_up_to.
+cap: {trigger_seconds: 30, target_seconds: 15, trigger_window_share: 0.9,
+      target_window_share: 0.5, target_reliable_share: 0.5}
+# Until Hilde has measured a model: how fast it reads a prompt (tokens a
+# second), how long its server keeps a conversation cached (seconds), and up
+# to how many tokens of context it answers reliably (null: its whole window).
+local: {prefill_tokens_per_second: 400, cache_lifetime_seconds: 600, reliable_up_to: 16384}
+cloud: {prefill_tokens_per_second: 2000, cache_lifetime_seconds: 300, reliable_up_to: null}
+# Per model, by its selector or a pattern; these win over what was measured.
+# expiry_multiplier stretches (2) or shortens (0.5) every expiry_turns value.
+models:
+  "lm-studio/qwen*": {reliable_up_to: 32768, expiry_multiplier: 1}
+```
+
+(The `models` entry above is an example; by default there is none.) Hilde
+measures each model's prompt speed and how long its cache lasts from its own
+requests and keeps them in the library's `.cache/ask-models.json`; the server
+log has one `Ask:` line per model request with its prompt tokens by kind, the
+cached tokens the provider reported, the time to the first token, and what
+was dropped and why.
 
 ## Storage
 
@@ -256,6 +301,10 @@ alone. The server creates and owns this fixed layout:
 
 ```text
 ~/.hilde/library/
+├── .cache/
+│   ├── thumbnails/
+│   ├── chat-docs/
+│   └── ask-models.json
 ├── Voices/
 ├── Audiobooks/
 │   └── attention-is-all-you-need--bdfaa68d8984/
@@ -264,6 +313,8 @@ alone. The server creates and owns this fixed layout:
 │       ├── narration.json
 │       ├── reader.md
 │       ├── history.jsonl
+│       ├── chat.json
+│       ├── files/
 │       └── voices/
 │           └── Eir/
 │               ├── audio.mp3
@@ -274,6 +325,10 @@ alone. The server creates and owns this fixed layout:
 └── workers.yaml
 ```
 
+- **.cache** holds what Hilde can make again: the Library's thumbnails, the
+  long web pages Ask Hilde read (`chat-docs/<id>.json`, by the page's link),
+  and what Hilde measured of each chat model (`ask-models.json`). Nothing in
+  it is ever written into a book's folder; deleting it costs only a redo.
 - **Voices** contains one directory per narrator: `reference.wav`, the exact
   UTF-8 `transcript.txt` used to create it, its `description.txt`, and, for
   voices made before fixed previews, a rendered `preview.wav`.
@@ -301,6 +356,8 @@ alone. The server creates and owns this fixed layout:
     each job that made it or one of its voices, oldest first, each with its
     time in UTC (`at`), the job (`job`), and the event; see
     [Model history](#model-history);
+  - `chat.json` is the book's Ask Hilde conversation, and what Hilde keeps in
+    mind of it; `files/` holds the Markdown files Hilde wrote for you;
   - `voices/<voice>/` holds that voice's `audio.mp3` and its own word and
     sentence `timings.json`.
 

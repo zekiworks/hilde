@@ -563,12 +563,13 @@ selected words and **Ask about this figure** do; the book waits at that sentence
 player bar (the chat has no play button for the book); closing the chat never
 starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
-notes on a section. Hilde sees a one-line summary of every paragraph and reads
-the paragraphs it needs before answering. For a long book on a model with a
-small memory, it sees one line per section instead and searches the book for
-the paragraphs it needs; a question that still doesn't fit says so plainly. A
-paragraph it cites, such as ¶12,
-is a link that scrolls the book to it. When the server has web search (see
+notes on a section. Hilde sees the book's abstract (or, without one, its
+first paragraphs), never the whole book: it searches the book and reads the
+paragraphs it needs before answering, however long the book is. It can also
+answer questions about Hilde Reader itself, from the [help](help.md), and
+says when the help doesn't cover something. A paragraph it cites shows as
+¶12, a link that scrolls the book to it (also while the answer is still
+arriving). When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
 search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's **⋯** menu says **Web
@@ -606,8 +607,12 @@ one per book, for everyone using this server, and survives a refresh. **New
 conversation** starts over. Your unsent question, what is attached to it, and
 the conversation stay as they were when you look at a figure or a page, or
 close the chat and open it again; an answer keeps arriving meanwhile. When a
-conversation grows long, its oldest messages and reads leave what Hilde
-remembers, and the chat says so.
+conversation grows long, Hilde keeps your earlier questions whole and its
+earlier answers in short (their first and last sentence, and the paragraphs
+and links they used); what it looked up leaves its memory after a few
+questions (web results sooner than the book's paragraphs), and, past what the
+model can read quickly and well, the oldest questions go too, and the chat
+says so. Hilde looks up again what it needs.
 
 Ask Hilde attaches the part being read (or the words you selected) as a card
 above the message box, in teal, Ask Hilde's colour (as are the cards of past

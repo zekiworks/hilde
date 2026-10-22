@@ -9289,6 +9289,8 @@ class FakeChatModel(BaseHTTPRequestHandler):
     requests = []
     window = 100_000
     tokenize = None
+    # Reported after the last delta, as include_usage asks; None sends none.
+    usage = None
 
     def log_message(self, *args):
         pass
@@ -9320,6 +9322,8 @@ class FakeChatModel(BaseHTTPRequestHandler):
         for delta, finish in reply:
             event = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
             self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+        if type(self).usage is not None:
+            self.wfile.write(f"data: {json.dumps({'choices': [], 'usage': type(self).usage.pop(0)})}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
 
 
@@ -9360,9 +9364,11 @@ class ChatTests(unittest.TestCase):
     def test_write_append_list_and_delete_a_file(self):
         book, path = self.book(chat_narration("S."))
         passages = web.chat_book(self.storage, book)[2]
+        shelf = web.AskShelf(self.storage, web.ask_book_document(book, {}, passages))
 
         def call(tool, **arguments):
-            return web.chat_tool(path, passages, {"name": tool, "arguments": arguments})
+            items, label, changed = web.chat_tool(path, shelf, {"name": tool, "arguments": arguments})
+            return web.chat_tool_text({"items": items}), label, changed
 
         self.assertEqual(call("write_file", name="notes", mode="append", content="x")[2], False)
         self.assertEqual(call("write_file", name="notes", mode="create", content="# A\n")[2], True)
@@ -9380,38 +9386,25 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(web.chat_files(path), [])
         self.assertEqual(call("delete_file", name="notes.md")[2], False)
 
-    def test_reads_stop_at_the_cap_and_say_where_to_read_on(self):
+    def test_reads_by_id_stop_at_the_cap_and_say_where_to_read_on(self):
         passages = [{"text": "w" * 15_000}, {"text": "x" * 15_000}, {"text": ""}]
-        content, label = web.chat_read(passages, 1, 3)
+        book = web.AskDocument("0a1b2c3d", "paper", "Book", passages)
+        shelf = web.AskShelf(None, book, web.AskDocument("help", "help", "Help", [
+            {"title": "Voices", "body": "Pick one.", "text": "Voices\n\nPick one."},
+        ]))
+        items, label = web.ask_read(shelf, ["0a1b2c3d:1-3"])
         self.assertEqual(label, "Read ¶1")
-        self.assertIn("Stopped before ¶2", content)
-        content, label = web.chat_read(passages, 3, 99)
-        self.assertEqual(label, "Read ¶3")
-        self.assertIn("Not narrated", content)
-        self.assertEqual(web.chat_read(passages, 4)[1], "Read nothing")
-
-    def test_past_80_percent_the_oldest_go_first_with_their_tool_results(self):
-        entries = [
-            {"role": "user", "text": "a" * 300},
-            {"role": "assistant", "text": "", "calls": [{"id": "1", "name": "read_paragraphs", "arguments": {}}]},
-            {"role": "tool", "id": "1", "name": "read_paragraphs", "content": "r" * 300},
-            {"role": "notice", "text": "Stopped."},
-            {"role": "assistant", "text": "b" * 300},
-            {"role": "user", "text": "latest"},
-        ]
-        # Under 80% of the window, everything stays.
-        self.assertEqual(web.chat_context(entries, 0, 1_000), (
-            [entry for entry in entries if entry["role"] != "notice"], 0
-        ))
-        kept, dropped = web.chat_context(entries, 0, 300)
-        # The call goes with its result, and the oldest go only until the
-        # context is under 60%; it still opens with the listener.
-        self.assertEqual(dropped, 3)
-        self.assertEqual([entry["role"] for entry in kept], ["user", "assistant", "user"])
-        self.assertIn("removed", kept[0]["text"])
-        self.assertEqual(kept[2]["text"], "latest")
-        # The latest message stays even when it alone is too long.
-        self.assertEqual(web.chat_context(entries, 10_000, 300)[0][-1]["text"], "latest")
+        self.assertEqual([item.get("id") for item in items], ["0a1b2c3d:1", None])
+        self.assertIn("Stopped before 0a1b2c3d:2", items[-1]["text"])
+        items, label = web.ask_read(shelf, ["0a1b2c3d:3–99", "help:1", "7"])
+        self.assertEqual(label, "Read ¶3, Help › Voices")
+        self.assertEqual([(item["kind"], item.get("id")) for item in items], [
+            ("paper", "0a1b2c3d:3"), ("help", "help:1"), ("note", None),
+        ])
+        self.assertIn("Not narrated", items[0]["text"])
+        self.assertEqual(items[2]["text"], "0a1b2c3d has paragraphs 0a1b2c3d:1 to 0a1b2c3d:3.")
+        self.assertEqual(web.ask_read(shelf, ["ffffffff:1"])[0][0]["text"], "There is no document ffffffff.")
+        self.assertEqual(web.ask_read(shelf, [])[1], "Read nothing")
 
     def test_recreating_a_book_keeps_its_files_and_drops_its_conversation(self):
         book, path = self.book(chat_narration("S."))
@@ -9424,16 +9417,18 @@ class ChatTests(unittest.TestCase):
 
     def test_a_turn_runs_the_models_tool_calls_until_it_answers(self):
         book, path = self.book(chat_narration("Storms.", "Dams."))
+        doc = web.document_id(book)
         FakeChatModel.requests = []
         FakeChatModel.replies = [
             [({"content": "Reading."}, None),
-             ({"tool_calls": [{"index": 0, "id": "a", "function": {"name": "read_paragraphs", "arguments": '{"start": 2'}}]}, None),
+             ({"tool_calls": [{"index": 0, "id": "a", "function": {
+                 "name": "read_paragraphs", "arguments": f'{{"ids": ["{doc}:2"]'}}]}, None),
              ({"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}, None),
              ({"tool_calls": [{"index": 1, "id": "b", "function": {
                  "name": "write_file",
                  "arguments": json.dumps({"name": "dams", "mode": "create", "content": "# Dams\n"})}}]},
               "tool_calls")],
-            [({"content": "Dams are in ¶2."}, "stop")],
+            [({"content": f"Dams are in {doc}:2."}, "stop")],
         ]
         server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -9450,14 +9445,19 @@ class ChatTests(unittest.TestCase):
             events += new
             index += len(new)
 
-        # The model saw its paragraph lines, then the text it asked to read.
+        # The model saw the document's id and abstract, never its paragraph
+        # list, then the text it asked to read, labelled with its id.
         first, second = FakeChatModel.requests
-        self.assertIn("¶2 [body] Dams. Tags: tag.", first["messages"][0]["content"])
+        system = first["messages"][0]["content"]
+        self.assertIn(f"document id {doc}, paragraphs {doc}:1 to {doc}:2.", system)
+        self.assertNotIn("Tags:", system)
         self.assertEqual({tool["function"]["name"] for tool in first["tools"]},
-                         {"read_paragraphs", "search_book", "write_file", "list_files", "delete_file"})
+                         {"read_paragraphs", "search_document", "write_file", "list_files", "delete_file"})
+        self.assertEqual(first["stream_options"], {"include_usage": True})
         results = [message for message in second["messages"] if message["role"] == "tool"]
         self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
-        self.assertEqual(results[0]["content"], "¶2\nParagraph 2 text.")
+        self.assertEqual(results[0]["content"], f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>')
+        self.assertEqual(results[1]["content"], "Wrote dams.md.")
         self.assertEqual((path / "files" / "dams.md").read_text(), "# Dams\n")
         # The page heard each step, and the conversation survives a reload.
         # The question named no part of the book, so the note has no section.
@@ -9466,14 +9466,17 @@ class ChatTests(unittest.TestCase):
         ]}, events)
         payload = web.chat_payload(self.storage, chats, book)
         self.assertFalse(payload["running"])
+        self.assertEqual(payload["document"], doc)
         self.assertEqual(
             [(entry["role"], entry["text"]) for entry in payload["conversation"]],
             [("user", "Where are dams?"), ("assistant", "Reading."),
-             ("tool", "Read ¶2"), ("tool", "Wrote dams.md"), ("assistant", "Dams are in ¶2.")],
+             ("tool", "Read ¶2"), ("tool", "Wrote dams.md"), ("assistant", f"Dams are in {doc}:2.")],
         )
         self.assertIn('<a href="#" class="chat-cite" data-passage="2">¶2</a>',
                       payload["conversation"][-1]["html"])
         self.assertEqual(payload["passages"], {"1": 0, "2": 1})
+        # The answer keeps the ids and links it used, for when it is shortened.
+        self.assertEqual((web.read_chat(path)[-1]["ids"], web.read_chat(path)[-1]["links"]), ([f"{doc}:2"], []))
 
     def test_a_stopped_turn_keeps_the_text_that_arrived_marked_stopped(self):
         book, path = self.book(chat_narration("Storms.", "Dams."))
@@ -9691,6 +9694,7 @@ class ChatTests(unittest.TestCase):
     def test_a_files_section_is_the_question_whose_turn_last_wrote_it(self):
         book, path = self.book(chat_narration("S."))
         passages = web.chat_book(self.storage, book)[2]
+        shelf = web.AskShelf(self.storage, web.ask_book_document(book, {}, passages))
         entries = []
 
         def ask(section, *writes):
@@ -9700,9 +9704,10 @@ class ChatTests(unittest.TestCase):
                 call = {"id": str(number), "name": "write_file",
                         "arguments": {"name": name, "mode": mode, "content": "x\n"}}
                 entries.append({"role": "assistant", "text": "", "calls": [call]})
-                content, label, _ = web.chat_tool(path, passages, call)
-                entries.append({"role": "tool", "id": call["id"], "name": "write_file",
-                                "content": content, "label": label})
+                items, label, _ = web.chat_tool(path, shelf, call)
+                # A result saved before results had items kept its text as `content`.
+                result = {"items": items} if number else {"content": items[0]["text"]}
+                entries.append({"role": "tool", "id": call["id"], "name": "write_file", **result, "label": label})
             entries.append({"role": "assistant", "text": "Done."})
 
         ask("2 Methods", ("notes", "create"), ("summary", "create"))
@@ -9757,10 +9762,11 @@ class ChatTests(unittest.TestCase):
 
     def test_gemini_gets_its_answer_back_as_received_with_its_thought_signatures(self):
         book, path = self.book(chat_narration("Storms.", "Dams."))
+        doc = web.document_id(book)
         requests = []
         call_parts = [
             {"text": "Which paragraph holds dams?", "thought": True},
-            {"functionCall": {"id": "fc-1", "name": "read_paragraphs", "args": {"start": 2}},
+            {"functionCall": {"id": "fc-1", "name": "read_paragraphs", "args": {"ids": [f"{doc}:2"]}},
              "thoughtSignature": "c2lnLWNhbGw="},
             # Streaming may bring a signature later, on a part with no text.
             {"text": "", "thoughtSignature": "c2lnLWVuZA=="},
@@ -9783,7 +9789,7 @@ class ChatTests(unittest.TestCase):
                     ))
                 return self.stream((
                     {"candidates": [{"content": {"role": "model", "parts": [
-                        {"text": "Dams are in ¶2.", "thoughtSignature": "c2lnLWFuc3dlcg=="},
+                        {"text": f"Dams are in {doc}:2.", "thoughtSignature": "c2lnLWFuc3dlcg=="},
                     ]}, "finishReason": "STOP"}]},
                 ))
 
@@ -9797,23 +9803,25 @@ class ChatTests(unittest.TestCase):
         self.run_turn(web.ChatTurn(self.storage, book, "Where are dams?", "gemini/gemini-test", []))
 
         first, second = requests
-        self.assertIn("¶2 [body] Dams. Tags: tag.", first["systemInstruction"]["parts"][0]["text"])
+        self.assertIn(f"document id {doc}", first["systemInstruction"]["parts"][0]["text"])
         self.assertEqual(first["contents"], [{"role": "user", "parts": [{"text": "Where are dams?"}]}])
         declarations = first["tools"][0]["functionDeclarations"]
         self.assertEqual({tool["name"] for tool in declarations},
-                         {"read_paragraphs", "search_book", "write_file", "list_files", "delete_file"})
+                         {"read_paragraphs", "search_document", "write_file", "list_files", "delete_file"})
         self.assertTrue(all("parametersJsonSchema" in tool and "parameters" not in tool for tool in declarations))
         self.assertEqual(first["toolConfig"], {"functionCallingConfig": {"mode": "AUTO"}})
-        # The model turn goes back exactly as it arrived, every signature in
-        # its part, followed by the tool's result for that call.
-        self.assertEqual(second["contents"][1], {"role": "model", "parts": call_parts})
+        # The model turn goes back as it arrived, every signature in its
+        # part, but never the thought's text; then the tool's result.
+        self.assertEqual(second["contents"][1], {"role": "model", "parts": call_parts[1:]})
         self.assertEqual(second["contents"][2], {"role": "user", "parts": [{"functionResponse": {
-            "name": "read_paragraphs", "id": "fc-1", "response": {"content": "¶2\nParagraph 2 text."},
+            "name": "read_paragraphs", "id": "fc-1",
+            "response": {"content": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
         }}]})
+        self.assertNotIn("Which paragraph", json.dumps(second))
         entries = web.read_chat(path)
         self.assertEqual(entries[1]["gemini_parts"], call_parts)
-        self.assertEqual(entries[1]["calls"], [{"id": "fc-1", "name": "read_paragraphs", "arguments": {"start": 2}}])
-        self.assertEqual(entries[-1]["text"], "Dams are in ¶2.")
+        self.assertEqual(entries[1]["calls"], [{"id": "fc-1", "name": "read_paragraphs", "arguments": {"ids": [f"{doc}:2"]}}])
+        self.assertEqual(entries[-1]["text"], f"Dams are in {doc}:2.")
         # A thought is never part of the answer.
         self.assertNotIn("Which paragraph", json.dumps([entry.get("text") for entry in entries]))
         # A call Gemini did not write, such as another model's or a reading an
@@ -9842,6 +9850,7 @@ class ChatTests(unittest.TestCase):
 
     def test_an_openai_api_key_chats_through_responses(self):
         book, path = self.book(chat_narration("Storms.", "Dams."))
+        doc = web.document_id(book)
         requests = []
 
         class OpenAIHandler(FakeProviderHandler):
@@ -9854,13 +9863,15 @@ class ChatTests(unittest.TestCase):
                         {"type": "response.output_item.done", "item": {"type": "reasoning", "summary": []}},
                         {"type": "response.output_item.done", "item": {
                             "type": "function_call", "id": "fc_1", "call_id": "call_1",
-                            "name": "read_paragraphs", "arguments": '{"start": 2}',
+                            "name": "read_paragraphs", "arguments": json.dumps({"ids": [f"{doc}:2"]}),
                         }},
-                        {"type": "response.completed", "response": {"id": "resp"}},
+                        {"type": "response.completed", "response": {"id": "resp", "usage": {
+                            "input_tokens": 2400, "input_tokens_details": {"cached_tokens": 0}}}},
                     ))
                 return self.stream((
-                    {"type": "response.output_text.delta", "delta": "Dams are in ¶2."},
-                    {"type": "response.completed", "response": {"id": "resp"}},
+                    {"type": "response.output_text.delta", "delta": f"Dams are in {doc}:2."},
+                    {"type": "response.completed", "response": {"id": "resp", "usage": {
+                        "input_tokens": 2500, "input_tokens_details": {"cached_tokens": 2304}}}},
                 ))
 
         origin = serve_fake_provider(self, OpenAIHandler)
@@ -9878,13 +9889,21 @@ class ChatTests(unittest.TestCase):
         self.assertTrue(all(tool["type"] == "function" and tool["strict"] is False for tool in first["tools"]))
         self.assertEqual(second["input"][1:], [
             {"type": "function_call", "call_id": "call_1", "name": "read_paragraphs",
-             "arguments": json.dumps({"start": 2})},
-            {"type": "function_call_output", "call_id": "call_1", "output": "¶2\nParagraph 2 text."},
+             "arguments": json.dumps({"ids": [f"{doc}:2"]})},
+            {"type": "function_call_output", "call_id": "call_1",
+             "output": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
         ])
-        self.assertEqual(web.read_chat(path)[-1]["text"], "Dams are in ¶2.")
+        self.assertEqual(web.read_chat(path)[-1]["text"], f"Dams are in {doc}:2.")
+        # The Responses usage was read: OpenAI caches, and the ratio of its
+        # count to Hilde's estimate is kept.
+        measured = web.AskStats(self.storage).read()["openai/gpt-test"]
+        self.assertTrue(measured["caches"])
+        self.assertEqual(len(measured["ratio"]), 2)
+        self.assertEqual(web.read_chat_context(path)["last"]["cached"], 2304)
 
     def test_deepseek_chats_through_chat_completions_and_gets_its_reasoning_back(self):
         book, path = self.book(chat_narration("Storms.", "Dams."))
+        doc = web.document_id(book)
         requests = []
 
         class DeepSeekHandler(FakeProviderHandler):
@@ -9904,14 +9923,16 @@ class ChatTests(unittest.TestCase):
                         {"choices": [{"index": 0, "delta": {"reasoning_content": "Look it up."}}]},
                         {"choices": [{"index": 0, "delta": {"tool_calls": [{
                             "index": 0, "id": "call_1", "type": "function",
-                            "function": {"name": "read_paragraphs", "arguments": '{"start": 2}'},
+                            "function": {"name": "read_paragraphs", "arguments": json.dumps({"ids": [f"{doc}:2"]})},
                         }]}}]},
                         {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
                     ))
                 return self.stream((
                     {"choices": [{"index": 0, "delta": {"reasoning_content": "Found it."}}]},
-                    {"choices": [{"index": 0, "delta": {"content": "Dams are in ¶2."}}]},
+                    {"choices": [{"index": 0, "delta": {"content": f"Dams are in {doc}:2."}}]},
                     {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                    # DeepSeek reports its cache hits in fields of its own.
+                    {"choices": [], "usage": {"prompt_tokens": 1900, "prompt_cache_hit_tokens": 1792}},
                 ))
 
         origin = serve_fake_provider(self, DeepSeekHandler)
@@ -9928,21 +9949,25 @@ class ChatTests(unittest.TestCase):
 
         first, second = requests
         self.assertEqual((first["model"], first["stream"], first["tool_choice"]), ("deepseek-flash", True, "auto"))
+        self.assertEqual(first["stream_options"], {"include_usage": True})
         # DeepSeek's thinking takes its default output room.
         self.assertNotIn("max_tokens", first)
         self.assertTrue(all(tool["type"] == "function" and "name" in tool["function"] for tool in first["tools"]))
         self.assertEqual(first["messages"][1], {"role": "user", "content": "Where are dams?"})
-        # The answer that called the tool goes back with its reasoning, then the tool's result.
+        # The answer that called the tool goes back with its reasoning (this
+        # turn's, which DeepSeek needs while tools are on), then the result.
         self.assertEqual(second["messages"][2:], [
             {"role": "assistant", "content": "", "reasoning_content": "Look it up.", "tool_calls": [
                 {"id": "call_1", "type": "function",
-                 "function": {"name": "read_paragraphs", "arguments": json.dumps({"start": 2})}},
+                 "function": {"name": "read_paragraphs", "arguments": json.dumps({"ids": [f"{doc}:2"]})}},
             ]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "¶2\nParagraph 2 text."},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
         ])
         entries = web.read_chat(path)
         self.assertEqual(entries[1]["reasoning_content"], "Look it up.")
-        self.assertEqual(entries[-1]["text"], "Dams are in ¶2.")
+        self.assertEqual(entries[-1]["text"], f"Dams are in {doc}:2.")
+        self.assertEqual(web.read_chat_context(path)["last"]["cached"], 1792)
         # Reasoning is never part of an answer the page shows.
         self.assertNotIn("Found it", json.dumps([web.chat_display_entry(entry) for entry in entries]))
 
@@ -9970,10 +9995,11 @@ class ChatTests(unittest.TestCase):
         # without a read made up for it.
         (request,) = FakeChatModel.requests
         (message,) = request["messages"][1:]
+        doc = web.document_id(book)
         self.assertEqual(message["content"], (
             "The listener attached this from the book:\n\n"
-            "[Hilde's narration (¶2)]\nParagraph 2 text.\n\n"
-            "[Hilde's narration (¶3)]\nParagraph 3 text.\n\n"
+            f"[Hilde's narration ({doc}:2)]\nParagraph 2 text.\n\n"
+            f"[Hilde's narration ({doc}:3)]\nParagraph 3 text.\n\n"
             'What does it mean by "trapped"?'
         ))
         conversation = web.chat_payload(self.storage, web.ChatRegistry(), book)["conversation"]
@@ -10077,28 +10103,34 @@ class ChatTests(unittest.TestCase):
         FakeChatModel.window, FakeChatModel.tokenize = window, tokenize
         FakeChatModel.requests, FakeChatModel.replies = [], replies
 
-    def test_a_long_book_sends_a_section_outline_that_fits_a_32k_model(self):
+    def test_a_long_book_is_never_sent_only_its_id_and_opening_and_search_finds_its_paragraphs(self):
         book = self.long_book()
+        doc = web.document_id(book)
         self.reset_fake(32_768, [[({"content": "It is a threshold."}, "stop")]])
         conversation = self.ask(book)
         self.assertEqual(conversation[-1], "It is a threshold.")
         (request,) = FakeChatModel.requests
         system = request["messages"][0]["content"]
-        self.assertIn("each section is one line", system)
-        self.assertIn("¶1531–1560 Section 51:", system)
+        self.assertIn(f"paragraphs {doc}:1 to {doc}:3000.", system)
+        self.assertIn("It has no abstract marked as one; its opening", system)
+        # Neither the paragraph map (summaries, tags) nor the paper goes.
+        self.assertNotIn("Paragraph 1555", system)
+        self.assertNotIn("explains topic", json.dumps(request))
         counted = (len(json.dumps(request["messages"])) + len(json.dumps(request["tools"]))) // 3
-        self.assertLessEqual(counted + request["max_tokens"], 32_768)
+        self.assertLess(counted, 4_000)
+        passages = web.chat_book(self.storage, book)[2]
+        items, _ = web.search_document(web.ask_book_document(book, {}, passages), "optimal threshold")
+        self.assertEqual(items[0]["id"], f"{doc}:1555")
 
-    def test_a_request_the_server_refuses_as_too_long_is_sent_once_more_with_the_shortest_outline(self):
+    def test_a_request_the_server_refuses_as_too_long_is_sent_once_more_compacted(self):
         book, _ = self.book(chat_narration("Storms.", "Dams."))
         refusal = (400, "This model's maximum context length is 32768 tokens. However, you requested "
                         "8000 output tokens and your prompt contains at least 24769 input tokens.")
         self.reset_fake(100_000, [refusal, [({"content": "Dams trap silt."}, "stop")]])
-        with mock.patch("sys.stdout", io.StringIO()):
+        with mock.patch("sys.stdout", io.StringIO()) as log:
             self.assertEqual(self.ask(book)[-1], "Dams trap silt.")
-        first, second = FakeChatModel.requests
-        self.assertIn("¶2 [body] Dams. Tags: tag.", first["messages"][0]["content"])
-        self.assertIn("each section is one line", second["messages"][0]["content"])
+        self.assertEqual(len(FakeChatModel.requests), 2)
+        self.assertIn("decision=compact", log.getvalue())
 
         # Refused again: the listener reads why in plain words, once.
         self.reset_fake(100_000, [refusal, refusal])
@@ -10110,7 +10142,8 @@ class ChatTests(unittest.TestCase):
     def test_the_servers_own_count_sets_how_long_the_answer_may_be(self):
         book, _ = self.book(chat_narration("Storms.", "Dams."))
         self.reset_fake(32_768, [[({"content": "Short."}, "stop")]], tokenize=31_000)
-        self.ask(book)
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.ask(book)
         (request,) = FakeChatModel.requests
         self.assertEqual(request["max_tokens"], 32_768 - 31_000 - web.CHAT_TOKEN_MARGIN)
 
@@ -10119,17 +10152,457 @@ class ChatTests(unittest.TestCase):
         with_tools = web.chat_input_tokens("anthropic/x", "", "System.", [], web.CHAT_TOOLS)
         self.assertAlmostEqual(with_tools - without, (len(json.dumps(web.CHAT_TOOLS)) - 2) / 3, delta=1)
 
-    def test_search_book_puts_paragraphs_holding_the_words_together_first(self):
-        passages = [
-            {"type": "body", "text": "The threshold moves.", "summary": "Optimal choices.", "tags": []},
-            {"type": "body", "text": "If we denote the optimal threshold value, the rule is simple.",
-             "summary": "Bayes rule.", "tags": []},
-            {"type": "body", "text": "Nothing here.", "summary": "Unrelated.", "tags": []},
+
+ASK_DOC = "0a1b2c3d"
+
+
+def ask_call(call_id, tool, **arguments):
+    return {"id": call_id, "name": tool, "arguments": arguments}
+
+
+def ask_paragraph(number, text=None):
+    return {"kind": "paper", "id": f"{ASK_DOC}:{number}", "text": text or f"Paragraph {number} text."}
+
+
+def ask_conversation():
+    """Four turns: a web search and a read, a help read and a file, a read
+    of a paragraph read before, and the current question."""
+    return [
+        {"role": "user", "text": "Q1"},
+        {"role": "assistant", "text": "", "calls": [ask_call("s1", "web_search", query="silt")]},
+        {"role": "tool", "id": "s1", "name": "web_search", "label": "Searched",
+         "items": [{"kind": "web_search", "text": "1. Silt\nhttps://example.org/silt\nAbout silt."}]},
+        {"role": "assistant", "text": "", "calls": [ask_call("r1", "read_paragraphs", ids=[f"{ASK_DOC}:2"])]},
+        {"role": "tool", "id": "r1", "name": "read_paragraphs", "label": "Read ¶2", "items": [ask_paragraph(2)]},
+        {"role": "assistant", "text": f"Silt is trapped. It settles. Dams hold it, says {ASK_DOC}:2.",
+         "ids": [f"{ASK_DOC}:2"], "links": []},
+        {"role": "user", "text": "Q2"},
+        {"role": "assistant", "text": "", "calls": [ask_call("h1", "read_paragraphs", ids=["help:1"])]},
+        {"role": "tool", "id": "h1", "name": "read_paragraphs", "label": "Read",
+         "items": [{"kind": "help", "id": "help:1", "text": "Voices\n\nPick one."}]},
+        {"role": "assistant", "text": "", "calls": [ask_call("w1", "write_file", name="n", mode="create", content="x")]},
+        {"role": "tool", "id": "w1", "name": "write_file", "label": "Wrote n.md",
+         "items": [{"kind": "note", "text": "Wrote n.md."}]},
+        {"role": "assistant", "text": "Pick a voice under Voices."},
+        {"role": "notice", "text": "Stopped."},
+        {"role": "user", "text": "Q3"},
+        {"role": "assistant", "text": "", "calls": [
+            ask_call("r2", "read_paragraphs", ids=[f"{ASK_DOC}:2", f"{ASK_DOC}:3"])]},
+        {"role": "tool", "id": "r2", "name": "read_paragraphs", "label": "Read ¶2–3",
+         "items": [ask_paragraph(2), ask_paragraph(3)]},
+        {"role": "assistant", "text": "Three."},
+        {"role": "user", "text": "Q4"},
+    ]
+
+
+def ask_model(**changes):
+    """A model as ask_plan() takes it: by default fast, uncached, roomy."""
+    return {"selector": "lm-studio/m", "speed": 10_000, "lifetime": 300, "ratio": 1.0, "caches": False,
+            "window": 100_000, "reliable": 100_000, **changes}
+
+
+ASK_FIXED = {"tokens": 100, "hash": "fixed"}
+
+
+class AskContextTests(unittest.TestCase):
+    """Ask Hilde's context (22 Oct design): ids, the documents and their
+    tools, the ledger, expiry by turns, compaction, and the cache."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+
+    def messages(self, entries, state=None, **options):
+        ledger = web.AskLedger(entries, ASK_DOC, **options)
+        return ledger, ledger.render(web.ask_state(state))[0]
+
+    @staticmethod
+    def result(messages, call_id):
+        return next(message["content"] for message in messages if message["role"] == "tool" and message["id"] == call_id)
+
+    def test_ids_are_hashes_of_names_and_citations_of_the_open_book_link_to_it(self):
+        self.assertEqual(web.document_id("attention--bdfaa68d8984"),
+                         hashlib.sha256(b"attention--bdfaa68d8984").hexdigest()[:8])
+        self.assertEqual(web.HELP_DOCUMENT, "help")
+        shown = web.chat_display_entry({"role": "assistant", "text": (
+            f"See {ASK_DOC}:12, [{ASK_DOC}:3–5], {ASK_DOC}:7-{ASK_DOC}:8, help:2, ffffffff:1 and an old ¶9."
+        )}, ASK_DOC)
+        self.assertEqual(shown["html"], (
+            '<p>See <a href="#" class="chat-cite" data-passage="12">¶12</a>, '
+            '<a href="#" class="chat-cite" data-passage="3">¶3–5</a>, '
+            '<a href="#" class="chat-cite" data-passage="7">¶7–8</a>, help:2, ffffffff:1 and an old '
+            '<a href="#" class="chat-cite" data-passage="9">¶9</a>.</p>\n'
+        ))
+        # Read aloud, an id is a paragraph and the help is the help.
+        self.assertEqual(web.chat_speech_blocks(f"In {ASK_DOC}:4–6 and help:2."),
+                         [(0, "In paragraphs 4 to 6 and the help.")])
+
+    def test_the_page_shows_ids_of_the_open_book_arriving_as_paragraph_numbers(self):
+        results = run_node(page_script("liveCitations") + f"""
+let chatData = {{ document: "{ASK_DOC}" }};
+const first = liveCitations("See [{ASK_DOC}:12] and {ASK_DOC}:3–5, help:2, ffffffff:1.");
+chatData = null;
+console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
+""")
+        self.assertEqual(results, ["See ¶12 and ¶3–5, help:2, ffffffff:1.", f"{ASK_DOC}:4"])
+
+    def test_a_search_gives_the_best_matches_whole_and_the_next_as_summaries(self):
+        document = web.AskDocument(ASK_DOC, "paper", "Book", [
+            {"text": "Multi-head attention runs several attention heads.", "summary": "S1"},
+            {"text": "Heads of attention, again attention.", "summary": "S2"},
+            {"text": "Attention only.", "summary": "S3"},
+            {"text": "Heads only.", "summary": "S4"},
+            {"text": "Nothing.", "summary": "S5"},
+        ])
+        items, label = web.search_document(document, "attention heads",
+                                           {"good_max": 5, "good_share": 0.5, "weak_max": 2})
+        self.assertEqual(label, 'Searched the book for "attention heads"')
+        # Only the first scores at least half the best; two of the rest come as summaries.
+        self.assertEqual(items, [
+            {"kind": "paper", "id": f"{ASK_DOC}:1", "text": "Multi-head attention runs several attention heads."},
+            {"kind": "document_search", "text": "Weaker matches, as summaries; read one with read_paragraphs:\n"
+                                                f"{ASK_DOC}:2 S2\n{ASK_DOC}:3 S3"},
+        ])
+        same = web.AskDocument(ASK_DOC, "paper", "Book", [{"text": "Silt.", "summary": f"S{n}"} for n in range(9)])
+        items, _ = web.search_document(same, "silt")
+        self.assertEqual([item.get("id") for item in items], [f"{ASK_DOC}:{n}" for n in range(1, 6)] + [None])
+        self.assertEqual(items[-1]["text"].count("\n"), 4)
+        self.assertEqual(web.search_document(same, "dams")[0], [{"kind": "note", "text": f"No paragraph of {ASK_DOC} holds dams."}])
+        self.assertEqual(web.search_document(same, "a")[1], "Searched nothing")
+
+    def test_the_help_is_a_document_of_sections_and_its_contents_go_in_the_instructions(self):
+        help_file = Path(self.storage.root) / "help.md"
+        help_file.write_text(
+            "# Help (DRAFT)\n\n> Draft for review.\n\n## Playback\n\nPress play.\n<!-- checked: x -->\n\n"
+            "## Voices\n\nPick one.\n\n### Tags\n\nShort words.\n"
+        )
+        document = web.ask_help(help_file)
+        self.assertEqual([section["title"] for section in document.paragraphs], ["Playback", "Voices", "Tags"])
+        self.assertEqual(document.text(1), "Playback\n\nPress play.")
+        self.assertEqual(web.ask_help_contents(document), "help:1 Playback\nhelp:2 Voices\nhelp:3 Tags")
+        self.assertEqual(web.search_document(document, "pick")[0][0], {"kind": "help", "id": "help:2", "text": "Voices\n\nPick one."})
+        # Hilde Reader's own help: short, its contents about 150 tokens, no review notes.
+        shipped = web.ask_help()
+        self.assertGreaterEqual(len(shipped.paragraphs), 8)
+        self.assertLess(web.ask_tokens(web.ask_help_contents(shipped)), 250)
+        self.assertLess(sum(len(section["text"].split()) for section in shipped.paragraphs), 1_600)
+        self.assertNotIn("checked:", json.dumps(shipped.paragraphs))
+        self.assertEqual(web.ask_help(Path(self.storage.root) / "missing.md").paragraphs, [])
+
+    def test_the_abstract_is_found_under_its_heading_or_opening_else_the_first_paragraphs_go(self):
+        heading = [{"type": "heading", "text": "Title"}, {"type": "heading", "text": "Abstract"},
+                   {"type": "body", "text": "We propose X."}, {"type": "body", "text": "It works."},
+                   {"type": "heading", "text": "1 Introduction"}, {"type": "body", "text": "Later."}]
+        self.assertEqual(web.chat_abstract(heading), {"first": 3, "last": 4, "text": "We propose X.\n\nIt works.", "found": True})
+        opening = [{"type": "body", "text": "Authors."}, {"type": "body", "text": "Abstract. We propose Y."}]
+        self.assertEqual(web.chat_abstract(opening)["first"], 2)
+        plain = [{"type": "body", "text": "word " * 300}, {"type": "body", "text": "more " * 300}]
+        found = web.chat_abstract(plain, tokens=500)
+        self.assertFalse(found["found"])
+        self.assertEqual((found["first"], found["last"]), (1, 2))
+        self.assertLessEqual(len(found["text"]), 500 * web.ASK_PROSE_CHARS_PER_TOKEN + 2)
+        self.assertTrue(found["text"].endswith("…"))
+
+    def test_every_item_is_in_the_ledger_and_expires_by_turns(self):
+        ledger = web.AskLedger(ask_conversation(), ASK_DOC)
+        self.assertEqual(ledger.current, 4)
+        items = {item["key"]: (item["kind"], item.get("id"), item["entry"], item["turn"], item["expires"])
+                 for item in ledger.every()}
+        self.assertEqual(items["2.0"], ("web_search", None, 2, 1, 4))
+        self.assertEqual(items["4.0"], ("paper", f"{ASK_DOC}:2", 4, 1, None))
+        self.assertEqual(items["8.0"], ("help", "help:1", 8, 2, 5))
+        self.assertEqual(items["10.0"], ("note", None, 10, 2, None))
+        self.assertEqual(items["0.0"][0], "question")
+        self.assertTrue(all(item["tokens"] > 0 for item in ledger.every()))
+        # A model's expiry multiplier stretches or shortens every expiry.
+        stretched = web.AskLedger(ask_conversation(), ASK_DOC, multiplier=2)
+        self.assertEqual({item["key"]: item["expires"] for item in stretched.every()}["2.0"], 7)
+        # An expired result reads EXPIRED; the call that asked for it stays.
+        _, messages = self.messages(ask_conversation(), {"expired": ["2.0"]})
+        self.assertEqual(self.result(messages, "s1"), "EXPIRED")
+        self.assertEqual(messages[1]["calls"], [ask_call("s1", "web_search", query="silt")])
+        self.assertNotIn("Stopped.", json.dumps(messages))
+        # Cold, the due search expires now; the paper's paragraphs never by age.
+        plan = web.ask_plan(ledger, web.ask_state(None), ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertEqual(plan["state"]["expired"], ["2.0"])
+        self.assertEqual(plan["decision"], "prune: 1 due expired (cold cache)")
+        # A turn later the help is due too; a file's confirmation never.
+        later = web.AskLedger(ask_conversation() + [{"role": "assistant", "text": "Four."}, {"role": "user", "text": "Q5"}],
+                              ASK_DOC)
+        plan = web.ask_plan(later, plan["state"], ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertEqual(plan["state"]["expired"], ["2.0", "8.0"])
+        self.assertIn("Wrote n.md.", json.dumps(plan["messages"]))
+
+    def test_a_paragraph_already_in_the_context_is_sent_once(self):
+        _, messages = self.messages(ask_conversation())
+        self.assertEqual(self.result(messages, "r2"), (
+            f'<paragraph id="{ASK_DOC}:2" kind="paper">\n(already above)\n</paragraph>\n\n'
+            f'<paragraph id="{ASK_DOC}:3" kind="paper">\nParagraph 3 text.\n</paragraph>'
+        ))
+        # Once the first copy expires, the later one is the copy sent.
+        _, messages = self.messages(ask_conversation(), {"expired": ["4.0"]})
+        self.assertEqual(self.result(messages, "r1"), f'<paragraph id="{ASK_DOC}:2" kind="paper">\nEXPIRED\n</paragraph>')
+        self.assertIn("Paragraph 2 text.", self.result(messages, "r2"))
+
+    def test_earlier_answers_are_cut_to_first_and_last_sentence_with_their_ids_and_links(self):
+        self.assertEqual(web.ask_short_answer({"text": (
+            "## Why\n\n**Silt** is trapped behind dams. It settles.\n\n- See [a source](https://example.org/a).\n"
+            f"- Coarse grains stay, as {ASK_DOC}:4 says."
+        )}, ASK_DOC), (
+            "[Earlier conversation, for reference: answer shortened to its first and last sentence.]\n"
+            f"Why Silt is trapped behind dams. … Coarse grains stay, as {ASK_DOC}:4 says.\n"
+            f"Paragraphs used: {ASK_DOC}:4\nLinks used: https://example.org/a"
+        ))
+        # An answer saved before answers had ids cites ¶N: those are the book's.
+        self.assertIn(f"Paragraphs used: {ASK_DOC}:7–9", web.ask_short_answer({"text": "Read ¶7–9."}, ASK_DOC))
+        _, messages = self.messages(ask_conversation())
+        answers = [message["text"] for message in messages if message["role"] == "assistant" and message["text"]]
+        self.assertEqual(answers, [
+            "[Earlier conversation, for reference: answer shortened to its first and last sentence.]\n"
+            f"Silt is trapped. … Dams hold it, says {ASK_DOC}:2.\nParagraphs used: {ASK_DOC}:2",
+            "[Earlier conversation, for reference: answer shortened to its first and last sentence.]\n"
+            "Pick a voice under Voices.",
+            "[Earlier conversation, for reference: answer shortened to its first and last sentence.]\nThree.",
+        ])
+        # Questions go in full; the current one last.
+        self.assertEqual([message["text"] for message in messages if message["role"] == "user"], ["Q1", "Q2", "Q3", "Q4"])
+
+    def test_thinking_is_never_sent_back_after_its_turn(self):
+        thought = {"text": "Let me think.", "thought": True}
+        signed = {"text": "", "thought": True, "thoughtSignature": "c2ln"}
+        entries = [
+            {"role": "user", "text": "Q1"},
+            {"role": "assistant", "text": "", "reasoning_content": "R1", "calls": [ask_call("a", "list_files")],
+             "gemini_parts": [thought, signed, {"functionCall": {"name": "list_files", "args": {}}}]},
+            {"role": "tool", "id": "a", "name": "list_files", "items": [{"kind": "list_files", "text": "No files yet."}]},
+            {"role": "assistant", "text": "None.", "reasoning_content": "R2"},
+            {"role": "user", "text": "Q2"},
+            {"role": "assistant", "text": "", "reasoning_content": "R3", "calls": [ask_call("b", "list_files")]},
+            {"role": "tool", "id": "b", "name": "list_files", "items": [{"kind": "list_files", "text": "No files yet."}]},
         ]
-        content, label = web.search_book(passages, "optimal threshold")
-        self.assertEqual(label, 'Searched the book for "optimal threshold"')
-        self.assertEqual([line.split()[0] for line in content.splitlines()], ["¶2", "¶1"])
-        self.assertIn("denote the optimal threshold value", content)
+        _, messages = self.messages(entries)
+        self.assertNotIn("R1", json.dumps(messages))
+        self.assertNotIn("R2", json.dumps(messages))
+        self.assertNotIn("Let me think", json.dumps(messages))
+        self.assertEqual(messages[1]["gemini_parts"], [{"text": "", "thoughtSignature": "c2ln"},
+                                                      {"functionCall": {"name": "list_files", "args": {}}}])
+        # DeepSeek needs this turn's reasoning while it calls tools; earlier answers send none.
+        sent = web._chat_openai_messages("S", messages, reasoning=True)
+        self.assertEqual([message.get("reasoning_content") for message in sent if message["role"] == "assistant"],
+                         ["", "", "R3"])
+
+    def test_warm_the_conversation_is_appended_to_cold_due_items_expire(self):
+        entries = ask_conversation()
+        # The last request: turn 3's, just before its answer, with the fixed part first.
+        before = web.AskLedger(entries[:16], ASK_DOC)
+        previous = web.ask_plan(before, web.ask_state(None), ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 900, 99)
+        last = {"model": "lm-studio/m", "at": 990, "hashes": ["fixed"] + previous["hashes"], "cached": 2_000}
+        ledger = web.AskLedger(entries, ASK_DOC)
+        state = {"expired": [], "dropped": 0, "last": last}
+        warm = web.ask_plan(ledger, state, ask_model(caches=True), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertTrue(warm["warm"])
+        self.assertTrue(warm["decision"].startswith("append: 1 due kept (warm cache"))
+        self.assertEqual(warm["state"]["expired"], [])
+        # Appending misses only the shortened answer and the new question.
+        self.assertEqual(warm["miss"], sum(warm["tokens"][-2:]))
+        self.assertEqual(warm["shared"], warm["total"] - warm["miss"])
+        # Past the cache's lifetime, or with a server that never reported a
+        # cached token, the cache is cold: the due search expires for free.
+        for model, now in ((ask_model(caches=True), 1_400), (ask_model(caches=False), 1_000)):
+            cold = web.ask_plan(ledger, state, model, web.ASK_DEFAULTS, ASK_FIXED, now, 99)
+            self.assertFalse(cold["warm"])
+            self.assertEqual(cold["state"]["expired"], ["2.0"])
+            self.assertEqual(cold["miss"], cold["total"])
+        # Another model's cache is not this one's.
+        other = web.ask_plan(ledger, state, ask_model(caches=True, selector="lm-studio/other"), web.ASK_DEFAULTS,
+                             ASK_FIXED, 1_000, 99)
+        self.assertFalse(other["warm"])
+
+    def capped_conversation(self):
+        big = "x " * 1_500
+        return [
+            {"role": "user", "text": "Q1"},
+            {"role": "assistant", "text": "", "calls": [ask_call("p", "read_web_page", url="https://example.org")]},
+            {"role": "tool", "id": "p", "name": "read_web_page", "items": [{"kind": "web_page", "id": "aaaaaaaa", "text": big}]},
+            {"role": "assistant", "text": "", "calls": [ask_call("s", "web_search", query="x")]},
+            {"role": "tool", "id": "s", "name": "web_search", "items": [{"kind": "web_search", "text": "y " * 300}]},
+            {"role": "assistant", "text": "One."},
+            {"role": "user", "text": "Q2"},
+            {"role": "assistant", "text": "", "calls": [ask_call("r", "read_paragraphs", ids=[f"{ASK_DOC}:1-2"])]},
+            {"role": "tool", "id": "r", "name": "read_paragraphs", "items": [ask_paragraph(1, big), ask_paragraph(2, big)]},
+            {"role": "assistant", "text": "Two."},
+            {"role": "user", "text": "Q3"},
+        ]
+
+    def test_the_hard_cap_reads_the_whole_context_cold_at_the_measured_prefill_speed(self):
+        ledger = web.AskLedger(self.capped_conversation(), ASK_DOC)
+        state = web.ask_state(None)
+        # 10,000 tokens a second: 3,400 tokens read in well under 30 s.
+        fast = web.ask_plan(ledger, state, ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertEqual((fast["decision"], fast["state"]["expired"]), ("append", []))
+        self.assertGreater(fast["total"], 3_000)
+        # 100 tokens a second: over 30 s, so compacted to 15 s (1,500 tokens):
+        # the page read, then the search, then the paper's paragraphs, oldest first.
+        slow = web.ask_plan(ledger, state, ask_model(speed=100), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertEqual(slow["state"]["expired"], ["2.0", "4.0", "8.0"])
+        self.assertEqual(slow["state"]["dropped"], 0)
+        self.assertLessEqual(slow["total"], 1_500)
+        self.assertTrue(slow["decision"].startswith("compact: "))
+        self.assertIn(f'<paragraph id="{ASK_DOC}:2" kind="paper">\nx x', self.result(slow["messages"], "r"))
+        # A model reliable only up to 2,000 tokens is held to its half.
+        small = web.ask_plan(ledger, state, ask_model(reliable=2_000), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertLessEqual(small["total"], 1_000)
+        # 90% of the window is a cap of its own.
+        narrow = web.ask_plan(ledger, state, ask_model(window=3_500, reliable=3_500), web.ASK_DEFAULTS,
+                              ASK_FIXED, 1_000, 99)
+        self.assertLessEqual(narrow["total"], 1_750)
+
+    def test_compaction_leaves_out_whole_old_turns_last_never_the_current_question_or_latest_results(self):
+        entries = self.capped_conversation()[:-1] + [
+            {"role": "user", "text": "Q3"},
+            {"role": "assistant", "text": "", "calls": [ask_call("t", "read_paragraphs", ids=[f"{ASK_DOC}:5"])]},
+            {"role": "tool", "id": "t", "name": "read_paragraphs", "items": [ask_paragraph(5, "z " * 1_500)]},
+        ]
+        ledger = web.AskLedger(entries, ASK_DOC)
+        plan = web.ask_plan(ledger, web.ask_state(None), ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 11,
+                            force_target=50)
+        self.assertEqual(plan["state"]["expired"], ["2.0", "4.0", "8.0", "8.1"])
+        self.assertEqual(plan["state"]["dropped"], 2)
+        self.assertEqual([message["role"] for message in plan["messages"]], ["user", "assistant", "tool"])
+        self.assertIn("z z", plan["messages"][-1]["content"])
+        self.assertIn("2 old turns left out", plan["decision"])
+
+    def test_a_conversation_saved_before_ids_loads_unchanged_and_goes_on(self):
+        book = store_book(self.storage, narration=chat_narration("Storms.", "Dams."))
+        path = web.read_book(self.storage, book)[0]
+        doc = web.document_id(book)
+        old = [
+            {"role": "user", "text": "Where are dams?", "at": "2026-10-20T10:00:00Z"},
+            {"role": "assistant", "text": "", "calls": [
+                {"id": "c1", "name": "search_book", "arguments": {"query": "dams"}},
+                {"id": "c2", "name": "read_paragraphs", "arguments": {"start": 2, "end": 2}},
+            ]},
+            {"role": "tool", "id": "c1", "name": "search_book", "content": "¶2 [body] …Dams…", "label": "Searched"},
+            {"role": "tool", "id": "c2", "name": "read_paragraphs", "content": "¶2\nParagraph 2 text.", "label": "Read ¶2"},
+            {"role": "assistant", "text": "Dams are in ¶2. They trap silt."},
+        ]
+        (path / "chat.json").write_text(json.dumps({"schema": 1, "book": book, "entries": old}, indent=2))
+        before = (path / "chat.json").read_bytes()
+        payload = web.chat_payload(self.storage, web.ChatRegistry(), book)
+        self.assertIn('data-passage="2">¶2</a>', payload["conversation"][-1]["html"])
+        self.assertEqual((path / "chat.json").read_bytes(), before)
+        # Sent again in today's terms, its results as they were saved.
+        ledger = web.AskLedger(old + [{"role": "user", "text": "And silt?"}], doc)
+        messages = ledger.render(web.ask_state(None))[0]
+        self.assertEqual(messages[1]["calls"], [
+            {"id": "c1", "name": "search_document", "arguments": {"document_id": doc, "keywords": "dams"}},
+            {"id": "c2", "name": "read_paragraphs", "arguments": {"ids": [f"{doc}:2"]}},
+        ])
+        self.assertEqual([(message["name"], message["content"]) for message in messages[2:4]], [
+            ("search_document", "¶2 [body] …Dams…"), ("read_paragraphs", "¶2\nParagraph 2 text."),
+        ])
+        self.assertIn(f"Paragraphs used: {doc}:2", messages[4]["text"])
+        # A new question appends; the old entries stay as they were.
+        FakeChatModel.requests, FakeChatModel.replies = [], [[({"content": "Silt settles."}, "stop")]]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with mock.patch("sys.stdout", io.StringIO()):
+            turn = web.ChatTurn(self.storage, book, "And silt?", "lm-studio/fake", local_servers_at(server))
+            self.assertTrue(web.ChatRegistry().start(turn))
+            self.assertTrue(turn.wait_done(10))
+        saved = json.loads((path / "chat.json").read_text())
+        self.assertEqual(saved["entries"][:5], old)
+        self.assertEqual(set(saved["context"]), {"expired", "dropped", "last"})
+
+    def test_each_request_is_logged_with_its_tokens_by_kind_cache_and_decision(self):
+        book = store_book(self.storage, narration=chat_narration("Storms.", "Dams."))
+        previous = FakeChatModel.usage
+        self.addCleanup(setattr, FakeChatModel, "usage", previous)
+        FakeChatModel.requests = []
+        FakeChatModel.replies = [[({"reasoning_content": "Hm."}, None), ({"content": "<think>x</think>One."}, "stop")],
+                                 [({"content": "Two."}, "stop")]]
+        # SGLang: no details when nothing was cached, the count when something was.
+        FakeChatModel.usage = [{"prompt_tokens": 3_000, "prompt_tokens_details": None},
+                               {"prompt_tokens": 3_100, "prompt_tokens_details": {"cached_tokens": 2_900}}]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            for question in ("Q1", "Q2"):
+                turn = web.ChatTurn(self.storage, book, question, "lm-studio/fake", local_servers_at(server))
+                self.assertTrue(web.ChatRegistry().start(turn))
+                self.assertTrue(turn.wait_done(10))
+        lines = [line for line in log.getvalue().splitlines() if line.startswith("Ask: ")]
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[0], r"^Ask: model=lm-studio/fake turn=\w{12} question=1 round=1 prompt=3,000 tokens "
+                                   r"\(estimated [\d,]+: fixed [\d,]+, questions \d+\) cached=unknown "
+                                   r"first token=\d+\.\d\ds total=\d+\.\d\ds cache=cold .* decision=append$")
+        self.assertIn("question=2 round=1 prompt=3,100 tokens", lines[1])
+        self.assertIn("answers ", lines[1])
+        self.assertIn("cached=2,900", lines[1])
+        # A thought left in the text is never kept, so never sent back.
+        path = web.read_book(self.storage, book)[0]
+        self.assertEqual([entry["text"] for entry in web.read_chat(path) if entry["role"] == "assistant"], ["One.", "Two."])
+        self.assertNotIn("x</think>", json.dumps(FakeChatModel.requests[1]))
+        measured = web.AskStats(self.storage).read()["lm-studio/fake"]
+        self.assertTrue(measured["caches"])
+        self.assertEqual(len(measured["ratio"]), 2)
+
+    def test_measured_speeds_and_cache_lifetimes_replace_the_defaults(self):
+        stats = web.AskStats(self.storage)
+        settings = web.ask_model_settings(web.ASK_DEFAULTS, "lm-studio/m")
+        self.assertEqual(stats.model("lm-studio/m", settings, 262_144), {
+            "selector": "lm-studio/m", "speed": 400, "lifetime": 600, "ratio": 1.0, "caches": False,
+            "window": 262_144, "reliable": 16_384,
+        })
+        for ttft in (2.0, 1.0, 4.0):
+            stats.learn("lm-studio/m", prompt=5_000, cached=1_000, ttft=ttft, estimate=4_000)
+        # Too few uncached tokens to say anything of the speed.
+        stats.learn("lm-studio/m", prompt=5_000, cached=4_500, ttft=0.1, estimate=4_000)
+        stats.learn("lm-studio/m", prompt=5_000, cached=4_000, ttft=1, estimate=4_000, gap=100, expected=4_000)
+        stats.learn("lm-studio/m", prompt=5_000, cached=0, ttft=1, estimate=4_000, gap=900, expected=4_000)
+        measured = stats.model("lm-studio/m", settings, 262_144)
+        self.assertEqual((measured["speed"], measured["lifetime"], measured["ratio"], measured["caches"]),
+                         (2_000, 500, 1.25, True))
+        self.assertTrue((self.storage.root / ".cache" / "ask-models.json").is_file())
+        # What ask.yaml sets for a model wins over what was measured.
+        settings = web.ask_model_settings({**web.ASK_DEFAULTS, "models": {"lm-studio/*": {
+            "prefill_tokens_per_second": 50, "cache_lifetime_seconds": 30}}}, "lm-studio/m")
+        self.assertEqual(stats.model("lm-studio/m", settings, 262_144)["speed"], 50)
+        self.assertEqual(stats.model("lm-studio/m", settings, 262_144)["lifetime"], 30)
+        # A cloud model is reliable up to its window.
+        cloud = web.ask_model_settings(web.ASK_DEFAULTS, "openai/gpt-test")
+        self.assertEqual(stats.model("openai/gpt-test", cloud, 272_000)["reliable"], 272_000)
+
+    def test_ask_yaml_in_hildes_config_dir_overrides_the_defaults(self):
+        self.assertIs(web.ask_config(), web.ASK_DEFAULTS)
+        web.ask_config_path().parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(web.ask_config_path().unlink, missing_ok=True)
+        web.ask_config_path().write_text(
+            "search: {good_max: 3}\nexpiry_turns: {web_page: 2}\n"
+            "models:\n  'lm-studio/qwen*': {reliable_up_to: 32768, expiry_multiplier: 2}\n"
+        )
+        config = web.ask_config()
+        self.assertEqual(config["search"], {"good_max": 3, "good_share": 0.5, "weak_max": 10})
+        self.assertEqual(config["expiry_turns"]["web_page"], 2)
+        self.assertEqual(config["expiry_turns"]["web_search"], 3)
+        qwen = web.ask_model_settings(config, "lm-studio/qwen3.8-27b")
+        self.assertEqual((qwen["reliable_up_to"], qwen["expiry_multiplier"], qwen["kind"]), (32_768, 2, "local"))
+        self.assertEqual(web.ask_model_settings(config, "openai/gpt")["reliable_up_to"], None)
+        web.ask_config_path().write_text("cap: {trigger_seconds: -1}\n")
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            self.assertIs(web.ask_config(), web.ASK_DEFAULTS)
+            self.assertIs(web.ask_config(), web.ASK_DEFAULTS)
+        self.assertEqual(log.getvalue().count("cap.trigger_seconds must be a positive number"), 1)
+        web.ask_config_path().write_text("colour: blue\n")
+        with mock.patch("sys.stdout", io.StringIO()) as log:
+            web.ask_config()
+        self.assertIn("unknown setting colour", log.getvalue())
 
 
 # A figure of two panels side by side, at points the crop dpi cuts on whole pixels.
@@ -10419,7 +10892,7 @@ class FigureAndContextTests(unittest.TestCase):
         first, second = FakeChatModel.requests
         self.assertIn("image_url", json.dumps(first["messages"][-1]))
         self.assertNotIn("image_url", json.dumps(second))
-        self.assertIn("[Hilde's description (¶4)]", second["messages"][1]["content"])
+        self.assertIn(f"[Hilde's description ({web.document_id(self.book)}:4)]", second["messages"][1]["content"])
         path = web.read_book(self.storage, self.book)[0]
         stored = web.read_chat(path)[0]
         self.assertEqual(stored["context"], attachment[0])
@@ -10498,6 +10971,12 @@ class FakeWeb(BaseHTTPRequestHandler):
 
 
 class WebToolTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+
     def serve(self):
         FakeWeb.pages, FakeWeb.asked = {}, []
         server = ThreadingHTTPServer(("127.0.0.1", 0), FakeWeb)
@@ -10515,15 +10994,19 @@ class WebToolTests(unittest.TestCase):
             return web._public_connection(address, *args, **kwargs)
         return connect
 
+    def read(self, url, **options):
+        items, label = web.read_web_page(self.storage, url, **options)
+        return web.chat_tool_text({"items": items}), label, items
+
     def test_pages_on_this_machine_or_the_local_network_are_never_fetched(self):
         origin, _ = self.serve()
         FakeWeb.pages["/"] = (200, {"Content-Type": "text/plain"}, b"secret")
         for url in (f"{origin}/", origin.replace("127.0.0.1", "localhost") + "/"):
-            content, label = web.read_web_page(url)
+            content, label, _ = self.read(url)
             self.assertIn("is not a public address", content)
             self.assertTrue(label.startswith("Could not read"))
         self.assertEqual(FakeWeb.asked, [])
-        self.assertIn("HTTP or HTTPS", web.read_web_page("file:///etc/passwd")[0])
+        self.assertIn("HTTP or HTTPS", self.read("file:///etc/passwd")[0])
 
     def test_a_redirect_to_a_local_address_is_refused(self):
         public, public_port = self.serve()
@@ -10533,28 +11016,52 @@ class WebToolTests(unittest.TestCase):
         self.addCleanup(local.shutdown)
         FakeWeb.pages["/moved"] = (302, {"Location": f"http://127.0.0.1:{local.server_port}/admin"}, b"")
         FakeWeb.pages["/admin"] = (200, {"Content-Type": "text/plain"}, b"secret")
-        content, _ = web.read_web_page(f"{public}/moved", connect=self.allowing(public_port))
+        content, _, _ = self.read(f"{public}/moved", connect=self.allowing(public_port))
         self.assertIn("127.0.0.1 is not a public address", content)
         self.assertEqual(FakeWeb.asked, ["/moved"])
 
-    def test_a_page_is_read_as_its_content_in_pieces(self):
+    def test_a_short_page_comes_whole_with_its_id(self):
         origin, port = self.serve()
-        article = "".join(f"<p>Sentence {number} about sediment.</p>" for number in range(1500))
+        FakeWeb.pages["/note"] = (200, {"Content-Type": "text/plain"}, b"Silt settles behind dams.")
+        content, label, items = self.read(f"{origin}/note#part", connect=self.allowing(port))
+        self.assertEqual(label, "Read 127.0.0.1/note")
+        self.assertEqual(items, [{"kind": "web_page", "id": web.document_id(f"{origin}/note"),
+                                  "text": f"{origin}/note\n\nSilt settles behind dams."}])
+        self.assertFalse((self.storage.root / ".cache" / "chat-docs").exists())
+
+    def test_a_long_page_is_stored_outside_every_book_and_listed_by_paragraph(self):
+        origin, port = self.serve()
+        article = "".join(f"<p>Sentence {number} about sediment. It settles.</p>" for number in range(5000))
         FakeWeb.pages["/a"] = (301, {"Location": "/article"}, b"")
         FakeWeb.pages["/article"] = (200, {"Content-Type": "text/html; charset=utf-8"}, (
             "<html><head><title>Ebro &amp; silt</title><style>p{}</style></head><body>"
             "<nav><a href='/'>Home</a> Menu</nav><script>track()</script>"
             f"<main><h1>Delta</h1>{article}</main><footer>Cookie notice</footer></body></html>"
         ).encode())
-        first, label = web.read_web_page(f"{origin}/a", connect=self.allowing(port))
+        content, label, items = self.read(f"{origin}/a", connect=self.allowing(port))
+        doc = web.document_id(f"{origin}/article")
         self.assertEqual(label, "Read 127.0.0.1/article")
-        self.assertTrue(first.startswith(f"Ebro & silt\n{origin}/article\n\nDelta\nSentence 0 about sediment."))
+        self.assertEqual([(item["kind"], item["id"]) for item in items], [("web_page", doc)])
+        self.assertTrue(content.startswith(f"Ebro & silt\n{origin}/article\nStored as document {doc}, "))
+        self.assertIn(f"\n{doc}:1 Delta Sentence 0 about sediment. It settles.", content)
+        self.assertRegex(content, rf"\({doc}:\d+ to {doc}:\d+ not listed: search for them\.\)$")
+        self.assertLessEqual(web.ask_tokens(content), web.ASK_DEFAULTS["store_results_over_tokens"] + 50)
         for chrome in ("Menu", "track()", "Cookie notice", "p{}"):
-            self.assertNotIn(chrome, first)
-        resume = int(re.search(r"read on with start=(\d+)\.\)$", first).group(1))
-        rest, _ = web.read_web_page(f"{origin}/article", resume, connect=self.allowing(port))
-        self.assertTrue(rest.endswith("Sentence 1499 about sediment."))
-        self.assertNotIn("read on", rest)
+            self.assertNotIn(chrome, content)
+        # Stored in the library's cache, never in a book's folder.
+        stored = self.storage.root / ".cache" / "chat-docs" / f"{doc}.json"
+        self.assertEqual(web.ask_web_document_path(self.storage, doc), stored)
+        self.assertNotIn("Audiobooks", stored.relative_to(self.storage.root).parts)
+        page = json.loads(stored.read_text())
+        self.assertEqual((page["url"], page["title"]), (f"{origin}/article", "Ebro & silt"))
+        self.assertTrue(page["paragraphs"][-1].endswith("Sentence 4999 about sediment. It settles."))
+        # Its paragraphs are read, and searched, by id.
+        shelf = web.AskShelf(self.storage, web.AskDocument("0a1b2c3d", "paper", "Book", []))
+        read, label = web.ask_read(shelf, [f"{doc}:2"])
+        self.assertEqual((read[0]["kind"], read[0]["id"], label), ("web_page", f"{doc}:2", "Read 127.0.0.1/article"))
+        found, label = web.search_document(shelf.get(doc), "Sentence 4999")
+        self.assertEqual(found[0]["id"], f"{doc}:{len(page['paragraphs'])}")
+        self.assertEqual(label, 'Searched 127.0.0.1/article for "Sentence 4999"')
 
     def test_search_lists_searxng_results_with_their_links(self):
         origin, _ = self.serve()
@@ -10571,7 +11078,9 @@ class WebToolTests(unittest.TestCase):
 
     def test_without_a_search_server_the_web_tools_do_not_exist(self):
         call = {"name": "web_search", "arguments": {"query": "sediment"}}
-        self.assertEqual(web.chat_tool(Path("."), [], call)[0], "There is no tool named web_search.")
+        shelf = web.AskShelf(None, web.AskDocument("0a1b2c3d", "paper", "Book", []))
+        self.assertEqual(web.chat_tool(Path("."), shelf, call)[0],
+                         [{"kind": "note", "text": "There is no tool named web_search."}])
 
 
 

@@ -37,9 +37,10 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `install.sh` | POSIX installer run as `curl … \| sh`, all inside `main()` so a truncated download runs nothing. Needs only git and curl, never sudo: installs uv if missing (uv supplies Python 3.12), clones or fast-forwards `~/hilde` (`HILDE_HOME`), creates `.venv`, installs PyTorch 2.10 from the index matching the NVIDIA driver (580+ `cu130`, 525+ `cu126`, else `cpu`; `HILDE_TORCH` overrides; PyPI on macOS), then `requirements.txt`, checks the imports, and writes a `hilde` launcher to `~/.local/bin` (`HILDE_BIN_DIR`) that starts the web server with both Qwen3-TTS models by Hugging Face ID and `--allow-model-downloads`. Rerunning it updates; the library is untouched. **Set up** in **Add narration workers** pipes it to a node over SSH. |
 | `README.md` | User guide: what Hilde does, how it reads a paper, measured results, a two-command quickstart through `install.sh`, known limitations, access and security, and License. Short summaries link to the guides below. |
 | `docs/installation.md` | User guide to installing: the one-command installer and its settings, then by hand: environment, PyTorch/TorchAudio builds, dependencies, FlashAttention 2, and model downloads. |
-| `docs/configuration.md` | User reference for the web server: starting it and its options, default models, suggested models (the ratings file), storage, speech models, narration workers, and batch size. |
+| `docs/configuration.md` | User reference for the web server: starting it and its options, default models, suggested models (the ratings file), Ask Hilde settings (`ask.yaml`), storage, speech models, narration workers, and batch size. |
 | `docs/text-adaptation.md` | User guide to text adaptation: what it changes, models and providers, local servers and images, workers, and what the job log reports. |
 | `docs/web-ui.md` | User guide to the page: header and navigation, creating an audiobook and following its progress, the Library and the Listen reader, Voices and new voices, Settings, confirmation dialogs, and browser state. The README links to it. |
+| `docs/help.md` | Hilde Reader's help for listeners, one `##` section per topic (a draft under review). Ask Hilde reads it as the document `help` (`ask_help()`); a feature change updates it in the same commit. |
 | `docs/command-line.md` | User guide to `audiobook_tts.py`: creating a voice, narrating, multiple GPUs, CPU, a speech server, and input and output. The README links to it. |
 | `docs/ssh-workers.md` | User guide to narration workers on other machines: requirements, **Add narration workers** and `workers.yaml`, and the CLI form. The README links to it. |
 | `docs/command-line-options.md` | User reference listing every `audiobook_tts.py` flag with its default. The README links to it. |
@@ -202,7 +203,9 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 ```text
 <root>/
 ├── .cache/
-│   └── thumbnails/<pdf sha256>.png
+│   ├── thumbnails/<pdf sha256>.png
+│   ├── chat-docs/<document id>.json
+│   └── ask-models.json
 ├── Voices/
 ├── Audiobooks/
 │   └── <slug>--<hash12>/
@@ -373,12 +376,22 @@ and the full hash in `book.json`.
   1–3: sample rate, duration, block paragraphs, sentence cues, word cues).
   A voice's timings are never paired with another voice's audio.
 - `chat.json` (`schema` 1): the book's one conversation, `entries` oldest
-  first: `user` (`text`), `assistant` (`text`, and `calls`, each `{id, name,
-  arguments}`; `model`, the selector of the request that wrote it, on answers
-  saved since 22 Oct, never added to older ones), `tool` (`id`, `name`,
-  `content` the model was given, `label` the page shows), and `notice` (why a
-  turn ended; never sent to a model; a model's failure has `failed: true` and
-  its `model`).
+  first: `user` (`text`, and `context`, the manifest of what was attached),
+  `assistant` (`text`, and `calls`, each `{id, name, arguments}`; `model`, the
+  selector of the request that wrote it, on answers saved since 22 Oct, never
+  added to older ones; on an answer without calls saved since the Ask context
+  change, `ids` and `links`, the paragraph ids and web links its text cites,
+  which its shortened form keeps), `tool` (`id`, `name`, `label` the page
+  shows, and what the model was given: `items`, each `{kind, text}` with `id`
+  for a paragraph or page and `type` for a heading, since the Ask context
+  change; `content`, one text, before), and `notice` (why a turn ended; never
+  sent to a model; a model's failure has `failed: true` and its `model`).
+  `context` (since the Ask context change; `ask_state()`) is what the next
+  request starts from: `expired` (ledger keys replaced by `EXPIRED`),
+  `dropped` (how many turns from the first are left out), and `last` (the last
+  request's model, time, message fingerprints, and prompt and cached tokens).
+  A file without `context`, and entries saved before these fields, load as
+  they are; their entries are never changed, and a new question appends.
   Rebuilding the book (`commit_book()` for the same content) drops it, since
   it cites the old text's paragraph numbers.
 - `files/`: the Markdown files Chat wrote. `commit_book()` copies them into a
@@ -2397,23 +2410,48 @@ everything it does later dropped, so a turn still waiting on a connection
 never writes over the next turn's conversation). `begin()` loads the book through `chat_book()` and
 saves the listener's message, with the manifest of what it is about as
 `context`; `run()` asks the model and runs its tool calls
-until it answers without one. The system prompt (`chat_system_prompt()`)
-holds the book's outline (`chat_outline()`), where N is a passage's 1-based
-position in `narration.json`: `full`, every passage as `¶N [type] summary
-Tags: …`; `brief`, every passage with the first `CHAT_BRIEF_WORDS` words of its
-summary; `sections`, one line per heading's passages (at most
-`CHAT_SECTION_MAX_PASSAGES`) with its range, heading, and opening summary. A
-turn takes the most detailed outline whose prompt and tools come to at most
-`CHAT_OUTLINE_SHARE` of the window: on a 2,445-passage book these are about
-184,000, 71,000, and 11,000 tokens, so a 32,768-token model gets sections.
-Tools (`CHAT_TOOLS`, run by `chat_tool()`):
+until it answers without one.
 
-- `read_paragraphs(start, end)`: the passages' text under their numbers, at
-  most `CHAT_READ_MAX_CHARS`, saying where to read on when cut (`chat_read()`);
-- `search_book(query)`: `search_book()` ranks passages by how many of the
-  query's words (whole words, three letters or more, or numbers) their text,
-  summary, and tags hold, the words together first, and returns the first
-  `CHAT_BOOK_SEARCH_RESULTS` with an excerpt each;
+**Documents and ids.** A document's id is `document_id()`: 8 hex characters of
+the SHA-256 of its name (the book's id; a web page's link without its
+fragment); Hilde Reader's help is `help` (`HELP_DOCUMENT`). A paragraph's id
+is `<document id>:<n>`, n the passage's 1-based position in `narration.json`
+(so a book's `<id>:12` is the page's ¶12). `AskDocument` is one document
+(`kind` `paper`, `help`, or `web_page`); `AskShelf` resolves an id to the open
+book (`ask_book_document()`), the help (`ask_help()`: `docs/help.md`, HTML
+comments dropped, one paragraph per `##`/`###` section, read again when the
+file changes), or a stored web page (`ask_web_document()`).
+
+**The instructions** (`ask_system_prompt()`), the same for every book first so
+a server's prompt cache serves them to every conversation: how to find,
+read, and cite paragraphs by full id; that questions about using Hilde Reader
+are answered only from help sections read, saying "not sure" when the help
+does not cover it, never inventing features; that an off-topic question gets
+one friendly line and a related question to ask; that earlier answers come
+shortened and marked "Earlier conversation, for reference", the listener's
+last message is the current question, `EXPIRED` means removed to save room,
+and "(already above)" a duplicate; the attachment labels; the files; with
+`--search-server`, `WEB_PROMPT`. Then the help's contents
+(`ask_help_contents()`, a line `help:<n> <title>` per section, about 150
+tokens), then the open document: title, id, paragraph range, and its abstract
+(`chat_abstract()`: the paragraphs under a heading "Abstract", or from one
+opening with "Abstract", to the next heading; else the first paragraphs;
+either cut to `abstract_tokens`). The paragraph map (summaries, tags) and the
+paper are never sent; they stay on the server.
+
+Tools (`CHAT_TOOLS`, run by `chat_tool()`, which returns context items
+`{kind, text, id?}`, a label, and whether the files changed):
+
+- `search_document(document_id, keywords)`: `search_document()` scores each
+  paragraph of that document by how many of the words (whole words, three
+  letters or more, or numbers) its text, summary, title, and tags hold, the
+  words together most; the best come whole (at most `search.good_max`, each
+  scoring at least `search.good_share` of the best, within
+  `CHAT_READ_MAX_CHARS`), the next `search.weak_max` as one `document_search`
+  item of `<id> <summary>` lines;
+- `read_paragraphs(ids)`: `ask_read()`, the paragraphs of the ids (`<id>:<n>`,
+  a run `<id>:<n>-<m>`, a bare number for the open book), at most
+  `CHAT_READ_MAX_CHARS`, saying where to read on when cut;
 - `write_file(name, content, mode)`: `create` refuses an existing file,
   `append` a missing one; at most `CHAT_FILE_MAX_BYTES` a file;
 - `list_files()`;
@@ -2421,8 +2459,14 @@ Tools (`CHAT_TOOLS`, run by `chat_tool()`):
 - with `--search-server` only (`CHAT_WEB_TOOLS`, and `WEB_PROMPT` in the
   system prompt): `web_search(query)`, the first `CHAT_SEARCH_RESULTS` results
   of the SearXNG instance's JSON API as title, link, and snippet; and
-  `read_web_page(url, start)`, a page's text from character `start`, at most
-  `CHAT_READ_MAX_CHARS`, saying where to read on.
+  `read_web_page(url)` (`read_web_page()`): a page of at most
+  `store_results_over_tokens` comes whole; a longer one is split into
+  paragraphs of about 1,200 characters (`split_web_text()`), stored as
+  `<root>/.cache/chat-docs/<document id>.json` (`ask_web_document_path()`,
+  `{schema, id, url, title, fetched, paragraphs}`, never in a book's folder
+  and never listed with the book's files), and listed as its id and each
+  paragraph's id with its first two sentences, as many as that many tokens
+  hold.
 
 `chat_file_path()` takes one name of letters, digits, spaces, dots, dashes,
 and parentheses ending in `.md` (adding it to a bare name), so a tool reaches
@@ -2467,7 +2511,8 @@ pictures in chat (`chat_sees_images()`: `CHAT_IMAGE_PROVIDERS`, a DeepSeek or
 xAI model when its list entry reads images (`deepseek_model_info()`, `xai_model_info()`), a local model
 when it is known to read images, `local_route()`'s `vision`; Claude Code cannot chat). Every
 converter sends the user message as the same parts (`_chat_user_parts()`): the
-items under their labels (`chat_attachment_text()`), the pictures, then the
+items under their labels and paragraph ids (`chat_attachment_text()`, as the
+ledger rendered them in `attached`), the pictures, then the
 message: Anthropic `text` and base64 `image` blocks, Responses `input_text`
 and `input_image` data URLs (ChatGPT and the OpenAI key), Gemini `text` and
 `inlineData` parts, and for a local server or DeepSeek one string, or `text`
@@ -2476,12 +2521,87 @@ manifest without pictures; the pictures ride only with the requests of the
 turn that attached them, each counted as `CHAT_IMAGE_TOKENS`. The system
 prompt says what each label means.
 
-`chat_context()` sends the conversation whole until it passes `CHAT_TRIM_AT`
-(80%) of the model's window less its reply, counted at
-`CHAT_CHARS_PER_TOKEN`, the prompt and tool schemas fixed; then the oldest
-entries go first, a tool call with its results, until it is under
-`CHAT_TRIM_TO`, never the latest message of the listener or what followed it,
-and the page hears `trimmed`. The window is the `/v1/models`
+**The ledger.** Each request is built from `AskLedger`, made from the saved
+entries: a **turn** is one listener message and what followed it, a **round**
+one model request within it. Every item has a key (`<entry index>.<n>`), a
+kind, its paragraph id if any, the entry (question or tool result) it
+belongs to, its estimated tokens (`ask_tokens()`, `CHAT_CHARS_PER_TOKEN`), the
+turn it arrived in, and the turn it is due to expire: `expiry_turns` of
+`ask.yaml` (`web_search` and `document_search` hit lists 3, `web_page` reads
+and stored-page listings 5, `help` paragraphs 3, `list_files` 3), times the
+model's `expiry_multiplier`; the paper's paragraphs (`paper`, read, found, or
+attached) and notes (`write_file`/`delete_file` confirmations, errors) never
+by age. A result saved before items is one item of its tool's kind
+(`ASK_LEGACY_KINDS`), sent as it was; an old call (`search_book`,
+`read_paragraphs` by `start`/`end`, `read_web_page` with `start`) goes in
+today's terms (`ask_call()`). `render()` sends, in order: each kept turn's
+question in full (with its attachment), its calls as made, their results
+(`ask_item_text()`: a paragraph as `<paragraph id=… kind=…>`, a page as
+`<document id=…>`, a list as `<kind>`), and its answers; an earlier turn's
+final answer shortened by `ask_short_answer()` (marked "Earlier conversation,
+for reference", its first and last sentence, then its `ids` and `links`); an
+expired item reads `EXPIRED` (its call stays); a paragraph already sent in
+live form reads "(already above)" (keyed by id and variant: narration, or the
+paper's own text). Only the current turn's answers carry `reasoning_content`
+(DeepSeek needs it while tools run; DeepSeek drops earlier turns' itself); a
+Gemini answer's `gemini_parts` go back without its thoughts' text, a
+thought's signature kept on an empty part (`_ask_gemini_parts()`); a local
+server's text never keeps a leading `<think>…</think>`. Notices are never
+sent.
+
+**Pruning** (`ask_plan()`, each round). Items whose turn has come are due.
+Under the hard cap, it renders both options, append (due items stay) and
+prune (due items become `EXPIRED`), and takes the one with fewer predicted
+uncached tokens, prune on a tie: warm, an option misses what follows the
+prefix it shares with the last request (message fingerprints,
+`ask_fingerprint()`, kept in `chat.json`'s `context.last`); cold, it misses
+everything. The cache is predicted warm when the last request was this
+model's, its server has ever reported a cached token (`AskStats`), and less
+than its cache lifetime has passed. The hard cap: the whole context's
+estimate (times the model's reported ÷ estimated ratio), read cold at the
+model's prefill speed, over `cap.trigger_seconds` (30), or over
+`cap.trigger_window_share` (0.9) of the window, or over the model's
+`reliable_up_to`, compacts (`ask_compact()`) to the least of
+`cap.target_seconds` (15) of prefill, `cap.target_window_share` (0.5) of the
+window, and `cap.target_reliable_share` (0.5) of `reliable_up_to`: due items
+expire, then, oldest first, web page reads, web searches, and the documents'
+results (paper, help, hit lists, file lists), then whole old turns (question,
+short answer, calls), oldest first; never the current question or the latest
+round's results. Leaving out turns publishes `trimmed`. The state
+(`ask_state()`: `expired`, `dropped`, `last`) is saved in `chat.json`.
+
+**Measured per model** (`AskStats`, `<root>/.cache/ask-models.json`, the last
+`ASK_STATS_KEEP` of each): prefill speed, uncached prompt tokens ÷ time to the
+first token of any kind, from requests with at least
+`ASK_PREFILL_SAMPLE_TOKENS` uncached (median, used from `ASK_STATS_MIN`
+samples; until then the kind's default, 400 tokens/s local, 2,000 cloud);
+reported ÷ estimated prompt tokens; whether its server reports cached tokens;
+and, at a turn's first request, the idle gap after which the shared prefix
+was still cached (`hits`) or gone (`misses`): the lifetime is midway between
+the longest hit and the shortest later miss, else the kind's default (600 s
+local, 300 s cloud) or the longest hit. `ask.yaml`'s `models` entries set any
+of these for a model and win. Every reader reports usage into a dict:
+`_chat_completion_stream()` (with `stream_options.include_usage`;
+`prompt_tokens_details.cached_tokens`, SGLang's left out when nothing was
+cached and read as 0 once the model has reported one, or DeepSeek's
+`prompt_cache_hit_tokens`), `_openai_text()` (`response.completed` usage,
+`input_tokens_details.cached_tokens`), `_anthropic_text()` (`message_start`:
+input plus cache read plus cache creation, the read cached), and
+`_gemini_text()` (`usageMetadata`); anything else is unknown, taken as cold.
+`ask_log()` prints one line per request: `Ask: model=… turn=<turn id>
+question=<n> round=<n> prompt=<reported> tokens (estimated N: fixed, questions,
+answers, calls, paper, help, web, hits, files, notes) cached=… first token=…s
+total=…s cache=warm|cold (predicted uncached N) decision=append|prune: …|compact: …`.
+
+**Settings** (`ask_config()`): `~/.hilde/ask.yaml` (`ASK_CONFIG_FILE` in
+`HILDE_HOME`) over `ASK_DEFAULTS`, read at each turn; an unknown key or a value
+that is not a positive number makes the whole file be ignored, said once in the
+log. `ask_model_settings()` takes the kind's (`local` or `cloud`:
+`prefill_tokens_per_second`, `cache_lifetime_seconds`, `reliable_up_to`, 16,384
+local and the window for cloud) and then each `models` entry whose pattern
+(`fnmatch`) matches the selector.
+
+The window is the `/v1/models`
 `max_model_len` (or a like field) of the local server the model runs on
 (`local_route()`, resolved once a turn), a DeepSeek model's `context_window`
 from its list, else `CHAT_PROVIDER_CONTEXT`, else `CHAT_LOCAL_CONTEXT`. Before each request `chat_input_tokens()` counts its
@@ -2489,10 +2609,10 @@ input, tool schemas included, with that server's `POST /tokenize` (vLLM;
 a server whose endpoint is missing is remembered in `_NO_TOKENIZE`), else at
 `CHAT_CHARS_PER_TOKEN` (3). The reply may take `min(CHAT_MAX_OUTPUT_TOKENS,
 window − input − CHAT_TOKEN_MARGIN)`; under `CHAT_MIN_OUTPUT_TOKENS` the
-outline shrinks a level, and with none left the turn ends with
-`CHAT_TOO_LONG`. A request the server refuses as too long
-(`CHAT_CONTEXT_ERROR`; vLLM's count there is only a lower bound) is sent once
-more with the `sections` outline, then ends the same way; the raw error goes
+context is compacted to leave `CHAT_MAX_OUTPUT_TOKENS`, and if it still does
+not fit the turn ends with `CHAT_TOO_LONG`. A request the server refuses as
+too long (`CHAT_CONTEXT_ERROR`; vLLM's count there is only a lower bound) is
+sent once more compacted to half, then ends the same way; the raw error goes
 to the server log, prefixed `Chat:`. `chat_model_reply()` sends a local
 model to its own server (`local_route()` over `local_endpoints()`),
 through `/v1/chat/completions` with OpenAI tools, the ChatGPT account through
@@ -2504,17 +2624,20 @@ way through `openai_api_request()`, the Anthropic key through Messages
 without the `thoughtSignature` it came with, and a streamed signature may
 arrive on a later, empty part, so a Gemini answer keeps every part as received
 in `gemini_parts` on its stored assistant entry; `_chat_gemini_contents()`
-sends those back unchanged as the `model` turn, followed by one `user` turn
-of `functionResponse`s. An assistant entry without them (another model's, or
-a reading an earlier Hilde added for the listener) is rebuilt with Google's documented
+sends those back (without the thoughts' text, `_ask_gemini_parts()`) as the
+`model` turn, followed by one `user` turn
+of `functionResponse`s. An assistant entry without them (another model's, a
+reading an earlier Hilde added for the listener, or a shortened earlier
+answer) is rebuilt with Google's documented
 `GEMINI_SKIP_SIGNATURE` on its first call. Other providers ignore
 `gemini_parts`. The DeepSeek key goes through `/v1/chat/completions`-style
 `POST /chat/completions` with OpenAI tools (`deepseek_request()`, read by the
 shared `_chat_completion_stream()`), without `max_tokens`; in thinking mode
-DeepSeek wants each earlier answer's `reasoning_content` back while tools are
+DeepSeek wants the current turn's `reasoning_content` back while tools are
 on, so a DeepSeek answer keeps its reasoning in `reasoning_content` on its
 stored entry and `_chat_openai_messages(reasoning=True)` sends every
-assistant message with it ("" for another model's). The page never gets it
+assistant message with the field, "" for an earlier turn's or another
+model's (the ledger sends only the current turn's). The page never gets it
 (`chat_display_entry()`). The xAI sign-in and key go the same way
 (`xai_request()`) with `max_completion_tokens` (xAI counts only the visible
 answer) and no reasoning sent back; a 403 to the sign-in ends the turn with
@@ -2530,14 +2653,21 @@ asks for its turn's stream (`turn`), which a later turn never answers (HTTP
 conversation. `ChatTurn.keep()` saves an
 entry to `chat.json` and publishes it under the turn's lock, which
 `chat_payload()` reads the conversation, the partial answer, and
-`event_index` under, so a page sees each message once. `chat_display_entry()` keeps
+`event_index` under, so a page sees each message once. `chat_display_entry(entry, document)` keeps
 a listener's message's `context` manifest, for the card on past questions, and renders
-an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
-`.chat-cite` links; an answer or failure saved with its `model` gets `model`
+an answer's Markdown with raw HTML off; `chat_cite_links()` turns the open
+book's ids (`<id>:N`, `<id>:N–M`, in brackets or not) into `.chat-cite`
+links reading ¶N and ¶N–M, an older answer's `¶N` and `¶N–M` too, and leaves
+other documents' ids (the help's, a web page's) as text; reading aloud says
+"paragraph N" and "the help" (`chat_speech_blocks()`). While an answer
+arrives the page shows the same (`setLiveText()`, `liveCitations()` with the
+payload's `document`, the raw text kept in `data-raw` since an id may arrive
+split). An answer or failure saved with its `model` gets `model`
 and `model_name` (`chat_model_name()`, the picker's short name), which the page
 shows as a small gray label under it (`chatModelLabel()`, `.chat-model`), and
 the answer arriving gets the running turn's (`running_model_name`); older
-entries have none and show none. `chat_payload()` maps each passage number to its first
+entries have none and show none. `chat_payload()` gives the book's `document`
+id and maps each passage number to its first
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
 error or a stop ends the turn with a `notice`. An error's notice ("Hilde
 couldn't answer: …", the provider's own text, such as the sign-in, local
@@ -2733,7 +2863,8 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
-- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`).
+- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages and model measurements live in `<root>/.cache/chat-docs/` and `<root>/.cache/ask-models.json`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
+- Ask Hilde never sends a book's paragraph map or the paper whole: the model gets the abstract and reads paragraphs by id.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.
 - An `in_progress` stage is removed only after its book or voice is published.
