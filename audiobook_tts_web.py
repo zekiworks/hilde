@@ -17928,7 +17928,8 @@ PAGE = r"""<!doctype html>
            ground), never a button's fill;
            teal --ask: Ask Hilde only: the player's Ask Hilde button (a 12%
            tint, its border, text and sparkle), the chat panel's header, the
-           chat's Stop / Pause / Resume button (dark ink on it, 6.9:1), and
+           chat's Stop / Pause / Resume button and Ask Hilde for a touch
+           selection above the player bar (dark ink on it, 6.9:1), and
            every Ask Hilde card (6.6:1 on the ground; light mode, Phase 3:
            #127a6e, 5.2:1 on white);
            green --local: the Local badge (with a chip) and Runs on Local;
@@ -18891,13 +18892,19 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
                                        text-decoration-color:var(--dim); text-underline-offset:3px; }
 .chat-tool .saved { margin-left:6px; color:var(--accent-light); }
 /* One spot just above the player bar (#dock-slot), centred over the text as the bar's controls are: Back to
-   reading position, a small pill, while the word being read is out of sight; a phone's Ask Hilde for selected
-   text (Part 2) shares it, never both at once. */
+   reading position, a small pill, while the word being read is out of sight; Ask Hilde for text selected by touch
+   (#dock-ask) shares it, never both at once. */
 .dock-slot { position:fixed; z-index:14; right:0; bottom:calc(var(--dock-h, 0px) + 8px); left:0; display:flex;
              justify-content:center; padding:0 16px; pointer-events:none; }
 .dock-slot > * { pointer-events:auto; }
 .back-to-listening { min-height:32px; padding:4px 14px; border-radius:999px; font-size:14px;
                      box-shadow:0 6px 20px rgba(0,0,0,.5); }
+/* Ask Hilde for a touch selection: filled with Ask Hilde's teal, dark ink on it (6.9:1), the sparkle; 44px tall. Here,
+   not beside the selection, where a phone puts its own text menu (Copy, Look Up). */
+.dock-ask { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0 22px; border:0;
+            border-radius:999px; background:var(--ask); color:#0e1a18; font-size:15px; font-weight:650;
+            box-shadow:0 6px 20px rgba(0,0,0,.5); }
+.dock-ask:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
 /* The side panel: beside the text on a wide screen, a bottom sheet below 900px. On a wide screen its top is the
    bottom of the lowest bar pinned at the top (--panel-top, fitPinned()): the tab row while it shows, else the
    slim paper bar, else the window's top. */
@@ -19100,8 +19107,9 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 /* The text: a reading column; the paragraph being read has a rail, the
    sentence being read a tint (kept while paused: a tap on it pauses and
    resumes, so it must be easy to find and hit), the word being read a mark;
-   the text keeps its color. */
-.reader-content { font-size:18px; line-height:1.6; }
+   the text keeps its color. A double tap on it does not zoom
+   (touch-action: manipulation); a pinch still does. */
+.reader-content { font-size:18px; line-height:1.6; touch-action:manipulation; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
   border-left-color:var(--accent-light); background:color-mix(in srgb, var(--accent-light) 5%, transparent);
@@ -19971,11 +19979,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
           <article id="reader-content" class="reader-content"></article>
         </section>
-        <!-- One spot just above the player bar, shared by Back to reading position and (Part 2) a phone's Ask Hilde
-             for selected text: never both; while text is selected in the reading column only Ask Hilde shows. -->
+        <!-- One spot just above the player bar, shared by Back to reading position and Ask Hilde for text selected
+             by touch: never both; while text is selected in the reading column only Ask Hilde shows. -->
         <div id="dock-slot" class="dock-slot">
           <button id="back-to-listening" class="back-to-listening hidden" type="button"
             onclick="backToListening()">↓ Back to reading position</button>
+          <button id="dock-ask" class="dock-ask hidden" type="button" aria-controls="side-panel"><svg class="ask-icon"
+            viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
+            d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
+            /></svg>Ask Hilde</button>
         </div>
         <!-- The player: one bar docked at the bottom, two rows in one column (560px at most, centred on a wide
              screen; 16px from the edges on a phone): the seek bar between the elapsed and total times, then
@@ -21123,7 +21135,7 @@ function clearReader() {
   $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
   if ($("change-voice-dialog").open) $("change-voice-dialog").close();
-  hideSelectionAsk();
+  hideSelectionAsk(); hideDockAsk();
   setDetached(false);
   renderPlayer();
 }
@@ -21236,16 +21248,18 @@ function wrapReaderWords(parts, cues) {
 // marked) it pauses, and the next tap there resumes from the same time.
 // It acts at once on the pointerup of a completed short tap. A press that
 // moved past READER_TAP_SLOP, was held READER_LONG_PRESS or longer, saw the
-// listener scroll the page, or that the browser took over (pointercancel: a
-// scroll, a pinch) does nothing; so do the second tap of a double tap (a
-// mouse press the browser counts as a double-click; a touch within
-// READER_DOUBLE_TAP of the last tap and near it), a Shift+click, and a tap
-// that only clears a selection. The browser keeps its own double-tap zoom:
-// no touch-action, no user-scalable. Selecting (a drag, a long press, the
-// browser's double-click) shows Ask about this beside the selection; only
-// that button (or Ask Hilde) pauses the book and asks, with the selection as
-// the card's focus and its sentence as context; the card's switch widens it
-// to the sentence or the paragraph.
+// listener scroll the page, made a selection while down (a long press), or
+// that the browser took over (pointercancel: a scroll, a pinch) does
+// nothing; so do the second tap of a double tap (a mouse press the browser
+// counts as a double-click; a touch within READER_DOUBLE_TAP of the last tap
+// and near it), a Shift+click, and a tap that only clears a selection. A
+// double tap never asks and never zooms (the text has touch-action:
+// manipulation; a pinch still zooms). Selecting (a drag, a long press, the
+// browser's double-click) shows Ask about this beside a mouse's selection
+// and Ask Hilde above the player bar for a touch's (see touchSelecting());
+// only those buttons (or the bar's Ask Hilde) pause the book and ask, with
+// the selection as the card's focus and its sentence as context; the card's
+// switch widens it to the sentence or the paragraph.
 // A focus: { base, the range selected; scope: "word" | "sentence" | "paragraph" }.
 const READER_WORD = /[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu;
 const TEXT_UNIT = "p, li, h1, h2, h3, h4, h5, h6, td, th, pre, blockquote, figcaption";
@@ -21262,7 +21276,7 @@ function pressReaderText(event) {
   const last = readerLastTap;
   const press = readerPress = {
     id:event.pointerId, x:event.clientX, y:event.clientY, at:event.timeStamp, target:event.target,
-    shift:event.shiftKey, selected:!!readerSelection(), moved:false, scrolled:false,
+    shift:event.shiftKey, selected:!!readerSelection(), selecting:false, moved:false, scrolled:false,
     double:event.pointerType !== "mouse" && !!last && event.timeStamp - last.at < READER_DOUBLE_TAP
       && Math.hypot(event.clientX - last.x, event.clientY - last.y) < 3 * READER_TAP_SLOP,
   };
@@ -21292,7 +21306,7 @@ function tapReaderText(event) {
   if (!press || event.pointerId !== press.id) return;
   readerPress = null;
   clearTimeout(press.timer);
-  if (press.moved || press.scrolled || press.double || press.shift || press.selected
+  if (press.moved || press.scrolled || press.double || press.shift || press.selected || press.selecting
       || event.timeStamp - press.at >= READER_LONG_PRESS
       || Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TAP_SLOP) return;
   readerLastTap = { at:event.timeStamp, x:event.clientX, y:event.clientY };
@@ -21792,8 +21806,9 @@ function readingMark() {
   return word && shown(word) ? word : listeningElement();
 }
 // Text selected in the reading column. The spot above the player bar is
-// shared with a phone's Ask Hilde for a selection (Part 2): while text is
-// selected only that shows, so the pill waits until the selection clears.
+// shared with Ask Hilde for a touch selection (#dock-ask): while text is
+// selected, or that button still shows, only it shows, so the pill waits
+// until the selection clears (and a mouse's selection hides it too).
 function readerHasSelection() {
   const selection = window.getSelection();
   return !!selection && !selection.isCollapsed && !!String(selection).trim()
@@ -21801,7 +21816,8 @@ function readerHasSelection() {
 }
 function renderBackToListening() {
   const button = $("back-to-listening");
-  const element = detached && readerAudio && !readerHasSelection() ? readingMark() : null;
+  const free = !readerHasSelection() && $("dock-ask").classList.contains("hidden");
+  const element = detached && readerAudio && free ? readingMark() : null;
   const away = !!element && !onScreen(element);
   button.classList.toggle("hidden", !away);
   if (!away) return;
@@ -23445,18 +23461,28 @@ async function askHilde() {
   refreshPaperModels();
 }
 
-// Ask about this: Hilde's button beside a selection in the text (a drag, a
-// long press, the browser's double-click), shown once the pointer is up;
-// above the selection with a mouse, below it on a touch screen, whose own
-// menu (Copy and the like) goes above. A tap listens from a word instead.
-let pointerHeld = false, selectionTimer = 0;
+// Asking from a selection in the text (a drag, a long press, the browser's
+// double-click). Which button it gets depends on the input that made it
+// (touchSelecting()): a mouse's selection gets Ask about this, Hilde's
+// button beside it, shown once the pointer is up; a touch's (or a pen's)
+// gets Ask Hilde in #dock-slot just above the player bar, shown at once and
+// kept away from the phone's own text menu (Copy, Look Up) beside the
+// selection, as long as the selection lasts; the pill then waits. A tap
+// listens from a word instead; a double tap never asks.
+let pointerHeld = false, selectionTimer = 0, lastPointerType = "";
+// By the last press's pointerType, so a laptop with a touch screen gives the
+// mouse Ask about this and a finger Ask Hilde; before any press (a keyboard
+// selection), a screen whose main pointer cannot hover counts as touch.
+function touchSelecting() {
+  return lastPointerType ? lastPointerType !== "mouse" : window.matchMedia("(hover: none)").matches;
+}
 function hideSelectionAsk() { $("selection-ask").classList.add("hidden"); }
 function queueSelectionAsk() {
   clearTimeout(selectionTimer);
   selectionTimer = setTimeout(showSelectionAsk, 250);
 }
 function showSelectionAsk() {
-  const picked = !pointerHeld && state && state.tab === "player" && readerSelection();
+  const picked = !pointerHeld && state && state.tab === "player" && !touchSelecting() && readerSelection();
   if (!picked) { hideSelectionAsk(); return; }
   $("selection-ask").classList.remove("hidden");
   placeSelectionAsk();
@@ -23466,8 +23492,7 @@ function placeSelectionAsk() {
   if (button.classList.contains("hidden") || !selection.rangeCount) return;
   const box = selection.getRangeAt(0).getBoundingClientRect(), view = readingViewport();
   const height = button.offsetHeight, width = button.offsetWidth;
-  const below = window.matchMedia("(pointer:coarse)").matches;
-  let top = below ? box.bottom + 12 : box.top - height - 8;
+  let top = box.top - height - 8;
   if (top < view.top + 4) top = box.bottom + 8;
   if (top + height > view.bottom - 4) top = box.top - height - 8;
   // A selection scrolled partly away keeps its button on screen.
@@ -23475,6 +23500,51 @@ function placeSelectionAsk() {
   button.style.top = `${Math.round(top)}px`;
   button.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
     Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
+}
+// The slot's Ask Hilde asks about the selection stored at its last
+// selectionchange (dockPicked, the range cloned, since the selection's own
+// range changes with it): iOS clears the selection when the button is
+// touched, before its click. A cleared selection hides the button only
+// DOCK_ASK_LINGER later and never while it is pressed (dockPressed), so the
+// press that cleared it still lands on it and asks.
+const DOCK_ASK_LINGER = 400;
+let dockPicked = null, dockPressed = false, dockHideTimer = 0;
+function noteSelection() {
+  const picked = state && state.tab === "player" ? readerSelection() : null;
+  if (!picked) {
+    clearTimeout(dockHideTimer);
+    dockHideTimer = setTimeout(settleDockAsk, DOCK_ASK_LINGER);
+    return;
+  }
+  // A press that selects (a long press) is not a tap.
+  if (readerPress) readerPress.selecting = true;
+  if (!touchSelecting()) { hideDockAsk(); return; }
+  clearTimeout(dockHideTimer);
+  dockPicked = { ...picked, range:picked.range.cloneRange() };
+  hideSelectionAsk();
+  if ($("dock-ask").classList.contains("hidden")) {
+    $("dock-ask").classList.remove("hidden");
+    renderBackToListening();
+  }
+}
+function settleDockAsk() {
+  if (!dockPressed && !readerSelection()) hideDockAsk();
+}
+function hideDockAsk() {
+  clearTimeout(dockHideTimer);
+  dockPicked = null;
+  if ($("dock-ask").classList.contains("hidden")) return;
+  $("dock-ask").classList.add("hidden");
+  renderBackToListening();
+}
+function askFromDock() {
+  const picked = readerSelection() || dockPicked;
+  dockPressed = false;
+  hideDockAsk();
+  if (!picked) return;
+  window.getSelection().removeAllRanges();
+  pauseBookForQuestion();
+  askAboutSelection(picked);
 }
 // Seeks to the first word of the selection (a clicked word, the card's
 // focus), else to its sentence or passage; false when nothing there is narrated.
@@ -26380,7 +26450,7 @@ function followActive(info, reconnecting) {
 const SERVER_PARTS = [
   "#page-settings", "#page-audiobook", "#page-progress", "#page-voice",
   "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#chat-pane",
-  "#figure-view .panel-actions", "#selection-ask",
+  "#figure-view .panel-actions", "#selection-ask", "#dock-ask",
 ];
 let serverDown = false;
 function setServerDown(down) {
@@ -26454,7 +26524,7 @@ function render() {
   document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
-  if (!reading) { hideSelectionAsk(); closeReaderMenus(); }
+  if (!reading) { hideSelectionAsk(); hideDockAsk(); closeReaderMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
   renderFailureCards();
 }
@@ -27946,7 +28016,7 @@ $("reader-content").addEventListener("mousedown", pressReaderTextAgain);
 $("reader-content").addEventListener("pointermove", trackReaderPress, { passive:true });
 $("reader-content").addEventListener("pointercancel", cancelReaderPress);
 $("reader-content").addEventListener("pointerup", tapReaderText);
-$("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection(); });
+$("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection() || dockPicked; });
 $("ask-hilde").addEventListener("click", askHilde);
 $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
   const item = document.createElement("button");
@@ -27987,16 +28057,35 @@ window.addEventListener("scroll", () => {
 }, { passive:true });
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
+  lastPointerType = event.pointerType;
   if (!event.target.closest("#selection-ask")) hideSelectionAsk();
   // The page's own scroll bar.
   if (event.target === document.documentElement) userScrollAt = performance.now();
 }, true);
 for (const type of ["pointerup", "pointercancel"])
-  document.addEventListener(type, () => { pointerHeld = false; queueSelectionAsk(); }, true);
+  document.addEventListener(type, () => {
+    pointerHeld = false;
+    queueSelectionAsk();
+    if (dockPressed) {
+      dockPressed = false;
+      clearTimeout(dockHideTimer);
+      dockHideTimer = setTimeout(settleDockAsk, DOCK_ASK_LINGER);
+    }
+  }, true);
 document.addEventListener("selectionchange", () => {
+  noteSelection();
   queueSelectionAsk();
   if (detached) renderBackToListening();
 });
+// Pressed, the slot's Ask Hilde asks about the stored selection if the press
+// cleared the live one (iOS). A mouse press is cancelled so it keeps the
+// selection; a touch press never is, since WebKit then sends no click.
+$("dock-ask").addEventListener("pointerdown", (event) => {
+  dockPressed = true;
+  clearTimeout(dockHideTimer);
+  if (event.pointerType === "mouse") event.preventDefault();
+});
+$("dock-ask").addEventListener("click", askFromDock);
 // Pressed, the button keeps the selection it asks about.
 $("selection-ask").addEventListener("pointerdown", (event) => event.preventDefault());
 $("selection-ask").addEventListener("click", () => {

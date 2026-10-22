@@ -890,7 +890,8 @@ Ask Hilde: the player's **Ask Hilde** button (a 12% tint over `--surface`, a
 1 px border of 65% `--ask`, teal text and sparkle), the chat panel's header
 while the chat is shown (the sparkle and **Ask Hilde** in teal), the chat's
 Stop / Pause / Resume button (`#chat-action`: a solid `--ask` fill with dark
-ink #0e1a18), and every Ask Hilde card
+ink #0e1a18), **Ask Hilde** for a touch selection above the player bar
+(`#dock-ask`: the same solid fill and dark ink, with the sparkle), and every Ask Hilde card
 (`.chip`: a selection, a passage, a figure, Preparing, Couldn't attach, a
 selection too long to attach, and the collapsed cards of past questions: a
 1 px border of 65% `--ask` on a 12% tint; the
@@ -1529,7 +1530,8 @@ be reached, as opposed to an HTTP error) calls `setServerDown(true)`, which
 shows `#server-down` and makes `SERVER_PARTS` inert (Settings, Create, the
 progress view, Voices, the Library, an open book's
 **More** menu, stale-voice notice, **Ask Hilde**, the chat, **Ask about this
-figure**, and the floating **Ask about this** on a selection), so nothing that needs
+figure**, the floating **Ask about this** on a selection, and the slot's
+**Ask Hilde** for a touch selection), so nothing that needs
 the server can be pressed or focused; the tabs, the player, the text, its
 views, and the figure and page already shown stay, so a book loaded in this
 browser plays on. The first poll that answers again, or answers before the
@@ -2022,10 +2024,11 @@ the pill **↑/↓ Back to reading position** (`#back-to-listening`,
 `#dock-slot`, the one spot just above the player bar (fixed, 8 px above
 `--dock-h`, centred over the text like the bar's controls), whenever the word
 is out of sight; it hides while the word is on screen (checked on every
-scroll, word, and sentence change while detached) and while text is selected
-in the reading column (`readerHasSelection()`, on `selectionchange`): Part 2's
-phone **Ask Hilde** for a selection takes that spot then, so the two never
-show together. Pressing it (`backToListening()`) brings the word a quarter of
+scroll, word, and sentence change while detached), while text is selected
+in the reading column (`readerHasSelection()`, on `selectionchange`), and
+while **Ask Hilde** for a touch selection (`#dock-ask`, below) shows: that
+button takes the spot then, so the two never show together, and the pill
+comes back when the selection clears. Pressing it (`backToListening()`) brings the word a quarter of
 the way down, clears `detached` and checks **Follow along**. Opening a figure
 or a source page, a ¶ link in an answer, and the paper bar's title (when the
 word is not on screen at the top) set `detached` too.
@@ -2043,8 +2046,11 @@ pinch: `cancelReaderPress()`; a second finger cancels too), without Shift,
 not the second press of a double-click (`mousedown` `detail` ≥ 2,
 `pressReaderTextAgain()`, so the system's double-click time decides) or of a
 double tap (a touch within `READER_DOUBLE_TAP`, 350 ms, of the last tap and
-within 30 px), not a press that began on a selection (it only clears it), and
-no selection left at the `pointerup`. Then, on a part outside the sentence
+within 30 px), not a press that began on a selection (it only clears it),
+not one during which a selection appeared (`selecting`, set by
+`noteSelection()`: a long press that selects never seeks or toggles, even
+if the selection is gone by the `pointerup`), and no selection left at the
+`pointerup`. Then, on a part outside the sentence
 being read it seeks to the word under the pointer (`clickedWord()`: its
 `.reader-word`, else the word at the caret point, else the nearest word of
 the tapped sentence) with `listenFromSelection()` and plays; on any part of
@@ -2054,18 +2060,39 @@ the shown element of its passage) it calls `togglePlayback()`: a pause, or
 a resume from the time it shows, never a seek. (Chromium's own pipeline then
 reports a clock 75–105 ms later at the `play` event than the paused time it
 was called at, the same as the Play button.) The first tap of a double tap
-acts like any tap and the second does nothing; the page sets no
-`touch-action` and no `user-scalable`, so the browser keeps its double-tap
-zoom. A touch held still for `READER_PRESS_SELECT` (650 ms) with nothing
+acts like any tap and the second does nothing; nothing asks on a double tap
+or a double-click. The text has `touch-action: manipulation`, so a double
+tap does not zoom (it is iOS's own gesture for zoom and the text menu) while
+a pinch still does; the viewport sets no `user-scalable` and no
+`maximum-scale`. A touch held still for `READER_PRESS_SELECT` (650 ms) with nothing
 selected yet selects its word (`selectPressedWord()`): a phone's own long
 press selects first and this then does nothing; Chromium's touch emulation
-has no long press, so there this selects. A finished selection in the text
-(a drag, a long press, the browser's double-click, Shift+click extending
-it) shows Hilde's floating **Ask about this** (`#selection-ask`,
-`showSelectionAsk()` 250 ms after `selectionchange` or the `pointerup`)
-above it (below it on a touch screen, whose own Copy menu is above); it
-never seeks or asks. Only **Ask about this** (or
-**Ask Hilde** with text selected) pauses the book
+has no long press, so there this selects.
+
+A finished selection in the text (a drag, a long press, the browser's
+double-click, Shift+click extending it) gets a button by the input that
+made it (`touchSelecting()`: the `pointerType` of the last `pointerdown`,
+so a laptop with a touch screen gives the mouse one and a finger the
+other; before any press, a keyboard selection, a screen whose main pointer
+cannot hover, `(hover: none)`, counts as touch). A mouse's gets Hilde's
+floating **Ask about this** (`#selection-ask`, `showSelectionAsk()` 250 ms
+after `selectionchange` or the `pointerup`) above it (below it when there
+is no room). A touch's (or a pen's) gets **Ask Hilde** (`#dock-ask`, teal,
+`noteSelection()` on every `selectionchange`) in `#dock-slot` above the
+player bar, not beside the selection, where the phone puts its own text
+menu (Copy, Look Up, Translate); the floating button never shows for it.
+`noteSelection()` stores the selection each time (`dockPicked`: its text,
+passages, and a clone of its range, since the selection's own range
+changes with it), because iOS clears the selection when the button is
+touched, before its click. A cleared selection hides the button
+`DOCK_ASK_LINGER` (400 ms) later, and not while it is pressed
+(`dockPressed`, from its `pointerdown` to the `pointerup`), so the press that
+cleared it still lands (a touch `pointerdown` on it is never cancelled:
+WebKit then sends no click; a mouse's is, so it keeps the selection); its click (`askFromDock()`) takes the live
+selection, else the stored one. The bar's **Ask Hilde** falls back to the
+stored one the same way. A selection showing either button never seeks or
+asks. Only pressing **Ask about this**, the slot's **Ask Hilde**, or the
+bar's **Ask Hilde** with text selected pauses the book
 (`pauseBookForQuestion()`), opens the chat (`askAboutSelection()`) and
 attaches the selection as a focus `{base, scope}`; the box is left as it
 was, never submitted. The card's **Word | Sentence | Paragraph** switch
@@ -2158,10 +2185,11 @@ book's title, `#book-files` lists the book's `files/` as download links.
 **Ask Hilde**, in the player bar, is the one way in. `askHilde()` opens the
 chat as it was left and, if the book plays, pauses it
 (`pauseBookForQuestion()`, a plain pause: the time and the sentence stay);
-nothing resumes it but Play. **Ask about this** on a selection and **Ask
-about this figure** pause it the same way; a click in the text never asks
-(it listens from its word). Text selected in
-`#reader-content` (taken on `pointerdown`, before the press can clear it) is
+nothing resumes it but Play. **Ask about this** and the slot's **Ask Hilde**
+on a selection and **Ask about this figure** pause it the same way; a click
+in the text never asks (it listens from its word). Text selected in
+`#reader-content` (taken on `pointerdown`, before the press can clear it, and
+else the selection `noteSelection()` stored) is
 attached; else, with no card and no draft, the passage playing at the press
 is (a figure passage as a figure). `selectedPassages()` takes only passages
 the selection takes words from, so a triple-click ending at offset 0 of the

@@ -474,12 +474,20 @@ being read pauses it, and that sentence stays marked, so the next tap in it
 goes on from exactly where it stopped. Nothing opens and nothing is asked, and
 the book answers at once, without waiting. Only a short, still tap counts:
 scrolling, dragging, selecting, and holding your finger down never start,
-stop, or move the book, nor does the second tap of a double tap (the browser
-may still zoom), nor a tap that only clears a selection. To ask about text,
-select it: on a phone, long-press a word (its handles stretch the selection);
-on a computer, drag over any span. Hilde's **Ask about this** button then
-appears next to the selection (your phone's own Copy menu may appear too).
-Nothing opens until you press **Ask about this** (or **Ask Hilde** in the
+stop, or move the book, nor does the second tap of a double tap, nor a tap
+that only clears a selection. A double tap never asks anything, and it does
+not zoom the text (pinch to zoom instead). To ask about text, select it.
+
+- On a phone or tablet, long-press a word (its handles stretch the selection
+  to a phrase or a sentence). A teal **Ask Hilde** button appears just above
+  the player bar, away from your phone's own Copy menu, and stays while the
+  text is selected; tap it. It goes away when the selection is cleared.
+- On a computer, drag over any span or double-click a word. Hilde's **Ask
+  about this** button appears next to the selection; press it. A laptop with
+  a touch screen shows the button for the way you selected: **Ask about
+  this** for the mouse, **Ask Hilde** above the player bar for a finger.
+
+Nothing opens until you press that button (or **Ask Hilde** in the
 player): then the book pauses and the chat opens (on a phone, as a sheet from
 the bottom) with a card headed **Selected text**: your words in quotes, and under
 **Context details** the section they are in, all of your selection, and the
@@ -503,7 +511,8 @@ sentence being read leaves the screen. If you scroll the word being read out
 of sight yourself, it stops following and a small **↑ Back to reading
 position** pill appears just above the player bar (↓ when the word is below);
 it hides while the word is on screen, and while you have text selected in the
-book. Clicking it brings the word back on screen and turns **Follow along**
+book (on a phone, the selection's **Ask Hilde** takes its place).
+Clicking it brings the word back on screen and turns **Follow along**
 on again. The pill appears too, once the word is out of sight, after you open
 a figure or a page, follow a ¶ link, or click the paper bar's title. With
 **Follow along** off, the page never scrolls by itself.
@@ -526,8 +535,8 @@ text keeps about 50 characters a line beside it. Its header is Hilde's sparkle
 and **Ask Hilde** in teal, then the chat's model box, **⋯**, and **×** at the
 right; in a panel under 420 px wide (a phone, a narrow window) the model box has
 a line of its own under them.
-It pauses the book, as **Ask about this** on selected words and **Ask about
-this figure** do; the book waits at that sentence until you press play in the
+It pauses the book, as **Ask about this** or the phone's **Ask Hilde** on
+selected words and **Ask about this figure** do; the book waits at that sentence until you press play in the
 player bar (the chat has no play button for the book); closing the chat never
 starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
