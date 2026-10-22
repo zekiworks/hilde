@@ -6768,6 +6768,196 @@ class RetainedAudiobookDownloadTests(unittest.TestCase):
         self.assertIs(web.library_catalog(storage)[0]["has_source"], False)
 
 
+def page_script(*names, lines=()):
+    """Top-level functions of the page's script, by name (each to its closing
+    brace), and whole lines starting with each of `lines`, for node to run."""
+    parts = []
+    for prefix in lines:
+        parts.append(re.search(rf"^{re.escape(prefix)}.*$", web.PAGE, re.M).group(0))
+    for name in names:
+        start = re.search(rf"^function {name}\(", web.PAGE, re.M).start()
+        depth, at = 0, web.PAGE.index("{", start)
+        for at in range(at, len(web.PAGE)):
+            depth += {"{": 1, "}": -1}.get(web.PAGE[at], 0)
+            if depth == 0:
+                break
+        parts.append(web.PAGE[start:at + 1])
+    return "\n".join(parts)
+
+
+def run_node(script):
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("node is not installed")
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    if done.returncode:
+        raise AssertionError(done.stderr)
+    return json.loads(done.stdout)
+
+
+class LibraryCardTests(unittest.TestCase):
+    """The Listen library's cards (22 Oct): thumbnails in their own cache, and
+    what this browser saves of each book's place and reads back as its state."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+
+    def book_with_pdf(self):
+        pdf = Path(self.storage.root) / "paper.pdf"
+        write_figure_pdf(pdf)
+        book = store_book(self.storage, title="Kept Book", source_sha256=web.file_version(pdf), source=pdf)
+        pdf.unlink()
+        return book
+
+    def folder_bytes(self, book):
+        folder = self.storage.audiobooks / book
+        return {str(path.relative_to(folder)): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+
+    def test_a_thumbnail_is_made_once_into_its_own_cache_never_into_the_book(self):
+        book = self.book_with_pdf()
+        before = self.folder_bytes(book)
+        path, record = web.read_book(self.storage, book)
+        pdf = web.book_pdf(self.storage, path, record)
+        version, picture = web.book_thumbnail(self.storage, pdf)
+
+        self.assertEqual(version, web.file_version(pdf))
+        cached = web.thumbnail_path(self.storage, version)
+        self.assertEqual(cached, self.storage.root / ".cache" / "thumbnails" / f"{version}.png")
+        self.assertEqual(cached.read_bytes(), picture)
+        self.assertTrue(picture.startswith(b"\x89PNG"))
+        # THUMBNAIL_HEIGHT pixels tall (the PNG header's height).
+        self.assertEqual(struct.unpack(">II", picture[16:24])[1], web.THUMBNAIL_HEIGHT)
+        # Never inside a book's folder, nor anywhere under Audiobooks.
+        self.assertFalse(cached.resolve().is_relative_to(self.storage.audiobooks.resolve()))
+        self.assertEqual(self.folder_bytes(book), before)
+        self.assertEqual(
+            [p.name for p in web.thumbnail_cache(self.storage).iterdir()], [f"{version}.png"]
+        )
+        # The second time it is read from the cache, not rendered.
+        with mock.patch.object(web, "render_thumbnail", side_effect=AssertionError("rendered again")):
+            self.assertEqual(web.book_thumbnail(self.storage, pdf), (version, picture))
+        with self.assertRaises(ValueError):
+            web.thumbnail_path(self.storage, "../../Audiobooks/x")
+
+    def test_the_library_names_a_books_thumbnail_and_the_route_serves_and_caches_it(self):
+        book = self.book_with_pdf()
+        plain = store_book(self.storage, title="Plain Text", source_sha256="b" * 64)
+        catalog = {entry["id"]: entry for entry in web.library_catalog(self.storage)}
+        path, record = web.read_book(self.storage, book)
+        version = web.file_version(path / "source.pdf")
+        self.assertEqual(catalog[book]["thumbnail"], version)
+        self.assertIsNone(catalog[plain]["thumbnail"])
+        before = self.folder_bytes(book)
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.daemon_threads = True
+            server.storage = self.storage
+            server.verbose = False
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            origin = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urllib.request.urlopen(f"{origin}/api/thumbnail?book={book}&v={version}") as response:
+                    pinned = (response.headers["Content-Type"], response.headers["Cache-Control"],
+                              response.headers["ETag"], response.read())
+                with urllib.request.urlopen(f"{origin}/api/thumbnail?book={book}") as response:
+                    unpinned = response.headers["Cache-Control"]
+                with self.assertRaises(urllib.error.HTTPError) as unchanged:
+                    urllib.request.urlopen(urllib.request.Request(
+                        f"{origin}/api/thumbnail?book={book}&v={version}",
+                        headers={"If-None-Match": f'"{version}"'}))
+                with self.assertRaises(urllib.error.HTTPError) as without_pdf:
+                    urllib.request.urlopen(f"{origin}/api/thumbnail?book={plain}")
+                with self.assertRaises(urllib.error.HTTPError) as invalid:
+                    urllib.request.urlopen(f"{origin}/api/thumbnail?book=..%2F{book}")
+            finally:
+                server.shutdown()
+                thread.join()
+
+        self.assertEqual(pinned[0], "image/png")
+        self.assertEqual(pinned[1], "private, max-age=31536000, immutable")
+        self.assertEqual(pinned[2], f'"{version}"')
+        self.assertEqual(pinned[3], web.thumbnail_path(self.storage, version).read_bytes())
+        self.assertEqual(unpinned, "no-cache")
+        self.assertEqual(unchanged.exception.code, 304)
+        self.assertEqual(without_pdf.exception.code, 404)
+        self.assertEqual(invalid.exception.code, 404)
+        self.assertEqual(self.folder_bytes(book), before)
+
+    def test_a_book_playing_from_the_library_survives_a_refresh_only_when_true(self):
+        self.assertIs(normalize({})["player"]["in_library"], False)
+        self.assertIs(normalize({"player": {"in_library": "yes"}})["player"]["in_library"], False)
+        self.assertIs(normalize({"player": {"in_library": True}})["player"]["in_library"], True)
+
+    def test_the_saved_place_and_last_played_time_and_the_state_read_from_them(self):
+        script = page_script(
+            "stored", "store", "bookPlace", "saveBookPlace", "bookStatus", "sentenceStartAt",
+            lines=("let readerRestored = ",),
+        )
+        results = run_node("""
+const saved = new Map();
+globalThis.localStorage = { getItem: (key) => saved.has(key) ? saved.get(key) : null,
+                            setItem: (key, value) => saved.set(key, String(value)) };
+let state = { player: { book: "b", voice: "Eir" } }, readerDownload = null, activeReaderBlock = 3, painted = 0;
+function passageOfBlock(block) { return block + 1; }
+function refreshCards() { painted++; }
+let readerAudio = { currentTime: 12.5, paused: true, ended: false, defaultPlaybackRate: 1.25 };
+""" + script + """
+const out = {};
+const place = () => JSON.parse(localStorage.getItem("hilde.book.b"));
+store("book.b", { voice: "Eir", time: 12.8, speed: 1, played: 111 });
+// Opened (the place restored to its sentence's start, 12.5) and left alone: nothing is written.
+readerRestored = true; restoredTime = 12.5;
+saveBookPlace();
+out.untouched = place();
+// Played (the play event): the place, and when it was heard.
+heardSinceOpen = heardSinceSave = true; readerAudio.paused = false; readerAudio.currentTime = 20;
+const before = Date.now(); saveBookPlace(); out.playing = place(); out.window = [before, Date.now()];
+readerAudio.paused = true; readerAudio.currentTime = 21; saveBookPlace(); out.paused = place();
+readerAudio.currentTime = 30; saveBookPlace(); out.seekedPaused = place();
+readerAudio.currentTime = 99; readerAudio.ended = true; saveBookPlace(); out.ended = place();
+out.painted = painted;
+const book = { voices: [{ name: "Eir", status: "ready", duration: 99 }, { name: "Old", status: "stale", duration: 50 }] };
+out.status = {
+  none: bookStatus(book, {}).kind, speedOnly: bookStatus(book, { speed: 1.5 }).kind,
+  progress: bookStatus(book, out.paused), finished: bookStatus(book, out.ended).kind,
+  staleVoice: bookStatus(book, { voice: "Old", time: 10 }).kind,
+  tiny: bookStatus(book, { voice: "Eir", time: 0.2 }).percent,
+  nearEnd: bookStatus(book, { voice: "Eir", time: 98.99 }).percent,
+};
+const cues = [{ start_sample: 0 }, { start_sample: 24000 }, { start_sample: 72000 }];
+out.sentence = [5, 0.5, 1, 2.9, 3, 10].map((time) => sentenceStartAt(cues, 24000, time))
+  .concat([sentenceStartAt([], 24000, 7), sentenceStartAt([{ start_sample: 48000 }], 24000, 1)]);
+console.log(JSON.stringify(out));
+""")
+        self.assertEqual(results["untouched"], {"voice": "Eir", "time": 12.8, "speed": 1, "played": 111})
+        playing = results["playing"]
+        self.assertEqual(
+            {key: playing[key] for key in ("voice", "time", "block", "passage", "speed", "finished")},
+            {"voice": "Eir", "time": 20, "block": 3, "passage": 4, "speed": 1.25, "finished": False},
+        )
+        self.assertGreaterEqual(playing["played"], results["window"][0])
+        self.assertLessEqual(playing["played"], results["window"][1])
+        # The pause after playing is a listen too; a seek while paused is not.
+        self.assertEqual(results["paused"]["time"], 21)
+        self.assertGreaterEqual(results["paused"]["played"], playing["played"])
+        self.assertEqual(results["seekedPaused"]["time"], 30)
+        self.assertEqual(results["seekedPaused"]["played"], results["paused"]["played"])
+        self.assertIs(results["ended"]["finished"], True)
+        # The Library repaints at each write (not for the untouched open).
+        self.assertEqual(results["painted"], 4)
+        status = results["status"]
+        self.assertEqual((status["none"], status["speedOnly"], status["finished"], status["staleVoice"]),
+                         ("new", "new", "finished", "new"))
+        self.assertEqual((status["progress"]["kind"], status["progress"]["percent"]), ("progress", 21))
+        self.assertEqual(status["progress"]["played"], results["paused"]["played"])
+        self.assertEqual((status["tiny"], status["nearEnd"]), (1, 99))
+        self.assertEqual(results["sentence"], [3, 0, 1, 1, 3, 3, 7, 1])
+
+
 class HttpsTests(unittest.TestCase):
     def test_hildes_certificate_authority_vouches_for_this_machine_only_and_lasts(self):
         from cryptography import x509

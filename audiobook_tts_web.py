@@ -2970,6 +2970,7 @@ def library_catalog(storage):
         default = default_voice(record)
         shown = next((voice for voice in voices if voice["name"] == default), voices[0])
         filenames = record.get("source_filenames") or []
+        source = book_source(storage, path, record)
         books.append({
             "id": path.name,
             "title": record.get("title") or path.name,
@@ -2982,7 +2983,11 @@ def library_catalog(storage):
             "legacy_names": record.get("legacy_names") or [],
             "has_text": (path / "narration.json").is_file() and bool(record.get("narration_sha256")),
             # Its document can be downloaded from Listen (book_source()).
-            "has_source": book_source(storage, path, record) is not None,
+            "has_source": source is not None,
+            # The Library card's thumbnail (GET /api/thumbnail): its PDF's
+            # SHA-256, which names the cached picture; None without a PDF.
+            "thumbnail": cached_file_version(source)
+            if source is not None and source.suffix.lower() == ".pdf" else None,
         })
     books.sort(key=lambda book: book["modified"], reverse=True)
     return books
@@ -4910,6 +4915,71 @@ def _pdf_png(pdf, version, page, dpi, clip=None):
                 dpi=dpi, clip=pymupdf.Rect(clip) if clip else None, alpha=False,
             ).tobytes("png")
     except (RuntimeError, ValueError):
+        return None
+
+
+# The Library's card thumbnail of a book: its PDF's first page, THUMBNAIL_HEIGHT
+# pixels tall (twice the card's 72 CSS px, sharp on a HiDPI screen), rendered
+# once per PDF content into the thumbnail cache, <root>/.cache/thumbnails/
+# <the PDF's SHA-256>.png, and never into a book's folder. The name is the
+# PDF's hash, so another PDF is another picture.
+THUMBNAIL_HEIGHT = 160
+_THUMBNAIL_LOCK = threading.Lock()
+
+
+def thumbnail_cache(storage):
+    """The folder of the Library's thumbnails, beside the books, never in one."""
+    return storage.root / ".cache" / "thumbnails"
+
+
+def book_pdf(storage, path, record):
+    """The book's source document when it is a PDF, else None."""
+    source = book_source(storage, path, record)
+    return source if source is not None and source.suffix.lower() == ".pdf" else None
+
+
+def thumbnail_path(storage, version):
+    """Where the thumbnail of the PDF with this SHA-256 is kept."""
+    if not SHA256_PATTERN.fullmatch(str(version)):
+        raise ValueError("not a PDF version")
+    return thumbnail_cache(storage) / f"{version}.png"
+
+
+def book_thumbnail(storage, pdf):
+    """(the PDF's SHA-256, its first page as PNG), rendered once and then read
+    from the cache; None when the PDF cannot be read or rendered."""
+    version = cached_file_version(pdf)
+    if version is None:
+        return None
+    target = thumbnail_path(storage, version)
+    with _THUMBNAIL_LOCK:
+        try:
+            return version, target.read_bytes()
+        except OSError:
+            pass
+        picture = render_thumbnail(pdf)
+        if picture is None:
+            return None
+        target.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.tmp")
+        temporary.write_bytes(picture)
+        temporary.replace(target)
+    return version, picture
+
+
+def render_thumbnail(pdf):
+    """A PDF's first page as PNG, THUMBNAIL_HEIGHT pixels tall; None when it
+    has no page or cannot be read."""
+    import pymupdf
+
+    try:
+        with pymupdf.open(str(pdf)) as document:
+            if document.page_count < 1:
+                return None
+            sheet = document[0]
+            zoom = THUMBNAIL_HEIGHT / sheet.rect.height
+            return sheet.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).tobytes("png")
+    except (RuntimeError, ValueError, ZeroDivisionError):
         return None
 
 
@@ -11268,6 +11338,8 @@ def normalize(state):
         # The book open on the Listen page survives a refresh.
         "player": {
             "book": stored_text(player, "book"), "voice": stored_text(player, "voice"),
+            # The book plays from the Library: loaded, with the Library shown.
+            "in_library": player.get("in_library") is True,
             # The model Chat with Hilde answers with, from the adaptation models.
             "chat_model": stored_text(player, "chat_model"),
             # Whether each answer is read aloud as it finishes; off unless chosen.
@@ -16757,6 +16829,32 @@ class Handler(BaseHTTPRequestHandler):
             if picture is None:
                 return self.fail(HTTPStatus.NOT_FOUND, "This figure can't be found in the book's PDF.")
             return self.reply(HTTPStatus.OK, picture, "image/png", extra=(("Cache-Control", "no-cache"),))
+        if route == "/api/thumbnail":
+            # A Library card's thumbnail: the first page of the book's PDF,
+            # rendered on the first request into the thumbnail cache.
+            try:
+                path, record = read_book(self.server.storage, query.get("book", [""])[0])
+            except (ValueError, FileNotFoundError):
+                return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+            pdf = book_pdf(self.server.storage, path, record)
+            made = book_thumbnail(self.server.storage, pdf) if pdf is not None else None
+            if made is None:
+                return self.fail(HTTPStatus.NOT_FOUND, "This book has no PDF to show.")
+            version, picture = made
+            # The page asks with v=<the PDF's SHA-256>, so a link for this PDF
+            # never changes and the browser keeps it; without it, it asks again.
+            pinned = query.get("v", [""])[0] == version
+            extra = (
+                ("Cache-Control", "private, max-age=31536000, immutable" if pinned else "no-cache"),
+                ("ETag", f'"{version}"'),
+            )
+            if self.headers.get("If-None-Match") == f'"{version}"':
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                for name, value in extra:
+                    self.send_header(name, value)
+                self.end_headers()
+                return None
+            return self.reply(HTTPStatus.OK, picture, "image/png", extra=extra)
         if route == "/api/source-page":
             # A page of the book's PDF, 1-based.
             try:
@@ -18766,16 +18864,72 @@ button#voice-search-clear { position:absolute; top:0; bottom:0; right:4px; width
   color:var(--dim); font-size:20px; line-height:1; }
 button#voice-search-clear:hover:not(:disabled) { background:none; color:var(--text); }
 .voice-count { margin-top:12px; }
-.voice-table .select, .book-table .action { width:1%; text-align:right; white-space:nowrap; }
-.voice-table .select > * + *, .book-table .action > * + * { margin-left:4px; }
-.book-table .duration, .book-table .position { color:var(--dim); white-space:nowrap;
-                                               font-variant-numeric:tabular-nums; }
-.book-table .source { width:22%; color:var(--dim); overflow-wrap:anywhere; }
-.book-table .voice { color:var(--dim); overflow-wrap:anywhere; }
-.book-table .book-row { cursor:pointer; }
+.voice-table .select { width:1%; text-align:right; white-space:nowrap; }
+.voice-table .select > * + * { margin-left:4px; }
 .data-table .modified { width:1%; color:var(--dim); white-space:nowrap;
                         font-variant-numeric:tabular-nums; }
-.book-title { font-weight:600; }
+/* The Library (22 Oct): each book a framed card like Create's step rows (rounded, a thin line), 10 px apart, on a
+   ground a shade lighter than the page (--card, on which the playing book's solid --accent button keeps 3:1): a
+   thumbnail of the paper's first page (a plain page icon until it is in, or without a PDF), the title (bold, one
+   line, cut with …), "voice · length · PDF" in gray, a thin blue bar while in progress; at the right the status
+   chip, the round play button and ⋯. In progress: "N% listened" in a blue chip (text 5.5:1 on its tint, border
+   3.5:1 on the card) and the bar (4.6:1 on its track). New: "New" in a gray outline (4.1:1). Finished: "✓ Finished"
+   in green (5.6:1, border 3.5:1), no bar. Playing: a 2 px --accent border (3.1:1 on the page), "Playing · N%", the
+   button solid --accent with a white pause (5.5:1). The play button otherwise: a light blue ring and triangle
+   (6.4:1). A mouse over a card turns its border light blue; the title, the card's one Tab stop, draws its focus
+   ring round the whole card. Group headings: small gray capitals. On a phone (below) the cards stack. */
+#library-view { --card:#1e1e20; --card-line:#303236; }
+.library-search { margin-bottom:4px; }
+.library-search input { flex:1 1 100%; }
+.library-group-head { margin:18px 2px 10px; color:var(--dim); font-size:13px; font-weight:600; letter-spacing:.05em;
+                      text-transform:uppercase; }
+.book-cards { display:grid; grid-template-columns:minmax(0,1fr); gap:10px; margin:0; padding:0; list-style:none; }
+.book-card { display:grid; grid-template-columns:56px minmax(0,1fr) 150px auto auto;
+             grid-template-areas:"thumb text chip play more"; align-items:center; column-gap:20px;
+             min-height:100px; padding:13px 8px 13px 15px; background:var(--card); border:1px solid var(--card-line);
+             border-radius:var(--radius); cursor:pointer; }
+@media (hover:hover) {
+  .book-card:hover { border-color:color-mix(in srgb, var(--accent-light) 65%, var(--card)); }
+}
+.book-card.is-playing, .book-card.is-playing:hover { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+.book-card:has(.book-open:focus-visible) { outline:2px solid var(--accent-light); outline-offset:2px; }
+.book-thumb { grid-area:thumb; position:relative; width:56px; height:72px; }
+.book-thumb .page-icon { display:block; width:100%; height:100%; }
+.page-icon .page-sheet { fill:var(--raised); stroke:var(--off); stroke-width:1.5; }
+.page-icon .page-lines { fill:none; stroke:var(--off); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.book-thumb img { position:absolute; inset:0; width:100%; height:100%; border-radius:4px; background:#ffffff;
+                  object-fit:cover; object-position:top; opacity:0; }
+.book-thumb.has-picture img { opacity:1; }
+.book-thumb.has-picture .page-icon { visibility:hidden; }
+.book-text { grid-area:text; display:grid; gap:2px; min-width:0; }
+.book-card .book-open { justify-self:start; max-width:100%; min-width:0; min-height:0; padding:0; border:0;
+                        border-radius:4px; background:none; box-shadow:none; color:var(--text); font-size:17px;
+                        font-weight:650; line-height:1.35; text-align:left; }
+.book-card .book-open:hover:not(:disabled) { background:none; }
+.book-card .book-open:active:not(:disabled) { transform:none; filter:none; }
+.book-card .book-open:focus-visible { outline:none; }
+.book-name { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.book-line { overflow:hidden; color:var(--dim); font-size:14px; white-space:nowrap; text-overflow:ellipsis; }
+.book-bar { max-width:420px; height:4px; margin-top:10px; overflow:hidden; border-radius:2px; background:#33363c; }
+.book-bar > span { display:block; height:100%; border-radius:2px; background:var(--accent-light); }
+.book-chip { grid-area:chip; justify-self:start; padding:2px 11px; border:1px solid; border-radius:999px;
+             font-size:14px; line-height:1.4; white-space:nowrap; }
+.book-card:is(.is-progress, .is-playing) .book-chip {
+  border-color:color-mix(in srgb, var(--accent-light) 65%, var(--card));
+  background:color-mix(in srgb, var(--accent-light) 10%, var(--card)); color:var(--accent-light); }
+.book-card.is-new .book-chip { border-color:#7a7e87; color:#c9ccd2; }
+.book-card.is-finished .book-chip { border-color:color-mix(in srgb, var(--local) 65%, var(--card));
+                                    background:color-mix(in srgb, var(--local) 10%, var(--card)); color:var(--local); }
+.book-card .book-play { grid-area:play; display:grid; place-items:center; width:46px; height:46px; min-height:0;
+                        padding:0; border:1px solid var(--accent-light); border-radius:50%; background:transparent;
+                        box-shadow:none; color:var(--accent-light); }
+.book-card .book-play:hover:not(:disabled) { background:color-mix(in srgb, var(--accent-light) 12%, var(--card)); }
+.book-card .book-play svg { width:14px; height:14px; fill:currentColor; }
+.book-card.is-playing .book-play { border-color:var(--accent); background:var(--accent); color:var(--accent-ink); }
+.book-card.is-playing .book-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
+.book-card button.book-more { grid-area:more; min-width:32px; padding:0 6px; border-color:transparent;
+                              background:transparent; box-shadow:none; color:var(--dim); }
+.book-card button.book-more:hover:not(:disabled) { background:var(--hover); color:var(--text); }
 button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1; }
 .more { display:block; margin:14px auto 0; }
 .empty { padding:40px 20px; background:var(--surface); border-radius:var(--radius);
@@ -18913,7 +19067,12 @@ html { scrollbar-gutter:stable; }
 .player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0;
                padding:0 16px env(safe-area-inset-bottom); background:var(--surface);
                border-top:1px solid var(--line); }
-body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
+body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--dock-h, 0px); }
+/* A book playing from the Library: of its view only the player bar shows, the full width, without Ask Hilde (which
+   asks about an open book). */
+#book-view.dock-only > :not(.reading-column), #book-view.dock-only .reading-column > :not(.player-dock),
+#book-view.dock-only .ask-hilde { display:none !important; }
+#book-view.dock-only :is(.player-dock, .dock-slot) { right:0; }
 .player-bar { display:grid; gap:8px; max-width:560px; margin:0 auto; padding:8px 0 12px; }
 .player-bar > * { font-size:15px; }
 .player-controls { display:flex; align-items:center; gap:12px; min-width:0; }
@@ -19405,14 +19564,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                          align-items:center; gap:6px; }
   .voice-table button.voice-select { min-width:0; }
   .voice-table .selected-badge { min-width:0; min-height:44px; padding:0 12px; }
-  .book-table tr { grid-template-columns:minmax(0,1fr) auto; }
-  .book-table .title, .book-table .duration, .book-table .source, .book-table .voice,
-  .book-table .position { grid-column:1; }
-  .book-table .duration, .book-table .source, .book-table .voice, .book-table .position { font-size:13px; }
   .data-table td[data-label]::before { content:attr(data-label) ": "; }
-  .book-table .action { grid-column:2; grid-row:1 / span 5; align-self:center; }
-  .book-table .action { display:flex; flex-direction:column; align-items:flex-end; gap:2px; }
-  .voice-table .select > * + *, .book-table .action > * + * { margin-left:0; }
+  .voice-table .select > * + * { margin-left:0; }
+  /* A book's card on a phone: the thumbnail, then the title, "voice · length", the chip and the bar stacked; the
+     play button (and ⋯) on the right. */
+  .book-card { grid-template-columns:44px minmax(0,1fr) auto auto;
+               grid-template-areas:"thumb title play more" "thumb line play more" "thumb chip play more"
+                                   "thumb bar play more";
+               column-gap:12px; min-height:0; padding:12px 2px 12px 14px; }
+  .book-text { display:contents; }
+  .book-card .book-open { grid-area:title; font-size:16px; }
+  .book-line { grid-area:line; }
+  .book-type { display:none; }
+  .book-chip { grid-area:chip; margin-top:6px; }
+  .book-bar { grid-area:bar; max-width:none; }
+  .book-thumb { align-self:center; width:44px; height:58px; }
+  .book-card .book-play { width:44px; height:44px; }
+  .book-card button.book-more { min-width:30px; padding:0 4px; }
 }
 @media (max-width:400px) {
   /* The narrowest phones give the name's line a little more room. */
@@ -19971,21 +20139,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
   <section id="page-player" class="page hidden" role="tabpanel" aria-labelledby="tab-player">
     <div id="library-view">
-      <div class="page-head"><h2>Library</h2></div>
+      <h2 class="visually-hidden">Library</h2>
       <div id="library-content" class="hidden">
-        <div class="search">
+        <div class="search library-search">
           <label for="book-search" class="visually-hidden">Search titles</label>
           <input id="book-search" type="search" autocomplete="off" placeholder="Search titles">
           <span id="book-count" class="note" aria-live="polite"></span>
         </div>
-        <table id="book-table" class="data-table book-table">
-          <caption class="visually-hidden">Audiobooks</caption>
-          <thead><tr><th scope="col">Title</th><th scope="col">Duration</th>
-            <th scope="col">Source file</th><th scope="col">Voice</th>
-            <th scope="col">Last position (this device)</th>
-            <th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
-          <tbody id="book-rows"></tbody>
-        </table>
+        <!-- Each book a framed card (bookCard()): books in progress under Continue listening, latest heard first;
+             the rest under All books, newest first. -->
+        <section id="continue-group" class="library-group hidden" aria-labelledby="continue-head">
+          <h3 id="continue-head" class="library-group-head">Continue listening</h3>
+          <ul id="continue-cards" class="book-cards"></ul>
+        </section>
+        <section id="all-group" class="library-group" aria-labelledby="all-head">
+          <h3 id="all-head" class="library-group-head">All books</h3>
+          <ul id="book-cards" class="book-cards"></ul>
+        </section>
         <p id="book-none" class="empty hidden"></p>
         <button id="book-more" class="more hidden" type="button"
           onclick="showMoreBooks()">Show more</button>
@@ -21184,6 +21354,9 @@ function downloadWholeBook(audio) {
 function playDownloadedBook() {
   const download = readerDownload;
   if (!download || !download.url || download.swapped || download.audio !== readerAudio) return;
+  // Not before the saved place is set: a book played from the Library starts
+  // (muted) before it is placed, and the swap would put it back where it began.
+  if (!readerRestored) return;
   download.swapped = true;
   const audio = download.audio, time = audio.currentTime, playing = !audio.paused;
   // The same bytes, so cue times and exact seeking stay as they were. While
@@ -21207,6 +21380,7 @@ function clearReader() {
   readerSampleRate = 0; readerBlocks = []; readerWordElements = [];
   activeReaderBlock = -1; activeReaderWord = -1;
   readerPayload = null; readerRestored = false; panelAnswer = null;
+  restoredTime = 0; heardSinceOpen = heardSinceSave = false; pendingPlay = null;
   $("reader-models").classList.add("hidden");
   if (readerDownload) {
     readerDownload.controller.abort();
@@ -21860,9 +22034,11 @@ function keepPlace(change) {
 function motion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }
-// Bring an element a quarter of the way down the reading view.
+// Bring an element a quarter of the way down the reading view. A book
+// playing from the Library has no text on screen, and the Library never
+// scrolls for it.
 function placeListening(element, behavior) {
-  if (!element) return;
+  if (!element || !document.querySelector("main").classList.contains("reading")) return;
   const box = element.getBoundingClientRect();
   // Once the text scrolls, the paper bar is pinned to the top, and on a wide
   // screen the controls under it.
@@ -22106,9 +22282,14 @@ function renderPlayer() {
     item.setAttribute("aria-checked", String(Math.abs(Number(item.dataset.speed) - speed) < 1e-9));
   renderPlayerTime();
 }
+// A book asked to play from the Library starts muted inside the press, so a
+// browser that lets only a press start sound (Safari) plays it once it is in
+// place (openAudiobook()); a pause meanwhile cancels that.
+let pendingPlay = null;
 function togglePlayback() {
   if (!readerAudio) return;
-  if (readerAudio.paused) readerAudio.play().catch(() => {}); else readerAudio.pause();
+  if (readerAudio.paused) readerAudio.play().catch(() => {});
+  else { pendingPlay = null; readerAudio.pause(); }
 }
 // Speed is this browser's playback preference, kept per book; it never
 // changes the audio.
@@ -22161,35 +22342,65 @@ function setHighlightStyle(style, save = true) {
   if (save) store("highlightStyle", style);
 }
 function bookPlace(book) { return stored(`book.${book}`) || {}; }
-let readerRestored = false, placeSavedAt = 0;
+// The place is saved about every second while the book plays, and as it
+// pauses, seeks, ends, closes, and as the page is left or hidden; all of it
+// in localStorage, written at once, so nothing waits for the network. A book
+// opened and neither played nor moved keeps its saved place exactly.
+let readerRestored = false, placeSavedAt = 0, restoredTime = 0, heardSinceOpen = false, heardSinceSave = false;
 function saveBookPlace() {
   const audio = readerAudio, book = state && state.player.book;
   if (!audio || !book || !readerRestored || readerDownload?.restoring) return;
+  if (!heardSinceOpen && Math.abs(audio.currentTime - restoredTime) < 0.01) return;
   placeSavedAt = performance.now();
+  const before = bookPlace(book);
   store(`book.${book}`, {
-    ...bookPlace(book), voice:state.player.voice, time:audio.currentTime,
+    ...before, voice:state.player.voice, time:audio.currentTime,
     block:activeReaderBlock, passage:passageOfBlock(activeReaderBlock),
     speed:audio.defaultPlaybackRate,
+    // It reached the end: the Library says Finished, and it starts again from the beginning.
+    finished:audio.ended,
+    // When it was last heard (Unix ms): Continue listening shows the latest first.
+    played:heardSinceSave ? Date.now() : before.played,
   });
+  heardSinceSave = !audio.paused;
+  refreshCards();
 }
 function saveBookPlaceSoon() { if (performance.now() - placeSavedAt > 1000) saveBookPlace(); }
 function rememberSpeed() {
   const book = state && state.player.book;
   if (readerAudio && book) store(`book.${book}`, { ...bookPlace(book), speed:readerAudio.defaultPlaybackRate });
 }
-// Reopening a book, or reloading, finds it paused where it was: the same
-// time with the same voice, else the start of the same passage.
-function restoreBookPlace(place, voice) {
+// The start of the sentence being read at a time (the last one begun by
+// then; cues in source-audio samples, sorted), so a book resumes at the
+// beginning of the sentence where listening stopped.
+function sentenceStartAt(cues, rate, time) {
+  if (!rate || !cues.length || !(time > 0)) return time;
+  const sample = time * rate;
+  let low = 0, high = cues.length - 1, found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (cues[middle].start_sample <= sample) { found = middle; low = middle + 1; } else high = middle - 1;
+  }
+  return found < 0 ? time : cues[found].start_sample / rate;
+}
+// Reopening a book, or reloading, finds it paused where it was: the start of
+// the sentence it stopped in with the same voice, else the start of the same
+// passage. A finished book, or Start over, begins again from the beginning.
+function restoreBookPlace(place, voice, fromStart = false) {
   const audio = readerAudio;
   let time = null;
-  if (place.voice === voice && Number.isFinite(place.time)) time = place.time;
+  if (fromStart || place.finished === true) time = 0;
+  else if (place.voice === voice && Number.isFinite(place.time))
+    time = sentenceStartAt(readerCues, readerSampleRate, place.time);
   else if (place.passage && readerPayload) {
     const block = (readerPayload.block_passages || []).indexOf(place.passage);
     const cue = readerCues.find((candidate) => candidate.block === block);
     if (cue) time = cue.start_sample / readerSampleRate;
   }
-  if (time > 0) audio.currentTime = Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time;
+  if (time !== null && (time > 0 || audio.currentTime > 0))
+    audio.currentTime = Number.isFinite(audio.duration) ? Math.min(time, audio.duration) : time;
   readerRestored = true;
+  restoredTime = audio.currentTime;
   updateReaderHighlight();
   renderPlayer();
   if (time > 0) placeListening(listeningElement(), "auto");
@@ -22201,12 +22412,15 @@ function bindReaderAudio(audio) {
   audio.addEventListener("seeking", () => { updateReaderHighlight(); renderPlayerTime(); });
   audio.addEventListener("seeked", saveBookPlace);
   audio.addEventListener("play", () => {
+    heardSinceOpen = heardSinceSave = true;
     pauseOtherSounds(audio);
     renderPlayer();
     if (!readerFrame) readerFrame = requestAnimationFrame(followReaderAudio);
     downloadWholeBook(audio);
+    refreshCards();
   });
-  audio.addEventListener("pause", () => { renderPlayer(); saveBookPlace(); playDownloadedBook(); });
+  audio.addEventListener("pause", () => { renderPlayer(); saveBookPlace(); playDownloadedBook(); refreshCards(); });
+  audio.addEventListener("ended", saveBookPlace);
   for (const type of ["durationchange", "volumechange", "ended"])
     audio.addEventListener(type, renderPlayer);
   audio.addEventListener("ratechange", () => { renderPlayer(); rememberSpeed(); });
@@ -22243,14 +22457,16 @@ function bookById(id) {
 
 // A book's voices all read its one text; the reader plays one of them. It
 // opens paused where this browser last left it, at the speed chosen for it.
-async function openAudiobook(id, focus, voiceName) {
+// From a Library card's play button (inLibrary, play) it loads with the
+// Library still shown and plays in the player bar; fromStart is Start over.
+async function openAudiobook(id, focus, voiceName, { inLibrary = false, play = false, fromStart = false } = {}) {
   if (!id) return;
   stopPreview();
   clearReader();
   const book = bookById(id);
   const voice = voiceName
     || (state.player.book === id && state.player.voice) || (book ? book.voice : "") || "";
-  state.player.book = id; state.player.voice = voice;
+  state.player.book = id; state.player.voice = voice; state.player.in_library = inLibrary;
   state.tab = "player";
   render(); queueSync();
   resetChatFor(id);
@@ -22265,8 +22481,10 @@ async function openAudiobook(id, focus, voiceName) {
   $("paper-bar-meta").textContent = [voice, length].filter(Boolean).join(" · ");
   // Only a book whose document is kept, or is in Documents, offers it.
   $("reader-source").classList.toggle("hidden", !(book && book.has_source));
-  expectScrollUntil = performance.now() + 400;
-  window.scrollTo(0, 0);
+  if (!inLibrary) {
+    expectScrollUntil = performance.now() + 400;
+    window.scrollTo(0, 0);
+  }
   if (focus) $("reader-title").focus({ preventScroll:true });
   const audio = readerPlayer(id, voice);
   $("artifact-player").append(audio);
@@ -22275,7 +22493,13 @@ async function openAudiobook(id, focus, voiceName) {
   const speed = Number(place.speed);
   if (speed >= 0.25 && speed <= 4) setSpeed(speed);
   bindReaderAudio(audio);
+  if (play) {
+    pendingPlay = audio;
+    audio.muted = true;
+    audio.play().catch(() => {});
+  }
   renderPlayer();
+  refreshCards();
   const metadata = new Promise((resolve) => {
     audio.addEventListener("loadedmetadata", resolve, { once:true });
   });
@@ -22319,7 +22543,14 @@ async function openAudiobook(id, focus, voiceName) {
     $("reader-unavailable").classList.remove("hidden");
   }
   await metadata;
-  if (readerAudio === audio) restoreBookPlace(place, voice);
+  if (readerAudio !== audio) return;
+  restoreBookPlace(place, voice, fromStart);
+  if (!play) return;
+  audio.muted = false;
+  if (pendingPlay === audio) {
+    pendingPlay = null;
+    audio.play().catch(() => {});
+  }
 }
 
 // The voice picker lists the voices that read the book's current text; a
@@ -22441,12 +22672,15 @@ async function startBookJob(mode, voice) {
   }
 }
 
-function closeBook() {
+// Back to the Library, the book's place saved (clearReader()); also a book
+// playing from the Library, as it is deleted.
+function closeBook(focus = true) {
   clearReader();
-  state.player.book = ""; state.player.voice = "";
+  state.player.book = ""; state.player.voice = ""; state.player.in_library = false;
   resetChatFor("");
   render(); queueSync();
-  $("book-search").focus();
+  renderLibrary();
+  if (focus) $("book-search").focus();
 }
 
 // The Listen tab, pressed while Listen is shown, does what All audiobooks
@@ -22454,7 +22688,7 @@ function closeBook() {
 function chooseListen() {
   if (settingsOpen) { setSettings(false); if (state.tab === "player") return; }
   if (state.tab !== "player") setTab("player");
-  else if (state.player.book) closeBook();
+  else if (state.player.book && !state.player.in_library) closeBook();
 }
 
 // The MP3 exists as soon as the book does. A click starts the browser's
@@ -23819,27 +24053,71 @@ async function refreshLibrary(restore) {
   if (!bookById(state.player.book)) {
     state.player.book = ""; state.player.voice = ""; render(); queueSync();
   } else if (state.tab === "player" && !readerAudio) {
-    openAudiobook(state.player.book);
+    openAudiobook(state.player.book, false, undefined, { inLibrary:state.player.in_library });
   }
 }
 
-function renderLibrary() {
+// The Library: books in progress under Continue listening, the latest heard
+// first; every other book under All books, newest first, 50 at a time. The
+// search (titles only) filters both. The groups and their order are set as
+// the Library is drawn afresh (shown, searched, a book closed); a repaint
+// (refreshCards(): every second while a book plays here, and as it plays,
+// pauses, or ends) only updates the cards where they are, so none moves under
+// the pointer. Cards are kept by book, so focus and an open menu stay.
+const bookCards = new Map();
+let libraryGroups = null;
+function renderLibrary(regroup = true) {
   $("library-empty").classList.toggle("hidden", books.length > 0);
   $("library-content").classList.toggle("hidden", books.length === 0);
   const terms = searchWords($("book-search").value);
   const matches = books.filter((book) => matchesAll(book.words, terms));
-  $("book-rows").replaceChildren(...matches.slice(0, bookLimit).map(bookRow));
-  $("book-table").classList.toggle("hidden", matches.length === 0);
+  const statuses = new Map(matches.map((book) => [book.id, bookStatus(book, bookPlace(book.id))]));
+  if (regroup || !libraryGroups) {
+    libraryGroups = {
+      going: matches.filter((book) => statuses.get(book.id).kind === "progress")
+        .sort((a, b) => statuses.get(b.id).played - statuses.get(a.id).played).map((book) => book.id),
+      rest: matches.filter((book) => statuses.get(book.id).kind !== "progress").map((book) => book.id),
+    };
+  }
+  const byId = new Map(matches.map((book) => [book.id, book]));
+  const going = libraryGroups.going.map((id) => byId.get(id)).filter(Boolean);
+  const rest = libraryGroups.rest.map((id) => byId.get(id)).filter(Boolean);
+  const shown = rest.slice(0, bookLimit);
+  const focused = document.activeElement;
+  placeCards($("continue-cards"), going, statuses);
+  placeCards($("book-cards"), shown, statuses);
+  // Moving a card takes the focus from what it holds; it is given back.
+  if (focused && focused.isConnected && focused !== document.activeElement) focused.focus({ preventScroll:true });
+  const ids = new Set(books.map((book) => book.id));
+  for (const id of bookCards.keys()) if (!ids.has(id)) bookCards.delete(id);
+  $("continue-group").classList.toggle("hidden", going.length === 0);
+  $("all-group").classList.toggle("hidden", shown.length === 0);
   $("book-none").classList.toggle("hidden", matches.length > 0);
   $("book-none").textContent = `No titles contain all of: ${terms.join(" ")}`;
-  const hidden = Math.max(0, matches.length - bookLimit);
+  const hidden = Math.max(0, rest.length - bookLimit);
   $("book-more").classList.toggle("hidden", hidden === 0);
   $("book-more").textContent = `Show ${Math.min(hidden, PAGE_SIZE)} more`;
+  // The count shows while searching; screen readers hear it either way.
   $("book-count").textContent = terms.length
     ? `${matches.length} of ${plural(books.length, "audiobook")}`
     : plural(books.length, "audiobook");
+  $("book-count").classList.toggle("visually-hidden", !terms.length);
 }
 function showMoreBooks() { bookLimit += PAGE_SIZE; renderLibrary(); }
+// The Library repaints while it shows: a book playing here, pausing, or ending.
+function libraryShown() {
+  return !!state && state.tab === "player" && !settingsOpen && !$("library-view").classList.contains("hidden");
+}
+function refreshCards() { if (libraryShown()) renderLibrary(false); }
+function placeCards(list, items, statuses) {
+  const cards = items.map((book) => {
+    const card = bookCard(book);
+    updateCard(card, book, statuses.get(book.id));
+    return card;
+  });
+  if (cards.length !== list.children.length || cards.some((card, at) => list.children[at] !== card))
+    list.replaceChildren(...cards);
+}
 
 function cell(className, label) {
   const node = document.createElement("td");
@@ -23848,53 +24126,152 @@ function cell(className, label) {
   return node;
 }
 
-// Where this browser last left a book: its voice and time (hilde.book.<id>),
-// while that voice still reads the book.
-function lastPosition(book) {
-  const place = bookPlace(book.id);
-  const voice = book.voices.find((item) => item.name === place.voice && item.status === "ready");
-  return voice && Number(place.time) > 0 ? { voice, time:Number(place.time) } : null;
+// What this browser's saved place (hilde.book.<id>) says about a book; only
+// read here, never written. New: no saved time (never played here, or its
+// voice no longer reads the book). Finished: it reached the end (`finished`,
+// written as its audio ended). Else in progress: the share heard of that
+// voice's length (1-99%) and when it was last heard (`played`, Unix ms).
+function bookStatus(book, place) {
+  const voice = book.voices.find((item) => item.name === place.voice && item.status === "ready") || null;
+  const time = Number(place.time), played = Number(place.played) || 0;
+  if (voice && place.finished === true) return { kind:"finished", percent:100, voice, played };
+  if (!voice || !(time > 0)) return { kind:"new", percent:0, voice:null, played:0 };
+  const duration = Number(voice.duration);
+  const percent = duration > 0 ? Math.min(99, Math.max(1, Math.floor(time / duration * 100))) : 1;
+  return { kind:"progress", percent, voice, played };
 }
-function bookRow(book) {
-  const row = document.createElement("tr");
-  const title = cell("title");
-  const name = document.createElement("div");
-  name.className = "book-title clamp"; name.textContent = book.title; name.title = book.title;
-  title.append(name);
-  const duration = cell("duration", "Duration");
-  duration.textContent = formatDuration(book.duration);
-  const source = cell("source", "Source file");
-  source.textContent = book.source || "Unknown";
-  const place = lastPosition(book);
-  const voice = cell("voice", "Voice");
-  const narrators = book.voices.filter((item) => item.status === "ready").map((item) => item.name);
-  const shownVoice = place ? place.voice.name : book.voice;
-  voice.textContent = shownVoice + (narrators.length > 1 ? ` (+${narrators.length - 1})` : "");
-  voice.title = narrators.length ? `Read by ${narrators.join(", ")}` : "";
-  const position = cell("position", "Last position (this device)");
-  position.textContent = place
-    ? `${formatClock(place.time)} of ${formatClock(place.voice.duration)}` : "Not started";
-  const action = cell("action");
-  const open = document.createElement("button");
-  open.type = "button"; open.textContent = place ? "Continue" : "Open";
-  // Phase 1's name for this control, which its checks and screen readers know.
-  open.setAttribute("aria-label", `Listen to ${book.title}`);
-  open.title = place ? `Continue at ${formatClock(place.time)}, paused` : `Open ${book.title}`;
-  const go = () => openAudiobook(book.id, true, place ? place.voice.name : undefined);
-  open.addEventListener("click", go);
-  const more = rowMoreButton(`More for ${book.title}`, () => [
-    { label:"Delete…", run:(button) => deleteBook(book, button) },
-  ]);
-  action.append(open, more);
-  row.append(title, duration, source, voice, position, action);
-  // A click anywhere on the row does what Open does; its buttons keep their
-  // own, and a click that ends a text selection selects.
-  row.className = "book-row";
-  row.addEventListener("click", (event) => {
-    if (event.target.closest("button, a, input") || String(window.getSelection())) return;
-    go();
+// The book in the player (open, or playing from the Library), and whether it plays.
+function loadedBook(id) { return !!readerAudio && state.player.book === id; }
+function bookPlaying(id) { return loadedBook(id) && !readerAudio.paused; }
+
+// A plain page: the card's picture until the PDF's first page is in, or for a book without a PDF.
+const PAGE_ICON = '<svg class="page-icon" viewBox="0 0 56 72" aria-hidden="true"><path class="page-sheet" '
+  + 'd="M6 1.5h32l16.5 16.5v48a4.5 4.5 0 0 1-4.5 4.5H6A4.5 4.5 0 0 1 1.5 66V6A4.5 4.5 0 0 1 6 1.5z"/>'
+  + '<path class="page-lines" d="M38 1.5V18h16.5M11 30h34M11 38h34M11 46h34M11 54h22"/></svg>';
+// A book's card: its thumbnail, title, "voice · length · PDF", the bar while
+// in progress, the status chip, the round play button, and ⋯. The title is
+// the card's one Tab stop (Enter opens the book, Space plays or pauses it); a
+// click anywhere else on the card opens it too.
+function bookCard(book) {
+  let card = bookCards.get(book.id);
+  if (card) { card.book = book; return card; }
+  card = document.createElement("li");
+  card.book = book;
+  const key = `book-card-${bookCards.size}`;
+  card.innerHTML = `<div class="book-thumb">${PAGE_ICON}</div><div class="book-text">`
+    + `<button type="button" class="book-open" aria-describedby="${key}-line ${key}-chip"><span class="book-name">`
+    + `</span></button><p id="${key}-line" class="book-line"></p><div class="book-bar" aria-hidden="true"><span>`
+    + `</span></div></div><span id="${key}-chip" class="book-chip"></span>`
+    + `<button type="button" class="book-play" tabindex="-1"></button>`;
+  const open = card.querySelector(".book-open");
+  open.addEventListener("click", () => openFromLibrary(card.book));
+  open.addEventListener("keydown", (event) => {
+    if (event.key !== " " || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    if (!event.repeat) playFromLibrary(card.book);
   });
-  return row;
+  // The button's own Space (a click on its release) is not an open.
+  open.addEventListener("keyup", (event) => { if (event.key === " ") event.preventDefault(); });
+  card.querySelector(".book-play").addEventListener("click", () => playFromLibrary(card.book));
+  const more = rowMoreButton(`More for ${book.title}`, () => bookMenu(card.book));
+  more.classList.add("book-more");
+  card.append(more);
+  // The path as dispatched: a button's own click repaints the card (its icon), which leaves the target detached.
+  card.addEventListener("click", (event) => {
+    if (event.composedPath().some((node) => node instanceof Element && node.matches("button, a, input"))
+      || String(window.getSelection())) return;
+    openFromLibrary(card.book);
+  });
+  bookCards.set(book.id, card);
+  return card;
+}
+function updateCard(card, book, status) {
+  const playing = bookPlaying(book.id);
+  // The book playing here shows the player's own place, live.
+  const duration = playing ? readerAudio.duration : NaN;
+  const percent = Number.isFinite(duration) && duration > 0
+    ? Math.min(99, Math.floor(readerAudio.currentTime / duration * 100)) : status.percent;
+  const kind = playing ? "playing" : status.kind;
+  card.className = `book-card is-${kind}`;
+  card.dataset.book = book.id;
+  card.dataset.status = status.kind;
+  const open = card.querySelector(".book-open");
+  open.setAttribute("aria-label", `Listen to ${book.title}`);
+  open.title = book.title;
+  setText(card.querySelector(".book-name"), book.title);
+  const voice = status.voice || book.voices.find((item) => item.name === book.voice) || null;
+  const type = documentType(book.source);
+  const line = card.querySelector(".book-line");
+  line.replaceChildren(`${voice ? voice.name : book.voice} · ${formatDuration(voice ? voice.duration : book.duration)}`);
+  // The phone leaves out the document's type.
+  if (type) {
+    const part = document.createElement("span");
+    part.className = "book-type"; part.textContent = ` · ${type}`;
+    line.append(part);
+  }
+  setText(card.querySelector(".book-chip"), playing ? `Playing · ${percent}%`
+    : kind === "progress" ? `${percent}% listened` : kind === "finished" ? "✓ Finished" : "New");
+  const bar = card.querySelector(".book-bar");
+  bar.classList.toggle("hidden", !(kind === "progress" || playing && status.kind !== "finished"));
+  bar.firstChild.style.width = `${percent}%`;
+  const play = card.querySelector(".book-play");
+  if (play.dataset.playing !== String(playing)) {
+    play.dataset.playing = String(playing);
+    play.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+  }
+  play.setAttribute("aria-label", `${playing ? "Pause" : "Play"} ${book.title}`);
+  card.querySelector(".book-more").setAttribute("aria-label", `More for ${book.title}`);
+  // The thumbnail: asked for once per PDF (its SHA-256 in the link, so the
+  // browser keeps it); the page icon stays until it is in, or if it fails.
+  const thumb = card.querySelector(".book-thumb");
+  if ((book.thumbnail || "") !== (thumb.dataset.version || "")) {
+    thumb.dataset.version = book.thumbnail || "";
+    thumb.classList.remove("has-picture");
+    thumb.querySelector("img")?.remove();
+    if (book.thumbnail) {
+      const image = document.createElement("img");
+      image.alt = ""; image.loading = "lazy"; image.decoding = "async";
+      image.addEventListener("load", () => thumb.classList.add("has-picture"), { once:true });
+      image.src = `/api/thumbnail?book=${encodeURIComponent(book.id)}&v=${book.thumbnail}`;
+      thumb.append(image);
+    }
+  }
+}
+function bookMenu(book) {
+  const items = [];
+  if (bookStatus(book, bookPlace(book.id)).kind === "progress")
+    items.push({ label:"Start over", run:() => playFromLibrary(book, true) });
+  items.push({ label:"Delete…", run:(button) => deleteBook(book, button) });
+  return items;
+}
+// A card opens its book, paused where it was left (the start of that
+// sentence); the book playing here opens where it is, playing on.
+function openFromLibrary(book) {
+  if (!loadedBook(book.id)) {
+    const status = bookStatus(book, bookPlace(book.id));
+    openAudiobook(book.id, true, status.voice ? status.voice.name : undefined);
+    return;
+  }
+  state.player.in_library = false;
+  render(); queueSync();
+  expectScrollUntil = performance.now() + 400;
+  window.scrollTo(0, 0);
+  $("reader-title").focus({ preventScroll:true });
+  if (readerRestored) placeListening(listeningElement(), "auto");
+}
+// The play button starts or pauses its book without opening it: the player
+// bar plays it under the Library. Another book stops the one playing; Start
+// over plays from the beginning.
+function playFromLibrary(book, fromStart = false) {
+  if (loadedBook(book.id)) {
+    if (!fromStart) { togglePlayback(); return; }
+    readerAudio.currentTime = 0;
+    readerAudio.play().catch(() => {});
+    return;
+  }
+  const status = bookStatus(book, bookPlace(book.id));
+  openAudiobook(book.id, false, status.voice ? status.voice.name : undefined,
+    { inLibrary:true, play:true, fromStart });
 }
 
 // A row's ⋯ button: its menu (one shared element) opens under it.
@@ -24343,6 +24720,7 @@ async function deleteBook(book, button) {
       + "Your documents are not touched.",
   }, button);
   if (!answer) return;
+  if (state.player.book === book.id) closeBook(false);
   setStatus(`Deleted the audiobook ${book.title}.`);
   await refreshLibrary();
 }
@@ -26748,15 +27126,21 @@ function render() {
   $("speech-server-note").classList.toggle("hidden", !facts.clone_server);
   $("speech-applies").classList.toggle("hidden", !!facts.clone_server);
   $("narration-server-note").classList.toggle("hidden", !facts.clone_server);
-  const reading = tab === "player" && !!state.player.book && !settingsOpen;
+  // A book is open (reading), or plays from the Library (docked): the Library
+  // shows, and of the book's view only the player bar.
+  const listening = tab === "player" && !!state.player.book && !settingsOpen;
+  const reading = listening && !state.player.in_library, docked = listening && state.player.in_library;
   $("library-view").classList.toggle("hidden", reading);
-  $("book-view").classList.toggle("hidden", !reading);
+  $("book-view").classList.toggle("hidden", !listening);
+  $("book-view").classList.toggle("dock-only", docked);
   document.querySelector("main").classList.toggle("reading", reading);
+  document.querySelector("main").classList.toggle("library-docked", docked);
   queuePinned();
   document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
-  if (!reading) { hideSelectionAsk(); hideDockAsk(); closeReaderMenus(); }
+  // The player bar's speed menu stays while the bar shows under the Library.
+  if (!reading) { hideSelectionAsk(); hideDockAsk(); if (!docked) closeReaderMenus(); }
   renderCreate(); renderProgress(); renderResult(); renderVoiceForm(); renderQueue();
   renderFailureCards();
 }
@@ -26777,7 +27161,8 @@ function setTab(tab) {
   if (tab === "voice") { renderVoiceTable(); refreshVoices(); }
   if (tab === "player") {
     refreshLibrary();
-    if (state.player.book && !readerAudio) openAudiobook(state.player.book);
+    if (state.player.book && !readerAudio)
+      openAudiobook(state.player.book, false, undefined, { inLibrary:state.player.in_library });
   }
   render(); sync();
   if (tab === "player" && listenPlace && listenPlace.element.isConnected)
@@ -28154,6 +28539,8 @@ const PLAYER_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 function playerKey(event) {
   const audio = readerAudio, target = event.target;
   if (!audio || state.tab !== "player" || !state.player.book) return;
+  // Under the Library the keys are the player bar's only (a card has its own Space).
+  if (state.player.in_library && !target.closest?.("#player-dock")) return;
   if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
   // The seek bar takes the player's keys; the volume slider and a model
   // picker's list keep their own.
@@ -28169,7 +28556,7 @@ function playerKey(event) {
   };
   const say = (text) => setText($("player-key-status"), text);
   if (key === "k" || (key === " " && !presses)) {
-    if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+    if (audio.paused) audio.play().catch(() => {}); else { pendingPlay = null; audio.pause(); }
   } else if (key === "j" || key === "l") {
     seek(audio.currentTime + (key === "l" ? 10 : -10));
   } else if (key === "ArrowLeft" || key === "ArrowRight") {

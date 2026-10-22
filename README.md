@@ -270,7 +270,9 @@ and description, offers the tags Hilde suggests from each description for you
 to review one voice at a time, and designs new voices from tags. Tags live in
 `voice-tags.json` in the library, never in a voice's folder.
 **Listen** opens the
-**Library**, where each book shows its last position on this device, and
+**Library**, each book a card with its paper's first page, its status (new, how
+much is listened, finished, playing) and a play button that plays it without
+opening it, the books in progress first; it
 plays a book with its synchronized text, its source text, and its figures as
 printed in the PDF; **Ask Hilde** answers questions about what you are hearing
 and writes Markdown notes, in a panel beside the text from 900 px wide (below

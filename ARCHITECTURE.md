@@ -201,6 +201,8 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 
 ```text
 <root>/
+├── .cache/
+│   └── thumbnails/<pdf sha256>.png
 ├── Voices/
 ├── Audiobooks/
 │   └── <slug>--<hash12>/
@@ -224,6 +226,18 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 Browser state contains only flat asset names and book ids. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser; `read_book()` accepts only an id matching `BOOK_ID_PATTERN` and `voice_folder()` only a single safe component. File-serving and AirDrop paths must resolve inside the shared root.
 
 `asset_catalog()` returns sorted shared voice and document names; the Listen page reads books from `GET /api/library`. Existing files are not migrated automatically when the root changes.
+
+The Library's card thumbnails live in their own cache, `<root>/.cache/thumbnails/`
+(`thumbnail_cache()`), never in a book's folder. `book_thumbnail()` renders the
+first page of the book's PDF (`book_pdf()`: `book_source()` when it is a PDF)
+once with pymupdf, `THUMBNAIL_HEIGHT` (160) pixels tall, twice the card's 72 CSS
+px for a HiDPI screen, and keeps it as `<the PDF's SHA-256>.png`
+(`thumbnail_path()`, staged as a hidden `.tmp` and renamed, under
+`_THUMBNAIL_LOCK`); later requests read the file. The name is the PDF's hash
+(`cached_file_version()`), so another PDF is another picture and nothing goes
+stale; deleting the cache only costs a render. It is made lazily, on the first
+`GET /api/thumbnail` for the book (the card's `<img loading="lazy">`), never
+while listing the library.
 
 `prepare_library()` runs at startup. It creates the layout, runs `recover_books()` and `migrate_legacy_books()`, and, only when it
 creates `Voices/`, copies in each stock voice from `STOCK_VOICES_PATH` whole:
@@ -437,7 +451,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, New voice's `tags` (`stored_voice_tags()`: the valid ones, once each, at most 12, in vocabulary order) and `details` (More details), reference WAV subtype. `values_of()` composes `instruct` from them (`compose_voice_instruct()`), and `derived()` returns it as `voice_instruct`;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
+- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `in_library`, whether that book plays from the Library (loaded, with the Library shown and of the book's view only the player bar; true only when stored as `true`), `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -1424,23 +1438,68 @@ Each page:
   exists. Saving replaces it; its current version is kept in its history."
   and Save asks "Replace voice '<name>'?" first. Saving under another name
   keeps both voices.
-- **Listen** opens the **Library** (`#library-view`): a compact table
-  (`bookRow()`) of Title, Duration, Source file, Voice (the voice last heard
-  here, else the book's; "(+N)" for more ready voices, all named in its
-  tooltip), Last position (this device) (`hilde.book.<id>`'s time as "12:45 of
-  43:53", else "Not started"), and **Open**, which reads **Continue** when a
-  position exists and opens the book at that voice and time, paused. Its
-  accessible name stays "Listen to <title>". **⋯** holds **Delete…**. Newest
-  first, 50 rows at a time; search (placeholder "Search titles") reads titles only, with the same rules.
-  Without audiobooks it shows "No audiobooks yet", a sentence, and **Create
-  your first audiobook**. A click anywhere else on a row (not on a button, nor
-  one ending a text selection) opens the book view. Its header holds the
+- **Listen** opens the **Library** (`#library-view`; its "Library" heading is
+  for screen readers only): under the search box (placeholder "Search titles",
+  titles only, the same rules; it filters both groups, and "N of M audiobooks"
+  shows only while searching) the books as framed cards (`bookCard()`,
+  `updateCard()`) in two groups, `#continue-cards` under **Continue
+  listening** (books in progress, the latest `played` first; the group hidden
+  when empty) and `#book-cards` under **All books** (every other book, newest
+  first, 50 at a time); the headings are small gray capitals (13 px,
+  `text-transform`). A card (`li.book-card`, `--card` #1e1e20, a 1 px
+  `--card-line`, 12 px radius, 10 px apart, at least 100 px tall) holds the
+  thumbnail (`.book-thumb`, 56 × 72 px; the paper's first page from `GET
+  /api/thumbnail?book=<id>&v=<the PDF's SHA-256>`, a lazy `<img>` shown once
+  loaded over the plain page icon `PAGE_ICON`, which stays for a book without
+  a PDF or a failed picture), the title (`.book-open`, a button: bold 17 px,
+  one line cut with …, accessible name "Listen to <title>", described by the
+  line and the chip), "voice · length · PDF" (`.book-line`, `--dim`; the
+  voice of the saved place, else the book's; the document type
+  `documentType()`, left out on a phone), and for a book in progress the bar
+  (`.book-bar`, 4 px, `--accent-light` on #33363c, at most 420 px); then the
+  status chip (`.book-chip`, one 150 px column), the round play button
+  (`.book-play`, 46 px, 44 px on a phone; `--accent-light` ring and triangle;
+  "Play <title>" / "Pause <title>"; not a Tab stop) and **⋯** (`rowMoreButton()`,
+  **Start over** for a book in progress, then **Delete…**). The state
+  (`bookStatus()`, from `hilde.book.<id>`, only read here): **New** (gray
+  outline) without a saved time or with a voice no longer ready; **N%
+  listened** (blue chip, 1–99% of that voice's length) in progress;
+  **✓ Finished** (green, no bar) once `finished`; and for the book playing in
+  the player (`bookPlaying()`) **Playing · N%** from the player's own time,
+  a 2 px `--accent` border (its 1 px border and a 1 px inset shadow) and the
+  button solid `--accent` with a white pause. A mouse over a card turns its
+  border light blue (65% `--accent-light`); the title's focus ring is drawn
+  round the card (`:has(.book-open:focus-visible)`). Cards are kept per book
+  (`bookCards`) and only moved (`placeCards()`), with focus given back. The
+  groups and their order (`libraryGroups`) are set when the Library is drawn
+  afresh (`renderLibrary()`: shown, searched, more shown, a book closed); its
+  repaints while it shows (`refreshCards()`, `renderLibrary(false)`: every
+  save of the place, every play, pause, or end) update the cards where they
+  are, so a card never moves under the pointer: a book started from All books
+  moves to Continue listening the next time the Library is drawn. A click on a card
+  (not on a button, nor one ending a text selection; judged by the click's
+  `composedPath()`, since a button's own click repaints its icon) or Enter on its title
+  opens the book (`openFromLibrary()`); Space on the title, or the play button,
+  plays or pauses it without opening it (`playFromLibrary()`): the book loads
+  with `state.player.in_library` (`openAudiobook(…, {inLibrary, play})`),
+  the Library stays, and of `#book-view` only the player bar shows
+  (`.dock-only`, `main.library-docked`, without Ask Hilde); the player's keys
+  then work only inside the bar. Another card's play button loads its book
+  instead (the first one's place saved by `clearReader()`); **Start over**
+  plays from 0 (`fromStart`). The press itself starts the new audio muted
+  (`pendingPlay`), so Safari, which plays sound only from a press, plays it;
+  once placed it is unmuted and plays, unless paused meanwhile. A card of the
+  book playing here opens it where it is, playing on, scrolled to the
+  sentence. Without audiobooks it shows "No audiobooks yet", a sentence, and
+  **Create your first audiobook**. The book view's header holds the
   title and one meta line, and at its top right (on desktop and phone alike)
   **Library**, the quiet blue of Create's Change (`button.library-button`:
   `--accent-light` text and books icon, a thin blue border, no fill; its own
   15 px text, 6 × 11 px padding) that returns to the
-  list in one press (`closeBook()`), as does the **Listen** tab pressed while
-  Listen is shown (`chooseListen()`; from another page the tab opens Listen as
+  list in one press (`closeBook()`: the place saved, the book unloaded, the
+  Library drawn afresh), as does the **Listen** tab pressed while a book is
+  open (`chooseListen()`; a book playing from the Library plays on; from
+  another page the tab opens Listen as
   it was left, with its book). The meta line reads "Read by <voice>" (a
   voice picker instead when more than one voice is ready), duration, source
   file; under it the in-browser copy's progress (`#reader-download`); then
@@ -1558,7 +1617,8 @@ Besides the cookie state above, the page keeps four `localStorage` keys, all
 through `stored()`/`store()` (JSON under the `hilde.` prefix), never sent to
 the server:
 
-- `hilde.book.<id>`: a book's place and speed (see Reader).
+- `hilde.book.<id>`: a book's place and speed, whether it was heard to the end,
+  and when it was last heard (see Reader); the Library's states and order.
 - `hilde.panelWidth`: the side panel's width (`setPanelWidth()`).
 - `hilde.dismissedJobs`: the `<job id>@<finished_at>` keys of stopped or
   failed jobs dismissed here, newest first, at most 50.
@@ -1985,6 +2045,9 @@ seeking are unchanged, and nothing later waits on the network. A failed
 download leaves playback streaming. Leaving the book aborts the download and
 revokes the URL. (A pause that makes this move, before any sentence cue did,
 sets the same time again on the copy: one `seeking` to the time it paused at.)
+The move never happens before the saved place is set (`readerRestored`): a
+book played from the Library starts, muted, before it is placed, and a move
+then would put it back where it began.
 
 A tap on a word (and **Listen from here** on the card) seeks to a word starting up to 0.1 s before its aligned
 onset but never inside the previous word or sentence
@@ -2157,13 +2220,26 @@ bar's height, on a `ResizeObserver`; the page's bottom padding
 the bar, and **Back to reading position** (`#dock-slot`), toasts, and a phone's
 menus sit above it. The `<audio>` element has no controls.
 This browser keeps each book's place and speed in `localStorage`
-(`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`; saved about
-every second while playing, on pause, seek, and leaving the page), and the
-panel width (`hilde.panelWidth`; see [Browser storage](#browser-storage));
-never in the book, the voice, or the
-server. Opening the book, or reloading, sets the speed and, once the audio's
-metadata and the reader are in, the saved time with the same voice (else the
-start of the saved passage), paused, and brings that sentence on screen.
+(`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`, `finished`,
+whether the audio had ended there, and `played`, when it was last heard, in
+Unix ms; `saveBookPlace()`), and the panel width (`hilde.panelWidth`; see
+[Browser storage](#browser-storage)); never in the book, the voice, or the
+server. The place is written about every second while the book plays
+(`saveBookPlaceSoon()` on `timeupdate`), on pause, seek, and end, as the book
+closes or another loads (`clearReader()`), and as the page is left or hidden
+(`pagehide`, `visibilitychange`); `localStorage` writes at once, so no beacon
+is needed. `played` is stamped by a save while the book plays and by the one
+as it pauses (`heardSinceSave`), never by a seek while paused. A book opened
+and neither played nor moved writes nothing (`heardSinceOpen`,
+`restoredTime`), so opening it, or reading the Library, never changes its
+place. Opening the book, or reloading, sets the speed and, once the audio's
+metadata and the reader are in (`restoreBookPlace()`), the start of the
+sentence the saved time falls in (`sentenceStartAt()`: the last sentence cue
+begun by then) with the same voice, so it resumes in context (else the start
+of the saved passage), paused, and brings that sentence on screen; a finished
+book, or **Start over**, starts at 0. A book playing from the Library has no
+text on screen and never scrolls the page (`placeListening()` acts only on
+`main.reading`).
 One sound plays at a time (`oneSoundAtATime()`): the book, the voice preview
 player (previews and drafts), and the answer voice each pause the others
 when they start; an answer read aloud keeps its place when paused this way.
@@ -2597,7 +2673,8 @@ read aloud by **Read answers aloud**.
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so the editor can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft and store JSON `tags` and `details` as the voice's confirmed tag entry. `compose_voice_instruct(tags, details)` must equal the draft's `description.txt`, else HTTP 409 and nothing is written. A missing draft returns HTTP 404; a bad name, a bad tag, or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, and `has_source`, whether `book_source()` finds its document. |
+| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, `has_source`, whether `book_source()` finds its document, and `thumbnail`, the SHA-256 of that document when it is a PDF (`cached_file_version()`), else `null`. |
+| `GET /api/thumbnail?book=...&v=...` | The Library card's thumbnail: the first page of the book's PDF (`book_pdf()`) as a 160 px tall PNG, rendered on the first request into `<root>/.cache/thumbnails/<sha256>.png` (`book_thumbnail()`) and read from there after. `ETag` is the PDF's SHA-256; with `v` equal to it `Cache-Control: private, max-age=31536000, immutable`, else `no-cache`; `If-None-Match` with it answers 304. HTTP 404 for an invalid id or a book without a PDF (or one that cannot be rendered). |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<title> - <voice>.mp3` (`book_download_name()`). `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
 | `GET /api/source-page?book=...&page=N` | Page N (1-based) of the book's PDF (`book_source()`) as PNG at `SOURCE_PAGE_DPI`, cached in memory. HTTP 404 when the book has no PDF or no such page, or for an invalid id or page. |
@@ -2656,6 +2733,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
+- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`).
 - Prepared narration reads staged content, not a mutable shared copy.
 - Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.
 - An `in_progress` stage is removed only after its book or voice is published.

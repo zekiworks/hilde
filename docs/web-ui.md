@@ -384,20 +384,43 @@ restart, submit unfinished document/voice pairs again to resume their durable
 
 ## Listen
 
-**Listen** opens the **Library**: a table of your audiobooks with **Title**,
-**Duration**, **Source file**, **Voice** (with `(+2)` when other voices read
-it too), **Last position (this device)**, for example `12:45 of 43:53` or
-`Not started`, and **Open**, which reads **Continue** when this browser has a
-place in the book. Continue opens the book in the voice you last heard, paused
-at that place. A title is the book's first heading, or its document's name
-when that heading is a section such as Abstract. Search (**Search titles**)
-looks only at titles; every word you type must appear, in any order and case. **⋯** on a row holds
-**Delete…**, which removes the audiobook, every voice of it, its text, its
-notes, and its conversation after a confirmation naming the book. With no
-audiobooks yet, the Library says so and offers **Create your first
-audiobook**.
+**Listen** opens the **Library**: under **Search titles**, each audiobook is a
+framed card. On the left is a small picture of its paper's first page (made
+once from the book's PDF; a plain page icon until it is ready, or when the book
+has no PDF); in the middle the title in bold on one line, then the voice, the
+length and the document type in grey (for example "Mimir · 43 min · PDF"; on a
+phone "Mimir · 43 min"), and a thin blue bar for a book you are in the middle
+of; on the right its status and a round play button. The status is **New**
+(grey) for a book you have not played in this browser, **70% listened** (blue)
+for one in progress, **✓ Finished** (green) once you heard it to the end, and
+**Playing · 35%** for the one playing now, whose card gets a blue frame and
+whose play button turns solid blue with a pause sign. The percentage comes from
+the place this browser saved; looking at the Library never changes it.
 
-A click anywhere on a book's row opens it too: its header shows the title and
+Books in progress are under **Continue listening**, the one you heard last
+first (the group is left out when there are none); every other book is under
+**All books**, the newest first. The search looks only at titles and filters
+both groups; every word you type must appear, in any order and case. A title is
+the book's first heading, or its document's name when that heading is a section
+such as Abstract. With no audiobooks yet, the Library says so and offers
+**Create your first audiobook**.
+
+The play button plays the book without opening it: the Library stays, and the
+player bar at the bottom plays it; press it again to pause. Playing another book
+stops the first. A book continues where you stopped, from the start of that
+sentence so you hear it in context; a finished book starts again from the
+beginning. **⋯** on a card holds **Start over** (for a book in progress: it plays
+from the beginning) and **Delete…**, which removes the audiobook, every voice of
+it, its text, its notes, and its conversation after a confirmation naming the
+book. Your place is saved in this browser about every second while a book
+plays, and when you pause, close the book, or leave the page.
+
+With the keyboard, **Tab** moves from card to card (and to each card's **⋯**);
+**Enter** opens the book and **Space** plays or pauses it.
+
+A click anywhere on a card opens the book, paused at the start of the sentence
+where you stopped, with the text scrolled to it (the book playing from the
+Library opens where it is and keeps playing): its header shows the title and
 one line with the voice, the length, and the source file, with a **Library**
 button at its top right (on a phone too; blue text and books icon in a thin
 blue outline, like **Change** on Create) that goes back to the list in one
@@ -1031,7 +1054,8 @@ Editable form settings are stored in bounded `HttpOnly; SameSite=Strict`
 cookies per browser. Local model servers and cloud providers are the
 server's, under **Settings › Providers**, the same for every browser. This
 browser alone also remembers, in its local storage,
-each book's place and speed, the side panel's width, the highlight style, and which stopped or
+each book's place and speed (with when you last heard it and whether you heard it to
+the end), the side panel's width, the highlight style, and which stopped or
 failed jobs you dismissed. Model paths, model IDs, speech-server endpoints,
 worker devices/hosts, credentials, storage paths, and output paths remain
 server-owned; only a browser on the server's machine (any browser with
