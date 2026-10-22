@@ -17922,8 +17922,10 @@ PAGE = r"""<!doctype html>
            each in one role only, used through these tokens:
            blue: --accent, the fill of buttons and chosen things (Play/Pause
            too), white ink on it (5.5:1); --accent-light, selected items,
-           links, the LED dot of a selected tab or a switch that is on, and
-           the reading highlight (6.6:1 on the ground), never a button's fill;
+           links, the LED dot of a selected tab or a switch that is on, the
+           quiet blue buttons' text, icon and border (Change, and Library
+           with a book open), and the reading highlight (6.6:1 on the
+           ground), never a button's fill;
            teal --ask: Ask Hilde only: the player's Ask Hilde button (a 12%
            tint, its border, text and sparkle), the chat panel's header, the
            chat's Stop / Pause / Resume button (dark ink on it, 6.9:1), and
@@ -18006,7 +18008,8 @@ button { background:var(--raised); color:var(--text); border:1px solid var(--lin
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button, .ask-hilde) {
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button, .ask-hilde,
+                                 .paper-bar-title) {
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
@@ -18146,13 +18149,17 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .step-summary:empty { display:none; }
 .summary-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .summary-type { flex:0 0 auto; color:var(--off); }
-/* Every Change on Create: quiet blue, a pencil and the word, a thin blue
-   border, no fill; right after what it changes. */
+/* The quiet blue: every Change on Create, and Library with a book open (the card's and the paper bar's):
+   --accent-light text and icon, a thin blue border (65% --accent-light, 3.5:1 on the ground; the text 6.6:1),
+   no fill. Change: a pencil and the word, small, right after what it changes. */
+button.change, button.picker-change, button.library-button {
+  background:transparent; border:1px solid color-mix(in srgb, var(--accent-light) 65%, transparent);
+  border-radius:8px; box-shadow:none; color:var(--accent-light); }
 button.change, button.picker-change {
   display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; min-height:28px; padding:3px 11px;
-  background:transparent; border:1px solid color-mix(in srgb, var(--accent-light) 45%, transparent);
-  border-radius:8px; box-shadow:none; color:var(--accent-light); font-size:13px; font-weight:500; line-height:1.2; }
-button.change:hover:not(:disabled), button.picker-change:hover:not(:disabled) {
+  font-size:13px; font-weight:500; line-height:1.2; }
+button.change:hover:not(:disabled), button.picker-change:hover:not(:disabled),
+button.library-button:hover:not(:disabled) {
   background:var(--accent-soft); border-color:var(--accent-light); }
 button.change svg, button.picker-change svg { flex:0 0 auto; width:13px; height:13px; }
 .step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; margin-top:16px; }
@@ -18752,9 +18759,40 @@ html { scrollbar-gutter:stable; }
 .book-top { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; margin-bottom:12px; }
 .book-top > * { grid-column:1 / -1; }
 .book-top > h2 { grid-column:1; grid-row:1; align-self:center; font-size:22px; }
-.book-top > .library-button { grid-column:2; grid-row:1; align-self:start; display:inline-flex;
-                              align-items:center; gap:8px; padding:6px 14px; }
+.book-top > .library-button { grid-column:2; grid-row:1; align-self:start; }
+.library-button { display:inline-flex; align-items:center; gap:8px; padding:6px 11px; }
 .library-button svg { width:16px; height:16px; fill:currentColor; }
+/* The slim paper bar: once the card has scrolled away, the title (one line, cut with …), the voice and length in
+   grey, and Library at the card's own x and width, pinned to the top of the window (on a phone below the browser's
+   own bar, inside the safe area). A zero-height sticky slot right under the card holds it by its bottom edge: the
+   slot sticks at the bar's bottom edge (the safe area's top plus 48px) and the bar hangs above it, so it lies over
+   the text and never moves it; its ground and bottom line run the window's width (a border image's outset, which
+   adds no scrolling). Hidden (no .shown, fitPinned()), it is out of sight, of the pointer and of the keyboard. */
+:root { --paper-bar-h:48px; }
+/* scrollIntoView and focus land the text below the bar and, on a wide screen, the controls pinned under it. On the
+   text itself (scroll-margin), not the page (scroll-padding would change the browser's scroll anchoring, which keeps
+   the text in place through a Narration | Source text switch). */
+#reader-content, #reader-content * {
+  scroll-margin-top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h) + var(--listen-bar-h, 0px)); }
+/* overflow-anchor: never the browser's scroll anchor, which must be text that moves with the page (a sticky box
+   does not), so a layout change (Narration | Source text) keeps the text in place as before. */
+.paper-bar { position:sticky; top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h)); z-index:6; height:0;
+             overflow-anchor:none; }
+.paper-bar-inner { position:absolute; right:0; bottom:0; left:0; display:flex; align-items:center; gap:12px;
+                   height:var(--paper-bar-h); visibility:hidden;
+                   border-image:linear-gradient(to top, var(--line) 1px, var(--bg) 1px) 0 fill / 0 / 0 100vmax; }
+.paper-bar.shown .paper-bar-inner { visibility:visible; }
+.paper-bar-title { flex:0 1 auto; min-width:0; min-height:0; padding:4px 0; border:0; background:none; box-shadow:none;
+                   color:var(--text); font-size:16px; font-weight:650; text-align:left; }
+.paper-bar-title:hover:not(:disabled) { background:none; text-decoration:underline; text-underline-offset:3px; }
+.paper-bar-title span { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.paper-bar-meta { flex:none; color:var(--dim); font-size:13px; white-space:nowrap; }
+.paper-bar .library-button { flex:none; margin-left:auto; }
+/* Where the controls start (the bar shows once it has gone under the bar): its own formatting context, so the
+   card's bottom margin stays above it and nothing moves. */
+.paper-bar-mark { display:flow-root; height:0; }
+/* With the bar shown, the controls pinned on a wide screen sit under it. */
+.listen-workspace.paper-bar-shown .listen-bar { top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h)); }
 .book-meta { overflow-wrap:anywhere; }
 .book-meta select { margin:0 2px; padding:2px 8px; font-size:13px; }
 .book-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; margin-top:6px; }
@@ -18852,12 +18890,18 @@ body:has(main.reading) { padding-bottom:var(--dock-h, 0px); }
 .note-item a, .note-item button.link { padding:4px 0; color:var(--text); font-size:13px;
                                        text-decoration-color:var(--dim); text-underline-offset:3px; }
 .chat-tool .saved { margin-left:6px; color:var(--accent-light); }
-/* Back to where you're listening: at the bottom of the screen while the
-   narrated sentence is out of sight. */
-.back-to-listening { position:sticky; bottom:calc(16px + var(--dock-h, 0px)); z-index:6; display:block;
-                     margin:12px auto 0; box-shadow:0 6px 20px rgba(0,0,0,.5); }
-/* The side panel: beside the text on a wide screen, a bottom sheet below 900px. */
-.side-panel { position:fixed; z-index:20; top:0; right:0; bottom:0; display:flex;
+/* One spot just above the player bar (#dock-slot), centred over the text as the bar's controls are: Back to
+   reading position, a small pill, while the word being read is out of sight; a phone's Ask Hilde for selected
+   text (Part 2) shares it, never both at once. */
+.dock-slot { position:fixed; z-index:14; right:0; bottom:calc(var(--dock-h, 0px) + 8px); left:0; display:flex;
+             justify-content:center; padding:0 16px; pointer-events:none; }
+.dock-slot > * { pointer-events:auto; }
+.back-to-listening { min-height:32px; padding:4px 14px; border-radius:999px; font-size:14px;
+                     box-shadow:0 6px 20px rgba(0,0,0,.5); }
+/* The side panel: beside the text on a wide screen, a bottom sheet below 900px. On a wide screen its top is the
+   bottom of the lowest bar pinned at the top (--panel-top, fitPinned()): the tab row while it shows, else the
+   slim paper bar, else the window's top. */
+.side-panel { position:fixed; z-index:20; top:var(--panel-top, 0px); right:0; bottom:0; display:flex;
               flex-direction:column; width:var(--panel-w); background:var(--surface);
               border-left:1px solid var(--line); overscroll-behavior:contain; }
 .panel-resize { position:absolute; z-index:1; top:0; bottom:0; left:-5px; width:10px;
@@ -19130,7 +19174,7 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 /* With the panel open on a wide screen, the text and the player move left to make room. */
 @media (min-width:900px) {
   .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
-  .listen-workspace.panel-open .player-dock { right:var(--panel-w); }
+  .listen-workspace.panel-open :is(.player-dock, .dock-slot) { right:var(--panel-w); }
 }
 /* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
    grabber, 60% of the visible viewport high, the book dimmed above it (a tap there closes it). With the keyboard
@@ -19160,6 +19204,10 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
   .figure-card.has-composite.stacks .figure-composite { display:none; }
   .menu, .menu.row-menu, .player-bar .menu { position:fixed; right:8px; left:8px; top:auto;
                                              bottom:calc(var(--dock-h, 0px) + 8px); }
+}
+/* Under 600px the paper bar holds only Library and the title. */
+@media (max-width:599.98px) {
+  .paper-bar-meta { display:none; }
 }
 /* A phone: the player's controls 16px from the screen's edges (the dock's padding), Play/Pause 48px. */
 @media (max-width:767.98px) {
@@ -19290,7 +19338,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 }
 /* Listen on a phone or a touch screen: every control 44px or more. */
 @media (max-width:767.98px), (pointer:coarse) {
-  .book-top button, .book-controls button, .player-bar button, .chip-head button, .panel-head button,
+  .book-top button, .paper-bar button, .book-controls button, .player-bar button, .chip-head button, .panel-head button,
   .menu button, .selection-ask, .chat-model-notes button, .chat-voice button, .panel-actions button,
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-speed, .chip-head button, .panel-close, .chat-more, .page-nav button { min-width:44px; }
@@ -19875,6 +19923,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </details>
           <p id="reader-stale" class="notice hidden"></p>
         </header>
+        <!-- The slim paper bar, pinned to the top once the card has scrolled away (fitPinned()): a zero-height sticky
+             slot under the card, so it never moves the text; the reading column's width, so Library keeps the card's
+             x and width. -->
+        <div id="paper-bar" class="paper-bar">
+          <div class="paper-bar-inner">
+            <button id="paper-bar-title" class="paper-bar-title" type="button" title="Back to the top of the paper"
+              onclick="paperBarToTop()"><span id="paper-bar-name"></span></button>
+            <span id="paper-bar-meta" class="paper-bar-meta"></span>
+            <button id="paper-bar-library" class="library-button" type="button" onclick="closeBook()"><svg
+              viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
+          </div>
+        </div>
+        <!-- Where the controls start: the bar shows once this line has gone under it. -->
+        <div id="paper-bar-mark" class="paper-bar-mark" aria-hidden="true"></div>
         <div id="listen-bar" class="listen-bar">
           <div class="book-controls">
             <label id="reader-follow-toggle" class="check note"><input id="reader-follow"
@@ -19909,8 +19971,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
           <article id="reader-content" class="reader-content"></article>
         </section>
-        <button id="back-to-listening" class="back-to-listening hidden" type="button"
-          onclick="backToListening()">Back to where you're listening</button>
+        <!-- One spot just above the player bar, shared by Back to reading position and (Part 2) a phone's Ask Hilde
+             for selected text: never both; while text is selected in the reading column only Ask Hilde shows. -->
+        <div id="dock-slot" class="dock-slot">
+          <button id="back-to-listening" class="back-to-listening hidden" type="button"
+            onclick="backToListening()">↓ Back to reading position</button>
+        </div>
         <!-- The player: one bar docked at the bottom, two rows in one column (560px at most, centred on a wide
              screen; 16px from the edges on a phone): the seek bar between the elapsed and total times, then
              Play/Pause and speed on the left and Ask Hilde on the right. -->
@@ -21631,10 +21697,12 @@ function dockTop() {
   const dock = $("player-dock");
   return shown(dock) ? dock.getBoundingClientRect().top : window.innerHeight;
 }
-// The part of the screen the text shows in: beneath the pinned controls (at
-// the top of a phone's screen once they scroll away) and above the player.
+// The part of the screen the text shows in: beneath what is pinned at the
+// top (the slim paper bar once the card has scrolled away, and on a wide
+// screen the view's controls under it) and above the player.
 function readingViewport() {
-  return { top:narrowLayout() ? 0 : Math.max($("listen-bar").getBoundingClientRect().bottom, 0), bottom:dockTop() };
+  const controls = narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().bottom;
+  return { top:Math.max(controls, paperBarShown ? paperBarEdge : 0, 0), bottom:dockTop() };
 }
 function shown(element) { return !!element && element.getClientRects().length > 0; }
 function onScreen(element) {
@@ -21673,8 +21741,9 @@ function readingAnchor() {
   return element ? { element, block:-1, passage:Number(element.dataset.passage) || null,
                      top:element.getBoundingClientRect().top } : null;
 }
-// Scrolling the page for the listener, which Back to where you're listening ignores.
-let expectScrollUntil = 0, userScrollAt = 0;
+// Scrolling the page for the listener, which Back to reading position ignores.
+// No wheel, touch, or key yet: a scroll in the page's first 1.2 s is its own.
+let expectScrollUntil = 0, userScrollAt = -Infinity;
 function scrollPageBy(delta, behavior = "auto") {
   if (Math.abs(delta) < 1) return;
   expectScrollUntil = performance.now() + (behavior === "smooth" ? 1500 : 400);
@@ -21693,8 +21762,9 @@ function motion() {
 function placeListening(element, behavior) {
   if (!element) return;
   const box = element.getBoundingClientRect();
-  // Once the text scrolls, the controls are pinned to the top of a wide screen.
-  const top = narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height;
+  // Once the text scrolls, the paper bar is pinned to the top, and on a wide
+  // screen the controls under it.
+  const top = paperBarEdge + (narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height);
   const bottom = dockTop();
   scrollPageBy(box.top - top - (bottom - top) / 4, behavior);
 }
@@ -21707,32 +21777,118 @@ function followListening(element) {
   if (box.top >= view.top && box.bottom <= view.bottom) return;
   placeListening(element, motion());
 }
-// Back to where you're listening: shown while the listener has scrolled
-// the narrated sentence away, or jumped elsewhere; auto-scroll waits meanwhile.
+// Back to reading position: shown while the listener has scrolled the word
+// being read away, or jumped elsewhere, and it is out of sight; auto-scroll
+// waits meanwhile (detached).
 let detached = false;
 function setDetached(value) {
   detached = value;
   renderBackToListening();
 }
+// The word being read (in Source text, or without word timing, what
+// listeningElement() gives).
+function readingMark() {
+  const word = textView === "narration" && activeReaderWord >= 0 ? readerWordElements[activeReaderWord] : null;
+  return word && shown(word) ? word : listeningElement();
+}
+// Text selected in the reading column. The spot above the player bar is
+// shared with a phone's Ask Hilde for a selection (Part 2): while text is
+// selected only that shows, so the pill waits until the selection clears.
+function readerHasSelection() {
+  const selection = window.getSelection();
+  return !!selection && !selection.isCollapsed && !!String(selection).trim()
+    && !!selection.anchorNode && $("book-view").querySelector(".reading-column").contains(selection.anchorNode);
+}
 function renderBackToListening() {
   const button = $("back-to-listening");
-  const element = detached && readerAudio ? listeningElement() : null;
-  button.classList.toggle("hidden", !element);
-  if (!element) return;
+  const element = detached && readerAudio && !readerHasSelection() ? readingMark() : null;
+  const away = !!element && !onScreen(element);
+  button.classList.toggle("hidden", !away);
+  if (!away) return;
   const above = element.getBoundingClientRect().bottom < readingViewport().top;
-  button.textContent = `${above ? "↑" : "↓"} Back to where you're listening`;
+  button.textContent = `${above ? "↑" : "↓"} Back to reading position`;
 }
+// The pill: to the word being read, and auto-scroll on again (Follow along
+// with it).
 function backToListening() {
+  $("reader-follow").checked = true;
   setDetached(false);
-  placeListening(listeningElement(), motion());
+  placeListening(readingMark(), motion());
 }
+// A scroll the listener made, told from the page's own: a wheel, touch, key,
+// or the scroll bar within the last 1.2 s (userScrollAt), outside the time
+// the page's own scroll takes (expectScrollUntil, scrollPageBy() and
+// paperBarToTop()). It detaches when it takes the word being read off screen
+// and attaches again when it brings it back; any other scroll only shows or
+// hides the pill.
 function userScrolled() {
-  if (!readerAudio || state.tab !== "player" || performance.now() < expectScrollUntil) return;
+  if (!readerAudio || state.tab !== "player") return;
   // Layout changes scroll too (images loading, scroll anchoring); only a
   // scroll right after the listener's own wheel, touch, or key counts.
-  if (performance.now() - userScrollAt > 1200) return;
-  const element = listeningElement();
-  if (element) setDetached(!onScreen(element));
+  const now = performance.now();
+  if (now >= expectScrollUntil && now - userScrollAt <= 1200) {
+    const element = readingMark();
+    if (element) setDetached(!onScreen(element));
+  } else if (detached) renderBackToListening();
+}
+
+// --- Pinned at the top: the slim paper bar and the side panel's top ----------
+// The bar shows once the line where the view's controls start
+// (#paper-bar-mark) has gone under it, so on a wide screen the controls,
+// pinned under the bar from then on, meet its bottom edge as it appears.
+// The side panel (900 px and wider) starts under the lowest bar pinned at the
+// top: the tab row while it shows, else the paper bar, else the window's top.
+// Two IntersectionObservers say when the mark or the tab row crosses; only
+// while the tab row shows with the panel open does a scroll schedule an
+// update, at most one a frame (requestAnimationFrame). An update reads first
+// and writes after (--panel-top on the panel alone, only when it changed).
+let paperBarShown = false, paperBarEdge = 48, tabsInView = true, pinnedFrame = 0, panelTop = null;
+let paperBarObserver = null;
+function showPaperBar(show) {
+  if (show === paperBarShown) return;
+  paperBarShown = show;
+  // Focus on one Library button moves to the other, so it is never lost.
+  const card = document.querySelector(".book-top .library-button"), focused = document.activeElement;
+  if (!show && focused === $("paper-bar-library")) card.focus({ preventScroll:true });
+  if (!show && focused === $("paper-bar-title")) $("reader-title").focus({ preventScroll:true });
+  $("paper-bar").classList.toggle("shown", show);
+  $("book-view").classList.toggle("paper-bar-shown", show);
+  if (show && focused === card) $("paper-bar-library").focus({ preventScroll:true });
+}
+function fitPinned() {
+  if (pinnedFrame) cancelAnimationFrame(pinnedFrame);
+  pinnedFrame = 0;
+  const mark = $("paper-bar-mark");
+  const bar = shown(mark) && mark.getBoundingClientRect().top < paperBarEdge;
+  const tabs = panelOpen && tabsInView ? document.querySelector("nav.tabs").getBoundingClientRect().bottom : 0;
+  showPaperBar(bar);
+  if (!panelOpen) return;
+  const top = Math.max(tabs, bar ? paperBarEdge : 0, 0);
+  if (top === panelTop) return;
+  panelTop = top;
+  $("side-panel").style.setProperty("--panel-top", `${top}px`);
+}
+function queuePinned() {
+  if (!pinnedFrame) pinnedFrame = requestAnimationFrame(() => { pinnedFrame = 0; fitPinned(); });
+}
+// The bar's bottom edge, where its slot sticks: the safe area's top (a
+// phone's notch) plus its height.
+function observePaperBar() {
+  const edge = parseFloat(getComputedStyle($("paper-bar")).top) || 48;
+  if (paperBarObserver && edge === paperBarEdge) return;
+  paperBarEdge = edge;
+  paperBarObserver?.disconnect();
+  paperBarObserver = new IntersectionObserver(fitPinned, { rootMargin:`${-edge}px 0px 0px 0px` });
+  paperBarObserver.observe($("paper-bar-mark"));
+}
+// The bar's title: back to the top of the paper. The listener looks away
+// from the word being read, so auto-scroll waits (the pill shows) unless the
+// word is on screen up there too.
+function paperBarToTop() {
+  const element = readerAudio ? readingMark() : null;
+  if (element) setDetached(element.getBoundingClientRect().bottom + window.scrollY > dockTop());
+  expectScrollUntil = performance.now() + 1500;
+  window.scrollTo({ top:0, behavior:motion() });
 }
 
 function updateReaderHighlight() {
@@ -21765,17 +21921,19 @@ function updateReaderHighlight() {
     const element = listeningElement();
     if (element && $("reader-follow").checked && !readerAudio.paused && !detached)
       followListening(element);
-    renderBackToListening();
     // A sentence start is a natural pause, so switching sources there is not heard.
     if (readerDownload?.url && !readerDownload.swapped) playDownloadedBook();
   }
   const nextWord = wordCue ? wordCue.position : -1;
-  if (nextWord === activeReaderWord) return;
-  if (activeReaderWord >= 0 && readerWordElements[activeReaderWord])
-    readerWordElements[activeReaderWord].classList.remove("active");
-  activeReaderWord = nextWord;
-  if (nextWord >= 0 && readerWordElements[nextWord])
-    readerWordElements[nextWord].classList.add("active");
+  if (nextWord !== activeReaderWord) {
+    if (activeReaderWord >= 0 && readerWordElements[activeReaderWord])
+      readerWordElements[activeReaderWord].classList.remove("active");
+    activeReaderWord = nextWord;
+    if (nextWord >= 0 && readerWordElements[nextWord])
+      readerWordElements[nextWord].classList.add("active");
+  } else if (!blockChanged) return;
+  // The pill follows the word being read: it hides once the word is on screen.
+  if (blockChanged || detached) renderBackToListening();
 }
 
 // Narration text | Source text. Switching keeps the reading position: the
@@ -21993,12 +22151,14 @@ async function openAudiobook(id, focus, voiceName) {
   render(); queueSync();
   resetChatFor(id);
   const heard = book ? book.voices.find((item) => item.name === voice) : null;
+  const length = book ? formatDuration(heard ? heard.duration : book.duration) : "";
   $("reader-title").textContent = book ? book.title : id;
   $("reader-voice-name").textContent = voice ? `Read by ${voice}` : "";
-  $("reader-meta").textContent = book
-    ? [formatDuration(heard ? heard.duration : book.duration), book.source]
-      .filter(Boolean).map((part) => `· ${part}`).join(" ")
-    : "";
+  $("reader-meta").textContent = [length, book ? book.source : ""]
+    .filter(Boolean).map((part) => `· ${part}`).join(" ");
+  // The slim paper bar: the same title, voice and length.
+  $("paper-bar-name").textContent = $("reader-title").textContent;
+  $("paper-bar-meta").textContent = [voice, length].filter(Boolean).join(" · ");
   // Only a book whose document is kept, or is in Documents, offers it.
   $("reader-source").classList.toggle("hidden", !(book && book.has_source));
   expectScrollUntil = performance.now() + 400;
@@ -22243,6 +22403,7 @@ function renderPanel() {
   $("chat-menu-wrap").classList.toggle("hidden", panelView !== "chat");
   $("panel-head").classList.toggle("has-tabs", !!(figureShown || pageShown));
   $("ask-hilde").setAttribute("aria-expanded", String(chatShown()));
+  if (panelOpen) fitPinned();
 }
 function rememberChatScroll() {
   const log = $("chat-log");
@@ -26289,6 +26450,7 @@ function render() {
   $("library-view").classList.toggle("hidden", reading);
   $("book-view").classList.toggle("hidden", !reading);
   document.querySelector("main").classList.toggle("reading", reading);
+  queuePinned();
   document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
@@ -27831,7 +27993,10 @@ document.addEventListener("pointerdown", (event) => {
 }, true);
 for (const type of ["pointerup", "pointercancel"])
   document.addEventListener(type, () => { pointerHeld = false; queueSelectionAsk(); }, true);
-document.addEventListener("selectionchange", queueSelectionAsk);
+document.addEventListener("selectionchange", () => {
+  queueSelectionAsk();
+  if (detached) renderBackToListening();
+});
 // Pressed, the button keeps the selection it asks about.
 $("selection-ask").addEventListener("pointerdown", (event) => event.preventDefault());
 $("selection-ask").addEventListener("click", () => {
@@ -27852,6 +28017,8 @@ window.addEventListener("scroll", () => {
   if (readerPress && performance.now() >= expectScrollUntil) stopReaderPress(readerPress, "scrolled");
   userScrolled();
   placeSelectionAsk();
+  // The side panel's top follows the tab row while it scrolls away.
+  if (panelOpen && tabsInView) queuePinned();
 }, { passive:true });
 $("panel-resize").addEventListener("pointerdown", (event) => {
   event.currentTarget.setPointerCapture(event.pointerId);
@@ -27885,12 +28052,19 @@ $("panel-tabs").addEventListener("keydown", (event) => {
 window.visualViewport?.addEventListener("resize", fitVisualViewport);
 window.visualViewport?.addEventListener("scroll", fitVisualViewport);
 window.addEventListener("resize", () => {
-  fitVisualViewport(); fitDock();
+  fitVisualViewport(); fitDock(); observePaperBar(); queuePinned();
   setPanelWidth(Number(stored("panelWidth")) || 440, false);
   document.documentElement.classList.toggle(
     "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
+// The view's controls pinned on a wide screen (none on a phone: display:contents) under the paper bar: what
+// scrollIntoView, focus and Page Down keep clear of.
+new ResizeObserver(() => document.documentElement.style.setProperty("--listen-bar-h", `${$("listen-bar").offsetHeight}px`))
+  .observe($("listen-bar"));
+new IntersectionObserver((entries) => { tabsInView = entries.at(-1).isIntersecting; fitPinned(); })
+  .observe(document.querySelector("nav.tabs"));
+observePaperBar();
 // Ask Hilde's model box takes a line of its own in a panel narrower than 420 px (a phone's sheet, a narrow window).
 new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side-panel").offsetWidth < 420))
   .observe($("side-panel"));

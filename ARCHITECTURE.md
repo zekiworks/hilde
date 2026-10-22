@@ -1002,7 +1002,9 @@ Each page:
   The visually hidden `.step-state` reads "(current step)", "(completed)" or
   "(not reached yet)". Every Change on Create (`button.change`, the pickers'
   `button.picker-change`) is the quiet blue: `PENCIL_ICON` and the word in
-  `--accent-light`, a thin blue border, no fill. Step 3 is never finished: a
+  `--accent-light` (6.6:1 on the ground), a thin blue border (65%
+  `--accent-light`, 3.5:1), no fill; Listen's **Library** shares its colours,
+  border and fill (see below). Step 3 is never finished: a
   queued book starts the next one.
   1. **Add the source document**: three `.source-card`s side by side
      (stacked up to 640 px), always shown, in
@@ -1429,7 +1431,9 @@ Each page:
   your first audiobook**. A click anywhere else on a row (not on a button, nor
   one ending a text selection) opens the book view. Its header holds the
   title and one meta line, and at its top right (on desktop and phone alike)
-  **Library**, a bordered secondary button with an icon that returns to the
+  **Library**, the quiet blue of Create's Change (`button.library-button`:
+  `--accent-light` text and books icon, a thin blue border, no fill; its own
+  15 px text, 6 × 11 px padding) that returns to the
   list in one press (`closeBook()`), as does the **Listen** tab pressed while
   Listen is shown (`chooseListen()`; from another page the tab opens Listen as
   it was left, with its book). The meta line reads "Read by <voice>" (a
@@ -1441,7 +1445,9 @@ Each page:
   (each option says what it shows), and **⋯ More** (**Download MP3**,
   **Download source** when `has_source`, **Change voice…** for books with
   their own text, **Recreate with the latest Hilde…**, **Keyboard
-  shortcuts**); nothing at the top asks Hilde. The player bar is docked at
+  shortcuts**); nothing at the top asks Hilde. Once the header has scrolled
+  away, the slim paper bar pinned at the top keeps its title, voice and
+  length, and **Library** (see Reader). The player bar is docked at
   the bottom (see Reader).
   **Change voice** opens `#change-voice-dialog`: the saved voices the book
   does not have ready, the title "Read '<title>' with <voice>?", and
@@ -1792,12 +1798,50 @@ row, `#status` and `#server-down` stay in the centred 960 px column of every
 other page (`main.reading > :is(.app-header, .tabs, #status, #server-down)`,
 920 px inside main's sides), and every page keeps the scroll bar's room
 (`html { scrollbar-gutter:stable }`), so nothing above the workspace moves
-when the tab changes, a book opens, or a page starts scrolling. The side
-panel, which runs the screen's full height, covers the right end of that
-column (the Settings tab included) while it is open, as before. The page scrolls,
+when the tab changes, a book opens, or a page starts scrolling. On a screen
+900 px or wider the side panel's top is the bottom of the lowest bar pinned at
+the top (`--panel-top`, `fitPinned()`): the tab row while it shows, else the
+slim paper bar, else the window's top; it never covers the header, the tabs,
+Settings or the paper bar, and its x, width and bottom are as before. The page scrolls,
 never an inner box. The view's controls stay pinned to the top of a wide
 screen while the text scrolls, and the player is docked at the bottom of
-every screen (see the player bar below). Newly generated audio has
+every screen (see the player bar below).
+
+The **slim paper bar** (`#paper-bar`) keeps the paper reachable once its card
+(`.book-top`) has scrolled away: the title (`#paper-bar-title`, one line, cut
+with "…"; a click scrolls to the top, `paperBarToTop()`), the voice and length
+in `--dim` (`#paper-bar-meta`, "Mimir · 44 min", from the same voice and
+`formatDuration()` as the card's line; hidden under 600 px), and **Library**
+(`#paper-bar-library`, the card's `.library-button`, after it in the DOM). It
+is a zero-height sticky slot right under the card, sticking at the bar's
+bottom edge (`top: calc(env(safe-area-inset-top) + var(--paper-bar-h))`, so on
+a phone the bar sits at the top of the layout viewport, below the browser's
+own bar), with the 48 px (`--paper-bar-h`) box hanging above it: it lies over the text
+and never moves it, and spans the reading column, so Library keeps the card's
+x and width (the box's ground and bottom line run the window's width through a
+border image's outset, which adds no scrolling). It shows (`.shown`,
+`showPaperBar()`) once `#paper-bar-mark`, the zero-height line where the
+controls start (`display: flow-root`, so the card's margin stays above it), has
+gone under its bottom edge (`paperBarEdge`); the wide screen's controls are then
+pinned under it (`.paper-bar-shown .listen-bar`), meeting its edge as it
+appears. Hidden, it is `visibility: hidden`: out of sight, the pointer's way
+and the tab order. Focus never goes with it: on the card's Library as the bar
+shows, it moves to the bar's; on the bar's Library or title as it hides, to
+the card's Library or title. `#reader-content` and everything in it have a
+`scroll-margin-top` of the bar's height plus the pinned controls'
+(`--listen-bar-h`, a `ResizeObserver`; 0 on a phone), so `scrollIntoView` and
+focus land the text below them. (Not `scroll-padding-top` on the page: it
+changes Chromium's scroll anchoring, and the Narration | Source switch then
+no longer keeps the sentence in place. The bar's slot also has
+`overflow-anchor: none`.) Updates without layout thrash: an `IntersectionObserver` on the
+mark (root margin minus the bar's edge) and one on the tab row call
+`fitPinned()`, which reads first (the mark's and, with the panel open, the tab
+row's rect) and writes after (the bar's class; `--panel-top` on the panel
+alone, only when changed); a passive scroll listener schedules it, at most once
+a frame (`queuePinned()`, `requestAnimationFrame`), only while the tab row
+shows with the panel open; `render()`, `renderPanel()` and a resize run it too.
+
+Newly generated audio has
 exact integer-sample cues for every sentence and force-aligned word. The first
 aligned word in each block becomes its sentence checkpoint, replacing legacy
 length estimates whenever word timing exists.
@@ -1954,22 +1998,37 @@ Each reader paragraph carries its passage (`data-passage`, from
 `block_passages`), as does each Source text aside. `listeningElement()` is
 the narrated sentence, or in Source text the shown element of its passage.
 **Follow along** scrolls only when that element is no longer wholly visible
-between the pinned controls (the top of the screen on a phone) and the docked
-player (`readingViewport()`, `dockTop()`), then brings it a
-quarter of the way down the rest of the screen: the text turns like pages
-instead of sliding at every sentence, so a figure stays in view while its
-description is read; with Follow along off the page never scrolls by itself.
+between what is pinned at the top (the paper bar once shown, and on a wide
+screen the controls under it) and the docked player (`readingViewport()`,
+`dockTop()`), then brings it a quarter of the way down the rest of the screen
+(`placeListening()`, which counts the bar and the controls as pinned): the
+text turns like pages instead of sliding at every sentence, so a figure stays
+in view while its description is read; with Follow along off the page never
+scrolls by itself.
 A layout change (`keepPlace()`: the panel opening, closing, or resizing)
 and the Narration/Source switch keep the narrated sentence, or when it is
 off screen the first paragraph shown, at the same height on screen; leaving
 Listen for another tab and coming back does the same (`listenPlace`). None
-touches the audio. A scroll the listener makes (a wheel, touch, key, or the
-scroll bar within the last 1.2 s; the page's own scrolls are marked by
-`scrollPageBy()`) that takes the narrated sentence off screen sets
-`detached`: auto-scroll waits and **↑/↓ Back to where you're listening**
-shows at the bottom of the text until it is pressed or the sentence is back
-on screen; opening a figure or a source page, or a ¶ link in an answer, does
-the same.
+touches the audio. A scroll the listener makes is told from the page's own
+(`userScrolled()`): it follows a wheel, touch, key (Page Up/Down, ↑/↓), or a
+press on the scroll bar within the last 1.2 s (`userScrollAt`, never set
+before the first), outside the time the page's own scroll takes
+(`expectScrollUntil`, set by `scrollPageBy()` and `paperBarToTop()`: 400 ms,
+1.5 s when smooth). One that takes the word being read (`readingMark()`: the
+active `.reader-word`, else `listeningElement()`) off screen sets `detached`,
+one that brings it back clears it. While `detached`, auto-scroll waits, and
+the pill **↑/↓ Back to reading position** (`#back-to-listening`,
+`renderBackToListening()`; the arrow points to the word) shows in
+`#dock-slot`, the one spot just above the player bar (fixed, 8 px above
+`--dock-h`, centred over the text like the bar's controls), whenever the word
+is out of sight; it hides while the word is on screen (checked on every
+scroll, word, and sentence change while detached) and while text is selected
+in the reading column (`readerHasSelection()`, on `selectionchange`): Part 2's
+phone **Ask Hilde** for a selection takes that spot then, so the two never
+show together. Pressing it (`backToListening()`) brings the word a quarter of
+the way down, clears `detached` and checks **Follow along**. Opening a figure
+or a source page, a ¶ link in an answer, and the paper bar's title (when the
+word is not on screen at the top) set `detached` too.
 
 A tap (a click) in the text listens or pauses and opens nothing, at once,
 with no wait (pointer events on `#reader-content`, Narration and Source text
@@ -2064,7 +2123,7 @@ the bar). There is no mute button
 or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
 bar's height, on a `ResizeObserver`; the page's bottom padding
 (`body:has(main.reading)`) is that height, so the last paragraph ends above
-the bar, and **Back to where you're listening**, toasts, and a phone's
+the bar, and **Back to reading position** (`#dock-slot`), toasts, and a phone's
 menus sit above it. The `<audio>` element has no controls.
 This browser keeps each book's place and speed in `localStorage`
 (`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`; saved about
@@ -2082,7 +2141,7 @@ when they start; an answer read aloud keeps its place when paused this way.
 
 One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
 a source page (`#page-view`), with a tab for each one opened. On a screen
-900 px or wider it sits fixed at the right, `--panel-w` wide (440 px by
+900 px or wider it sits fixed at the right from `--panel-top` (see Reader) to the bottom, `--panel-w` wide (440 px by
 default, 400 to 720 by dragging its left edge or with ← and → on it, 360 at
 the least in a window under 1100 px, and at most the window less 700 px;
 `setPanelWidth()`, kept as `hilde.panelWidth`, fitted again on every resize;

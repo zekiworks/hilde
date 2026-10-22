@@ -399,7 +399,8 @@ audiobook**.
 
 A click anywhere on a book's row opens it too: its header shows the title and
 one line with the voice, the length, and the source file, with a **Library**
-button at its top right (on a phone too) that goes back to the list in one
+button at its top right (on a phone too; blue text and books icon in a thin
+blue outline, like **Change** on Create) that goes back to the list in one
 press, as does the **Listen** tab pressed while a book is open (from another
 tab, **Listen** brings back the book you had open). A book read by more than one voice shows a
 voice picker in that line. Above the text, and staying on screen while it
@@ -418,7 +419,21 @@ play/pause. The bar keeps clear of the phone's home indicator. The bar never
 covers the text: the page leaves room for it below the last paragraph. The
 text runs in a comfortable reading column; on a wide screen the panel for the
 chat, a figure, or a source page opens beside it, and the player bar then
-stays under the text.
+stays under the text. The panel starts just under the lowest bar at the top of
+the window: the tab row while you can see it, the slim paper bar (below) once
+it shows, otherwise the top of the window. It never covers the header, the
+tabs, **Settings**, or the paper bar, and its top follows them as you scroll.
+
+Once the book's header has scrolled away, a slim bar stays at the top of the
+window: the title on one line (cut with "…" when it is long), the voice and
+length in grey (for example "Mimir · 44 min"), and **Library** in exactly the
+place it has in the header. It is hidden while the header shows, so the title
+never appears twice, and it lies over the text without moving it. Click the
+title to go back to the top of the paper. If the keyboard focus is on
+**Library** as the header scrolls away, it moves to the bar's **Library**, and
+back when the header returns. On a phone (under 600 px wide) the bar holds only
+**Library** and the title; it sits below the browser's own bar, and text the
+page brings into view (a seek, **Follow along**, a link) lands below it.
 
 **⋯** holds **Download MP3** (the voice being played; the button reads
 **Download started** for a few seconds), **Download source** (the document the
@@ -483,10 +498,15 @@ nothing until you select less (then **Change**) or remove it with **×**.
 
 Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a
-page, going to another tab and back. If you scroll away while **Follow
-along** is on, it stops following and **Back to where you're listening**
-appears; it appears too after you open a figure or a page or follow a ¶ link.
-With **Follow along** off, the page never scrolls by itself.
+page, going to another tab and back. **Follow along** turns the page when the
+sentence being read leaves the screen. If you scroll the word being read out
+of sight yourself, it stops following and a small **↑ Back to reading
+position** pill appears just above the player bar (↓ when the word is below);
+it hides while the word is on screen, and while you have text selected in the
+book. Clicking it brings the word back on screen and turns **Follow along**
+on again. The pill appears too, once the word is out of sight, after you open
+a figure or a page, follow a ¶ link, or click the paper bar's title. With
+**Follow along** off, the page never scrolls by itself.
 
 A figure shows on a light card with its caption under **From the paper**. On
 a wide screen it shows as printed in the PDF: its part of the page, with the
