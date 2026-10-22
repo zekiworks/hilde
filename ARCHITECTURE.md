@@ -360,8 +360,11 @@ and the full hash in `book.json`.
   A voice's timings are never paired with another voice's audio.
 - `chat.json` (`schema` 1): the book's one conversation, `entries` oldest
   first: `user` (`text`), `assistant` (`text`, and `calls`, each `{id, name,
-  arguments}`), `tool` (`id`, `name`, `content` the model was given, `label`
-  the page shows), and `notice` (why a turn ended; never sent to a model).
+  arguments}`; `model`, the selector of the request that wrote it, on answers
+  saved since 22 Oct, never added to older ones), `tool` (`id`, `name`,
+  `content` the model was given, `label` the page shows), and `notice` (why a
+  turn ended; never sent to a model; a model's failure has `failed: true` and
+  its `model`).
   Rebuilding the book (`commit_book()` for the same content) drops it, since
   it cites the old text's paragraph numbers.
 - `files/`: the Markdown files Chat wrote. `commit_book()` copies them into a
@@ -897,7 +900,8 @@ selection too long to attach, and the collapsed cards of past questions: a
 1 px border of 65% `--ask` on a 12% tint; the
 card sets `--accent-light` to `--ask`, so its attached outline,
 scope-switch underline, details mark, and focus outlines are teal, and so is
-its title; `#chat-about`'s attach glow is 16% `--ask`); green `--local`
+its title; `#chat-about`'s attach glow is 16% `--ask`), and the chat's "Hilde is
+still answering" box (`.chat-hint.busy`: the card's border on its tint); green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items and the played part of the seek bar, red `--bad` (#e5534b) errors and destructive actions, always
@@ -2287,7 +2291,13 @@ typed question goes without it ("Sent without the selected text.").
 Enter and **Send** both call `sendChat()`, which never returns without a
 word in the hint line: an empty box with no card ("Type a question first."),
 a request still in flight, Hilde still answering, no model (loading, or none
-available). While the card prepares, **Send** reads **Preparing context…**
+available). Hilde still answering (`chatData.running`, with no model change)
+keeps the rule of one answer at a time but says so as a box, not the small
+gray line (`chatHint(…, "busy")`, `.chat-hint.busy`: 14 px text on a 12% `--ask`
+tint with a 65% `--ask` border), naming the model writing: "Hilde is still
+answering with <model>. Your question stays here: wait for the answer, or
+press Stop, then send it."; it goes when the answer ends (`applyChat()`).
+While the card prepares, **Send** reads **Preparing context…**
 and a press sets `chatQueued`; `attachAbout()` (or **×**) sends it when the
 card settles. A failed card stays and the question goes without it ("Sent
 without the selected text."); with an empty box and a failed card, the hint
@@ -2301,7 +2311,14 @@ removed) only once `POST /api/chat/send` succeeds; an error shows in the
 hint line and the text stays.
 
 One `ChatTurn` answers one message (`ChatRegistry`: one turn per book at a
-time, on its own thread). `begin()` loads the book through `chat_book()` and
+time, on its own thread; each turn has its own `id`, which its SSE events,
+the page's stream, and Stop name). `ChatRegistry.start()` refuses a message
+while the book's turn runs, unless that turn was stopped (Stop, or the page's
+model change): it then waits up to `CHAT_STOP_WAIT` (3 s) for the turn to keep
+what it wrote and end, and otherwise sets it aside (`ChatTurn.set_aside()`:
+its partial answer kept now as `keep_stopped()` keeps it, the turn ended, and
+everything it does later dropped, so a turn still waiting on a connection
+never writes over the next turn's conversation). `begin()` loads the book through `chat_book()` and
 saves the listener's message, with the manifest of what it is about as
 `context`; `run()` asks the model and runs its tool calls
 until it answers without one. The system prompt (`chat_system_prompt()`)
@@ -2431,16 +2448,47 @@ tools off, refuses chat with a message. A local reply still writing at its
 `max_tokens` fails the turn.
 
 Events (`text` deltas, `reset`, `message` with a display entry, `trimmed`,
-`files`, `done`) stream over SSE; the page reconnects from `event_index` and,
-when a stream drops, reloads the conversation. `ChatTurn.keep()` saves an
+`files`, `done`) stream over SSE, each with the turn's `turn` id; the page
+asks for its turn's stream (`turn`), which a later turn never answers (HTTP
+404), reconnects from `event_index` and, when a stream drops, reloads the
+conversation. `ChatTurn.keep()` saves an
 entry to `chat.json` and publishes it under the turn's lock, which
 `chat_payload()` reads the conversation, the partial answer, and
 `event_index` under, so a page sees each message once. `chat_display_entry()` keeps
 a listener's message's `context` manifest, for the card on past questions, and renders
 an answer's Markdown with raw HTML off and turns `¶N` and `¶N–M` into
-`.chat-cite` links; `chat_payload()` maps each passage number to its first
+`.chat-cite` links; an answer or failure saved with its `model` gets `model`
+and `model_name` (`chat_model_name()`, the picker's short name), which the page
+shows as a small gray label under it (`chatModelLabel()`, `.chat-model`), and
+the answer arriving gets the running turn's (`running_model_name`); older
+entries have none and show none. `chat_payload()` maps each passage number to its first
 reader paragraph, which a click scrolls to. Stop aborts the model stream; an
-error or a stop ends the turn with a `notice`.
+error or a stop ends the turn with a `notice`. An error's notice ("Hilde
+couldn't answer: …", the provider's own text, such as the sign-in, local
+server, or connection message) is `failed`: the page draws it as a red box
+with what to do (`CHAT_FAILED_ADVICE`: check the model under Settings ›
+Providers, sign in again, connect the provider, or start its server and load
+the model, or choose another model) and **Providers…** (`openProvidersPanel()`),
+and never changes the model.
+
+The page follows one turn at a time. `chatEpoch` counts what the panel follows
+(a question sent, a model change, another book): `loadChat()` drops a reply
+asked for in an earlier epoch, and `connectChat(from, turn)` drops any event
+of another turn. Changing Ask Hilde's model (`setPickerModel()`, when the
+selector differs from the picker's model before) calls `cancelChatAnswer()`:
+the running turn is stopped by id (`POST /api/chat/stop` with `turn`, as
+Stop), its id goes into `chatCancelled` (`applyChat()` then treats it as not
+running and draws its partial marked Stopped), and the stream, the live
+answer's running state, the Stop button, `chatStopping`, a queued question,
+and the hint are cleared; the conversation, the card, and the box stay. A send
+still on its way is marked cancelled (`chatSendCancelled`): its turn is stopped
+as soon as the server answers, and the box and card stay. `sendChat()` waits
+for that cancel (`chatCancel`) before it sends, so the server never refuses
+the new question as still answering. Every press sends a new request; asking
+about the part already attached lights its card again (`askAboutFocus()`).
+On `done` the page sets `chatData.running` false before reloading; a reload
+that fails says so in red (`chatHint(…, "reload")`), counts the answer as
+ended, and tries again after 2, 4, 8, then every 15 s.
 
 The files listing (`chat_file_listing()`, in `chat_payload()` and the `files`
 event) gives each file `name`, `bytes`, `modified`, and `section`: the
@@ -2518,8 +2566,9 @@ a paused one from its beginning. It is at least 44 px tall on phones and coarse 
 
 `stopChat()` sets `chatStopping`, so the button and status go at once and the
 answer arriving (`chatLive`) is marked **Stopped** (`markStopped()`, a muted
-`.chat-stopped` line under it; later text events are not shown), then asks
-`POST /api/chat/stop`. The server's turn, interrupted, keeps the text that had
+`.chat-stopped` line under it, above its model label; later text events are
+not shown), then asks `POST /api/chat/stop` with the turn's id
+(`stopChatTurn()`). The server's turn, interrupted, keeps the text that had
 arrived (`ChatTurn.keep_stopped()`: the partial reply saved and published as
 the assistant's entry with `"stopped": true`, which `chat_display_entry()`
 passes on; with no text yet, the notice "Stopped." as before), then ends;
@@ -2567,14 +2616,14 @@ read aloud by **Read answers aloud**.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with), `running`, the streaming `partial` answer and `event_index`, `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). |
-| `GET /api/chat/events?book=...&from=N` | SSE of the running turn's events from index N, ending with `done`. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). |
+| `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
-| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn; or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
+| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
 
 Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine, or from any device when Hilde starts with --manage-from-network." (`PROVIDERS_LOCAL_ONLY`) unless `Handler.may_manage()` (loopback, or `--manage-from-network`), the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers` and `manage_workers`. `POST /api/models/defaults` follows the same rule (`DEFAULTS_LOCAL_ONLY`), and the page shows the default models read-only without `manage_providers`. `may_manage()` is the only use of `local_client()`; nothing else depends on where a browser is. With `--manage-from-network` the server prints "Providers and machines can be changed from any device that reaches this server." at startup.
 

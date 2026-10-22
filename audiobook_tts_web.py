@@ -12681,12 +12681,18 @@ class ChatTurn:
         self.attachment = attachment
         # A SearXNG origin enables the web tools; empty leaves them out.
         self.search_server = search_server
+        # This turn's own id: its events, the page's stream, and Stop name it,
+        # so nothing of an earlier turn reaches a later one.
+        self.id = uuid.uuid4().hex[:12]
         self.events = []
         self.partial = ""
         self.done = False
         self.condition = threading.Condition()
         self.stop_requested = threading.Event()
         self.streams = set()
+        # Set aside (set_aside()): the next message came while this stopped
+        # turn still waited on its model; whatever it does later is dropped.
+        self.set_aside_ = False
 
     def publish(self, event):
         with self.condition:
@@ -12725,6 +12731,8 @@ class ChatTurn:
 
     def on_text(self, delta):
         with self.condition:
+            if self.set_aside_:
+                return
             if delta is None:
                 self.partial = ""
                 self.publish({"type": "reset"})
@@ -12740,6 +12748,8 @@ class ChatTurn:
         `chat_payload()` reads under, so a page sees it once: in the
         conversation it loads or in the events after it."""
         with self.condition:
+            if self.set_aside_:
+                return
             entries.append(entry)
             self.save(path, entries)
             self.partial = ""
@@ -12820,7 +12830,8 @@ class ChatTurn:
                     details = details[-1:]
                     system = chat_system_prompt(record, passages, web, details[0])
                     continue
-                entry = {"role": "assistant", "text": text.strip(), "at": utc_timestamp()}
+                # The model that wrote it, for the label under the answer.
+                entry = {"role": "assistant", "text": text.strip(), "at": utc_timestamp(), "model": self.selector}
                 if calls:
                     entry["calls"] = calls
                 # Provider fields, such as Gemini's parts, go back with the answer.
@@ -12851,12 +12862,33 @@ class ChatTurn:
             print(f"Chat: a question didn't fit {self.selector}: {exc}", flush=True)
             self.notice(CHAT_TOO_LONG)
         except Exception as exc:  # the listener sees why; the server goes on
-            self.notice(f"Hilde couldn't answer: {exc}")
+            self.notice(f"Hilde couldn't answer: {exc}", failed=True)
         finally:
             with self.condition:
-                self.done = True
-                self.events.append({"type": "done"})
-                self.condition.notify_all()
+                if not self.set_aside_:
+                    self.done = True
+                    self.events.append({"type": "done"})
+                    self.condition.notify_all()
+
+    def wait_done(self, timeout):
+        """Whether the turn ended within `timeout` seconds."""
+        with self.condition:
+            return self.condition.wait_for(lambda: self.done, timeout)
+
+    def set_aside(self):
+        """End a stopped turn that is still waiting on its model (Stop can't
+        cut a connection that has not opened yet) because the next message
+        came: what had arrived is kept now, as keep_stopped() keeps it, and
+        anything the turn does later is dropped, so it never writes over the
+        next turn's conversation."""
+        with self.condition:
+            if self.done:
+                return
+            self.keep_stopped()
+            self.set_aside_ = True
+            self.done = True
+            self.events.append({"type": "done"})
+            self.condition.notify_all()
 
     def keep_stopped(self):
         """A turn stopped while the model wrote: the text that had arrived is
@@ -12868,15 +12900,21 @@ class ChatTurn:
             self.notice("Stopped.")
             return
         try:
-            self.keep(self.path, self.entries,
-                      {"role": "assistant", "text": text, "at": utc_timestamp(), "stopped": True})
+            self.keep(self.path, self.entries, {
+                "role": "assistant", "text": text, "at": utc_timestamp(), "stopped": True, "model": self.selector,
+            })
         except (OSError, ValueError):
             self.notice("Stopped.")
 
-    def notice(self, text):
-        """Tell the listener what ended the turn; kept, never sent to a model."""
+    def notice(self, text, failed=False):
+        """Tell the listener what ended the turn; kept, never sent to a model.
+        A failure names the model asked, and the page says what to do."""
         entry = {"role": "notice", "text": text, "at": utc_timestamp()}
+        if failed:
+            entry.update(failed=True, model=self.selector)
         with self.condition:
+            if self.set_aside_:
+                return
             try:
                 path, _ = read_book(self.storage, self.book)
                 self.save(path, read_chat(path) + [entry])
@@ -12886,15 +12924,24 @@ class ChatTurn:
             self.publish({"type": "message", "entry": chat_display_entry(entry)})
 
 
+def chat_model_name(selector):
+    """A chat model's short name, as the picker shows it ("GPT-5.6 Sol")."""
+    return model_name({"provider": selector.partition("/")[0], "selector": selector})
+
+
 def chat_display_entry(entry):
     """One conversation entry as the page shows it: what the listener wrote,
-    Hilde's answer as HTML with ¶ citations as links, a tool's label, or a notice."""
+    Hilde's answer as HTML with ¶ citations as links, a tool's label, or a
+    notice. An answer, or a failure, saved with its `model` names it (the
+    selector and its short name) for the label under it; older ones have none."""
     role = entry.get("role")
     if role == "user":
         shown = {"role": "user", "text": entry.get("text", "")}
         if entry.get("context"):
             shown["context"] = entry["context"]
         return shown
+    if role == "tool":
+        return {"role": "tool", "text": entry.get("label") or entry.get("name") or "Tool"}
     if role == "assistant":
         html = READER_MARKDOWN.render(entry.get("text") or "")
         html = CHAT_CITATION_PATTERN.sub(
@@ -12905,10 +12952,19 @@ def chat_display_entry(entry):
         # An answer stopped while it was being written: the page marks it "Stopped".
         if entry.get("stopped"):
             shown["stopped"] = True
-        return shown
-    if role == "tool":
-        return {"role": "tool", "text": entry.get("label") or entry.get("name") or "Tool"}
-    return {"role": "notice", "text": entry.get("text", "")}
+    else:
+        shown = {"role": "notice", "text": entry.get("text", "")}
+        # The model couldn't answer: the page says what to do.
+        if entry.get("failed"):
+            shown["failed"] = True
+    if isinstance(entry.get("model"), str) and entry["model"]:
+        shown.update(model=entry["model"], model_name=chat_model_name(entry["model"]))
+    return shown
+
+
+# Seconds a new message waits for a stopped answer to end by itself (Stop
+# cuts its model's stream at once) before that answer is set aside.
+CHAT_STOP_WAIT = 3
 
 
 class ChatRegistry:
@@ -12924,7 +12980,13 @@ class ChatRegistry:
 
     def start(self, turn):
         """Begin the turn and run it on its own thread; False while the book
-        is still answering another."""
+        is still answering another. An answer already stopped (Stop, or the
+        listener changing the model) never holds the next message back: it
+        is given CHAT_STOP_WAIT seconds to keep what it wrote, then set aside."""
+        running = self.current(turn.book)
+        if running is not None and not running.done and running.stop_requested.is_set():
+            if not running.wait_done(CHAT_STOP_WAIT):
+                running.set_aside()
         with self.lock:
             running = self.turns.get(turn.book)
             if running is not None and not running.done:
@@ -12934,9 +12996,11 @@ class ChatRegistry:
         threading.Thread(target=turn.run, name=f"chat-{turn.book}", daemon=True).start()
         return True
 
-    def stop(self, book):
+    def stop(self, book, turn_id=""):
+        """Stop the book's running turn; with `turn_id`, only that turn, so a
+        stop meant for an earlier answer never ends a later one."""
         turn = self.current(book)
-        if turn is not None and not turn.done:
+        if turn is not None and not turn.done and (not turn_id or turn.id == turn_id):
             turn.stop()
             return True
         return False
@@ -12966,6 +13030,11 @@ def chat_payload(storage, chats, book, search_server=""):
         "running": running,
         "partial": partial,
         "event_index": event_index,
+        # The latest turn's id (its events and Stop name it) and, while it
+        # runs, the model writing it, for the label under the answer arriving.
+        "turn": turn.id if turn is not None else "",
+        "running_model": turn.selector if running else "",
+        "running_model_name": chat_model_name(turn.selector) if running else "",
         "files": chat_file_listing(path, entries),
         "web_search": bool(search_server),
         # Where each paragraph starts in the reader, for ¶ links.
@@ -16597,7 +16666,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/chat":
             return self.reply_chat(query.get("book", [""])[0])
         if route == "/api/chat/events":
-            return self.chat_events(query.get("book", [""])[0], query.get("from", ["0"])[0])
+            return self.chat_events(
+                query.get("book", [""])[0], query.get("from", ["0"])[0], query.get("turn", [""])[0],
+            )
         if route == "/api/chat/file":
             try:
                 path, _ = read_book(self.server.storage, query.get("book", [""])[0])
@@ -16904,7 +16975,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/chat/send":
             return self.chat_send(body)
         if route == "/api/chat/stop":
-            self.server.chats.stop(str(body.get("book") or ""))
+            # `turn`, when given, stops only that answer (a page's stale Stop never ends a newer one).
+            self.server.chats.stop(str(body.get("book") or ""), str(body.get("turn") or ""))
             return self.reply_chat(str(body.get("book") or ""))
         if route == "/api/chat/new":
             return self.chat_new(str(body.get("book") or ""))
@@ -17381,10 +17453,12 @@ class Handler(BaseHTTPRequestHandler):
         (path / BOOK_CHAT_FILE).unlink(missing_ok=True)
         return self.reply_chat(book)
 
-    def chat_events(self, book, start):
-        """Stream what Hilde writes and does while answering, from event `start`."""
+    def chat_events(self, book, start, turn_id=""):
+        """Stream what Hilde writes and does while answering, from event
+        `start`, each event naming its turn. With `turn_id`, only that turn's:
+        a stream asked for an earlier answer never carries a later one."""
         turn = self.server.chats.current(book)
-        if turn is None:
+        if turn is None or (turn_id and turn.id != turn_id):
             return self.fail(HTTPStatus.NOT_FOUND, "Hilde is not answering.")
         try:
             index = max(0, int(start or 0))
@@ -17408,7 +17482,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 for event in events:
                     index += 1
-                    self.wfile.write(f"id: {index}\ndata: {json.dumps(event)}\n\n".encode("utf-8"))
+                    data = json.dumps({**event, "turn": turn.id})
+                    self.wfile.write(f"id: {index}\ndata: {data}\n\n".encode("utf-8"))
                     if event.get("type") == "done":
                         self.wfile.flush()
                         return
@@ -19024,6 +19099,15 @@ button.chat-listen { min-height:32px; padding:0 12px; border-style:dashed; borde
                      font-size:13px; }
 .chat-restart { font-size:13px; }
 .chat-notice { font-style:italic; }
+/* The model that wrote an answer (or couldn't), from its request, never the picker: a small grey label under it. */
+.chat-model { display:block; color:var(--dim); font-size:12px; font-style:normal; white-space:normal; }
+.chat-assistant > .chat-model { margin-top:4px; }
+/* A model that couldn't answer: why, what to do, and Providers…, in a box of its own. */
+.chat-notice.failed { display:grid; gap:6px; padding:10px 12px; border:1px solid var(--bad); border-radius:8px;
+                      color:var(--text); font-size:14px; font-style:normal; }
+.chat-notice.failed > p { margin:0; }
+.chat-notice.failed .chat-advice { color:var(--dim); font-size:13px; }
+.chat-notice.failed .line { display:flex; gap:12px; }
 /* Under the conversation, never scrolling with it: the teal button for what Hilde is doing, with its short
    status; the card attached to the next question; the question box. */
 .chat-foot { display:grid; flex:none; gap:10px; padding:12px 16px; border-top:1px solid var(--line); }
@@ -19035,6 +19119,10 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .chat-action svg { width:12px; height:12px; fill:currentColor; }
 .chat-action-status { color:var(--dim); font-size:13px; white-space:nowrap; }
 .chat-hint { margin:0; color:var(--dim); font-size:13px; }
+/* A question that can't go while Hilde still answers: said in a box, not only the small grey line. */
+.chat-hint.busy { padding:8px 12px; border:1px solid color-mix(in srgb, var(--ask) 65%, transparent);
+                  border-radius:8px; background:color-mix(in srgb, var(--ask) 12%, transparent); color:var(--text);
+                  font-size:14px; }
 /* A part just attached: a short teal glow (none with reduced motion) and an outline. */
 @keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
 .chat-about { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); border-radius:8px; }
@@ -22556,6 +22644,14 @@ function openSourcePage(page) {
 // Ask Hilde: the open book's conversation, in the panel. One conversation
 // per book, shared by every browser; Hilde's answer streams in.
 let chatData = null, chatStream = null, chatLive = null;
+// What the panel follows changes when a question is sent, the model is
+// changed, or another book opens: each starts a new epoch, and a
+// conversation reply asked for in an earlier one is dropped, so a slow
+// reply never brings back an answer that was cancelled or overwrites a newer
+// one. An answer cancelled by a model change (chatCancelled, by turn id) is
+// never followed again; chatCancel is that cancel until the server has it.
+let chatEpoch = 0, chatCancel = null, chatRetry = 0, chatRetryTimer = 0;
+const chatCancelled = new Set();
 
 // Opening another book closes the panel and shows that book's files.
 function resetChatFor(book) {
@@ -22563,6 +22659,7 @@ function resetChatFor(book) {
   stopChatStream();
   stopSpeaking();
   chatData = null; chatLive = null; chatScroll = null;
+  chatEpoch++; chatCancel = null; chatRetry = 0; clearTimeout(chatRetryTimer);
   panelOpen = false; panelView = "chat"; figureShown = 0; pageShown = 0;
   chatQueued = false;
   chatHint();
@@ -22578,25 +22675,47 @@ function focusChatInput() {
   if (!window.matchMedia("(pointer:coarse)").matches) $("chat-input").focus({ preventScroll:true });
 }
 
+// A reload that fails is said in the panel and tried again, 2, 4, 8, then
+// every 15 seconds; meanwhile the answer counts as ended, so it never holds a
+// question back (the server still refuses one while an answer runs).
 async function loadChat() {
-  const book = state.player.book;
+  const book = state.player.book, epoch = chatEpoch;
+  clearTimeout(chatRetryTimer);
   try {
     const data = await jsonRequest("/api/chat?book=" + encodeURIComponent(book));
-    if (state.player.book !== book) return;
+    if (state.player.book !== book || epoch !== chatEpoch) return;
+    if (chatRetry) {
+      chatRetry = 0;
+      if ($("chat-hint").dataset.kind === "reload") chatHint();
+    }
     applyChat(data);
-    if (data.running && !chatStream) connectChat(data.event_index);
-  } catch (_) {}
+    if (chatData.running && !chatStream) connectChat(data.event_index, data.turn);
+  } catch (error) {
+    if (state.player.book !== book || epoch !== chatEpoch) return;
+    if (chatData) chatData.running = false;
+    chatStopping = false;
+    chatRetry++;
+    chatHint(`The conversation couldn't be loaded (${error.message}). Trying again…`, true, "reload");
+    renderChatControls();
+    chatRetryTimer = setTimeout(loadChat, Math.min(15000, 1000 * 2 ** chatRetry));
+  }
 }
 function applyChat(data) {
-  chatData = data;
-  if (!data.running) chatStopping = false;
+  // An answer cancelled by a model change is over here, whatever the server
+  // still says while it ends: shown as far as it came, marked Stopped.
+  const cancelled = data.running && chatCancelled.has(data.turn);
+  chatData = cancelled ? { ...data, running:false } : data;
+  if (!chatData.running) {
+    chatStopping = false;
+    if ($("chat-hint").dataset.kind === "busy") chatHint();
+  }
   renderChatFiles(data.files || []);
   const log = $("chat-log");
   log.replaceChildren(...data.conversation.map(chatEntryElement).filter(Boolean));
   chatLive = null;
   if (data.partial) {
-    chatLiveElement().textContent = data.partial;
-    if (chatStopping) markStopped(chatLive);
+    chatLiveText().textContent = data.partial;
+    if (chatStopping || cancelled) markStopped(chatLive);
   }
   scrollChat();
   renderChatControls();
@@ -22607,12 +22726,26 @@ function markStopped(node) {
   const mark = document.createElement("p");
   mark.className = "chat-stopped";
   mark.textContent = "Stopped";
-  node.append(mark);
+  node.insertBefore(mark, node.querySelector(":scope > .chat-model"));
 }
+// The model that wrote an answer, from the request that produced it (the
+// saved entry's, or the running turn's), never the picker's.
+function chatModelLabel(name, selector) {
+  const label = document.createElement("span");
+  label.className = "chat-model";
+  label.textContent = name;
+  if (selector) label.title = selector;
+  return label;
+}
+// Under a model's failure: what to do, and Providers… (where a sign-in is
+// renewed, a provider connected, or a local server added); the model stays.
+const CHAT_FAILED_ADVICE = "Check this model under Settings › Providers (sign in again, connect the provider, or "
+  + "make sure its server runs and has the model loaded), or choose another model above. Then ask again.";
 function chatEntryElement(entry) {
   if (entry.role === "assistant" && !entry.text) return null;
-  const node = document.createElement(entry.role === "assistant" || entry.role === "user" ? "div" : "p");
-  node.className = `chat-${entry.role}`;
+  const block = entry.role === "assistant" || entry.role === "user" || entry.failed;
+  const node = document.createElement(block ? "div" : "p");
+  node.className = `chat-${entry.role}${entry.failed ? " failed" : ""}`;
   // The server renders answers from Markdown with raw HTML turned off.
   if (entry.role === "assistant") {
     node.innerHTML = entry.html;
@@ -22621,6 +22754,7 @@ function chatEntryElement(entry) {
       link.target = "_blank"; link.rel = "noopener noreferrer";
     }
     if (entry.stopped) markStopped(node);
+    if (entry.model_name) node.append(chatModelLabel(entry.model_name, entry.model));
   } else if (entry.role === "user") {
     // A past question shows what went with it, as its chip did.
     if (entry.context) node.append(chipElement(entry.context));
@@ -22628,6 +22762,20 @@ function chatEntryElement(entry) {
     text.className = "chat-user-text";
     text.textContent = entry.text;
     node.append(text);
+  } else if (entry.failed) {
+    const why = document.createElement("p");
+    why.textContent = entry.text;
+    const advice = document.createElement("p");
+    advice.className = "chat-advice";
+    advice.textContent = CHAT_FAILED_ADVICE;
+    const actions = document.createElement("div");
+    actions.className = "line";
+    const providers = document.createElement("button");
+    providers.type = "button"; providers.className = "link"; providers.textContent = "Providers…";
+    providers.addEventListener("click", openProvidersPanel);
+    actions.append(providers);
+    node.append(why, advice, actions);
+    if (entry.model_name) node.append(chatModelLabel(entry.model_name, entry.model));
   } else {
     node.textContent = entry.text;
     // The server shows a tool's row only once its result is in: a note it
@@ -22657,14 +22805,21 @@ function chatEntryElement(entry) {
   }
   return node;
 }
+// The answer arriving: its text, and under it the running turn's model.
 function chatLiveElement() {
   if (!chatLive) {
     chatLive = document.createElement("div");
     chatLive.className = "chat-assistant live";
+    const text = document.createElement("div");
+    text.className = "chat-live-text";
+    chatLive.append(text);
+    if (chatData && chatData.running_model_name)
+      chatLive.append(chatModelLabel(chatData.running_model_name, chatData.running_model));
     $("chat-log").append(chatLive);
   }
   return chatLive;
 }
+function chatLiveText() { return chatLiveElement().querySelector(".chat-live-text"); }
 // New messages scroll the conversation to its end; hidden, it goes to its
 // end on return only if it was there.
 function scrollChat() {
@@ -22945,10 +23100,18 @@ function renderChatHeader() {
 const DEFAULT_QUESTION = "Explain this part.";
 const CHAT_PLACEHOLDER = "Type a question";
 let chatQueued = false, chatSending = false;
-function chatHint(message = "", problem = false) {
+// The send on its way (settled when it is done), and whether a model change
+// cancelled it meanwhile: its answer is then stopped as soon as it starts.
+let chatSendTask = null, chatSendCancelled = false;
+// `kind` names a hint that goes by itself: "busy" (a question refused while
+// Hilde answers, shown as a box) when the answer ends, "reload" once the
+// conversation loads again.
+function chatHint(message = "", problem = false, kind = "") {
   const hint = $("chat-hint");
   hint.textContent = message;
+  hint.dataset.kind = message ? kind : "";
   hint.classList.toggle("problem", problem);
+  hint.classList.toggle("busy", !!message && kind === "busy");
   hint.classList.toggle("hidden", !message);
 }
 function aboutName(about) {
@@ -22957,9 +23120,13 @@ function aboutName(about) {
 }
 async function sendChat(event) {
   if (event) event.preventDefault();
+  // A model change is ending the last answer: the question goes once the server has stopped it.
+  if (chatCancel) await chatCancel;
   if (chatSending) { chatHint("Sending your question…"); return; }
   if (chatData && chatData.running) {
-    chatHint("Hilde is still answering. Wait for the answer, or press Stop.");
+    const name = chatData.running_model_name;
+    chatHint(`Hilde is still answering${name ? ` with ${name}` : ""}. Your question stays here: wait for the `
+      + "answer, or press Stop, then send it.", false, "busy");
     return;
   }
   const typed = $("chat-input").value.trim();
@@ -22997,6 +23164,10 @@ async function sendChat(event) {
   const sent = chatAbout && chatAbout.manifest ? chatAbout : null;
   if (state.player.chat_speak) unlockChatVoice();
   chatSending = true;
+  chatSendCancelled = false;
+  let settle;
+  chatSendTask = new Promise((resolve) => { settle = resolve; });
+  const epoch = ++chatEpoch;
   chatHint();
   renderChatControls();
   try {
@@ -23006,32 +23177,45 @@ async function sendChat(event) {
         text:typed || DEFAULT_QUESTION,
         ...(sent ? { about:sent.about } : {}) }),
     });
+    if (chatSendCancelled) {
+      // The model changed while the question was on its way: its answer is
+      // stopped like the one running would be; the box and the card stay.
+      chatCancelled.add(data.turn);
+      await stopChatTurn(data.turn).catch(() => {});
+      return;
+    }
+    if (epoch !== chatEpoch) return;  // another book opened meanwhile
     // What was typed meanwhile stays.
     if ($("chat-input").value.trim() === typed) $("chat-input").value = "";
     if (sent && chatAbout === sent) clearAbout();
     if (failed) chatHint(`Sent without ${aboutName(failed.about)}.`);
     applyChat(data);
-    connectChat(data.event_index);
+    connectChat(data.event_index, data.turn);
   } catch (error) {
     chatHint(`Not sent: ${error.message}`, true);
   } finally {
     chatSending = false;
+    settle();
     renderChatControls();
   }
 }
-function connectChat(from) {
+// The stream of one turn's events (`turn`, from the server): anything of
+// another turn, such as an answer cancelled by a model change, is dropped.
+function connectChat(from, turn = "") {
   stopChatStream();
   const book = state.player.book;
   const source = new EventSource(
     "/api/chat/events?book=" + encodeURIComponent(book) + "&from=" + encodeURIComponent(from)
+    + (turn ? "&turn=" + encodeURIComponent(turn) : "")
   );
   chatStream = source;
   source.onmessage = (message) => {
     if (chatStream !== source) return;
     const event = JSON.parse(message.data);
+    if (turn && event.turn && event.turn !== turn) return;
     // After Stop, what was still on its way is not shown; the server keeps what it had.
-    if (event.type === "text") { if (!chatStopping) chatLiveElement().textContent += event.delta; }
-    else if (event.type === "reset") { if (chatLive && !chatStopping) chatLive.textContent = ""; }
+    if (event.type === "text") { if (!chatStopping) chatLiveText().textContent += event.delta; }
+    else if (event.type === "reset") { if (chatLive && !chatStopping) chatLiveText().textContent = ""; }
     else if (event.type === "message") {
       if (chatLive) { chatLive.remove(); chatLive = null; }
       const node = chatEntryElement(event.entry);
@@ -23044,6 +23228,9 @@ function connectChat(from) {
       $("chat-log").append(note);
     } else if (event.type === "done") {
       stopChatStream();
+      // The answer has ended: nothing holds a question back, even if the reload fails.
+      if (chatData) chatData.running = false;
+      renderChatControls();
       loadChat().then(speakLatestAnswer);
       return;
     }
@@ -23064,16 +23251,53 @@ async function stopChat() {
   if (chatLive) markStopped(chatLive);
   renderChatControls();
   try {
-    await jsonRequest("/api/chat/stop", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book }),
-    });
+    await stopChatTurn(chatData.turn);
   } catch (error) {
     chatStopping = false;
     chatLive?.querySelector(".chat-stopped")?.remove();
     renderChatControls();
     setStatus(error.message, true);
   }
+}
+// The server stops the book's answer; naming its turn, only that one.
+function stopChatTurn(turn) {
+  return jsonRequest("/api/chat/stop", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({ book:state.player.book, ...(turn ? { turn } : {}) }),
+  });
+}
+// Changing Ask Hilde's model ends what the old one is doing, as Stop does:
+// the server stops its turn (the text that arrived stays, marked Stopped),
+// and the page drops the answer's stream, Stop button, and waiting question,
+// and anything that arrives for it later. The conversation, the card, and
+// the box stay; the next question goes to the new model (sendChat() waits
+// for this cancel first, so the server never refuses it as still answering).
+function cancelChatAnswer() {
+  const turn = chatData && chatData.running ? chatData.turn : "";
+  const sending = chatSending ? chatSendTask : null;
+  chatEpoch++;
+  chatQueued = false;
+  if (sending) chatSendCancelled = true;
+  if (turn) chatCancelled.add(turn);
+  stopChatStream();
+  if (chatLive && turn) markStopped(chatLive);
+  if (chatData) chatData.running = false;
+  chatStopping = false;
+  chatHint();
+  renderChatControls();
+  if (!turn && !sending) return;
+  const name = chatData && chatData.running_model_name;
+  const task = chatCancel = (async () => {
+    if (sending) await sending;
+    if (turn) {
+      try { await stopChatTurn(turn); }
+      catch (error) {
+        chatHint(`The answer from ${name || "the earlier model"} couldn't be stopped: ${error.message}`, true);
+      }
+    }
+    await loadChat();
+    if (chatCancel === task) chatCancel = null;
+  })();
 }
 async function newChat() {
   const book = bookById(state.player.book);
@@ -23436,9 +23660,13 @@ function pauseBookForQuestion() {
   if (readerAudio && !readerAudio.paused) readerAudio.pause();
 }
 // Text asked about (selected): its card, the panel's chat, and
-// the box left as it was, for the listener's own question.
+// the box left as it was, for the listener's own question. Asking about the
+// part already attached lights its card again, so the press visibly did something.
 function askAboutFocus(focus) {
-  attachAbout(focusAbout(focus), focus);
+  const about = focusAbout(focus);
+  const same = !!(about && chatAbout && JSON.stringify(chatAbout.about) === JSON.stringify(about));
+  attachAbout(about, focus);
+  if (same) pulseChip();
   setPanel(true, "chat");
   if (!chatData) loadChat();
   focusChatInput();
@@ -25829,6 +26057,8 @@ function choosePickerOption(name, option) {
 // for a Settings default, the server's (saveDefaultModel()).
 function setPickerModel(name, selector) {
   if (PICKERS[name].server) { saveDefaultModel(name, selector); return; }
+  const prior = name === "chat" ? pickerChoice("chat") : null;
+  const before = prior ? (prior.model || prior.unreachable || {}).selector : "";
   const [group, key] = PICKERS[name].field;
   state[group][key] = selector;
   noteRecentModel(selector);
@@ -25836,6 +26066,8 @@ function setPickerModel(name, selector) {
   queueSync();
   render();
   if (name !== "chat") return;
+  // Another model: the answer the old one is writing ends (cancelChatAnswer()).
+  if (selector !== before) cancelChatAnswer();
   renderChatHeader();
   renderChatControls();
   // The same part again: whether the figure's picture goes depends on the model.

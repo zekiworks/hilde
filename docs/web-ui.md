@@ -559,6 +559,17 @@ you send it (screen readers hear the server or the provider and how it is
 reached too, as the list shows them), and the picker remembers the model you
 used last; it never starts on a cloud model by itself. A model that does not
 answer shows in red under the header, with others to use instead.
+Changing the model while Hilde is still writing an answer stops that answer,
+as **Stop** does: what had arrived stays, marked **Stopped**, and nothing more
+of it appears. Your unsent question, its card, and the conversation stay, and
+your next question goes to the new model at once. Every question is a new
+request, also about the same words as before. Under each answer a small gray
+label names the model that wrote it (such as "GPT-5.6 Sol"), as it was when
+the question went, whatever the model box shows later; answers from before
+this version have none. If the model can't answer (you are not signed in, its
+server is not running, the model is not loaded, or the connection fails), the
+chat says so in a red box under your question with what to do and a
+**Providers…** link; Hilde never switches to another model by itself.
 **⋯** next to the model box opens the chat's menu: the book and the section
 asked about, as a line of text, then **Read answers aloud** (a tick shows it is
 on; it stays open so you see the change) and **New conversation**. Enter,
@@ -598,8 +609,8 @@ picture is not sent. The picture goes with that question only. Past questions
 show the same card, collapsed and without its buttons.
 
 The attached part sits directly above the message box and lights up briefly
-when attached (a steady outline instead when your system asks for reduced
-motion). It reads **Preparing…** while Hilde gathers it; **Send** then reads
+when attached, also when you ask about the same words again (a steady outline
+instead when your system asks for reduced motion). It reads **Preparing…** while Hilde gathers it; **Send** then reads
 **Preparing context…**, and pressing it (or Enter) sends your question as soon
 as the part is ready. If gathering takes longer than 10 seconds or fails, the
 part reads **Couldn't attach: Retry · Remove**: **Retry** asks for the same
@@ -614,7 +625,11 @@ nothing typed, the button reads **Explain this part** and it, or Enter, sends
 Your question stays in the box until Hilde has it: if
 sending fails, the chat says why above the box and the text is still there.
 The chat also says why when nothing can go yet: an empty box, models still
-loading or none added, or Hilde still answering.
+loading or none added, or Hilde still answering. That last one shows in a teal
+box, naming the model still writing: "Hilde is still answering with … Your
+question stays here: wait for the answer, or press Stop, then send it." If the
+conversation can't be loaded again after an answer, the chat says so in red,
+keeps trying by itself, and never blocks your next question meanwhile.
 
 **🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
 own voice (or, when the Hilde voice is gone from **Voices**, the first voice

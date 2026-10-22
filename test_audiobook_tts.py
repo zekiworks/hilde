@@ -9305,6 +9305,199 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(web.read_chat(path)[-1]["role"], "notice")
         self.assertEqual(web.read_chat(path)[-1]["text"], "Stopped.")
 
+    def two_models(self):
+        """A local server with a slow model (a word each 50 ms, for 10 s, until
+        its connection is cut) and a fast one; the local servers to pass."""
+
+        class TwoModels(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = json.dumps({"data": [{"id": "slow", "max_model_len": 100_000},
+                                            {"id": "fast", "max_model_len": 100_000}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/tokenize":
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                words = ["Slow "] * 200 if body["model"] == "slow" else ["Fast answer."]
+                try:
+                    for word in words:
+                        event = {"choices": [{"index": 0, "delta": {"content": word}, "finish_reason": None}]}
+                        self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+                        self.wfile.flush()
+                        if body["model"] == "slow":
+                            time.sleep(0.05)
+                    self.wfile.write(b"data: [DONE]\n\n")
+                except OSError:
+                    pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), TwoModels)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return local_servers_at(server)
+
+    def wait_turn(self, turn, timeout=10):
+        self.assertTrue(turn.wait_done(timeout), "the turn did not end")
+
+    def test_changing_the_model_stops_the_running_turn_and_the_next_message_goes_at_once(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        servers, chats = self.two_models(), web.ChatRegistry()
+        first = web.ChatTurn(self.storage, book, "Explain this part.", "lm-studio/slow", servers)
+        self.assertTrue(chats.start(first))
+        for _ in range(100):
+            if first.partial:
+                break
+            time.sleep(0.05)
+        self.assertTrue(first.partial)
+        payload = web.chat_payload(self.storage, chats, book)
+        self.assertEqual((payload["running"], payload["turn"], payload["running_model"],
+                          payload["running_model_name"]), (True, first.id, "lm-studio/slow", "Slow"))
+        # While it runs, another message is refused; a stop naming another turn changes nothing.
+        second = web.ChatTurn(self.storage, book, "Explain this part.", "lm-studio/fast", servers)
+        self.assertFalse(chats.start(second))
+        self.assertFalse(chats.stop(book, "another-turn"))
+        self.assertFalse(first.stop_requested.is_set())
+        # The page's model change stops this turn by its id; the next message starts at once.
+        self.assertTrue(chats.stop(book, first.id))
+        started = time.monotonic()
+        self.assertTrue(chats.start(second))
+        self.assertLess(time.monotonic() - started, web.CHAT_STOP_WAIT)
+        self.wait_turn(second)
+        self.assertTrue(first.done)
+        entries = web.read_chat(path)
+        self.assertEqual([(entry["role"], entry.get("model"), bool(entry.get("stopped"))) for entry in entries], [
+            ("user", None, False), ("assistant", "lm-studio/slow", True),
+            ("user", None, False), ("assistant", "lm-studio/fast", False),
+        ])
+        self.assertEqual(entries[-1]["text"], "Fast answer.")
+        self.assertNotIn("Fast", entries[1]["text"])
+        # Each turn's events are its own.
+        self.assertNotIn("Slow", json.dumps(second.events))
+        self.assertNotIn("Fast", json.dumps(first.events))
+        # The page's labels: the model of the request that wrote each answer.
+        conversation = web.chat_payload(self.storage, chats, book)["conversation"]
+        self.assertEqual([(entry.get("model"), entry.get("model_name")) for entry in conversation], [
+            (None, None), ("lm-studio/slow", "Slow"), (None, None), ("lm-studio/fast", "Fast"),
+        ])
+
+    def test_a_stopped_turn_still_waiting_on_its_model_is_set_aside_by_the_next_message(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        servers, chats = self.two_models(), web.ChatRegistry()
+        # A turn whose model has not answered yet (its connection still opening): stopped, not done.
+        stuck = web.ChatTurn(self.storage, book, "Explain this part.", "lm-studio/slow", servers)
+        stuck.begin()
+        stuck.on_text("The encoder ")
+        chats.turns[book] = stuck
+        self.assertTrue(chats.stop(book, stuck.id))
+        following = web.ChatTurn(self.storage, book, "And this?", "lm-studio/fast", servers)
+        with mock.patch.object(web, "CHAT_STOP_WAIT", 0.2):
+            self.assertTrue(chats.start(following))
+        self.wait_turn(following)
+        self.assertTrue(stuck.done)
+        self.assertEqual(stuck.events[-1], {"type": "done"})
+        # What had arrived is kept, as Stop keeps it; whatever the old turn does later is dropped.
+        stuck.on_text("late words")
+        stuck.keep_stopped()
+        stuck.notice("Hilde couldn't answer: late", failed=True)
+        entries = web.read_chat(path)
+        self.assertEqual([(entry["role"], entry["text"], entry.get("model")) for entry in entries], [
+            ("user", "Explain this part.", None), ("assistant", "The encoder", "lm-studio/slow"),
+            ("user", "And this?", None), ("assistant", "Fast answer.", "lm-studio/fast"),
+        ])
+        self.assertNotIn("late", json.dumps(stuck.events))
+
+    def test_the_event_stream_and_stop_name_their_turn(self):
+        book, _ = self.book(chat_narration("S."))
+        chats = web.ChatRegistry()
+        old = web.ChatTurn(self.storage, book, "Q1", "lm-studio/slow", [])
+        old.begin()
+        old.on_text("Old words")
+        chats.turns[book] = old
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            server.daemon_threads = True
+            server.storage, server.chats, server.chat_speaker = self.storage, chats, None
+            server.search_server, server.verbose = "", False
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_port}"
+
+            def events(turn_id, start=0):
+                try:
+                    with urllib.request.urlopen(
+                        f"{base}/api/chat/events?book={book}&from={start}&turn={turn_id}", timeout=5
+                    ) as response:
+                        return [json.loads(line[6:]) for line in response.read().decode().splitlines()
+                                if line.startswith("data: ")]
+                except urllib.error.HTTPError as error:
+                    return error.code
+
+            def stop(turn_id):
+                request = urllib.request.Request(f"{base}/api/chat/stop", method="POST",
+                                                 data=json.dumps({"book": book, "turn": turn_id}).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return json.load(response)
+
+            try:
+                # A stop naming another turn leaves this one running.
+                self.assertTrue(stop("another-turn")["running"])
+                self.assertFalse(old.stop_requested.is_set())
+                self.assertEqual(stop(old.id)["turn"], old.id)
+                self.assertTrue(old.stop_requested.is_set())
+                with old.condition:
+                    old.done = True
+                    old.events.append({"type": "done"})
+                self.assertEqual(events(old.id), [{"type": "text", "delta": "Old words", "turn": old.id},
+                                                  {"type": "done", "turn": old.id}])
+                # A new turn: a stream asked for the old one gets nothing of it.
+                new = web.ChatTurn(self.storage, book, "Q2", "lm-studio/fast", [])
+                new.begin()
+                new.on_text("New words")
+                with new.condition:
+                    new.done = True
+                    new.events.append({"type": "done"})
+                chats.turns[book] = new
+                self.assertEqual(events(old.id), 404)
+                self.assertEqual(events(new.id), [{"type": "text", "delta": "New words", "turn": new.id},
+                                                  {"type": "done", "turn": new.id}])
+                # Without a turn, as before: the book's current one.
+                self.assertEqual(events("")[0]["turn"], new.id)
+            finally:
+                server.shutdown()
+
+    def test_a_failure_names_its_model_and_old_entries_name_none(self):
+        book, path = self.book(chat_narration("Storms.", "Dams."))
+        self.reset_fake(100_000, [(404, "model 'fake' is not loaded")])
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.run_turn(web.ChatTurn(self.storage, book, "Q", "lm-studio/fake", local_servers_at(server)))
+        failure = web.read_chat(path)[-1]
+        self.assertEqual((failure["role"], failure["failed"], failure["model"]), ("notice", True, "lm-studio/fake"))
+        self.assertTrue(failure["text"].startswith("Hilde couldn't answer: "))
+        shown = web.chat_display_entry(failure)
+        self.assertEqual((shown["failed"], shown["model"], shown["model_name"]), (True, "lm-studio/fake", "Fake"))
+        # An answer saved before answers named their model shows no label; a plain notice is no failure.
+        self.assertEqual(web.chat_display_entry({"role": "assistant", "text": "Old."}).keys(),
+                         {"role", "html", "text"})
+        self.assertEqual(web.chat_display_entry({"role": "notice", "text": "Stopped."}),
+                         {"role": "notice", "text": "Stopped."})
+
     def test_a_files_section_is_the_question_whose_turn_last_wrote_it(self):
         book, path = self.book(chat_narration("S."))
         passages = web.chat_book(self.storage, book)[2]
