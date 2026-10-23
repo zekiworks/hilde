@@ -9399,7 +9399,7 @@ class ChatTests(unittest.TestCase):
         items, label = web.ask_read(shelf, ["0a1b2c3d:3–99", "help:1", "7"])
         self.assertEqual(label, "Read ¶3, Help › Voices")
         self.assertEqual([(item["kind"], item.get("id")) for item in items], [
-            ("paper", "0a1b2c3d:3"), ("help", "help:1"), ("note", None),
+            ("narration", "0a1b2c3d:3"), ("help", "help:1"), ("note", None),
         ])
         self.assertIn("Not narrated", items[0]["text"])
         self.assertEqual(items[2]["text"], "0a1b2c3d has paragraphs 0a1b2c3d:1 to 0a1b2c3d:3.")
@@ -9456,7 +9456,9 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(first["stream_options"], {"include_usage": True})
         results = [message for message in second["messages"] if message["role"] == "tool"]
         self.assertEqual([message["tool_call_id"] for message in results], ["a", "b"])
-        self.assertEqual(results[0]["content"], f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>')
+        # The book's passages have no paper text of their own here: the read gives the narration, labelled so.
+        self.assertEqual(results[0]["content"],
+                         f'<paragraph id="{doc}:2" label="Hilde\'s narration">\nParagraph 2 text.\n</paragraph>')
         self.assertEqual(results[1]["content"], "Wrote dams.md.")
         self.assertEqual((path / "files" / "dams.md").read_text(), "# Dams\n")
         # The page heard each step, and the conversation survives a reload.
@@ -9815,7 +9817,7 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(second["contents"][1], {"role": "model", "parts": call_parts[1:]})
         self.assertEqual(second["contents"][2], {"role": "user", "parts": [{"functionResponse": {
             "name": "read_paragraphs", "id": "fc-1",
-            "response": {"content": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
+            "response": {"content": f'<paragraph id="{doc}:2" label="Hilde\'s narration">\nParagraph 2 text.\n</paragraph>'},
         }}]})
         self.assertNotIn("Which paragraph", json.dumps(second))
         entries = web.read_chat(path)
@@ -9891,7 +9893,7 @@ class ChatTests(unittest.TestCase):
             {"type": "function_call", "call_id": "call_1", "name": "read_paragraphs",
              "arguments": json.dumps({"ids": [f"{doc}:2"]})},
             {"type": "function_call_output", "call_id": "call_1",
-             "output": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
+             "output": f'<paragraph id="{doc}:2" label="Hilde\'s narration">\nParagraph 2 text.\n</paragraph>'},
         ])
         self.assertEqual(web.read_chat(path)[-1]["text"], f"Dams are in {doc}:2.")
         # The Responses usage was read: OpenAI caches, and the ratio of its
@@ -9962,7 +9964,7 @@ class ChatTests(unittest.TestCase):
                  "function": {"name": "read_paragraphs", "arguments": json.dumps({"ids": [f"{doc}:2"]})}},
             ]},
             {"role": "tool", "tool_call_id": "call_1",
-             "content": f'<paragraph id="{doc}:2" kind="paper">\nParagraph 2 text.\n</paragraph>'},
+             "content": f'<paragraph id="{doc}:2" label="Hilde\'s narration">\nParagraph 2 text.\n</paragraph>'},
         ])
         entries = web.read_chat(path)
         self.assertEqual(entries[1]["reasoning_content"], "Look it up.")
@@ -10161,7 +10163,9 @@ def ask_call(call_id, tool, **arguments):
 
 
 def ask_paragraph(number, text=None):
-    return {"kind": "paper", "id": f"{ASK_DOC}:{number}", "text": text or f"Paragraph {number} text."}
+    """A paragraph as a read saves it: the paper's own text, labelled so."""
+    return {"kind": "paper", "id": f"{ASK_DOC}:{number}", "label": "From the paper",
+            "text": text or f"Paragraph {number} text."}
 
 
 def ask_conversation():
@@ -10248,29 +10252,155 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
 """)
         self.assertEqual(results, ["See ¶12 and ¶3–5, help:2, ffffffff:1.", f"{ASK_DOC}:4"])
 
-    def test_a_search_gives_the_best_matches_whole_and_the_next_as_summaries(self):
+    def test_a_search_gives_the_best_matches_as_the_paper_prints_them_and_the_next_as_hildes_summaries(self):
+        def passage(text, summary, printed=None):
+            return {"text": text, "summary": summary, "original_text": printed or f"**{text}**"}
+
         document = web.AskDocument(ASK_DOC, "paper", "Book", [
-            {"text": "Multi-head attention runs several attention heads.", "summary": "S1"},
-            {"text": "Heads of attention, again attention.", "summary": "S2"},
-            {"text": "Attention only.", "summary": "S3"},
-            {"text": "Heads only.", "summary": "S4"},
-            {"text": "Nothing.", "summary": "S5"},
+            passage("Multi-head attention runs several attention heads.", "S1", "Multi-head _attention_ uses h = 8 heads."),
+            passage("Heads of attention, again attention.", "S2", "Heads."),
+            passage("Attention only.", "S3"),
+            passage("Heads only.", "S4"),
+            passage("Nothing.", "S5"),
         ])
         items, label = web.search_document(document, "attention heads",
                                            {"good_max": 5, "good_share": 0.5, "weak_max": 2})
         self.assertEqual(label, 'Searched the book for "attention heads"')
-        # Only the first scores at least half the best; two of the rest come as summaries.
+        # Only the first scores at least half the best, as the paper prints it;
+        # two of the rest come as Hilde's summaries, labelled so.
         self.assertEqual(items, [
-            {"kind": "paper", "id": f"{ASK_DOC}:1", "text": "Multi-head attention runs several attention heads."},
-            {"kind": "document_search", "text": "Weaker matches, as summaries; read one with read_paragraphs:\n"
-                                                f"{ASK_DOC}:2 S2\n{ASK_DOC}:3 S3"},
+            {"kind": "paper", "id": f"{ASK_DOC}:1", "label": "From the paper", "text": "Multi-head attention uses h = 8 heads."},
+            {"kind": "document_search", "label": "Hilde's summary",
+             "text": "Weaker matches, as Hilde's summaries (Hilde wrote them; they are not the paper's text); "
+                     f"read one with read_paragraphs:\n{ASK_DOC}:2 S2\n{ASK_DOC}:3 S3"},
         ])
+        # The paper's text is searched too, not only the narration.
+        self.assertEqual(web.search_document(document, "h = 8")[0][0]["id"], f"{ASK_DOC}:1")
         same = web.AskDocument(ASK_DOC, "paper", "Book", [{"text": "Silt.", "summary": f"S{n}"} for n in range(9)])
         items, _ = web.search_document(same, "silt")
         self.assertEqual([item.get("id") for item in items], [f"{ASK_DOC}:{n}" for n in range(1, 6)] + [None])
+        # Without paper text of its own, a match is its narration, labelled so.
+        self.assertEqual({item["label"] for item in items[:-1]}, {"Hilde's narration"})
         self.assertEqual(items[-1]["text"].count("\n"), 4)
         self.assertEqual(web.search_document(same, "dams")[0], [{"kind": "note", "text": f"No paragraph of {ASK_DOC} holds dams."}])
         self.assertEqual(web.search_document(same, "a")[1], "Searched nothing")
+
+    def test_a_read_gives_the_papers_text_by_default_the_narration_or_both_on_request(self):
+        passages = [
+            {"type": "body", "text": "Our big model achieves a BLEU score of 41.5.",
+             "original_text": "our big model achieves a BLEU score of 41 _._ 0, at less than 1 _/_ 4 the cost of "
+                              "10<sup>18</sup> FLOPs, with _d<sub>k</sub>_ = 64 and <sup>_∗_</sup> marks."},
+            {"type": "table", "text": "Table 2 compares BLEU scores: the big model 41.8.",
+             "original_text": "Table 2: BLEU scores.", "sources": [
+                 {"type": "table", "text": "![](images/t.png)"},
+                 {"type": "table", "text": "<!-- Start of picture text -->\n|Transformer (big)|28.4|41.8|\n"
+                                           "<!-- End of picture text -->"},
+                 {"type": "caption", "text": "Table 2: BLEU scores."}]},
+            {"type": "figure", "text": "Figure 2 shows attention.", "original_text": "Figure 2: Attention.", "sources": [
+                {"type": "figure", "text": "<!-- Start of picture text -->\nMatMul<br>SoftMax\n<!-- End of picture text -->"},
+                {"type": "caption", "text": "Figure 2: Attention."}]},
+            {"type": "body", "text": "Only narrated."},
+        ]
+        shelf = web.AskShelf(None, web.AskDocument(ASK_DOC, "paper", "Book", passages),
+                             web.AskDocument("help", "help", "Help", [{"title": "V", "body": "B", "text": "V\n\nB"}]))
+
+        def read(ids, version=None):
+            items, label = web.ask_read(shelf, ids, version)
+            return [(item["kind"], item.get("label"), item["text"]) for item in items], label
+
+        printed = ("our big model achieves a BLEU score of 41.0, at less than 1/4 the cost of 10^18 FLOPs, "
+                   "with d_k = 64 and ∗ marks.")
+        heard = "Our big model achieves a BLEU score of 41.5."
+        # PDF markup goes; every number stays exact.
+        self.assertEqual(read([f"{ASK_DOC}:1"]), ([("paper", "From the paper", printed)], "Read ¶1"))
+        self.assertEqual(read([f"{ASK_DOC}:1"], "paper")[0], [("paper", "From the paper", printed)])
+        self.assertEqual(read([f"{ASK_DOC}:1"], "narration"),
+                         ([("narration", "Hilde's narration", heard)], "Read ¶1 (Hilde's narration)"))
+        self.assertEqual(read([f"{ASK_DOC}:1"], "both"), ([
+            ("paper", "From the paper", printed), ("narration", "Hilde's narration", heard),
+        ], "Read ¶1 (paper and narration)"))
+        # A table: its caption and extracted cells, then Hilde's description, by default and with both.
+        table = [("paper", "From the paper", "Table 2: BLEU scores.\n|Transformer (big)|28.4|41.8|"),
+                 ("narration", "Hilde's description", "Table 2 compares BLEU scores: the big model 41.8.")]
+        self.assertEqual(read([f"{ASK_DOC}:2"])[0], table)
+        self.assertEqual(read([f"{ASK_DOC}:2"], "both")[0], table)
+        self.assertEqual(read([f"{ASK_DOC}:2"], "narration")[0], table[1:])
+        # A figure: its caption, never its picture's labels, and the description.
+        self.assertEqual(read([f"{ASK_DOC}:3"])[0], [("paper", "From the paper", "Figure 2: Attention."),
+                                                     ("narration", "Hilde's description", "Figure 2 shows attention.")])
+        # No paper text of its own: the narration, labelled as narration.
+        self.assertEqual(read([f"{ASK_DOC}:4"])[0], [("narration", "Hilde's narration", "Only narrated.")])
+        # The help has one text whatever the version; an unknown version reads the paper and says so.
+        self.assertEqual(read(["help:1"], "narration")[0], [("help", "Help", "V\n\nB")])
+        items, _ = read([f"{ASK_DOC}:1"], "draft")
+        self.assertEqual(items[0], ("paper", "From the paper", printed))
+        self.assertIn('version is "paper"', items[-1][2])
+
+    def test_nothing_hilde_wrote_is_labelled_as_the_paper(self):
+        passages = [{"type": "body", "text": "Heard 41.5.", "summary": "Hilde's summary.", "original_text": "Printed 41.0."},
+                    {"type": "body", "text": "Heard too.", "summary": "Another summary.", "original_text": "Printed too."}]
+        document = web.AskDocument(ASK_DOC, "paper", "Book", passages)
+        shelf = web.AskShelf(None, document, web.AskDocument("help", "help", "Help", []))
+        entries = [
+            # An attachment: the narration and the paper's own text of ¶1.
+            {"role": "user", "text": "Explain this part.", "context": {"items": [
+                {"kind": "selection", "label": "Your selection", "text": "41.5"},
+                {"kind": "narration", "label": "Hilde's narration", "passage": 1, "text": "Heard 41.5."},
+                {"kind": "source", "label": "From the paper · 6.1, PDF p. 8", "passage": 1, "text": "Printed 41 _._ 0."},
+            ]}},
+            {"role": "assistant", "text": "", "calls": [ask_call("a", "read_paragraphs", ids=[f"{ASK_DOC}:1"], version="both"),
+                                                        ask_call("b", "search_document", document_id=ASK_DOC, keywords="heard")]},
+            {"role": "tool", "id": "a", "name": "read_paragraphs", "items": web.ask_read(shelf, [f"{ASK_DOC}:1"], "both")[0]},
+            {"role": "tool", "id": "b", "name": "search_document", "items": web.search_document(
+                document, "heard", {"good_max": 1, "good_share": 0.5, "weak_max": 5})[0]},
+            # Saved before reads had versions: its text was the narration.
+            {"role": "assistant", "text": "", "calls": [ask_call("c", "read_paragraphs", ids=[f"{ASK_DOC}:2"])]},
+            {"role": "tool", "id": "c", "name": "read_paragraphs", "items": [{"kind": "paper", "id": f"{ASK_DOC}:2", "text": "Heard too."}]},
+        ]
+        ledger = web.AskLedger(entries, ASK_DOC)
+        messages = ledger.render(web.ask_state(None))[0]
+        sent = json.dumps(messages, ensure_ascii=False)
+        for heard in ("Heard 41.5.", "Heard too.", "Hilde's summary.", "Another summary."):
+            self.assertNotRegex(sent, rf'label=\\"From the paper\\">\\n{re.escape(heard)}')
+        self.assertIn(f"[Hilde's narration ({ASK_DOC}:1)]\\nHeard 41.5.", sent)
+        self.assertIn(f"[From the paper · 6.1, PDF p. 8 ({ASK_DOC}:1)]\\nPrinted 41.0.", sent)
+        # The read's paper and narration copies are the attachment's: sent once, above.
+        self.assertEqual(self.result(messages, "a"), (
+            f'<paragraph id="{ASK_DOC}:1" label="From the paper">\n(already above)\n</paragraph>\n\n'
+            f'<paragraph id="{ASK_DOC}:1" label="Hilde\'s narration">\n(already above)\n</paragraph>'
+        ))
+        self.assertIn('<document_search label="Hilde\'s summary">', self.result(messages, "b"))
+        self.assertEqual(self.result(messages, "c"), f'<paragraph id="{ASK_DOC}:2" label="Hilde\'s narration">\nHeard too.\n</paragraph>')
+        kinds = {item["key"]: item["kind"] for item in ledger.every()}
+        self.assertEqual([kinds["0.1"], kinds["0.2"], kinds["5.0"]], ["narration", "paper", "narration"])
+        # The abstract the instructions carry is the paper's own text.
+        self.assertEqual(web.chat_abstract(passages)["label"], "From the paper")
+        self.assertIn("Printed 41.0.", web.chat_abstract(passages)["text"])
+
+    def test_attached_and_read_paragraphs_never_expire_by_age_hildes_summaries_do(self):
+        entries = [
+            {"role": "user", "text": "Q1", "context": {"items": [
+                {"kind": "narration", "label": "Hilde's narration", "passage": 1, "text": "Heard."},
+                {"kind": "source", "label": "From the paper", "passage": 1, "text": "Printed."},
+            ]}},
+            {"role": "assistant", "text": "", "calls": [ask_call("s", "search_document", document_id=ASK_DOC, keywords="x")]},
+            {"role": "tool", "id": "s", "name": "search_document", "items": [
+                {"kind": "paper", "id": f"{ASK_DOC}:2", "label": "From the paper", "text": "Printed two."},
+                {"kind": "narration", "id": f"{ASK_DOC}:2", "label": "Hilde's description", "text": "Described two."},
+                {"kind": "document_search", "label": "Hilde's summary", "text": "Weaker matches…"}]},
+            {"role": "assistant", "text": "One."},
+        ] + [entry for n in range(2, 6) for entry in ({"role": "user", "text": f"Q{n}"}, {"role": "assistant", "text": "A."})] + [
+            {"role": "user", "text": "Q6"}]
+        ledger = web.AskLedger(entries, ASK_DOC)
+        expires = {item["key"]: (item["kind"], item["expires"]) for item in ledger.every() if item["kind"] != "question"}
+        self.assertEqual(expires, {"0.0": ("narration", None), "0.1": ("paper", None), "2.0": ("paper", None),
+                                   "2.1": ("narration", None), "2.2": ("document_search", 4)})
+        plan = web.ask_plan(ledger, web.ask_state(None), ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
+        self.assertEqual(plan["state"]["expired"], ["2.2"])
+        # Compaction may take them, oldest first, as it takes the paper's paragraphs.
+        plan = web.ask_plan(ledger, web.ask_state(None), ask_model(), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99,
+                            force_target=1)
+        self.assertTrue({"0.0", "0.1", "2.0", "2.1"} <= set(plan["state"]["expired"]))
 
     def test_the_help_is_a_document_of_sections_and_its_contents_go_in_the_instructions(self):
         help_file = Path(self.storage.root) / "help.md"
@@ -10280,9 +10410,10 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
         )
         document = web.ask_help(help_file)
         self.assertEqual([section["title"] for section in document.paragraphs], ["Playback", "Voices", "Tags"])
-        self.assertEqual(document.text(1), "Playback\n\nPress play.")
+        self.assertEqual(document.items(1), [{"kind": "help", "id": "help:1", "label": "Help", "text": "Playback\n\nPress play."}])
         self.assertEqual(web.ask_help_contents(document), "help:1 Playback\nhelp:2 Voices\nhelp:3 Tags")
-        self.assertEqual(web.search_document(document, "pick")[0][0], {"kind": "help", "id": "help:2", "text": "Voices\n\nPick one."})
+        self.assertEqual(web.search_document(document, "pick")[0][0],
+                         {"kind": "help", "id": "help:2", "label": "Help", "text": "Voices\n\nPick one."})
         # Hilde Reader's own help: short, its contents about 150 tokens, no review notes.
         shipped = web.ask_help()
         self.assertGreaterEqual(len(shipped.paragraphs), 8)
@@ -10295,7 +10426,9 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
         heading = [{"type": "heading", "text": "Title"}, {"type": "heading", "text": "Abstract"},
                    {"type": "body", "text": "We propose X."}, {"type": "body", "text": "It works."},
                    {"type": "heading", "text": "1 Introduction"}, {"type": "body", "text": "Later."}]
-        self.assertEqual(web.chat_abstract(heading), {"first": 3, "last": 4, "text": "We propose X.\n\nIt works.", "found": True})
+        # Passages without the paper's own text: the abstract is the narration, and says so.
+        self.assertEqual(web.chat_abstract(heading), {"first": 3, "last": 4, "text": "We propose X.\n\nIt works.",
+                                                      "found": True, "label": "Hilde's narration"})
         opening = [{"type": "body", "text": "Authors."}, {"type": "body", "text": "Abstract. We propose Y."}]
         self.assertEqual(web.chat_abstract(opening)["first"], 2)
         plain = [{"type": "body", "text": "word " * 300}, {"type": "body", "text": "more " * 300}]
@@ -10338,12 +10471,12 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
     def test_a_paragraph_already_in_the_context_is_sent_once(self):
         _, messages = self.messages(ask_conversation())
         self.assertEqual(self.result(messages, "r2"), (
-            f'<paragraph id="{ASK_DOC}:2" kind="paper">\n(already above)\n</paragraph>\n\n'
-            f'<paragraph id="{ASK_DOC}:3" kind="paper">\nParagraph 3 text.\n</paragraph>'
+            f'<paragraph id="{ASK_DOC}:2" label="From the paper">\n(already above)\n</paragraph>\n\n'
+            f'<paragraph id="{ASK_DOC}:3" label="From the paper">\nParagraph 3 text.\n</paragraph>'
         ))
         # Once the first copy expires, the later one is the copy sent.
         _, messages = self.messages(ask_conversation(), {"expired": ["4.0"]})
-        self.assertEqual(self.result(messages, "r1"), f'<paragraph id="{ASK_DOC}:2" kind="paper">\nEXPIRED\n</paragraph>')
+        self.assertEqual(self.result(messages, "r1"), f'<paragraph id="{ASK_DOC}:2" label="From the paper">\nEXPIRED\n</paragraph>')
         self.assertIn("Paragraph 2 text.", self.result(messages, "r2"))
 
     def test_earlier_answers_are_cut_to_first_and_last_sentence_with_their_ids_and_links(self):
@@ -10450,7 +10583,7 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
         self.assertEqual(slow["state"]["dropped"], 0)
         self.assertLessEqual(slow["total"], 1_500)
         self.assertTrue(slow["decision"].startswith("compact: "))
-        self.assertIn(f'<paragraph id="{ASK_DOC}:2" kind="paper">\nx x', self.result(slow["messages"], "r"))
+        self.assertIn(f'<paragraph id="{ASK_DOC}:2" label="From the paper">\nx x', self.result(slow["messages"], "r"))
         # A model reliable only up to 2,000 tokens is held to its half.
         small = web.ask_plan(ledger, state, ask_model(reliable=2_000), web.ASK_DEFAULTS, ASK_FIXED, 1_000, 99)
         self.assertLessEqual(small["total"], 1_000)

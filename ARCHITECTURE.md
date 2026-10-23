@@ -384,7 +384,9 @@ and the full hash in `book.json`.
   which its shortened form keeps), `tool` (`id`, `name`, `label` the page
   shows, and what the model was given: `items`, each `{kind, text}` with `id`
   for a paragraph or page and `type` for a heading, since the Ask context
-  change; `content`, one text, before), and `notice` (why a turn ended; never
+  change, and `label` ("From the paper", "Hilde's narration", …) since reads
+  have versions (an earlier `paper` item without it held the narration);
+  `content`, one text, before), and `notice` (why a turn ended; never
   sent to a model; a model's failure has `failed: true` and its `model`).
   `context` (since the Ask context change; `ask_state()`) is what the next
   request starts from: `expired` (ledger keys replaced by `EXPIRED`),
@@ -2440,28 +2442,58 @@ differ on a fact (a number, a name, a negation, what a figure shows), the
 answer says what the listener heard and what the paper prints, citing each
 one's paragraph id, and that the paper is the source, never quietly picking
 one; when the paper contradicts itself (a table against the text), it names
-both places; the files; with
+both places; and a question about what the listener heard, or doubting the
+narration, reads it first (`read_paragraphs` version `narration` or `both`);
+that `read_paragraphs` gives the paper's own text by default and a search's
+weaker matches are Hilde's summaries; the files; with
 `--search-server`, `WEB_PROMPT`. Then the help's contents
 (`ask_help_contents()`, a line `help:<n> <title>` per section, about 150
 tokens), then the open document: title, id, paragraph range, and its abstract
 (`chat_abstract()`: the paragraphs under a heading "Abstract", or from one
 opening with "Abstract", to the next heading; else the first paragraphs;
-either cut to `abstract_tokens`). The paragraph map (summaries, tags) and the
-paper are never sent; they stay on the server.
+either cut to `abstract_tokens`), in the paper's own words (`ask_paper_text()`),
+labelled "From the paper" (or "Hilde's narration" when a paragraph has no
+paper text). The paragraph map (summaries, tags) and the paper are never sent;
+they stay on the server.
+
+**Paper text and labels.** A book paragraph has two texts: the paper's own,
+`ask_paper_text()` (its `original_text`, else its sources; for a figure,
+table, or equation its caption and then the text extracted from it, a table's
+cells or an equation, never a figure's picture labels), cleaned of PDF markup
+by `clean_paper_text()` (picture-text markers, comments, image links,
+emphasis, and heading marks go; `<sub>x</sub>` reads `_x`, `<sup>x</sup>`
+`^x`, a lone symbol as it is; a number split around its point or slash,
+"41 _._ 0", is joined; every digit and symbol stays); and Hilde's narration
+(passage `text`; a visual's is Hilde's description). Every text the model gets
+carries its label (`ASK_LABELS`): "From the paper", "Hilde's narration",
+"Hilde's description", "Hilde's summary", "Help", "Web page". Nothing Hilde
+wrote is ever labelled as the paper: not in reads, searches, attachments, the
+abstract, or the ledger's kinds (`paper` is only the paper's own text,
+`narration` Hilde's narration or description).
 
 Tools (`CHAT_TOOLS`, run by `chat_tool()`, which returns context items
 `{kind, text, id?}`, a label, and whether the files changed):
 
 - `search_document(document_id, keywords)`: `search_document()` scores each
   paragraph of that document by how many of the words (whole words, three
-  letters or more, or numbers) its text, summary, title, and tags hold, the
-  words together most; the best come whole (at most `search.good_max`, each
+  letters or more, or numbers) its haystack holds (`AskDocument.haystack()`:
+  a book paragraph's paper text, narration, summary, and tags, a help
+  section's title and text), the words together most; the best come as
+  `read_paragraphs` gives them by default (at most `search.good_max`, each
   scoring at least `search.good_share` of the best, within
   `CHAT_READ_MAX_CHARS`), the next `search.weak_max` as one `document_search`
-  item of `<id> <summary>` lines;
-- `read_paragraphs(ids)`: `ask_read()`, the paragraphs of the ids (`<id>:<n>`,
-  a run `<id>:<n>-<m>`, a bare number for the open book), at most
-  `CHAT_READ_MAX_CHARS`, saying where to read on when cut;
+  item of `<id> <summary>` lines, labelled "Hilde's summary" for a book (a
+  help's or page's first sentence otherwise);
+- `read_paragraphs(ids, version)`: `ask_read()`, the paragraphs of the ids
+  (`<id>:<n>`, a run `<id>:<n>-<m>`, a bare number for the open book), at most
+  `CHAT_READ_MAX_CHARS`, saying where to read on when cut. For the open book
+  `version` chooses (`AskDocument.items()`): `paper`, the default, the paper's
+  own text; `narration`, Hilde's narration; `both`, the two, each labelled. A
+  figure, table, or equation gives its paper text and Hilde's description
+  unless `narration` (the description alone). A paragraph without paper text
+  gives its narration, labelled so. Help sections and stored pages have one
+  text; `version` is ignored. The listener's label says a non-default version
+  ("Read ¶84 (Hilde's narration)");
 - `write_file(name, content, mode)`: `create` refuses an existing file,
   `append` a missing one; at most `CHAT_FILE_MAX_BYTES` a file;
 - `list_files()`;
@@ -2539,20 +2571,26 @@ belongs to, its estimated tokens (`ask_tokens()`, `CHAT_CHARS_PER_TOKEN`), the
 turn it arrived in, and the turn it is due to expire: `expiry_turns` of
 `ask.yaml` (`web_search` and `document_search` hit lists 3, `web_page` reads
 and stored-page listings 5, `help` paragraphs 3, `list_files` 3), times the
-model's `expiry_multiplier`; the paper's paragraphs (`paper`, read, found, or
-attached) and notes (`write_file`/`delete_file` confirmations, errors) never
+model's `expiry_multiplier`; the paper's paragraphs and Hilde's narration and
+descriptions of them (`paper` and `narration`: read, found, or attached to a
+question, both copies) and notes (`write_file`/`delete_file` confirmations,
+errors) never
 by age. A result saved before items is one item of its tool's kind
 (`ASK_LEGACY_KINDS`), sent as it was; an old call (`search_book`,
 `read_paragraphs` by `start`/`end`, `read_web_page` with `start`) goes in
 today's terms (`ask_call()`). `render()` sends, in order: each kept turn's
 question in full (with its attachment), its calls as made, their results
-(`ask_item_text()`: a paragraph as `<paragraph id=… kind=…>`, a page as
-`<document id=…>`, a list as `<kind>`), and its answers; an earlier turn's
+(`ask_item_text()`: a paragraph as `<paragraph id=… label=…>`, a page as
+`<document id=… label=…>`, a list as `<kind label=…>`), and its answers; an
+earlier turn's
 final answer shortened by `ask_short_answer()` (marked "Earlier conversation,
 for reference", its first and last sentence, then its `ids` and `links`); an
-expired item reads `EXPIRED` (its call stays); a paragraph already sent in
-live form reads "(already above)" (keyed by id and variant: narration, or the
-paper's own text). Only the current turn's answers carry `reasoning_content`
+expired item reads `EXPIRED` (its call stays); a paragraph whose same text
+(same id and words) is already sent in live form reads "(already above)".
+An attachment's paper parts are sent cleaned like a read. A read saved before
+reads had versions (`kind` `paper` without a `label`) held the narration and
+is sent labelled "Hilde's narration"; one saved before items (`content`) is
+kind `narration`. Only the current turn's answers carry `reasoning_content`
 (DeepSeek needs it while tools run; DeepSeek drops earlier turns' itself); a
 Gemini answer's `gemini_parts` go back without its thoughts' text, a
 thought's signature kept on an empty part (`_ask_gemini_parts()`); a local
@@ -2575,7 +2613,7 @@ model's prefill speed, over `cap.trigger_seconds` (30), or over
 `cap.target_seconds` (15) of prefill, `cap.target_window_share` (0.5) of the
 window, and `cap.target_reliable_share` (0.5) of `reliable_up_to`: due items
 expire, then, oldest first, web page reads, web searches, and the documents'
-results (paper, help, hit lists, file lists), then whole old turns (question,
+results (paper, narration, help, hit lists, file lists), then whole old turns (question,
 short answer, calls), oldest first; never the current question or the latest
 round's results. Leaving out turns publishes `trimmed`. The state
 (`ask_state()`: `expired`, `dropped`, `last`) is saved in `chat.json`.

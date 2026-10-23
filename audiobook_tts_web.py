@@ -11632,12 +11632,17 @@ CHAT_TOOLS = (
         "name": "read_paragraphs",
         "description": (
             "Read paragraphs by their ids, such as 0a1b2c3d:12, or a run as 0a1b2c3d:12-14: "
-            "the open document's, the help's (help:3), or a stored web page's."
+            "the open document's, the help's (help:3), or a stored web page's. For the open document, "
+            "version says which text: paper (the default), the paper's own text; narration, Hilde's "
+            "rewrite that the listener hears; both. A figure, table, or equation comes with its caption "
+            "and extracted text and Hilde's description."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "ids": {"type": "array", "items": {"type": "string"}, "description": "Paragraph ids."},
+                "version": {"type": "string", "enum": ["paper", "narration", "both"],
+                            "description": "Which text of the open document; omit it for the paper's own."},
             },
             "required": ["ids"],
         },
@@ -11876,22 +11881,82 @@ def _excerpt(text, sentences=2, limit=300):
     return excerpt if len(excerpt) <= limit else excerpt[:limit - 1].rstrip() + "…"
 
 
+# How each kind of text is labelled where the model reads it. Nothing Hilde
+# wrote (narration, descriptions, summaries) is ever labelled as the paper.
+ASK_LABELS = {"paper": "From the paper", "narration": "Hilde's narration", "help": "Help", "web_page": "Web page"}
+ASK_VISUALS = ("figure", "table", "equation")
+ASK_VERSIONS = ("paper", "narration", "both")
+ASK_NOT_NARRATED = "(Not narrated: the adaptation left this paragraph out.)"
+
+
+def clean_paper_text(text):
+    """A paper's own text as extracted from its PDF, made plain: picture-text
+    markers and other HTML comments, image links, emphasis (`_x_`, `**x**`),
+    and heading marks go; <sub>x</sub> reads _x and <sup>x</sup> ^x (a symbol
+    alone, such as √ or ∗, as it is); <br> is a space; a number the PDF split
+    around its point or slash ("41 _._ 0", "1 _/_ 4") is joined again. Every
+    digit and symbol of the text stays."""
+    text = str(text or "")
+    text = re.sub(r"<!--\s*(?:Start|End) of picture text\s*-->", "\n", text)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"(?<!\w)_|_(?!\w)", "", text)
+    text = re.sub(r"(\d) +([./]) +(\d)", r"\1\2\3", text)
+    text = re.sub(r"<sub>(.*?)</sub>", r"_\1", text, flags=re.DOTALL)
+    text = re.sub(r"<sup>(.*?)</sup>", lambda match: ("^" if re.search(r"\w", match[1]) else "") + match[1],
+                  text, flags=re.DOTALL)
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = re.sub(r"</?(?:i|b|em|strong|span|u)\b[^>]*>", "", text)
+    text = re.sub(r"^[ \t]*#+[ \t]*", "", text, flags=re.MULTILINE)
+    return "\n".join(filter(None, (" ".join(line.split()) for line in text.splitlines())))
+
+
+def ask_paper_text(passage):
+    """A passage's text as the paper prints it (clean_paper_text()): for a
+    figure, table, or equation its caption, then the text extracted from it
+    (a table's cells, an equation; never a figure's picture labels); else its
+    original text. "" when the paper has none."""
+    if passage.get("type") not in ASK_VISUALS:
+        return clean_paper_text(_passage_source(passage))
+    sources = [source for source in passage.get("sources") or () if isinstance(source, dict)]
+    parts = [source.get("text") for source in sources if source.get("type") == "caption"] or [
+        passage.get("original_text")]
+    if passage["type"] != "figure":
+        parts += [source.get("text") for source in sources if source.get("type") in ("table", "equation")]
+    return "\n".join(dict.fromkeys(filter(None, (clean_paper_text(part) for part in parts))))
+
+
 class AskDocument:
     """A document Ask Hilde can search and read by paragraph id <id>:<n>,
     from 1: the open book (`kind` "paper"), the help ("help"), or a web page
     read_web_page stored ("web_page"). Each paragraph is a dict with `text`,
-    and optionally `summary`, `tags`, `type`, `title`, and `body`."""
+    and optionally `summary`, `tags`, `type`, `title`, and `body`; a book's
+    are its narration's passages (their `text` Hilde's narration, their
+    `sources` and `original_text` the paper's)."""
 
     def __init__(self, id, kind, title, paragraphs, url=""):
         self.id, self.kind, self.title, self.paragraphs, self.url = id, kind, title, paragraphs, url
+        self._paper = {}
 
-    def text(self, number):
+    def paper(self, number):
+        """A book paragraph's text as the paper prints it (ask_paper_text())."""
+        if number not in self._paper:
+            self._paper[number] = ask_paper_text(self.paragraphs[number - 1])
+        return self._paper[number]
+
+    def haystack(self, number):
+        """What a search looks in: a book paragraph's paper text, narration,
+        summary, and tags; a help section's title and text; a page's text."""
         paragraph = self.paragraphs[number - 1]
-        if self.kind == "paper" and not paragraph.get("text"):
-            return "(Not narrated: the adaptation left this paragraph out.)"
-        return str(paragraph.get("text") or "")
+        parts = [str(paragraph.get("text") or ""), str(paragraph.get("summary") or ""),
+                 str(paragraph.get("title") or ""), " ".join(paragraph.get("tags") or ())]
+        # Joined with "_" (a word character) so a phrase never runs from one part into the next.
+        return " _ ".join(([self.paper(number)] if self.kind == "paper" else []) + parts)
 
     def summary(self, number):
+        """A weak match's line: a book paragraph's summary (Hilde's), a help
+        section's title and first sentence, a page paragraph's first sentences."""
         paragraph = self.paragraphs[number - 1]
         if self.kind == "paper":
             return " ".join(str(paragraph.get("summary") or "").split()) or _excerpt(paragraph.get("text"))
@@ -11899,12 +11964,27 @@ class AskDocument:
             return f"{paragraph.get('title')}: {_excerpt(paragraph.get('body'), 1)}"
         return _excerpt(paragraph.get("text"))
 
-    def item(self, number):
-        """Paragraph `number` as a context item."""
-        item = {"kind": self.kind, "id": f"{self.id}:{number}", "text": self.text(number)}
-        if self.paragraphs[number - 1].get("type") == "heading":
-            item["type"] = "heading"
-        return item
+    def items(self, number, version=None):
+        """Paragraph `number` as context items, each with its `label`. A help
+        section or page paragraph is one text. A book paragraph by `version`
+        (ASK_VERSIONS; None is "paper"): the paper's own text ("From the
+        paper"), Hilde's narration ("Hilde's narration"), or both; a figure,
+        table, or equation gives, unless "narration", its caption and
+        extracted text and then Hilde's description ("Hilde's description").
+        A paragraph the paper has no text for gives the narration."""
+        paragraph, pid = self.paragraphs[number - 1], f"{self.id}:{number}"
+        extra = {"type": "heading"} if paragraph.get("type") == "heading" else {}
+        if self.kind != "paper":
+            return [{"kind": self.kind, "id": pid, "label": ASK_LABELS[self.kind],
+                     "text": str(paragraph.get("text") or ""), **extra}]
+        visual = paragraph.get("type") in ASK_VISUALS
+        narration = {"kind": "narration", "id": pid, "label": "Hilde's description" if visual else "Hilde's narration",
+                     "text": str(paragraph.get("text") or ASK_NOT_NARRATED), **extra}
+        paper = self.paper(number)
+        if version == "narration" or not paper:
+            return [narration]
+        printed = {"kind": "paper", "id": pid, "label": ASK_LABELS["paper"], "text": paper, **extra}
+        return [printed, narration] if version == "both" or visual else [printed]
 
 
 def ask_book_document(book, record, passages):
@@ -11955,10 +12035,12 @@ ABSTRACT_OPENING = re.compile(r"(?:#+\s*)?\**abstract\**\s*[.:—–-]", re.IGNO
 
 
 def chat_abstract(passages, tokens=ASK_DEFAULTS["abstract_tokens"]):
-    """The document's abstract as {"first", "last", "text", "found"}: the
-    paragraphs under a heading "Abstract", or from one that opens with
+    """The document's abstract as {"first", "last", "text", "found", "label"}:
+    the paragraphs under a heading "Abstract", or from one that opens with
     "Abstract", to the next heading; else (found False) its first
-    paragraphs. Either is cut to about `tokens` tokens."""
+    paragraphs; in the paper's own words, its `label` "From the paper" (or
+    "Hilde's narration" when one paragraph has no paper text). Either is cut
+    to about `tokens` tokens."""
     start, found = 0, False
     for index, passage in enumerate(passages):
         texts = [" ".join(str(passage.get("text") or "").split()), " ".join(_passage_source(passage).split())]
@@ -11969,14 +12051,19 @@ def chat_abstract(passages, tokens=ASK_DEFAULTS["abstract_tokens"]):
         elif any(ABSTRACT_OPENING.match(text) for text in texts):
             start, found = index, True
             break
-    limit, pieces, used, last = tokens * ASK_PROSE_CHARS_PER_TOKEN, [], 0, start + 1
+    limit, pieces, used, last, narrated = tokens * ASK_PROSE_CHARS_PER_TOKEN, [], 0, start + 1, False
     for index in range(start, len(passages)):
         passage = passages[index]
         if found and passage.get("type") == "heading":
             break
-        text = " ".join(str(passage.get("text") or "").split())
+        # The paper's own words (ask_paper_text()); Hilde's narration only
+        # where the paper has none, and then the prompt says so.
+        paper = " ".join(ask_paper_text(passage).split())
+        text = paper or " ".join(str(passage.get("text") or "").split())
         if not text:
             continue
+        if not paper:
+            narrated = True
         if used + len(text) > limit:
             if not pieces or limit - used > 200:
                 pieces.append(text[:limit - used].rsplit(" ", 1)[0] + "…")
@@ -11985,7 +12072,8 @@ def chat_abstract(passages, tokens=ASK_DEFAULTS["abstract_tokens"]):
         pieces.append(text)
         used += len(text) + 2
         last = index + 1
-    return {"first": start + 1, "last": last, "text": "\n\n".join(pieces), "found": found}
+    return {"first": start + 1, "last": last, "text": "\n\n".join(pieces), "found": found,
+            "label": ASK_LABELS["narration"] if narrated else ASK_LABELS["paper"]}
 
 
 def ask_system_prompt(document, abstract, help_document, web=False):
@@ -11995,11 +12083,12 @@ def ask_system_prompt(document, abstract, help_document, web=False):
     doc = document.id
     span = f"{doc}:{abstract['first']}" + (f"–{abstract['last']}" if abstract["last"] != abstract["first"] else "")
     what = "Its abstract" if abstract["found"] else "It has no abstract marked as one; its opening"
+    what += f", {abstract.get('label', ASK_LABELS['paper'])}"
     return f"""Hilde Reader turns technical documents into audiobooks and rewrites them for listening. Its narration and descriptions can be wrong, invented, or incomplete; the original document is always the source of truth.
 
 You are Hilde, the reading companion in Hilde Reader. The listener is listening to one document and asks you about it, or about using Hilde Reader.
 
-You see the document's abstract, not the document: find its paragraphs with search_document and read them with read_paragraphs. A search gives the best matches whole and weaker ones as summaries; summaries are not the text, so read a paragraph before quoting it or answering about its details. When a search misses, search again with other words. Cite every paragraph you use by its full id, such as 0a1b2c3d:12, or 0a1b2c3d:12–14 for a run; the listener sees them as links into the book.
+You see the document's abstract, not the document: find its paragraphs with search_document and read them with read_paragraphs, which gives the paper's own text, labelled "From the paper" (version "narration" gives Hilde's narration instead, "both" gives both; a figure, table, or equation comes with Hilde's description). A search gives the best matches as the paper prints them and weaker ones as Hilde's summaries; summaries are not the text, so read a paragraph before quoting it or answering about its details. When a search misses, search again with other words. Cite every paragraph you use by its full id, such as 0a1b2c3d:12, or 0a1b2c3d:12–14 for a run; the listener sees them as links into the book.
 
 Hilde Reader's help is the document "help". Answer a question about using Hilde Reader only from help sections you have read (read_paragraphs with ids such as "help:3", or search_document with "help"). When the help does not cover it, say you are not sure; never invent features, buttons, or settings. Name the help section you used, such as "Help › Playback and speed", never its id.
 
@@ -12009,7 +12098,7 @@ Earlier questions come in full; earlier answers are shortened to their first and
 
 A listener's message may come with what they attached from the book: the part they were listening to, words they selected, or a figure or table. Each part is labelled, with its paragraph id: "From the paper" is the source document's own text, "Hilde's narration" and "Hilde's description" are what the listener hears, "Your selection" is the words the listener selected or clicked, and "The sentence around it" is only context for them: answer about the selection, using the sentence to read it right. "This" and quoted words refer to what they attached.
 
-When "Hilde's narration" or "Hilde's description" and "From the paper" differ on a fact (a number, a name, a negation, what a figure shows), say so plainly: what the listener heard and what the paper prints, citing the paragraph id of each, and that the paper is the source; never quietly pick one. When the paper contradicts itself, such as one number in a table and another in the text, name both places.
+When "Hilde's narration" or "Hilde's description" and "From the paper" differ on a fact (a number, a name, a negation, what a figure shows), say so plainly: what the listener heard and what the paper prints, citing the paragraph id of each, and that the paper is the source; never quietly pick one. When the paper contradicts itself, such as one number in a table and another in the text, name both places. When the listener asks about what they heard, or questions the narration, read it with read_paragraphs version "narration" or "both" before answering.
 
 You can write Markdown files the listener downloads, such as a summary or the conversation, with write_file, see them with list_files, and delete one with delete_file when the listener asks. Say that a file was written or deleted only when the tool says so. Answer in the language the listener writes in.
 {WEB_PROMPT if web else ""}
@@ -12032,10 +12121,12 @@ def _ask_words(keywords):
 
 
 def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
-    """The paragraphs whose text, summary, title, and tags hold most of the
-    words (any case; the words together count most): the best whole (at most
-    `good_max`, each scoring at least `good_share` of the best), the next
-    `weak_max` as one list of summaries. Return (items, label)."""
+    """The paragraphs that hold most of the words (any case; the words
+    together count most), looking in each one's haystack (a book's paper
+    text, narration, summary, and tags): the best as items (at most
+    `good_max`, each scoring at least `good_share` of the best; a book's as
+    the paper prints them, AskDocument.items()), the next `weak_max` as one
+    list of summaries, a book's labelled as Hilde's. Return (items, label)."""
     query, words = _ask_words(keywords)
     where = {"paper": "the book", "help": "Help"}.get(document.kind) or _short_link(document.url) or document.id
     if not words:
@@ -12044,11 +12135,8 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
     patterns = [re.compile(rf"\b{re.escape(word)}", re.IGNORECASE) for word in words]
     phrase = re.compile(r"\W+".join(re.escape(word) for word in words), re.IGNORECASE)
     found = []
-    for number, paragraph in enumerate(document.paragraphs, 1):
-        haystack = " ".join((
-            str(paragraph.get("text") or ""), str(paragraph.get("summary") or ""),
-            str(paragraph.get("title") or ""), " ".join(paragraph.get("tags") or ()),
-        ))
+    for number in range(1, len(document.paragraphs) + 1):
+        haystack = document.haystack(number)
         hits = sum(1 for pattern in patterns if pattern.search(haystack))
         if not hits:
             continue
@@ -12059,32 +12147,44 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
     if not found:
         return [{"kind": "note", "text": f"No paragraph of {document.id} holds {', '.join(words)}."}], label
     found.sort()
-    best, items, used = -found[0][0], [], 0
+    best, items, used, good = -found[0][0], [], 0, 0
     for score, number in found[:settings["good_max"]]:
-        item = document.item(number)
-        if -score < settings["good_share"] * best or (items and used + len(item["text"]) > CHAT_READ_MAX_CHARS):
+        parts = document.items(number)
+        size = sum(len(part["text"]) for part in parts)
+        if -score < settings["good_share"] * best or (items and used + size > CHAT_READ_MAX_CHARS):
             break
-        items.append(item)
-        used += len(item["text"])
-    weak = found[len(items):len(items) + settings["weak_max"]]
+        items += parts
+        used += size
+        good += 1
+    weak = found[good:good + settings["weak_max"]]
     if weak:
-        items.append({"kind": "document_search", "text": "Weaker matches, as summaries; read one with read_paragraphs:\n"
-                      + "\n".join(f"{document.id}:{number} {document.summary(number)}" for _, number in weak)})
+        head = ("Weaker matches, as Hilde's summaries (Hilde wrote them; they are not the paper's text); "
+                "read one with read_paragraphs:" if document.kind == "paper"
+                else "Weaker matches, by their first sentence; read one with read_paragraphs:")
+        items.append({"kind": "document_search", "label": "Hilde's summary" if document.kind == "paper" else "Excerpt",
+                      "text": head + "\n" + "\n".join(f"{document.id}:{number} {document.summary(number)}"
+                                                      for _, number in weak)})
     return items, label
 
 
 ASK_PARAGRAPH_ID = re.compile(r"\s*(?:(help|[0-9a-f]{8}):)?(\d+)(?:\s*[-–]\s*(?:(?:help|[0-9a-f]{8}):)?(\d+))?\s*")
 
 
-def ask_read(shelf, ids):
+def ask_read(shelf, ids, version=None):
     """The paragraphs of `ids` (<document id>:<n>, a run <id>:<n>-<m>, or a
-    bare number for the open book), at most CHAT_READ_MAX_CHARS, saying
-    where to read on when cut. Return (items, label)."""
+    bare number for the open book), the book's by `version`
+    (AskDocument.items()), at most CHAT_READ_MAX_CHARS, saying where to read
+    on when cut. Return (items, label)."""
     if isinstance(ids, (str, int)):
         ids = re.split(r"[,;\s]+(?=\S)", str(ids))
     if not isinstance(ids, list) or not ids:
         return [{"kind": "note", "text": "Give paragraph ids, such as [\"0a1b2c3d:12\"]."}], "Read nothing"
     wanted, problems = [], []
+    if version in (None, "", "paper"):
+        version = None
+    elif version not in ASK_VERSIONS:
+        problems.append('version is "paper" (the default), "narration", or "both"; this is the paper\'s text.')
+        version = None
     for raw in ids[:100]:
         match = ASK_PARAGRAPH_ID.fullmatch(str(raw))
         if not match:
@@ -12104,14 +12204,18 @@ def ask_read(shelf, ids):
                 wanted.append((document, number))
     items, used = [], 0
     for document, number in wanted:
-        item = document.item(number)
-        if items and used + len(item["text"]) > CHAT_READ_MAX_CHARS:
+        parts = document.items(number, version)
+        size = sum(len(part["text"]) for part in parts)
+        if items and used + size > CHAT_READ_MAX_CHARS:
             problems.append(f"Stopped before {document.id}:{number} to keep this read short; read on from there.")
             break
-        items.append(item)
-        used += len(item["text"])
+        items += parts
+        used += size
     items += [{"kind": "note", "text": problem} for problem in problems]
-    return items, _ask_read_label(shelf, [item["id"] for item in items if item.get("id")])
+    label = _ask_read_label(shelf, list(dict.fromkeys(item["id"] for item in items if item.get("id"))))
+    if version and any(document is shelf.book for document, _ in wanted):
+        label += " (Hilde's narration)" if version == "narration" else " (paper and narration)"
+    return items, label
 
 
 def _ask_read_label(shelf, ids):
@@ -12461,6 +12565,12 @@ def chat_attachment(storage, book, passages, selector, about, local_servers):
     return manifest, images
 
 
+# The parts of an attachment (chat_attachment()) that are the paper's own
+# text, sent cleaned of PDF markup (clean_paper_text()); the others are
+# Hilde's (narration, description) or the listener's (selection, sentence).
+ASK_ATTACHED_PAPER = ("source", "caption")
+
+
 def chat_attachment_text(manifest, document="", texts=None):
     """What a listener attached, as the model reads it: each part under its
     label and its paragraph id (<document>:<n>; ¶N without a document);
@@ -12476,7 +12586,10 @@ def chat_attachment_text(manifest, document="", texts=None):
         where = ""
         if item.get("passage"):
             where = f" ({document}:{item['passage']})" if document else f" (¶{item['passage']})"
-        text = item["text"] if texts is None else texts[index]
+        if texts is not None:
+            text = texts[index]
+        else:
+            text = clean_paper_text(item["text"]) if item.get("kind") in ASK_ATTACHED_PAPER else item["text"]
         parts.append(f"[{item['label']}{where}]\n{text}")
     count = image.get("count", 0)
     if image.get("sent"):
@@ -12713,7 +12826,7 @@ def chat_tool(path, shelf, call, search_server="", config=ASK_DEFAULTS):
     if "_invalid" in arguments:
         return note("The arguments were not valid JSON.", f"{name}: invalid arguments")
     if name == "read_paragraphs":
-        return (*ask_read(shelf, arguments.get("ids")), False)
+        return (*ask_read(shelf, arguments.get("ids"), arguments.get("version")), False)
     if name == "search_document":
         doc = str(arguments.get("document_id") or "").strip()
         document = shelf.get(doc)
@@ -12771,21 +12884,22 @@ def read_chat(path):
 
 # --- Ask Hilde: the context ledger ---------------------------------------------
 
-# A tool result saved before results had items: its kind, by its tool.
+# A tool result saved before results had items: its kind, by its tool. Those
+# reads gave Hilde's narration, never the paper's text.
 ASK_LEGACY_KINDS = {
-    "read_paragraphs": "paper", "search_book": "document_search", "web_search": "web_search",
+    "read_paragraphs": "narration", "search_book": "document_search", "web_search": "web_search",
     "read_web_page": "web_page", "list_files": "list_files",
 }
 ASK_EARLIER = "Earlier conversation, for reference"
 ASK_EXPIRED = "EXPIRED"
 ASK_ALREADY = "(already above)"
 # Compaction takes, oldest first, web page reads, then web searches, then
-# what was read or found in the documents; then whole old turns.
-ASK_COMPACTION = (("web_page",), ("web_search",), ("paper", "help", "document_search", "list_files"))
+# what was read, attached, or found in the documents; then whole old turns.
+ASK_COMPACTION = (("web_page",), ("web_search",), ("paper", "narration", "help", "document_search", "list_files"))
 # The kinds the log adds up (ask_log()).
 ASK_LOG_KINDS = (
     ("fixed", ("fixed",)), ("questions", ("question",)), ("answers", ("answer",)), ("calls", ("calls",)),
-    ("paper", ("paper",)), ("help", ("help",)), ("web", ("web_page", "web_search")),
+    ("paper", ("paper",)), ("narration", ("narration",)), ("help", ("help",)), ("web", ("web_page", "web_search")),
     ("hits", ("document_search",)), ("files", ("list_files",)), ("notes", ("note",)),
 )
 
@@ -12862,16 +12976,20 @@ def ask_call(call, document):
 
 def ask_item_text(item, text):
     """One item as the model reads it: a paragraph or page wrapped with its
-    kind and id, a list wrapped with its kind, a note as it is."""
+    id and label ("From the paper", "Hilde's narration", "Hilde's
+    description", "Help", "Web page"), a list wrapped with its kind and
+    label, a note as it is."""
     if item.get("legacy"):
         return text
+    label = item.get("label") or ASK_LABELS.get(item["kind"])
+    labelled = f' label="{label}"' if label else ""
     if item.get("id"):
         tag = "paragraph" if ":" in item["id"] else "document"
         heading = ' type="heading"' if item.get("type") == "heading" else ""
-        return f'<{tag} id="{item["id"]}" kind="{item["kind"]}"{heading}>\n{text}\n</{tag}>'
+        return f'<{tag} id="{item["id"]}"{labelled}{heading}>\n{text}\n</{tag}>'
     if item["kind"] == "note" or text == ASK_EXPIRED:
         return text
-    return f"<{item['kind']}>\n{text}\n</{item['kind']}>"
+    return f"<{item['kind']}{labelled}>\n{text}\n</{item['kind']}>"
 
 
 def _ask_gemini_parts(parts):
@@ -12927,18 +13045,26 @@ class AskLedger:
             pieces = []
             for item in (entry.get("context") or {}).get("items") or ():
                 if item.get("passage") and item.get("kind") not in ("selection", "sentence"):
-                    variant = "text" if item.get("kind") in ("narration", "description") else str(item.get("kind"))
-                    pieces.append({"kind": "paper", "id": f"{self.document}:{item['passage']}", "variant": variant,
-                                   "text": str(item.get("text") or "")})
+                    # The paper's own text, cleaned as a read gives it, or Hilde's narration or description.
+                    paper = item.get("kind") in ASK_ATTACHED_PAPER
+                    text = str(item.get("text") or "")
+                    pieces.append({"kind": "paper" if paper else "narration", "id": f"{self.document}:{item['passage']}",
+                                   "label": item.get("label"), "text": clean_paper_text(text) if paper else text})
                 else:
                     pieces.append({"kind": "question", "text": str(item.get("text") or "")})
             return pieces + [{"kind": "question", "text": str(entry.get("text") or "")}]
         if role == "tool":
             if isinstance(entry.get("items"), list):
-                return [
-                    {"variant": "text", **item, "text": str(item.get("text") or ""), "kind": str(item.get("kind") or "note")}
-                    for item in entry["items"] if isinstance(item, dict)
-                ]
+                pieces = []
+                for item in entry["items"]:
+                    if not isinstance(item, dict):
+                        continue
+                    piece = {**item, "text": str(item.get("text") or ""), "kind": str(item.get("kind") or "note")}
+                    if piece["kind"] == "paper" and not piece.get("label"):
+                        # Saved before reads had versions: that text was Hilde's narration.
+                        piece.update(kind="narration", label=ASK_LABELS["narration"])
+                    pieces.append(piece)
+                return pieces
             return [{"kind": ASK_LEGACY_KINDS.get(entry.get("name"), "note"), "text": str(entry.get("content") or ""),
                      "legacy": True}]
         return []
@@ -12954,7 +13080,8 @@ class AskLedger:
         """The conversation as provider-neutral messages under `state`, and
         per message its estimated tokens by kind. An earlier turn's final
         answer is shortened (ask_short_answer()); an expired item reads
-        EXPIRED; a paragraph already above in its live form reads "(already
+        EXPIRED; a paragraph whose same text (same id, same words: the paper's
+        or the narration) is already above in live form reads "(already
         above)"; only the current turn's answers carry their reasoning back."""
         expired, seen = set(state["expired"]), set()
         messages, costs = [], []
@@ -12963,7 +13090,7 @@ class AskLedger:
             if item["key"] in expired:
                 return ASK_EXPIRED
             if item.get("id"):
-                mark = (item["id"], item.get("variant", "text"))
+                mark = (item["id"], item["text"])
                 if mark in seen:
                     return ASK_ALREADY
                 seen.add(mark)
