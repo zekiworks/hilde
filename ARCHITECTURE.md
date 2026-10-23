@@ -2423,14 +2423,24 @@ comments dropped, one paragraph per `##`/`###` section, read again when the
 file changes), or a stored web page (`ask_web_document()`).
 
 **The instructions** (`ask_system_prompt()`), the same for every book first so
-a server's prompt cache serves them to every conversation: how to find,
+a server's prompt cache serves them to every conversation. They open with
+what Hilde Reader is and how far to trust it: it rewrites documents for
+listening, its narration and descriptions can be wrong, invented, or
+incomplete, and the original document is always the source of truth. Then:
+how to find,
 read, and cite paragraphs by full id; that questions about using Hilde Reader
 are answered only from help sections read, saying "not sure" when the help
 does not cover it, never inventing features; that an off-topic question gets
 one friendly line and a related question to ask; that earlier answers come
 shortened and marked "Earlier conversation, for reference", the listener's
 last message is the current question, `EXPIRED` means removed to save room,
-and "(already above)" a duplicate; the attachment labels; the files; with
+and "(already above)" a duplicate; the attachment labels, and the conflict
+rule: when "Hilde's narration" or "Hilde's description" and "From the paper"
+differ on a fact (a number, a name, a negation, what a figure shows), the
+answer says what the listener heard and what the paper prints, citing each
+one's paragraph id, and that the paper is the source, never quietly picking
+one; when the paper contradicts itself (a table against the text), it names
+both places; the files; with
 `--search-server`, `WEB_PROMPT`. Then the help's contents
 (`ask_help_contents()`, a line `help:<n> <title>` per section, about 150
 tokens), then the open document: title, id, paragraph range, and its abstract

@@ -75,6 +75,8 @@ Pick the model in the chat header; its badge says **Local** or **Cloud**. Under 
 
 Hilde can also answer questions about Hilde Reader itself, from this help. If the help doesn't cover something, Hilde says it isn't sure.
 
+The narration can be wrong; when it differs from the document, Hilde says so and goes by the document.
+
 <!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()). -->
 
 ## Local and Cloud: what data leaves your computer
