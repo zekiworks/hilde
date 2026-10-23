@@ -36,6 +36,16 @@ text, the side panel, and the player bar) uses the whole width of the window.
 The short status line under the tabs ("Added …", "Deleted …") stays in that
 column too.
 
+Every menu, list, and popover behaves the same way: the book's **⋯** and
+speed, Ask Hilde's **⋯**, a voice's or a book card's **⋯**, the model pickers
+(**Runs on** and **Model**, on Create, in Ask Hilde, and in Settings), the
+saved-document list, and **+ Add a tag** in Review tags. One is open at a
+time. Escape, a click or tap outside it, or a choice in it closes it and puts
+the keyboard focus back on the button that opened it; a click on another
+control leaves the focus there, and a choice that opens a dialog gives the
+dialog the focus, which returns to that button when the dialog closes. Tab
+closes it and moves on.
+
 ## Create an audiobook
 
 **Create** walks through three steps, shown as rows on one page, one open at a
@@ -73,13 +83,13 @@ remembers the card you used last.
   audiobook, a voice, a note, or a conversation, and a job already queued keeps
   its own copy. With the keyboard: Enter, Space, or the down arrow on the field
   opens the list; the up and down arrows move through it, Home and End go to
-  the first and last document, Enter chooses one, and Escape closes the list
-  and returns to the field. Tab goes from a document to its trash button, and
+  the first and last document, Enter chooses one, and Escape or a click
+  outside closes the list and returns to the field. Tab goes from a document to its trash button, and
   then on out of the list. Delete and Backspace do nothing in the list: only a
   trash button deletes, after its question. In the question, Tab stays inside
   it, Escape is **Cancel**, and the focus goes back to the field (or to the
   trash button after it, if you used that one).
-- **From a URL**: a direct HTTP(S) link to a PDF (or Markdown or text file) or
+- **From a URL**: a direct HTTP(S) link to a PDF, TXT or Markdown file or
   an arXiv page, downloaded when you press **Continue**. **Save as** is
   optional: the server works out the document type and adds the matching
   extension when needed, including for PDF links without one, such as arXiv
@@ -92,9 +102,13 @@ remembers the card you used last.
   "Couldn't download this arXiv paper: arXiv has no paper at that link (404).
   Check the link or try again.", or that arXiv could not be reached, or did
   not send a PDF.
-- **Upload a file**: drop a PDF on the dashed area, or **browse**; the card
-  then names the uploaded file. Dropping a file anywhere on the step chooses
-  this card and uploads it.
+- **Upload a file** ("A file from your computer"): drop a file on the dashed
+  area ("Drop a file here or browse", with "PDF, TXT or Markdown" under it),
+  or **browse**; the card then names the uploaded file. Dropping a file
+  anywhere on the step chooses this card and uploads it. On a touch screen
+  (a phone or tablet, which can't drop files) the card says "A file from
+  your device" and its action is a **Choose a file** button, with "PDF, TXT
+  or Markdown" under it.
 
 **Continue** uses only the chosen card, whatever the others hold: no link is
 downloaded unless **From a URL** is chosen. Beside **Continue**, the step says
@@ -103,9 +117,12 @@ paper's title and type), "Chosen (Saved document): X.pdf · PDF", or "Chosen
 (Upload): X.pdf · PDF", and "No document chosen yet"
 before that. Pressed with the chosen card empty, **Continue** stays and says
 "Choose a document first". Files are limited to 64 MiB. Supported document
-types are PDF (`.pdf`), Markdown (`.md` or `.markdown`), and plain text (`.txt`
-or `.text`), not HTML web pages. A problem, such as a link that is not a
-document or a file type Hilde can't read, is said in a short sentence inside
+types are PDF, TXT or Markdown (`.pdf`; `.txt` or `.text`; `.md` or
+`.markdown`), not HTML web pages. A file of another type (the picker's "All
+files", or a drop) is not sent: the step says "Hilde reads PDF, TXT or
+Markdown files: choose one ending in .pdf, .txt or .md.", the same words the
+server answers with. Another problem, such as a link that is not a
+document, is said in a short sentence inside
 the step. Adding a document under a name you already have asks first, naming
 the file it would replace.
 
@@ -763,7 +780,12 @@ at most four on a wide screen and one on a phone, then "+N" for the rest. The
 second is one line of plain gray text that ends in "…" when it is longer: the
 voice's description, or, for a voice made from tags, its **More details**. A
 click on that text (on a phone, a tap anywhere on the row) opens the row: the
-whole saved description and every tag; another click folds it. A voice
+whole saved description and every tag; another click folds it. The text is a
+button (Enter or Space opens and folds it too). On a phone (640 px wide or
+less) the line ends in a chevron that turns up while it is open, the opened
+text runs under the name line across the whole row (from under the play
+button to under **Select** and **⋯**), and one row is open at a time: opening
+another folds the first, the one you opened staying where it was. A voice
 without a description says "No description".
 
 ### Voice tags

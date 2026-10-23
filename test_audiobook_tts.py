@@ -7881,9 +7881,21 @@ class DocumentUploadTests(unittest.TestCase):
                 connection.close()
                 server.shutdown()
                 thread.join()
-        self.assertEqual(refused_answer, (400, "Document filename must end in PDF, text, or Markdown."))
+        self.assertEqual(refused_answer, (400, web.DOCUMENT_TYPES["problem"]))
         self.assertEqual(accepted_answer, (201, "notes.txt"))
         self.assertEqual((storage.documents / "notes.txt").read_text(), "Plain text.")
+
+    def test_one_constant_names_the_document_types_everywhere(self):
+        types = web.DOCUMENT_TYPES
+        self.assertEqual(types["text"], "PDF, TXT or Markdown")
+        self.assertEqual(web.PAPER_SUFFIXES, frozenset(types["suffixes"]))
+        self.assertEqual(set(types["suffixes"]), {".pdf", ".txt", ".text", ".md", ".markdown"})
+        self.assertIn(types["text"], types["problem"])
+        self.assertIn(f"const DOCUMENT_TYPES = {json.dumps(types)};", web.PAGE)
+        self.assertNotIn("__DOCUMENT_TYPES__", web.PAGE)
+        root = Path(web.__file__).resolve().parent
+        for doc in ("docs/help.md", "README.md", "docs/web-ui.md"):
+            self.assertIn(types["text"], (root / doc).read_text(encoding="utf-8"), doc)
 
 
 class ReaderAudioIndexTests(unittest.TestCase):

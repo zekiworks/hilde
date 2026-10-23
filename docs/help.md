@@ -14,7 +14,7 @@ The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen*
 ## Adding a document
 
 1. Open **Create**.
-2. In **Add the source document**, pick one of three cards: **Saved document** (one you added before), **From a URL** (a link to a PDF, Markdown or text file, or an arXiv page), or **Upload a file** (drop a file or **browse**).
+2. In **Add the source document**, pick one of three cards: **Saved document** (one you added before), **From a URL** (a link to a PDF, TXT or Markdown file, or an arXiv page), or **Upload a file** (drop a file or **browse**; on a phone or tablet, **Choose a file**).
 3. Press **Continue**, then choose a voice.
 4. In **How Hilde prepares the text**, choose the model and the options, such as **Adapt the text for listening**. The **Summary** shows, with a **Local** or **Cloud** badge, where your text goes.
 5. Press **Create audiobook**.
@@ -27,7 +27,7 @@ If you add a document you already have, Hilde says **You already have this one**
 
 ## Choosing and changing a voice
 
-**Voices** lists your saved voices. Press the green play button to hear a voice. **Select** makes it the voice Create starts with.
+**Voices** lists your saved voices. Press the green play button to hear a voice. **Select** makes it the voice Create starts with. Click or tap a voice's description to read all of it; on a phone it opens under the name, one at a time.
 
 To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitched*, add details in your own words if you like, and give it a name. **Generate preview** makes a sample. **Save voice** turns on once you have listened to the preview. New voices can be made only while no audiobook is being made.
 
@@ -97,7 +97,7 @@ Use a Local model for private documents.
 
 ## File types
 
-Hilde Reader reads PDF (`.pdf`), Markdown (`.md`, `.markdown`) and plain text (`.txt`, `.text`) files, up to 64 MiB. Links may point to such a file or to an arXiv paper. Web pages (HTML) and EPUB books are not supported.
+Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` or `.markdown`), up to 64 MiB. A file of another type is refused with a message naming these. Links may point to such a file or to an arXiv paper. Web pages (HTML) and EPUB books are not supported.
 
 <!-- checked: docs/web-ui.md "Create an audiobook" (supported types, 64 MiB, arXiv); README.md "Known limitations: Inputs" -->
 

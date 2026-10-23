@@ -173,7 +173,22 @@ PAPER_LOOP_INSTRUCTION = (
 ROLE_LABELS = {"design": "VoiceDesign model", "clone": "Base model"}
 SERVER_MODEL_DEFAULTS = {"design": "gpt-4o-mini-tts", "clone": "tts-1"}
 NO_INSTRUCTIONS = ("tts-1", "tts-1-hd")
-PAPER_SUFFIXES = {".pdf", ".txt", ".text", ".md", ".markdown"}
+# The documents Hilde reads, said one way everywhere: the upload's file picker
+# (its accept list: the suffixes, then the media types), the Upload card and
+# its drop area, and the one message for a file of another type, which the
+# server (upload, a job's check) and the page say in the same words. The page
+# gets it as DOCUMENT_TYPES (PAGE's __DOCUMENT_TYPES__); docs/help.md and
+# README.md say the same (test_audiobook_tts checks them). The server tells a
+# type by the name's suffix (any case) alone; a download without one by its
+# Content-Type or a PDF's first bytes.
+_DOCUMENT_TYPES_TEXT = "PDF, TXT or Markdown"
+DOCUMENT_TYPES = {
+    "text": _DOCUMENT_TYPES_TEXT,
+    "suffixes": {".pdf": "PDF", ".txt": "Text", ".text": "Text", ".md": "Markdown", ".markdown": "Markdown"},
+    "media": ["application/pdf", "text/plain", "text/markdown"],
+    "problem": f"Hilde reads {_DOCUMENT_TYPES_TEXT} files: choose one ending in .pdf, .txt or .md.",
+}
+PAPER_SUFFIXES = frozenset(DOCUMENT_TYPES["suffixes"])
 OLLAMA_DEFAULT_SERVER = "http://127.0.0.1:11434"
 OPENAI_MODEL_PROVIDER = "openai-codex"
 # ChatGPT sign-in uses the OAuth client and endpoints of OpenAI's Codex CLI.
@@ -11012,7 +11027,7 @@ def _document_problem(values):
         return "Choose a document or enter a direct document URL."
     suffix = source.suffix.lower()
     if suffix not in PAPER_SUFFIXES:
-        return "Document must be PDF, text, or Markdown."
+        return DOCUMENT_TYPES["problem"]
     if suffix != ".pdf":
         try:
             "".encode(values["encoding"])
@@ -15596,7 +15611,7 @@ class PaperRun(Run):
             content_type = response.headers.get_content_type().lower()
             if content_type in ("text/html", "application/xhtml+xml"):
                 raise ValueError(
-                    "Document URL returned HTML; use a direct PDF, text, or Markdown URL."
+                    f"Document URL returned HTML; use a direct link to a {DOCUMENT_TYPES['text']} file."
                 )
             try:
                 declared_size = int(response.headers.get("Content-Length") or 0)
@@ -15635,7 +15650,7 @@ class PaperRun(Run):
                     suffix = ".pdf"
         if suffix not in PAPER_SUFFIXES:
             raise ValueError(
-                "Document URL must return a PDF, text, or Markdown document."
+                f"Document URL must return a {DOCUMENT_TYPES['text']} file."
             )
         source_path = temporary.with_suffix(suffix)
         temporary.replace(source_path)
@@ -18266,7 +18281,7 @@ class Handler(BaseHTTPRequestHandler):
         if not safe_name or Path(safe_name).suffix.lower() not in PAPER_SUFFIXES:
             return refuse(
                 HTTPStatus.BAD_REQUEST,
-                "Document filename must end in PDF, text, or Markdown.",
+                DOCUMENT_TYPES["problem"],
                 unread=length,
             )
         descriptor = None
@@ -18435,7 +18450,7 @@ class Handler(BaseHTTPRequestHandler):
                 if suffix not in PAPER_SUFFIXES:
                     raise ValueError(
                         "Cannot determine the document type; enter a filename "
-                        "ending in .pdf, .md, .markdown, .txt, or .text."
+                        f"ending in {', '.join(DOCUMENT_TYPES['suffixes'])}."
                     )
                 candidate = f"{candidate}{suffix}"
             name = candidate
@@ -19205,7 +19220,7 @@ button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, 
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
 @media (prefers-reduced-motion: reduce) {
-  button { transition:none; }
+  button, .voice-table button.voice-text::after { transition:none; }
   button:active:not(:disabled) { filter:none !important; }
 }
 button.primary { background:var(--accent); border-color:var(--accent);
@@ -19376,7 +19391,8 @@ details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:
 .source-card.is-off * { pointer-events:none; }
 .source-card.is-off .source-radio { pointer-events:auto; }
 .source-card.is-off .source-title, .source-card.is-off .source-sub, .source-card.is-off .field > label,
-.source-card.is-off .note, .source-card.is-off .upload-name, .source-card.is-off .dropzone { color:var(--off); }
+.source-card.is-off .note, .source-card.is-off .upload-name, .source-card.is-off .dropzone,
+.source-card.is-off .dropzone-types { color:var(--off); }
 .source-card.is-off :is(input, select, button):disabled { opacity:1; color:var(--off); }
 .source-card.is-off input::placeholder { color:var(--off); }
 .source-head { display:flex; align-items:center; gap:10px; min-width:0; }
@@ -19421,12 +19437,26 @@ button.doc-pick:hover:not(:disabled) { background:transparent; }
 .doc-date { flex:0 0 auto; color:var(--off); font-size:13px; }
 .doc-row button.trash { width:32px; min-width:32px; min-height:32px; border-color:transparent; }
 .doc-list .note { padding:8px 10px; }
-/* Upload a file: a dashed drop area with a browse link. */
+/* Upload a file: a dashed drop area with a browse link and, under it, the
+   types Hilde reads. A touch screen can't drop a file: Choose a file, a
+   button, with the types under it. */
 .dropzone { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:0 .3em; min-height:72px;
             padding:10px 12px; border:1.5px dashed #4a4e57; border-radius:8px; color:var(--text); text-align:center; }
+.dropzone-types { flex:1 0 100%; color:var(--dim); font-size:13px; }
 button.browse { min-height:0; padding:0; background:none; border:0; box-shadow:none; color:var(--accent-light);
                 font:inherit; }
 button.browse:hover:not(:disabled) { background:none; text-decoration:underline; }
+.touch-only { display:none; }
+@media (hover:none) {
+  .pointer-only { display:none; }
+  .touch-only { display:revert; }
+  .dropzone { display:grid; justify-content:start; justify-items:start; gap:8px; min-height:0; padding:0; border:0;
+              text-align:left; }
+  button.browse { min-height:44px; padding:9px 16px; border:1px solid var(--line); border-radius:8px;
+                  background:var(--raised); color:var(--text); font-weight:650;
+                  box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 2px 0 rgba(0,0,0,.55); }
+  button.browse:hover:not(:disabled) { background:var(--hover); text-decoration:none; }
+}
 .upload-name { margin:10px 0 0; overflow-wrap:anywhere; }
 /* Step 3: the book's model in its own box, then each option in its own card:
    checkbox and bold title, one muted line, the smaller "Can change" line, a
@@ -20584,6 +20614,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .voice-table .selected-badge { min-width:0; min-height:44px; padding:0 12px; }
   .data-table td[data-label]::before { content:attr(data-label) ": "; }
   .voice-table .select > * + * { margin-left:0; }
+  /* Opened, the text runs under the name line from the row's left edge to its right (under play, Select and ⋯):
+     the name cell spans the row on the row's own columns, its name line in the middle one. */
+  .voice-table tr.is-open > td.name { grid-column:1 / -1; grid-row:1; display:grid; grid-template-columns:subgrid;
+                                      align-content:start; }
+  .voice-table tr.is-open > td.name > * { grid-column:1 / -1; }
+  .voice-table tr.is-open > td.name > .voice-head { grid-column:2; min-height:44px; }
+  .voice-table tr.is-open > :is(td.preview, td.select) { position:relative; z-index:1; }
+  /* The text line ends in a chevron that turns while the row is open. */
+  .voice-table button.voice-text { position:relative; padding-right:24px; }
+  .voice-table button.voice-text::after { content:""; position:absolute; top:5px; right:8px; width:6px; height:6px;
+    border:solid currentColor; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); transition:transform .15s; }
+  .voice-table button.voice-text[aria-expanded=true]::after { top:8px; transform:rotate(225deg); }
   /* A book's card on a phone: the thumbnail, then the title, "voice · length", the chip and the bar stacked; the
      play button (and ⋯) on the right. */
   .book-card { grid-template-columns:44px minmax(0,1fr) auto auto;
@@ -20843,7 +20885,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <input id="source-pick-saved" class="source-radio" type="radio" name="source" value="saved">
                 <h4 class="source-title"><label id="source-saved-title" for="source-pick-saved">Saved document</label></h4>
               </div>
-              <p class="source-sub">A PDF already in your library</p>
+              <p class="source-sub">A document already in your library</p>
               <div class="doc-field">
                 <button id="document" class="doc-select" type="button" aria-expanded="false"
                   aria-controls="document-list" aria-labelledby="source-saved-title document-name"><span
@@ -20862,7 +20904,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <input id="source-pick-url" class="source-radio" type="radio" name="source" value="url">
                 <h4 class="source-title"><label id="source-url-title" for="source-pick-url">From a URL</label></h4>
               </div>
-              <p id="source-url-sub" class="source-sub">A link to a PDF or an arXiv page</p>
+              <p id="source-url-sub" class="source-sub">A link to a document or an arXiv page</p>
               <input id="source-url" type="text" inputmode="url" aria-labelledby="source-url-title"
                 aria-describedby="source-url-sub" placeholder="https://arxiv.org/abs/…">
               <div class="field">
@@ -20875,10 +20917,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <input id="source-pick-upload" class="source-radio" type="radio" name="source" value="upload">
                 <h4 class="source-title"><label id="source-file-title" for="source-pick-upload">Upload a file</label></h4>
               </div>
-              <p class="source-sub">A PDF from your computer</p>
-              <input id="document-file" class="hidden" type="file"
-                accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown">
-              <div class="dropzone">Drop a PDF here or <button id="document-upload" class="browse" type="button" onclick="chooseDocument()">browse</button></div>
+              <!-- A touch screen (hover: none) shows Choose a file as the card's action, no drag and drop; the
+                   accept list and the type line come from DOCUMENT_TYPES. -->
+              <p class="source-sub"><span class="pointer-only">A file from your computer</span><span
+                class="touch-only">A file from your device</span></p>
+              <input id="document-file" class="hidden" type="file">
+              <div class="dropzone"><span class="pointer-only">Drop a file here or</span><button id="document-upload"
+                class="browse" type="button" onclick="chooseDocument()"><span class="pointer-only">browse</span><span
+                class="touch-only">Choose a file</span></button><span class="dropzone-types doc-types"></span></div>
               <p id="upload-name" class="upload-name hidden"></p>
             </section>
           </div>
@@ -21180,7 +21226,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
       <div id="library-empty" class="empty hidden">
         <h3>No audiobooks yet</h3>
-        <p>Add a PDF, Markdown, or text file, choose a voice, and your audiobook will be
+        <p>Add a <span class="doc-types"></span> file, choose a voice, and your audiobook will be
           waiting here.</p>
         <button class="primary" type="button" onclick="createFirstAudiobook()">Create your
           first audiobook</button>
@@ -21239,14 +21285,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu"
                 onclick="toggleMenu('more')">⋯</button>
               <div id="more-menu" class="menu hidden" role="menu" aria-label="More">
-                <button type="button" role="menuitem" onclick="downloadBook(this); closeMenus()">Download MP3</button>
+                <button type="button" role="menuitem" onclick="downloadBook(this); closePopup('back')">Download MP3</button>
                 <button id="reader-source" type="button" role="menuitem" class="hidden"
-                  onclick="closeMenus(); downloadSource()">Download source</button>
+                  onclick="closePopup('back'); downloadSource()">Download source</button>
                 <button id="reader-change-voice" type="button" role="menuitem" class="hidden"
-                  onclick="closeMenus(); openChangeVoice()">Change voice…</button>
+                  onclick="closePopup('back'); openChangeVoice()">Change voice…</button>
                 <button id="reader-recreate" type="button" role="menuitem"
-                  onclick="closeMenus(); recreateBook()">Recreate with the latest Hilde…</button>
-                <button type="button" role="menuitem" onclick="closeMenus(); openShortcuts()">Keyboard shortcuts</button>
+                  onclick="closePopup('back'); recreateBook()">Recreate with the latest Hilde…</button>
+                <button type="button" role="menuitem" onclick="closePopup('back'); openShortcuts()">Keyboard shortcuts</button>
               </div>
             </div>
           </div>
@@ -21329,7 +21375,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <button id="chat-speak" class="hidden" type="button" role="menuitemcheckbox"
                 aria-checked="false">Read answers aloud</button>
               <button id="chat-new" type="button" role="menuitem"
-                onclick="toggleChatMenu(false); $('chat-more').focus(); newChat()">New conversation</button>
+                onclick="closePopup('back'); newChat()">New conversation</button>
             </div>
           </div>
           <button class="panel-close" type="button" aria-label="Close the panel"
@@ -21941,7 +21987,7 @@ function renderDocumentList() {
     const trash = document.createElement("button");
     trash.type = "button"; trash.className = "trash doc-trash"; trash.innerHTML = TRASH_ICON;
     trash.setAttribute("aria-label", `Delete ${name}`);
-    trash.addEventListener("click", () => { closeDocumentList(false); deleteDocument(name, $("document")); });
+    trash.addEventListener("click", () => { closeDocumentList(true); deleteDocument(name, $("document")); });
     row.append(pick, trash);
     return row;
   });
@@ -21970,17 +22016,17 @@ function focusDocumentRow(row) {
   if (current) current.querySelector(".doc-pick").focus();
 }
 function openDocumentList() {
+  closePopup();
   renderDocumentList();
-  $("document-list").classList.remove("hidden");
-  $("document").setAttribute("aria-expanded", "true");
+  const list = $("document-list"), field = $("document");
+  list.classList.remove("hidden");
+  field.setAttribute("aria-expanded", "true");
+  openPopup(list, field, () => { list.classList.add("hidden"); field.setAttribute("aria-expanded", "false"); });
   const current = markDocumentRow(null);
-  (current ? current.querySelector(".doc-pick") : $("document")).focus();
+  (current ? current.querySelector(".doc-pick") : field).focus();
 }
 function closeDocumentList(focusField) {
-  if ($("document-list").classList.contains("hidden")) return;
-  $("document-list").classList.add("hidden");
-  $("document").setAttribute("aria-expanded", "false");
-  if (focusField) $("document").focus();
+  if (popup && popup.panel === $("document-list")) closePopup(focusField ? "back" : "quiet");
 }
 function pickDocument(name) {
   state.audiobook.document = name;
@@ -22045,11 +22091,14 @@ function queueSync() { syncSeq++; clearTimeout(syncTimer); syncTimer = setTimeou
 // Whether the server holds everything this page changed.
 function stateStored() { return !syncTimer && !syncsPending; }
 
+// The documents Hilde reads: the server's DOCUMENT_TYPES (its text "PDF, TXT
+// or Markdown", each suffix's type, the media types, and the one message for
+// another type, which the server's refusal says in the same words).
+const DOCUMENT_TYPES = __DOCUMENT_TYPES__;
 // A document's type, by its name as the server checks it.
-const DOCUMENT_TYPES = { ".pdf":"PDF", ".md":"Markdown", ".markdown":"Markdown", ".txt":"Text", ".text":"Text" };
 function documentType(name) {
   const match = /\.[^.]+$/.exec(String(name || "").toLowerCase());
-  return match ? DOCUMENT_TYPES[match[0]] || "" : "";
+  return match ? DOCUMENT_TYPES.suffixes[match[0]] || "" : "";
 }
 // The server's messages about a document, said shortly and plainly in step 1.
 function documentProblem(message) {
@@ -22060,11 +22109,11 @@ function documentProblem(message) {
     [/port is invalid/, "That link's port number isn't valid."],
     [/returned HTTP (\d+)/, (match) => `The link didn't work: the site answered ${match[1]}.`],
     [/^Cannot download document URL/, "Hilde couldn't reach that link. Check it and try again."],
-    [/returned HTML/, "That link opens a web page, not a document. Use a direct link to the PDF, Markdown, or text file."],
+    [/returned HTML/, `That link opens a web page, not a document. Use a direct link to a ${DOCUMENT_TYPES.text} file.`],
+    [/must return a/, `That link doesn't lead to a ${DOCUMENT_TYPES.text} file.`],
     [/64 MiB/, "That document is larger than 64 MB, the most Hilde takes."],
     [/empty file|nonempty file/, "That file is empty."],
-    [/Cannot determine the document type/, "Hilde can't tell what kind of file that is. Under Save as, enter a name ending in .pdf, .md, or .txt."],
-    [/must end in PDF, text, or Markdown/, "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt."],
+    [/Cannot determine the document type/, "Hilde can't tell what kind of file that is. Under Save as, enter a name ending in .pdf, .txt or .md."],
     [/Enter a direct document URL/, "Enter a link, and a Save as name without a slash."],
   ];
   for (const [pattern, plain] of rules) {
@@ -22148,11 +22197,18 @@ function renderSources() {
   $("upload-name").classList.toggle("hidden", !book.upload);
 }
 function chooseDocument() { $("document-file").click(); }
-// A file chosen or dropped anywhere on the step makes Upload the source.
+// A file chosen or dropped anywhere on the step makes Upload the source; one
+// of another type (the picker's All files, a drop) is refused here, in the
+// server's words, without sending it.
 async function uploadDocument(file) {
   if (!file || uploading) return;
   selectSource("upload", false);
   setBookProblem("");
+  if (!documentType(file.name)) {
+    $("document-file").value = "";
+    setBookProblem(DOCUMENT_TYPES.problem);
+    return;
+  }
   if (!(await replaceDocumentOk([file.name]))) return;
   uploading = true; render();
   setStatus(`Uploading ${file.name}…`);
@@ -23316,29 +23372,65 @@ function setSpeed(speed) {
   // Loading the downloaded book resets playbackRate to the default one.
   readerAudio.defaultPlaybackRate = speed; readerAudio.playbackRate = speed;
 }
-// Menus open on a click or tap, never on hover; one at a time.
+// --- Menus, lists and popovers: one behaviour -------------------------------
+// Every menu (the book's ⋯ and speed, Ask Hilde's ⋯, a voice's or a book
+// card's ⋯), list (Saved document's, a model picker's) and popover (Review
+// tags' + Add a tag) opens from a button, its opener, and only one is open at
+// a time: its open function shows it and calls openPopup(). Escape, a press
+// outside it, or a choice in it closes it and gives the focus back to the
+// opener (closePopup("back")). A press outside on something that takes the
+// focus (a field, another button) leaves the focus there ("outside": settled
+// when the press ends). A choice that opens a dialog closes the popup first,
+// so the focus is on the opener when showModal() runs and the dialog gives it
+// back there when it closes. Tab, or the focus moving out, closes it and lets
+// the focus go on; the page closing it (another tab, its box gone) is quiet.
+// `fallback` (a picker's box) takes the focus when the opener has left the
+// screen (More models… once a model is chosen), and a press on it is inside.
+let popup = null, popupReturn = null;
+function openPopup(panel, opener, hide, fallback = null) {
+  popup = { panel, opener, hide, fallback };
+}
+function popupHas(node) {
+  return !!popup && [popup.panel, popup.opener, popup.fallback].some((part) => part && part.contains(node));
+}
+function closePopup(how = "quiet") {
+  if (!popup) return;
+  const { opener, hide, fallback } = popup;
+  popup = null;
+  hide();
+  if (how === "back") focusOpener(opener, fallback);
+  else if (how === "outside") popupReturn = { opener, fallback };
+}
+// A list redrawn meanwhile (a voice's or a card's ⋯ through the poll) has a new button of the same name.
+function focusOpener(opener, fallback) {
+  const again = (node) => node && !node.isConnected && node.getAttribute("aria-label")
+    ? document.querySelector(`button[aria-label="${CSS.escape(node.getAttribute("aria-label"))}"]`) : node;
+  [again(opener), fallback].find((node) => node && node.isConnected && !node.disabled && node.getClientRects().length)
+    ?.focus({ preventScroll:true });
+}
+// After a press outside: the opener, unless the press gave the focus to
+// something (a press on a dialog's text focuses only the dialog itself).
+function settlePopupReturn() {
+  const back = popupReturn;
+  popupReturn = null;
+  const active = document.activeElement;
+  if (back && (!active || active === document.body || active instanceof HTMLDialogElement))
+    focusOpener(back.opener, back.fallback);
+}
+// Menus open on a click or tap, never on hover.
 function toggleMenu(name) {
-  const menu = $(`${name}-menu`), open = menu.classList.contains("hidden");
-  closeMenus();
-  if (!open) return;
+  const menu = $(`${name}-menu`), button = $(name === "more" ? "more-button" : "player-speed");
+  if (popup && popup.panel === menu) { closePopup("back"); return; }
+  closePopup();
   menu.classList.remove("hidden");
-  $(name === "more" ? "more-button" : "player-speed").setAttribute("aria-expanded", "true");
+  button.setAttribute("aria-expanded", "true");
+  openPopup(menu, button, () => { menu.classList.add("hidden"); button.setAttribute("aria-expanded", "false"); });
   (menu.querySelector("[aria-checked=true]") || menu.querySelector("button:not(.hidden)"))
     ?.focus({ preventScroll:true });
 }
-// The book's own menus (More, speed); closeMenus() closes every menu.
+// The book's own menus (More, speed) go with the book.
 function closeReaderMenus() {
-  for (const [menu, button] of [["more-menu", "more-button"], ["speed-menu", "player-speed"]]) {
-    $(menu).classList.add("hidden");
-    $(button).setAttribute("aria-expanded", "false");
-  }
-}
-function closeMenus() {
-  closeReaderMenus();
-  $("row-menu").classList.add("hidden");
-  $("chat-menu").classList.add("hidden");
-  $("chat-more").setAttribute("aria-expanded", "false");
-  if (rowMenuButton) { rowMenuButton.setAttribute("aria-expanded", "false"); rowMenuButton = null; }
+  if (popup && (popup.panel === $("more-menu") || popup.panel === $("speed-menu"))) closePopup();
 }
 function openShortcuts() { $("shortcuts-dialog").showModal(); }
 
@@ -23767,7 +23859,10 @@ function rememberChatScroll() {
 }
 function setPanel(open, view = panelView) {
   const wasChat = chatShown();
-  if (wasChat && (!open || view !== "chat")) { rememberChatScroll(); toggleChatMenu(false); }
+  if (wasChat && (!open || view !== "chat")) {
+    rememberChatScroll();
+    if (popup && popup.panel === $("chat-menu")) closePopup();
+  }
   keepPlace(() => { panelOpen = open; panelView = view; renderPanel(); });
   if (chatShown() && !wasChat && chatScroll) {
     const log = $("chat-log");
@@ -23783,16 +23878,18 @@ function closePanel() {
 }
 // Ask Hilde's ⋯ menu: what the conversation is about, then Read answers
 // aloud and New conversation. Enter, Space, or ArrowDown on ⋯ opens it on
-// its first item (ArrowUp: on its last); arrows, Home and End move; Escape
-// closes it and returns to ⋯; Tab or a press elsewhere closes it.
+// its first item (ArrowUp: on its last); arrows, Home and End move; Tab
+// closes it; Escape and a press elsewhere as every menu (closePopup()).
 function chatMenuItems() {
   return [...$("chat-menu").querySelectorAll("[role^=menuitem]")].filter((item) => shown(item) && !item.disabled);
 }
-function toggleChatMenu(open = $("chat-menu").classList.contains("hidden"), at = "first") {
-  closeMenus();
-  if (!open) return;
-  $("chat-menu").classList.remove("hidden");
-  $("chat-more").setAttribute("aria-expanded", "true");
+function toggleChatMenu(open = !(popup && popup.panel === $("chat-menu")), at = "first") {
+  const menu = $("chat-menu"), button = $("chat-more");
+  if (!open) { if (popup && popup.panel === menu) closePopup("back"); return; }
+  closePopup();
+  menu.classList.remove("hidden");
+  button.setAttribute("aria-expanded", "true");
+  openPopup(menu, button, () => { menu.classList.add("hidden"); button.setAttribute("aria-expanded", "false"); });
   const items = chatMenuItems();
   (at === "last" ? items.at(-1) : items[0])?.focus({ preventScroll:true });
 }
@@ -25318,23 +25415,21 @@ function rowMoreButton(label, items) {
   button.addEventListener("click", () => openRowMenu(button, label, items()));
   return button;
 }
-let rowMenuButton = null;
 function openRowMenu(button, label, items) {
   const menu = $("row-menu");
-  const open = rowMenuButton !== button || menu.classList.contains("hidden");
-  closeMenus();
-  if (!open) return;
+  if (popup && popup.panel === menu && popup.opener === button) { closePopup("back"); return; }
+  closePopup();
   menu.setAttribute("aria-label", label);
   menu.replaceChildren(...items.map((item) => {
     const entry = document.createElement("button");
     entry.type = "button"; entry.setAttribute("role", "menuitem");
     entry.textContent = item.label;
-    entry.addEventListener("click", () => { closeMenus(); item.run(button); });
+    entry.addEventListener("click", () => { closePopup("back"); item.run(button); });
     return entry;
   }));
-  rowMenuButton = button;
   button.setAttribute("aria-expanded", "true");
   menu.classList.remove("hidden");
+  openPopup(menu, button, () => { menu.classList.add("hidden"); button.setAttribute("aria-expanded", "false"); });
   // Under its button on a wide screen; a phone's stylesheet docks it at the bottom.
   menu.style.top = menu.style.left = "";
   if (!narrowLayout()) {
@@ -25473,8 +25568,12 @@ function voiceTag(tag, filled, voice) {
 // ("N suggested · Review", a phone's "N to review" in place of the tags); then
 // its free text (More details, else the description) on one line. The text is
 // a button: it opens the row, showing the whole stored description and every
-// tag, and folds it again; a phone's tap on the row does the same.
-const VOICE_TAGS_WIDE = 4, VOICE_TAGS_NARROW = 1;
+// tag, and folds it again; a phone's tap on the row does the same. On a phone
+// (VOICE_PHONE, the list's own breakpoint) the line ends in a chevron that
+// turns, the opened text runs the row's whole width under the name line, and
+// one row is open at a time: opening one folds the other, the one opened
+// staying where it was on the screen.
+const VOICE_TAGS_WIDE = 4, VOICE_TAGS_NARROW = 1, VOICE_PHONE = "(max-width:640px)";
 function setVoiceRowOpen(row, voice, open) {
   row.classList.toggle("is-open", open);
   const text = row.querySelector(".voice-text");
@@ -25484,6 +25583,16 @@ function setVoiceRowOpen(row, voice, open) {
 }
 function toggleVoiceRow(row, voice) {
   const open = !expandedVoices.has(voice.name);
+  if (open && window.matchMedia(VOICE_PHONE).matches && expandedVoices.size) {
+    const top = row.getBoundingClientRect().top;
+    expandedVoices.clear();
+    for (const other of $("voice-rows").rows) {
+      if (other === row || !other.classList.contains("is-open")) continue;
+      setVoiceRowOpen(other, voices.find((item) => item.name === other.dataset.voice), false);
+      fitVoiceRow(other);
+    }
+    window.scrollBy(0, row.getBoundingClientRect().top - top);
+  }
   if (open) expandedVoices.add(voice.name); else expandedVoices.delete(voice.name);
   setVoiceRowOpen(row, voice, open);
   fitVoiceRow(row);
@@ -25514,6 +25623,7 @@ function tagsMore(count, limit, kind, tags) {
   more.title = tags.slice(limit).join(", ");
   return more;
 }
+let voiceRowCount = 0;
 function voiceRow(voice, terms) {
   const selected = !facts.clone_server && voice.name === state.audiobook.voice;
   const row = document.createElement("tr");
@@ -25524,6 +25634,7 @@ function voiceRow(voice, terms) {
   const play = previewButton(voice);
   preview.append(play);
   const name = cell("name");
+  name.id = `voice-about-${++voiceRowCount}`;
   const head = document.createElement("div");
   head.className = "voice-head";
   const title = document.createElement("span");
@@ -25560,6 +25671,7 @@ function voiceRow(voice, terms) {
     line.className = "voice-text-line";
     const words = document.createElement("button");
     words.type = "button"; words.className = "voice-text";
+    words.setAttribute("aria-controls", name.id);
     words.title = "Show or hide the full description";
     words.addEventListener("click", () => toggleVoiceRow(row, voice));
     line.append(words);
@@ -25815,7 +25927,7 @@ function editVoiceTags(name, opener) {
   showTagReview({ queue:[name], edit:true, opener, back:".row-more" });
 }
 function showTagReview(review) {
-  closeMenus();
+  closePopup();
   tagReview = { ...review, at:0, voice:"", kept:[], suggested:[], added:[], returnFocus:true };
   if (!loadTagReviewVoice()) { tagReview = null; return; }
   const dialog = $("tag-review");
@@ -26013,13 +26125,8 @@ $("tag-review").addEventListener("close", () => {
   (target || $("voice-search")).focus({ preventScroll:true });
 });
 // Tab and Shift+Tab go round the dialog's controls; Escape closes the open
-// tag picker first, then the dialog.
+// tag picker first (closePopup()), then the dialog.
 $("tag-review").addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("tag-review-picker").classList.contains("hidden")) {
-    event.preventDefault(); event.stopPropagation();
-    closeTagPick(true);
-    return;
-  }
   if (event.key !== "Tab") return;
   const controls = [...$("tag-review").querySelectorAll("input, button")]
     .filter((control) => !control.disabled && control.getClientRects().length);
@@ -26029,33 +26136,33 @@ $("tag-review").addEventListener("keydown", (event) => {
   event.preventDefault();
   controls[next].focus();
 });
-$("tag-review").addEventListener("cancel", (event) => {
-  if ($("tag-review-picker").classList.contains("hidden")) return;
-  event.preventDefault();
-  closeTagPick(true);
-});
 
 // "+ Add a tag": a box that finds tags of the list (Hilde's groups, then
 // Yours, each under its small heading; only here) as you type, or adds the
 // typed word as a tag of your own (the server checks it, as everywhere).
-// Arrow keys move, Enter picks, Escape closes it.
+// Arrow keys move, Enter picks; Escape, a press outside and a pick close it
+// back on "+ Add a tag", as every popover (closePopup()).
 let tagPickActive = -1;
 function toggleTagPick() {
   if ($("tag-review-picker").classList.contains("hidden")) openTagPick(); else closeTagPick(true);
 }
 function openTagPick() {
-  $("tag-review-picker").classList.remove("hidden");
-  $("tag-review-add").setAttribute("aria-expanded", "true");
+  closePopup();
+  const picker = $("tag-review-picker"), add = $("tag-review-add");
+  picker.classList.remove("hidden");
+  add.setAttribute("aria-expanded", "true");
+  openPopup(picker, add, () => {
+    picker.classList.add("hidden");
+    add.setAttribute("aria-expanded", "false");
+    $("tag-review-input").removeAttribute("aria-activedescendant");
+  });
   $("tag-review-input").value = "";
   $("tag-review-problem").classList.add("hidden");
   renderTagPick();
   $("tag-review-input").focus();
 }
 function closeTagPick(focus) {
-  $("tag-review-picker").classList.add("hidden");
-  $("tag-review-add").setAttribute("aria-expanded", "false");
-  $("tag-review-input").removeAttribute("aria-activedescendant");
-  if (focus) $("tag-review-add").focus();
+  if (popup && popup.panel === $("tag-review-picker")) closePopup(focus ? "back" : "quiet");
 }
 function tagPickOptions() {
   return [...$("tag-review-options").querySelectorAll("[role=option]")];
@@ -26648,7 +26755,7 @@ function renderCreate() {
   $("book-chosen").classList.toggle("problem", empty);
   $("book-chosen").title = chosenText;
   const problem = bookProblemText
-    || (done.book && !type ? "Hilde reads PDF, Markdown, or text files: choose one ending in .pdf, .md, or .txt." : "");
+    || (done.book && !type ? DOCUMENT_TYPES.problem : "");
   $("book-problem").textContent = problem;
   $("book-problem").classList.toggle("hidden", !problem);
   const voiceName = facts.clone_server
@@ -26994,8 +27101,9 @@ function mountPicker(host) {
     });
   }
   // "-picker-change": "book-change" is Create step 1's own Change, which took this listener.
-  $(`${name}-picker-change`).addEventListener("click", () => needsProvider(name)
-    ? openProviderDialog({ kind:"cloud" }) : togglePicker(name, "model", true));
+  const change = $(`${name}-picker-change`);
+  change.addEventListener("click", () => needsProvider(name)
+    ? openProviderDialog({ kind:"cloud" }) : togglePicker(name, "model", true, change));
   if (!picker.assign) $(`${name}-picker-none`).addEventListener("click", (event) => {
     const act = event.target.closest("[data-act]")?.dataset.act;
     if (act) openProviderDialog({ kind:act === "local" ? "local" : "cloud" });
@@ -27004,7 +27112,7 @@ function mountPicker(host) {
     const button = event.target.closest("button");
     if (!button) return;
     if (button.dataset.value) { setPickerModel(name, button.dataset.value); $(`${name}-picker`).focus(); }
-    else togglePicker(name, "model", true);
+    else togglePicker(name, "model", true, button);
   });
   $(`${name}-picker-search`).addEventListener("input", () => renderPickerList(name, true));
   // A press in the list keeps the focus where it is (the search box).
@@ -27015,15 +27123,14 @@ function mountPicker(host) {
   });
   pop.addEventListener("keydown", (event) => {
     // A list with suggestions ends with How this works: Tab reaches it,
-    // Shift+Tab goes back to the list, Tab from it or Escape closes.
+    // Shift+Tab goes back to the list, Tab from it closes (Escape: closePopup()).
     const how = $(`${name}-suggest-how-link`);
     if (how && event.target === how) {
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
         const search = $(`${name}-picker-search`);
         (search.classList.contains("hidden") ? list : search).focus();
-      } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePicker(true); }
-      else if (event.key === "Tab") closePicker(false);
+      } else if (event.key === "Tab") closePicker(false);
       return;
     }
     if (how && event.key === "Tab" && !event.shiftKey) { event.preventDefault(); how.focus(); return; }
@@ -27034,7 +27141,6 @@ function mountPicker(host) {
     };
     if (event.key in next) setPickerActive(name, next[event.key] || null);
     else if (event.key === "Enter") { if (at >= 0) choosePickerOption(name, options[at]); }
-    else if (event.key === "Escape") closePicker(true);
     else { if (event.key === "Tab") closePicker(false); return; }
     event.preventDefault();
     event.stopPropagation();
@@ -27401,12 +27507,18 @@ function setPickerActive(name, option) {
   else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
 }
 function pickerBox({ name, mode }) { return $(mode === "kind" ? `${name}-kind` : `${name}-picker`); }
-function togglePicker(name, mode, open = !(openPicker && openPicker.name === name && openPicker.mode === mode)) {
-  if (openPicker) closePicker(false);
-  if (!open) return;
-  openPicker = { name, mode };
-  pickerBox(openPicker).setAttribute("aria-expanded", "true");
-  $(`${name}-picker-pop`).classList.remove("hidden");
+// `opener`: what opened the list when not its box (Change, More models…, Runs
+// on for the model list its choice opened); the box takes the focus when the
+// opener has gone.
+function togglePicker(name, mode, open = !(openPicker && openPicker.name === name && openPicker.mode === mode),
+                      opener = null) {
+  if (!open) { closePicker(false); pickerBox({ name, mode }).focus(); return; }
+  closePopup();
+  openPicker = { name, mode, keepKind:false };
+  const box = pickerBox(openPicker), pop = $(`${name}-picker-pop`);
+  box.setAttribute("aria-expanded", "true");
+  pop.classList.remove("hidden");
+  openPopup(pop, opener || box, hidePicker, box);
   const search = $(`${name}-picker-search`), list = $(`${name}-picker-list`);
   search.value = "";
   list.dataset.signature = "";
@@ -27418,13 +27530,16 @@ function togglePicker(name, mode, open = !(openPicker && openPicker.name === nam
 // Closing the model list unchosen takes back a Runs on switch.
 function closePicker(focus, keepKind = false) {
   if (!openPicker) return;
-  const { name, mode } = openPicker, box = pickerBox(openPicker);
+  openPicker.keepKind = keepKind;
+  closePopup(focus ? "back" : "quiet");
+}
+function hidePicker() {
+  const { name, mode, keepKind } = openPicker, box = pickerBox(openPicker);
   openPicker = null;
   box.setAttribute("aria-expanded", "false");
   $(`${name}-picker-pop`).classList.add("hidden");
   if (mode === "model" && !keepKind) delete pickerKinds[name];
   renderPicker(name);
-  if (focus) box.focus();
 }
 // The list sits under its box (above it when there is more room there),
 // inside the screen: at most 440 px wide, 8 px from either edge.
@@ -27450,7 +27565,7 @@ function choosePickerOption(name, option) {
     else pickerKinds[name] = option.dataset.kind;
     closePicker(false, true);
     if (needsProvider(name)) { render(); $(`${name}-picker`).focus(); return; }
-    togglePicker(name, "model", true);
+    togglePicker(name, "model", true, $(`${name}-kind`));
     return;
   }
   if (option.dataset.action === "add-local") { closePicker(true); openProviderDialog({ kind:"local" }); return; }
@@ -28183,7 +28298,7 @@ function setTab(tab) {
   if (!state) return;
   if (settingsOpen) setSettings(false, false);
   if (state.tab === tab) { render(); return; }
-  stopPreview(); closeMenus();
+  stopPreview(); closePopup();
   if (state.tab === "player") listenPlace = readingAnchor();
   state.tab = tab;
   setStatus("");
@@ -28206,7 +28321,7 @@ function setTab(tab) {
 function setSettings(open, draw = true) {
   if (open === settingsOpen) return;
   settingsOpen = open;
-  closeMenus();
+  closePopup();
   if (open) { stopPreview(); refreshWorkers(); }
   if (draw) render();
   if (open) $("settings-title").focus();
@@ -29417,10 +29532,10 @@ for (const card of document.querySelectorAll(".source-card"))
   });
 // Saved document's field opens and closes its list (a click, Enter or Space;
 // ArrowDown or ArrowUp open it too). Open, ArrowDown and ArrowUp move through
-// the rows, Home and End go to the first and last, Enter chooses, Escape
-// closes it and returns to the field, and Tab goes to the row's trash button,
-// then on out of the list. Delete and Backspace do nothing: only a trash
-// button deletes, after its question. A click or focus outside closes it.
+// the rows, Home and End go to the first and last, Enter chooses, and Tab goes
+// to the row's trash button, then on out of the list (which closes it).
+// Delete and Backspace do nothing: only a trash button deletes, after its
+// question. Escape and a press outside as every list (closePopup()).
 $("document").addEventListener("click", () => {
   if ($("document-list").classList.contains("hidden")) openDocumentList(); else closeDocumentList(true);
 });
@@ -29428,7 +29543,6 @@ const documentField = $("document").closest(".doc-field");
 const DOCUMENT_KEYS = ["ArrowDown", "ArrowUp", "Home", "End"];
 documentField.addEventListener("keydown", (event) => {
   const open = !$("document-list").classList.contains("hidden");
-  if (event.key === "Escape" && open) { event.preventDefault(); closeDocumentList(true); return; }
   if (event.key === "Delete" || event.key === "Backspace") {
     if (event.target.closest(".doc-row")) event.preventDefault();
     return;
@@ -29446,12 +29560,6 @@ documentField.addEventListener("keydown", (event) => {
     : at < 0 ? 0 : (at + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
   focusDocumentRow(rows[next]);
 });
-documentField.addEventListener("focusout", (event) => {
-  if (event.relatedTarget && !documentField.contains(event.relatedTarget)) closeDocumentList(false);
-});
-document.addEventListener("pointerdown", (event) => {
-  if (!documentField.contains(event.target)) closeDocumentList(false);
-});
 // A finished step's title reopens it, as its Change does; nothing else is cleared.
 for (const name of ["book", "voice", "create"])
   $(`step-${name}`).querySelector(".step-title").addEventListener("click", () => {
@@ -29466,6 +29574,9 @@ for (const [id] of FIELDS) {
 for (const [id] of FLAGS)
   $(id).addEventListener("change", () => { collect(); render(); sync(); });
 $("shared-voice").addEventListener("change", () => { stopPreview(); renderVoiceTable(); });
+// The file picker offers the documents Hilde reads; every place that names them says DOCUMENT_TYPES.text.
+$("document-file").accept = [...Object.keys(DOCUMENT_TYPES.suffixes), ...DOCUMENT_TYPES.media].join(",");
+for (const node of document.querySelectorAll(".doc-types")) node.textContent = DOCUMENT_TYPES.text;
 $("document-file").addEventListener("change", () => uploadDocument($("document-file").files[0]));
 // The whole first step takes a dropped file, as Upload a file does.
 const bookStep = $("step-book");
@@ -29541,17 +29652,13 @@ $("confirm-dialog").addEventListener("keydown", (event) => {
 });
 
 // The model pickers (mountPicker()); a press outside the open list closes
-// it, and it follows its button when the page scrolls or resizes.
+// it, as every list (closePopup()), and it follows its button when the page
+// scrolls or resizes.
 for (const host of document.querySelectorAll("[data-picker]")) mountPicker(host);
 // Ask Hilde's model box is in the panel's header; its notes go under it, and
 // its list (fixed, placed under the box) hangs from the panel, not the header.
 $("chat-model-notes").append($("chat-model-reason"), $("chat-alternatives"), $("chat-picker-none"));
 $("side-panel").append($("chat-picker-pop"));
-document.addEventListener("pointerdown", (event) => {
-  if (!openPicker || $(`${openPicker.name}-picker-pop`).contains(event.target)
-      || pickerBox(openPicker).contains(event.target)) return;
-  closePicker(false);
-}, true);
 document.addEventListener("scroll", (event) => {
   if (openPicker && !$(`${openPicker.name}-picker-pop`).contains(event.target)) placePicker();
 }, true);
@@ -29653,11 +29760,7 @@ $("chat-menu").addEventListener("keydown", (event) => {
   const next = { ArrowDown:items[(at + 1) % count], ArrowUp:items[(at - 1 + count) % count],
                  Home:items[0], End:items[count - 1] }[event.key];
   if (next) { event.preventDefault(); next.focus(); return; }
-  if (event.key === "Escape") {
-    event.preventDefault(); event.stopPropagation();
-    toggleChatMenu(false);
-    $("chat-more").focus();
-  } else if (event.key === "Tab") toggleChatMenu(false);
+  if (event.key === "Tab") closePopup();
 });
 
 // Listen: the player bar, the panel, Ask about this, and the reading position.
@@ -29676,7 +29779,7 @@ $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
   item.dataset.speed = speed;
   item.textContent = formatSpeed(speed);
   item.addEventListener("click", () => {
-    setSpeed(speed); closeMenus(); $("player-speed").focus();
+    setSpeed(speed); closePopup("back");
   });
   return item;
 }));
@@ -29686,25 +29789,41 @@ $("player-seek").addEventListener("input", (event) => {
   if (readerAudio) readerAudio.currentTime = Number(event.target.value);
   paintSeek();
 });
-document.addEventListener("click", (event) => {
-  if (!event.target.closest(".menu-wrap, #row-menu, .row-more")) closeMenus();
+// Every menu, list and popover (openPopup()): Escape closes the open one back
+// to its opener, before anything else takes the key (a dialog it is in stays
+// open); a press outside closes it, and once the press is over (its click, or
+// a touch that scrolled instead) the opener has the focus unless the press
+// gave it to something; the focus moving out (Tab) closes it quietly.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !popup || event.isComposing) return;
+  const dialog = [...document.querySelectorAll("dialog[open]")].at(-1);
+  if (dialog && !dialog.contains(popup.panel)) return;
+  event.preventDefault(); event.stopPropagation();
+  closePopup("back");
+}, true);
+document.addEventListener("cancel", (event) => {
+  if (!popup || !(event.target instanceof HTMLDialogElement) || !event.target.contains(popup.panel)) return;
+  event.preventDefault();
+  closePopup("back");
+}, true);
+document.addEventListener("pointerdown", (event) => {
+  popupReturn = null;
+  if (popup && !popupHas(event.target)) closePopup("outside");
+}, true);
+document.addEventListener("pointerup", (event) => {
+  if (popupReturn && event.pointerType === "mouse") setTimeout(settlePopupReturn, 0);
+}, true);
+for (const type of ["click", "pointercancel"])
+  document.addEventListener(type, () => { if (popupReturn) setTimeout(settlePopupReturn, 0); }, true);
+document.addEventListener("focusin", (event) => {
+  if (popup && !popupHas(event.target) && !(event.target instanceof HTMLDialogElement)) closePopup();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  if (!$("row-menu").classList.contains("hidden")) {
-    const button = rowMenuButton;
-    closeMenus(); event.preventDefault();
-    button?.focus();
-  } else if (!$("chat-menu").classList.contains("hidden")) {
-    closeMenus(); event.preventDefault();
-    $("chat-more").focus();
-  } else if (!$("more-menu").classList.contains("hidden") || !$("speed-menu").classList.contains("hidden")) {
-    closeMenus(); event.preventDefault();
-  } else if (!$("selection-ask").classList.contains("hidden")) hideSelectionAsk();
+  if (event.key === "Escape" && !$("selection-ask").classList.contains("hidden")) hideSelectionAsk();
 });
 // A row's menu stays under its button only while nothing scrolls.
 window.addEventListener("scroll", () => {
-  if (!$("row-menu").classList.contains("hidden") && !narrowLayout()) closeMenus();
+  if (popup && popup.panel === $("row-menu") && !narrowLayout()) closePopup("back");
 }, { passive:true });
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
@@ -29849,7 +29968,7 @@ setInterval(refreshJobs, 2000);
 </script>
 </body>
 </html>
-"""
+""".replace("__DOCUMENT_TYPES__", json.dumps(DOCUMENT_TYPES))
 
 # HTTPS (--https): browsers flag downloads from a page served over plain HTTP,
 # except from this machine (localhost), and no public authority certifies a

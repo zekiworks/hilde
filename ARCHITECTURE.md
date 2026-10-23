@@ -1061,10 +1061,11 @@ Each page:
      button's click) or ArrowDown/ArrowUp opens the list on the chosen row,
      else the first; ArrowDown/ArrowUp (wrapping), Home, and End move
      between rows; Enter chooses (`pickDocument()`, focus back on the field);
-     Escape closes it and returns to the field. The open list is one Tab stop
+     Escape or a press outside closes it back on the field, as every popup
+     ([Menus, lists and popovers](#menus-lists-and-popovers)). The open list is one Tab stop
      (`markDocumentRow()`, `focusDocumentRow()`: only the current row's pick
      and trash have `tabIndex` 0), so Tab goes from a row to its trash, then
-     out of the field, which closes the list (focusout). Delete and Backspace
+     out of the field, which closes the list (the focus leaving it). Delete and Backspace
      do nothing there. Both trash buttons call `deleteDocument()`, which asks
      'Delete "<name>"?' with the trash icon (`askConfirm({ icon, more })`, a
      deep red `button.danger.with-icon`; Tab and Shift+Tab go round the
@@ -1089,10 +1090,24 @@ Each page:
      `url_document` (cleared with it: a changed link or Save as, a delete,
      `clearBookChoice()`), and `chosenTitle()` shows it for that document: the
      finished step's summary (tooltip "<title> (saved as <name>)"), the hint
-     beside **Continue**, and step 3's summary. **Upload a file** is a dashed
-     drop area with **browse**, uploading at
-     once and naming the file in `#upload-name`; a file dropped anywhere on
-     the step chooses Upload and uploads. **Continue** uses only
+     beside **Continue**, and step 3's summary. **Upload a file** ("A file
+     from your computer") is a dashed drop area, "Drop a file here or
+     **browse**" over the type line; on a touch screen (`@media (hover:
+     none)`, `.pointer-only` / `.touch-only`) the card says "A file from your
+     device", the drop words go, and `#document-upload` is a bordered **Choose
+     a file** button (44 px) over the type line. It uploads at once and names
+     the file in `#upload-name`; a file dropped anywhere on the step chooses
+     Upload and uploads. The types come from one constant, `DOCUMENT_TYPES`
+     (Python, beside `PAPER_SUFFIXES`, which is its suffixes): `text` "PDF,
+     TXT or Markdown", `suffixes` (`.pdf`, `.txt`, `.text`, `.md`,
+     `.markdown`, each with its type label), `media`, and `problem`, the one
+     wrong-type message. `PAGE` gets it as JSON (`__DOCUMENT_TYPES__`); the
+     page builds `#document-file`'s `accept` from the suffixes and media
+     types, fills every `.doc-types` (the type lines, the empty Library's
+     sentence), types names with `documentType()`, and refuses a file of
+     another type (the picker's All files, a drop) with `problem` before
+     sending it (`uploadDocument()`); the upload route and a job's check
+     answer the same `problem`, so both sides read alike. **Continue** uses only
      `chosenDocument()`; pressed with it empty it stays and `#book-chosen`,
      the hint beside it, says "Choose a document first" (`bookEmptyContinue`).
      Otherwise `#book-chosen` shows the chosen card alone:
@@ -1158,8 +1173,12 @@ Each page:
      provider rows with **Connect** (`openProviderDialog({kind: "cloud",
      provider})`; Anthropic's covers Claude Code); in a browser without
      `manage_providers` both open `openProvidersPanel()` instead; a search box above `PICKER_SEARCH_FROM` (10)
-     models. Arrow keys, Home, End, Enter, and Escape (focus back to the box)
-     work in the list; the player's shortcuts skip `[role=listbox]`. With
+     models. Arrow keys, Home, End, and Enter work in the list; Escape, a
+     press outside, or a choice closes it back on its opener
+     (`togglePicker(name, mode, open, opener)`: the box, else **Change**,
+     **More models…**, or, for the model list a **Runs on** choice opens, the
+     **Runs on** box; the box when the opener has gone), as every popup
+     ([Menus, lists and popovers](#menus-lists-and-popovers)); the player's shortcuts skip `[role=listbox]`. With
      ratings for the picker's job (`PICKERS[name].stage`) on the open tab,
      the list starts with its **Suggested for <job>** section (see
      [Suggested models](#suggested-models)); the rest of the list is
@@ -1348,10 +1367,19 @@ Each page:
   confirm button, no explanation. Line 2: `button.voice-text`, plain gray, one
   line ending in "…" (`text-overflow`): More details for a voice made from
   tags, else the description (`description.txt`, whitespace collapsed); no
-  text reads "No description". The text (`aria-expanded`), or on a phone a tap
+  text reads "No description". The text (`aria-expanded`, `aria-controls` its
+  row's name cell `#voice-about-N`; Enter and Space as a button), or on a phone a tap
   on the row (not on a button), toggles `is-open` (`toggleVoiceRow()`): every
   chip, wrapping, and the whole stored description; open rows are kept across
-  re-renders in `expandedVoices`. The cell has `width: 100%` and its two
+  re-renders in `expandedVoices`. Up to 640 px (`VOICE_PHONE`, the list's
+  phone breakpoint) the line ends in a chevron (`button.voice-text::after`,
+  45°, turned to 225° while open, no transition with reduced motion), one
+  row is open at a time (opening one folds the others, `window.scrollBy`
+  keeping the one opened where it was), and an open row's name cell spans the
+  row's three columns (`grid-template-columns: subgrid`): the name line stays
+  in the middle one (44 px tall, beside play and Select, which sit above the
+  cell), the text and everything after it run the full width under them. A
+  wide screen is unchanged: no chevron, any number open. The cell has `width: 100%` and its two
   lines `contain: inline-size`, so nothing widens the table. Up to 400 px the
   columns and buttons are a little tighter, so a name and its pill fit. Search
   (placeholder "Search voices by tag or description"): every typed word must
@@ -1423,7 +1451,7 @@ Each page:
   dialog closes. In edit mode they read **Cancel** and **Save tags**, and
   **Make a new voice from these tags** (`newVoiceFromReview()`) closes it and
   opens New voice with them on. Tab and Shift+Tab go round the dialog's
-  controls; Escape closes it (the picker first); on close focus returns to the
+  controls; Escape closes the open **+ Add a tag** picker first (a popup, back on its button), then the dialog; on close focus returns to the
   opener or, once the list was redrawn, that voice's pill or ⋯
   (`#tag-banner-review` or the search box otherwise), and a preview of that
   voice stops.
@@ -1539,8 +1567,8 @@ Each page:
   replaced.", plus "Its other voices are kept but must be made again before
   they play." when it has others, and "Notes stay; the conversation is
   cleared." Both start a job whose progress shows in the progress view.
-  Menus open on a click or tap, never on hover, one at a time; Escape or a
-  click elsewhere closes them. While a book is open, `playerKey()`, a
+  Menus open on a click or tap, never on hover, one at a time, and close as
+  every popup ([Menus, lists and popovers](#menus-lists-and-popovers)). While a book is open, `playerKey()`, a
   capturing `keydown` listener on the document, gives the player YouTube's
   shortcuts (Space or K, J and L 10 seconds, ← and → 5, ↑ and ↓ volume only
   while focus is in `#artifact-player`, M, 0 to 9, Home and End, < and >
@@ -1625,6 +1653,30 @@ running job's progress without sending a request. A sync response older than
 a newer local change is ignored, and derived checks apply only to the page
 they were computed for. Logs shown under **Technical details** show the fixed
 passage as `<fixed preview passage>`.
+
+### Menus, lists and popovers
+
+Every popup opens from a button and goes through one behaviour:
+`openPopup(panel, opener, hide, fallback)` after it shows, `closePopup(how)`
+to close (`popup` holds the open one; one at a time). The popups: the book's
+`#more-menu` and `#speed-menu` (`toggleMenu()`), Ask Hilde's `#chat-menu`
+(`toggleChatMenu()`), the shared `#row-menu` of a voice's or a book card's
+⋯ (`openRowMenu()`), every model picker's `#<name>-picker-pop` (`book`,
+`figure`, `verify`, `chat`, `default-text`, `default-image`; Runs on and
+Model, `togglePicker()`/`closePicker()`), the saved-document
+`#document-list` (`openDocumentList()`), and Review tags' `#tag-review-picker`
+(`openTagPick()`). `"back"` (Escape, a choice, the opener pressed again)
+focuses the opener (`focusOpener()`: a redrawn row's button of the same
+`aria-label`, else `fallback`, a picker's box); `"outside"` (a press outside
+panel, opener and fallback, capturing `pointerdown`) hides it at once and,
+when the press is over (`click`, a mouse's `pointerup`, `pointercancel`),
+focuses the opener only if nothing took the focus (`settlePopupReturn()`:
+the body, or a dialog's own text); `"quiet"` (Tab, `focusin` elsewhere, the
+page closing it: another tab, Settings, its box gone) leaves the focus. One
+capturing `keydown` takes Escape first unless a dialog the popup is not in is
+open, and a dialog's `cancel` is refused while its popup is open. A choice
+that opens a dialog calls `closePopup("back")` first, so `showModal()` keeps
+the opener as the element to give the focus back to.
 
 ### Browser storage
 

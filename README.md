@@ -172,8 +172,9 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
 - **Tested stack.** The GPU workflow is tested on Linux with Python 3.12 and
   PyTorch 2.10 + CUDA 13.0; CPU inference has also been exercised. Other
   platforms may need adjustments.
-- **Inputs.** PDF, Markdown, and plain text up to 64 MiB. HTML pages and EPUB
-  files are not supported.
+- **Inputs.** PDF, TXT or Markdown files (`.pdf`, `.txt`/`.text`,
+  `.md`/`.markdown`) up to 64 MiB. HTML pages and EPUB files are not
+  supported; a file of another type is refused with a message naming these.
 
 ## Installation
 
