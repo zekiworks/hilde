@@ -4,7 +4,8 @@
 server-side library. Its configuration comes from command-line options when the
 server starts; browsers cannot replace that process-wide configuration.
 Settings each browser may change, such as precision, chunking, and batch size,
-are under **Settings** in the page; see [Settings](web-ui.md#settings). The
+are under **Settings** in the page, the technical ones under each group's
+collapsed **Advanced**; see [Settings](web-ui.md#settings). The
 text-adaptation model is on **Create**, under **Adapt the text for listening**.
 
 ## Start the server
@@ -651,7 +652,7 @@ All batch sizes reuse the same voice prompt. Batching controls memory use and th
 submits the whole book on one device. In distributed mode it is the number of
 chunks one worker takes at a time, and `0` becomes one chunk per worker so
 faster workers can pull more work. The web app's **Batch size** (under
-**Settings**) defaults to 2.
+**Settings** › **Narration** › **Advanced**) defaults to 2.
 
 Larger batches narrate faster until GPU memory runs out. On an RTX PRO 6000
 with about 6 GiB left beside another model, one sentence per call narrated at
@@ -661,7 +662,7 @@ needed about 0.7 GiB on top of the 4 GiB model.
 A batch that runs out of CUDA memory is retried one chunk at a time, so a batch
 size that is too large costs time rather than the book. If the log often says
 so, lower the batch size to skip the wasted attempt, and reduce
-`--chunk-max-chars` (**Chunking** under **Settings**) when individual chunks are
+`--chunk-max-chars` (**Chunking** under **Settings** › **Narration** › **Advanced**) when individual chunks are
 too expensive. Other GPU processes, such as another model server, leave less
 memory for narration. A single chunk that still does not fit fails a
 single-device run; with several workers, that GPU hands its chunks to the others

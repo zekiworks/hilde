@@ -20,15 +20,16 @@ dismiss it. It opens the [progress view](#following-an-audiobook-being-made);
 once nothing is left it goes, and if you were on it you are back on **Create**.
 
 At the right end of the tab row is **Settings**: a tab like the others (the
-same height and rounded top corners, standing on the same line), blue with a
-white gear, named "Settings" for screen readers; its right edge is as far in
-from the row's end as **Create**'s left edge is from its start, on a wide
-screen and on a phone. It opens the settings in place of the page; while they
-are open it shows as the selected tab does, pressed down and joined to the
-page below, with a white bar along its top (and no other tab is selected).
-**Settings** again, **Close settings**, or any tab closes them. On the
-narrowest phones the tabs tighten so the row never scrolls sideways. See
-[Settings](#settings).
+same grey, height and rounded top corners, standing on the same line), with a
+gear and the word "Settings"; on a phone narrower than 400 px (508 px while
+**Progress** shows) the gear alone, still named "Settings" for screen readers.
+Its right edge is as far in from the row's end as **Create**'s left edge is
+from its start, on a wide screen and on a phone. It opens the settings in place
+of the page; while they are open it looks exactly like the selected tab,
+pressed down and joined to the page below, with the blue bar along its top
+(and no other tab is selected). **Settings** again, **Close settings**, or any
+tab closes them. On the narrowest phones the tabs tighten so the row never
+scrolls sideways. See [Settings](#settings).
 
 The header and the tab row sit in the same centred column on every page, and
 do not move when you change tab or open a book: only the book itself (its
@@ -338,7 +339,9 @@ reload keeps following the running job without repeating its log.
 When a book stopped or failed, both **Create** and the progress view show a
 card for the latest one, also after a reload: the stage it stopped or failed
 in, what was finished (for example `Reading the document: done · Preparing the
-text: 212 of 840 paragraphs`), **Continue from the last completed part** (with
+text: 212 of 840 paragraphs`), **Continue from the last completed part** (filled
+on the progress view; outlined on **Create**, where the step's own button is
+the one filled button; with
 "Changing the settings or the voice since then starts the changed steps
 again." and where the text goes), **Technical details** with its last log
 lines, and **Dismiss**, which hides the card in this browser only. The server
@@ -896,7 +899,8 @@ Balder, Bragi, Mimir, and Vidar (male) and Eir, Freyja, Idun, and Sigrun
 
 ### Making a new voice
 
-**New voice** opens the editor: the tags (the same groups as above, and your
+**New voice**, the outlined button beside the **Voices** heading (choosing a
+voice is this page's main job, so it has no filled button), opens the editor: the tags (the same groups as above, and your
 own), **More details** in your own words (optional), and **Name**. Under them,
 **Sent to the voice model:** shows exactly what Generate preview sends, as you
 change the tags or details. Hilde writes it as one or more sentences, each
@@ -949,32 +953,46 @@ saved have none; give them tags with **Edit** to make them searchable.
 
 ## Settings
 
-**Settings**, the blue tab with the gear at the right end of the tabs, replaces the
+**Settings**, the tab with the gear at the right end of the tabs, replaces the
 page until you choose **Settings** again, **Close settings**, or a tab. Each
 group of settings ends with one note on when it takes effect: "Applies to the
-next audiobook" or "Applies now". The groups:
+next audiobook" or "Applies now". The everyday choices are on top; a group's
+technical options sit in a collapsed **Advanced** at its foot, just above that
+note (open it with a click, Enter, or Space), each with a grey line on when to
+change it. The groups:
 
 - **Reading**: **Highlight style**, A (the word being read underlined) or B
   (underlined, with a faint fill behind it), applies now and is remembered by
   this browser. It is a temporary test: one style will stay and the choice
   will go.
-- **Speech tuning**: precision (**auto (recommended)**), attention (**sdpa
-  (recommended)**), language, and an optional seed. They change speed, memory
+- **Speech tuning**: language on top; under **Advanced**, precision (**auto
+  (recommended)**; "Change only if narration fails or runs out of memory on
+  your GPU."), attention (**sdpa (recommended)**; "Change only if narration
+  fails with sdpa; flash_attention_2 needs a CUDA GPU and FlashAttention 2."),
+  and an optional seed ("Set only to repeat a take; it may still differ on
+  another GPU or batch size."). They change speed, memory
   use, and small details of the sound, never the voice. They apply to the next
   audiobook and the next voice preview you generate under **New voice**; saved
   voices' previews and answers read aloud always use the defaults. With a
   speech server narrating they apply only to the previews you generate, and
   with speech servers narrating and designing they are turned off.
-- **Narration**: text encoding, [**Batch size**](configuration.md#batch-size)
-  (off with a speech server), **Chunking** (the longest chunk in characters;
-  when you give an existing book a new voice, the book keeps its own
-  chunking), and **MP3 compression**, for the next audiobook.
-- **Text preparation**: **Parallel text requests** (how many requests adapt
-  the text at once) and **Paragraphs per request**; see
-  [Text adaptation](text-adaptation.md).
-- **Voices**: **Reference WAV encoding** (FLOAT unless changed), under the
-  collapsed **Advanced voice settings**: the format of the reference recording
-  saved with a new voice, which local voice cloning reads.
+- **Narration**: **MP3 compression** on top; under **Advanced**, text encoding
+  (for TXT and Markdown files; "Change only if a TXT or Markdown file's accents
+  or symbols come out wrong; PDFs ignore it."),
+  [**Batch size**](configuration.md#batch-size) (off with a speech server;
+  "Change only for speed or GPU memory: larger narrates faster until memory
+  runs out."), and **Chunking** (the longest chunk in characters; "Lower it only
+  if one chunk alone runs out of GPU memory. A book given a new voice keeps its
+  own chunking."). All for the next audiobook.
+- **Text preparation**: under **Advanced**, **Parallel text requests** (how
+  many requests adapt the text at once; "Change only if the text model's
+  server is overloaded (lower) or can serve more at once (higher).") and
+  **Paragraphs per request** ("Change only to send fewer, larger requests to a
+  slow or rate-limited text model."); see [Text adaptation](text-adaptation.md).
+- **Voices**: under **Advanced**, **Reference WAV encoding** (FLOAT unless
+  changed): the format of the reference recording saved with a new voice,
+  which local voice cloning reads ("Change only to save disk space; FLOAT keeps
+  a new voice's reference recording exactly as designed.").
 - **Machines and devices**: only what the server reports. **This server** is
   the machine Hilde runs on, by its short host name, with every device its
   probe found: a CUDA GPU by its name, memory, and a stable ID (the start of

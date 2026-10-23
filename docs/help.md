@@ -7,7 +7,7 @@
 
 Hilde Reader turns a document, such as a research paper, into an audiobook. Before it reads, a language model can rewrite the text for listening: it removes page headers and reference marks, and describes figures, tables and equations in words. Then a voice reads it aloud. While you listen, the word being read is marked in the text. You can ask Hilde about any part of the book.
 
-The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen** (your **Library** and the open book), **Progress** (while a book is being made) and **Settings** (the gear at the right).
+The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen** (your **Library** and the open book), **Progress** (while a book is being made) and **Settings** (the gear at the right; technical options sit under **Advanced**).
 
 <!-- checked: docs/web-ui.md "Header and navigation", "Create an audiobook" steps 1-4; README.md "What it does" -->
 

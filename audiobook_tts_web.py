@@ -19233,11 +19233,12 @@ button.link:hover:not(:disabled) { background:none; text-decoration-color:var(--
 label.check { display:flex; align-items:center; gap:10px; cursor:pointer; }
 label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-color:var(--accent); }
 /* A small steady LED (no glow) on what is on: a checked switch, the selected
-   tab, the chosen highlight style. */
+   tab (Settings too, while open), the chosen highlight style. */
 label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before,
-#highlight-style [aria-checked=true] span::before {
+.tabs .settings-button[aria-pressed=true]::before, #highlight-style [aria-checked=true] span::before {
   content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
-.tab-list [role=tab][aria-selected=true]::before, #highlight-style [aria-checked=true] span::before {
+.tab-list [role=tab][aria-selected=true]::before, .tabs .settings-button[aria-pressed=true]::before,
+#highlight-style [aria-checked=true] span::before {
   display:inline-block; margin-right:8px; vertical-align:2px; }
 /* Folder tabs on a baseline. Inactive tabs stand 3px taller with a bevel, as if
    raised; the active tab is pressed flush and opens into the page below.
@@ -19246,33 +19247,36 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .tabs { display:flex; align-items:flex-end; gap:8px; margin-top:20px; padding:0 8px;
         border-bottom:1px solid var(--line); container-type:inline-size; }
 .tab-list { display:flex; align-items:flex-end; gap:4px; }
-.tab-list [role=tab] {
+.tab-list [role=tab], .tabs .settings-button {
   margin-bottom:-1px; min-height:0; padding:10px clamp(14px,3vw,22px) 7px;
   border-radius:9px 9px 0 0; color:var(--dim); background:linear-gradient(#383838,#292929);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.12), 0 -3px 6px -2px rgba(0,0,0,.6);
   white-space:nowrap; transition:color .12s,background .12s; }
-.tab-list [role=tab]:hover:not([aria-selected=true]) {
+.tab-list [role=tab]:hover:not([aria-selected=true]), .tabs .settings-button:hover:not([aria-pressed=true]) {
   color:var(--text); background:linear-gradient(#444,#303030);
 }
-.tab-list [role=tab][aria-selected=true] {
+.tab-list [role=tab][aria-selected=true], .tabs .settings-button[aria-pressed=true] {
   padding-top:7px; color:var(--text); font-weight:650; background:var(--bg); border-bottom-color:var(--bg);
   box-shadow:inset 0 3px 0 var(--accent-light); }
-/* Settings (its own page, not one of the tablist's): a tab like the others, the
-   same height, padding, top-rounded corners and baseline, with a white gear on
-   the blue accent, at the row's right end: its right edge as far in from the
-   row's end as Create's left edge is from its start. Closed it stands raised
-   like an inactive tab; open it is pressed flush and opens into the page
-   below like the selected tab, its cue a white bar along the top (the tabs'
-   light blue bar would not show on blue). Its gear is 1.5em, the tabs' line
-   height, so it follows their type when they tighten. */
+/* Settings (its own page, not one of the tablist's): a tab like the others, the same surface, text colour, border,
+   height, padding, top-rounded corners and baseline, at the row's right end: its right edge as far in from the row's
+   end as Create's left edge is from its start. Closed it stands raised like an unselected tab; open it is pressed
+   flush like the selected tab, with its blue bar and LED. A gear in the text's colour, then "Settings"; where the
+   word does not fit (see below), the gear alone, named Settings by its aria-label. */
 .tabs .settings-button { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;
-  min-width:44px; min-height:0; margin:0 0 -1px auto; padding:10px clamp(14px,3vw,22px) 7px;
-  border:1px solid var(--accent); border-radius:9px 9px 0 0; background:var(--accent); color:#fff;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.22), 0 -3px 6px -2px rgba(0,0,0,.6); transition:filter .12s; }
-.tabs .settings-button:hover:not(:disabled) { background:var(--accent); filter:brightness(1.12); }
-.tabs .settings-button[aria-pressed=true] { padding-top:7px; box-shadow:inset 0 3px 0 #fff; }
-.settings-button .gear { flex:0 0 auto; width:1.5em; height:1.5em; color:#fff; fill:none; stroke:currentColor;
-  stroke-width:1.7; stroke-linejoin:round; }
+  min-width:44px; margin-left:auto; }
+.settings-button .gear { flex:0 0 auto; width:1.125em; height:1.125em; margin-right:5px; fill:none;
+  stroke:currentColor; stroke-width:1.7; stroke-linejoin:round; }
+/* "Settings" beside the gear needs a row of 368px (a 400px window) with three tabs, of 476px (a 508px window) with
+   Progress too; narrower, the gear alone, as tall as the tabs' line (1.5em). */
+@container (max-width:367.98px) {
+  .settings-label { display:none; }
+  .settings-button .gear { width:1.5em; height:1.5em; margin-right:0; }
+}
+@container (max-width:475.98px) {
+  .tabs:has(#tab-progress:not(.hidden)) .settings-label { display:none; }
+  .tabs:has(#tab-progress:not(.hidden)) .settings-button .gear { width:1.5em; height:1.5em; margin-right:0; }
+}
 /* Narrower still: in a row under 310px (a 332–341px phone) Settings narrows to 44px and sits 4px from Listen, so the
    row never scrolls with the tabs as they are; under 300 and 290px (phones under 332 and 322px) the tabs tighten too. */
 @container (max-width:309.98px) {
@@ -19356,17 +19360,18 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .step-summary:empty { display:none; }
 .summary-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .summary-type { flex:0 0 auto; color:var(--off); }
-/* The quiet blue: every Change on Create, and Library with a book open (the card's and the paper bar's):
-   --accent-light text and icon, a thin blue border (65% --accent-light, 3.5:1 on the ground; the text 6.6:1),
-   no fill. Change: a pencil and the word, small, right after what it changes. */
-button.change, button.picker-change, button.library-button {
+/* The quiet blue: every Change on Create, Library with a book open (the card's and the paper bar's), and a
+   secondary action beside a page's main job (button.secondary: Voices' New voice; one filled button at most per
+   screen, for its main job): --accent-light text and icon, a thin blue border (65% --accent-light, 3.5:1 on the
+   ground; the text 6.6:1), no fill. Change: a pencil and the word, small, right after what it changes. */
+button.change, button.picker-change, button.library-button, button.secondary {
   background:transparent; border:1px solid color-mix(in srgb, var(--accent-light) 65%, transparent);
   border-radius:8px; box-shadow:none; color:var(--accent-light); }
 button.change, button.picker-change {
   display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; min-height:28px; padding:3px 11px;
   font-size:13px; font-weight:500; line-height:1.2; }
 button.change:hover:not(:disabled), button.picker-change:hover:not(:disabled),
-button.library-button:hover:not(:disabled) {
+button.library-button:hover:not(:disabled), button.secondary:hover:not(:disabled) {
   background:var(--accent-soft); border-color:var(--accent-light); }
 button.change svg, button.picker-change svg { flex:0 0 auto; width:13px; height:13px; }
 .step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; margin-top:16px; }
@@ -19669,7 +19674,10 @@ legend ~ * { clear:both; }
 .server-only { margin-top:4px; }
 /* A startup flag named in a note stays on one line. */
 .server-only code { font:inherit; white-space:nowrap; }
-#advanced-voice > .row { margin-top:10px; }
+/* Advanced: a group's technical options, collapsed at its foot above its "Applies" line; each with a grey line on
+   when to change it. */
+.settings details.advanced { margin:2px 0 8px; }
+.advanced > .row { margin-top:10px; }
 /* Machines and devices: this server, then the others, each with its devices and jobs. */
 .machines-part { display:grid; gap:10px; margin-top:6px; padding:12px 0 6px; border-top:1px solid var(--line); }
 .part-title { margin:0; font-size:15px; font-weight:650; }
@@ -20710,13 +20718,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="tab-progress" class="hidden" type="button" role="tab" aria-controls="page-progress"
         onclick="setTab('progress')">Progress</button>
     </div>
-    <!-- Settings: a page of its own, not one of the tablist's; a blue tab with a gear at the row's right end. -->
+    <!-- Settings: a page of its own, not one of the tablist's; a tab like the others at the row's right end, a gear and
+         "Settings" (the gear alone on a narrow phone, named by its aria-label). -->
     <button id="settings-button" class="settings-button" type="button" aria-controls="page-settings"
       aria-label="Settings" aria-pressed="false" onclick="toggleSettings()"><svg class="gear" viewBox="0 0 24 24"
       width="22" height="22" aria-hidden="true" focusable="false"><path d="M9.6 4.4 10.2 1.7 13.8 1.7 14.4 4.4 15.7 4.9
       18.1 3.4 20.6 5.9 19.1 8.3 19.6 9.6 22.3 10.2 22.3 13.8 19.6 14.4 19.1 15.7 20.6 18.1 18.1 20.6 15.7 19.1 14.4
       19.6 13.8 22.3 10.2 22.3 9.6 19.6 8.3 19.1 5.9 20.6 3.4 18.1 4.9 15.7 4.4 14.4 1.7 13.8 1.7 10.2 4.4 9.6 4.9 8.3
-      3.4 5.9 5.9 3.4 8.3 4.9ZM12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4z"/></svg></button>
+      3.4 5.9 5.9 3.4 8.3 4.9ZM12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4z"/></svg><span
+      class="settings-label">Settings</span></button>
   </nav>
   <p id="status" class="notice" role="status" aria-live="polite"></p>
   <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
@@ -20745,16 +20755,25 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <p class="note">The voice comes from the voice you choose. These settings change speed, memory
         use and small details of the sound, not the voice.</p>
       <p id="speech-server-note" class="note hidden"></p>
-      <div class="row"><label for="dtype">Precision</label><div class="setting">
-        <select id="dtype"><option value="auto">auto (recommended)</option><option>float32</option>
-          <option>float16</option><option>bfloat16</option></select></div></div>
-      <div class="row"><label for="attn">Attention</label><div class="setting">
-        <select id="attn"><option value="sdpa">sdpa (recommended)</option>
-          <option>eager</option><option>flash_attention_2</option></select></div></div>
       <div class="row"><label for="language">Language</label><div class="setting">
         <input id="language" type="text" placeholder="Auto"></div></div>
-      <div class="row"><label for="seed">Seed</label><div class="setting">
-        <input id="seed" type="text" placeholder="Optional seed"></div></div>
+      <details id="advanced-speech" class="advanced">
+        <summary>Advanced</summary>
+        <div class="row"><label for="dtype">Precision</label><div class="setting">
+          <select id="dtype" aria-describedby="dtype-when"><option value="auto">auto (recommended)</option>
+            <option>float32</option><option>float16</option><option>bfloat16</option></select>
+          <span id="dtype-when" class="note">Change only if narration fails or runs out of memory on your
+            GPU.</span></div></div>
+        <div class="row"><label for="attn">Attention</label><div class="setting">
+          <select id="attn" aria-describedby="attn-when"><option value="sdpa">sdpa (recommended)</option>
+            <option>eager</option><option>flash_attention_2</option></select>
+          <span id="attn-when" class="note">Change only if narration fails with sdpa; flash_attention_2 needs
+            a CUDA GPU and FlashAttention 2.</span></div></div>
+        <div class="row"><label for="seed">Seed</label><div class="setting">
+          <input id="seed" type="text" placeholder="Optional seed" aria-describedby="seed-when">
+          <span id="seed-when" class="note">Set only to repeat a take; it may still differ on another GPU or
+            batch size.</span></div></div>
+      </details>
       <p id="speech-applies" class="applies group-note">Applies to the next audiobook and the next
         voice preview you generate. Saved voices' previews and read-aloud answers use the defaults.</p>
     </fieldset>
@@ -20762,36 +20781,53 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <legend>Narration</legend>
       <p id="narration-server-note" class="note hidden">A speech server narrates, so batch size does
         not apply.</p>
-      <div class="row"><label for="encoding">Text encoding</label><div class="setting">
-        <input id="encoding" type="text" placeholder="utf-8-sig"></div></div>
-      <div class="row"><label for="batch-size">Batch size</label><div class="setting">
-        <input id="batch-size" type="text" class="short"></div></div>
-      <div class="row"><label for="chunk-max-chars">Chunking</label><div class="setting">
-        <input id="chunk-max-chars" type="text" class="short">
-        <span class="note">When you give an existing book a new voice, the book keeps its own
-          chunking.</span></div></div>
       <div class="row"><label for="mp3-level">MP3 compression</label><div class="setting">
         <input id="mp3-level" type="text" class="short"></div></div>
+      <details id="advanced-narration" class="advanced">
+        <summary>Advanced</summary>
+        <div class="row"><label for="encoding">Text encoding</label><div class="setting">
+          <input id="encoding" type="text" placeholder="utf-8-sig" aria-describedby="encoding-when">
+          <span id="encoding-when" class="note">Change only if a TXT or Markdown file's accents or symbols come
+            out wrong; PDFs ignore it.</span></div></div>
+        <div class="row"><label for="batch-size">Batch size</label><div class="setting">
+          <input id="batch-size" type="text" class="short" aria-describedby="batch-size-when">
+          <span id="batch-size-when" class="note">Change only for speed or GPU memory: larger narrates faster
+            until memory runs out.</span></div></div>
+        <div class="row"><label for="chunk-max-chars">Chunking</label><div class="setting">
+          <input id="chunk-max-chars" type="text" class="short" aria-describedby="chunk-max-chars-when">
+          <span id="chunk-max-chars-when" class="note">Lower it only if one chunk alone runs out of GPU memory.
+            A book given a new voice keeps its own chunking.</span></div></div>
+      </details>
       <p class="applies group-note">Applies to the next audiobook</p>
     </fieldset>
     <fieldset id="settings-adaptation">
       <legend>Text preparation</legend>
-      <p class="note">Used when "Adapt the text for listening" is on. Changing either prepares
-        the text again on Continue.</p>
-      <div class="row"><label for="paper-in-flight">Parallel text requests</label><div class="setting">
-        <input id="paper-in-flight" type="number" min="1" max="32" step="1" class="short"></div></div>
-      <div class="row"><label for="paper-paragraphs-per-worker">Paragraphs per request</label><div class="setting">
-        <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1" class="short"></div></div>
+      <p class="note">Used when "Adapt the text for listening" is on. Changing either setting under Advanced
+        prepares the text again on Continue.</p>
+      <details id="advanced-adaptation" class="advanced">
+        <summary>Advanced</summary>
+        <div class="row"><label for="paper-in-flight">Parallel text requests</label><div class="setting">
+          <input id="paper-in-flight" type="number" min="1" max="32" step="1" class="short"
+            aria-describedby="paper-in-flight-when">
+          <span id="paper-in-flight-when" class="note">Change only if the text model's server is overloaded
+            (lower) or can serve more at once (higher).</span></div></div>
+        <div class="row"><label for="paper-paragraphs-per-worker">Paragraphs per request</label><div class="setting">
+          <input id="paper-paragraphs-per-worker" type="number" min="1" max="32" step="1" class="short"
+            aria-describedby="paper-paragraphs-per-worker-when">
+          <span id="paper-paragraphs-per-worker-when" class="note">Change only to send fewer, larger requests to
+            a slow or rate-limited text model.</span></div></div>
+      </details>
       <p class="applies group-note">Applies to the next audiobook</p>
     </fieldset>
     <fieldset id="settings-voices">
       <legend>Voices</legend>
-      <details id="advanced-voice">
-        <summary>Advanced voice settings</summary>
+      <details id="advanced-voice" class="advanced">
+        <summary>Advanced</summary>
         <div class="row"><label for="wav-subtype">Reference WAV encoding</label><div class="setting">
-          <select id="wav-subtype"><option>FLOAT</option><option>PCM_16</option>
+          <select id="wav-subtype" aria-describedby="wav-subtype-when"><option>FLOAT</option><option>PCM_16</option>
             <option>PCM_24</option><option>PCM_32</option><option>DOUBLE</option></select>
-          <span class="note">Format of the reference recording saved with a new voice.</span></div></div>
+          <span id="wav-subtype-when" class="note">Change only to save disk space; FLOAT keeps a new voice's
+            reference recording exactly as designed.</span></div></div>
       </details>
     </fieldset>
     <fieldset id="settings-machines">
@@ -21115,7 +21151,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <section id="page-voice" class="page hidden" role="tabpanel" aria-labelledby="tab-voice">
     <div class="page-head">
       <h2>Voices</h2>
-      <button id="new-voice" class="primary" type="button" aria-controls="voice-form" aria-expanded="false"
+      <button id="new-voice" class="secondary" type="button" aria-controls="voice-form" aria-expanded="false"
         onclick="openVoiceForm()">New voice</button>
     </div>
     <p id="voice-chosen" class="banner hidden" role="status"><span id="voice-chosen-text"></span>
@@ -27851,6 +27887,9 @@ function fillFailureCard(card, entry) {
   finished.textContent = `What was finished: ${finishedText(history)}`;
   const resume = document.createElement("div");
   resume.className = "failure-continue";
+  // One filled button per screen: on the progress view resuming is the main job; on Create the step's
+  // Continue or Create audiobook is, so there the card's resume button is the quiet blue.
+  const resumeLook = card.id === "progress-failure" ? "primary" : "secondary";
   if (paused) {
     // A model stopped answering: the parts written stay; Retry asks the same
     // model again, or another model, once chosen here, writes only the rest.
@@ -27862,7 +27901,7 @@ function fillFailureCard(card, entry) {
         + `${item.last > item.first ? `–${item.last}` : ""} by ${item.name || textModel(item.model).short}`).join("; ")}.`
       : "No part was finished yet.";
     const retry = document.createElement("button");
-    retry.type = "button"; retry.className = "primary"; retry.textContent = "Retry";
+    retry.type = "button"; retry.className = resumeLook; retry.textContent = "Retry";
     retry.disabled = submitting;
     retry.addEventListener("click", () => resumePaused(entry, paused.model));
     const other = document.createElement("button");
@@ -27896,7 +27935,7 @@ function fillFailureCard(card, entry) {
     resume.append(buttons, list, condition);
   } else {
     const button = document.createElement("button");
-    button.type = "button"; button.className = "primary";
+    button.type = "button"; button.className = resumeLook;
     button.textContent = "Continue from the last completed part";
     button.disabled = submitting || (entry.mode !== "voice" && state.audiobook.adapt && !paperCatalog.loaded);
     button.addEventListener("click", () => continueJob(entry));

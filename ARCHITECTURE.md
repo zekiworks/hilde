@@ -950,17 +950,29 @@ are flat); an answer being read aloud stays plain text (no fill); danger buttons
 Buttons are raised: a 1 px top highlight (inset white 10%) and a 2 px shadow
 below (`--lift`); pressed (`:active`), a button moves down 1 px onto a 1 px
 shadow and brightens, fading back in 100 ms; with `prefers-reduced-motion`
-only the 1 px move remains. Links, tabs, the Settings gear, switch segments
+only the 1 px move remains. Links, tabs (Settings too), switch segments
 (`role=radio`), and menu items stay flat. A steady 6 px `--accent-light` LED dot
-marks what is on: the selected folder tab (`::before`), every `label.check`
+marks what is on: the selected folder tab and Settings while open (`::before`), every `label.check`
 whose box is ticked (`::after`: Follow along, Create step 3's options,
 Settings' boxes), and the chosen highlight style. The
 player's time is monospace with tabular figures.
 
-Each view shows at most one primary (blue)
-button: Create's step **Continue** or **Create audiobook**, **New voice** on
-Voices, **Create your first audiobook** on an empty Library, none in Settings.
-Secondary buttons are neutral; destructive or rare actions are text buttons or
+Each screen shows at most one filled (primary, `button.primary`, `--accent`)
+button, for its main job: Create's step **Continue**, **Change voice** (the
+notice of a book you already have), or **Create audiobook**; **Continue from
+the last completed part** / **Retry** on the progress view's job card (on
+Create the same card's buttons are `button.secondary`, the step's button being
+Create's job, `fillFailureCard()`); **Generate preview**, then **Save voice**
+in the voice editor (`renderVoiceForm()` moves the class); **Save and next**
+in Review tags; **Create your first audiobook** on an empty Library; **Ask about
+this** for a selection in the reading view; a dialog's confirm button (or its
+red danger button); none on Voices, in Settings, or in the Ask Hilde panel.
+Role colours are not primary buttons and stay: Play/Pause in the player bar and
+a playing card's play button, a playing voice preview (`--accent`, pressed),
+Ask Hilde's teal (`--ask`) buttons, and the tag pink of **Review tags**.
+A secondary action beside a screen's main job is `button.secondary`, the quiet
+blue of Create's **Change** (an outline, no fill): **New voice** on Voices.
+Other buttons are neutral; destructive or rare actions are text buttons or
 sit in a row's **⋯** menu, always behind a confirmation dialog.
 
 Three pages, **Create**, **Voices**, and **Listen**, and **Progress** while it
@@ -969,20 +981,21 @@ keys move between them, Progress included while it shows).
 Inactive tabs stand slightly raised with a bevel; the active tab is flush with
 an `--accent-light` top edge and opens into the page below. After the tablist,
 outside it, at the row's right end (`margin-left: auto`), sits **Settings**
-(`#settings-button`): a button (`aria-pressed`, `aria-label="Settings"`, no
-visible label), not one of the tablist's tabs, drawn as a tab: the tabs'
+(`#settings-button`): a button (`aria-pressed`, `aria-label="Settings"`), not
+one of the tablist's tabs, styled by the tabs' own rules (`.tab-list [role=tab],
+.tabs .settings-button`): the same raised surface, `--dim` text, border,
 padding (10 / 7 px, sides `clamp(14px,3vw,22px)`), 9 px top corners, square
-bottom, `margin-bottom: -1px` onto the row's line, at least 44 px wide, filled
-`--accent` with a white outline gear (inline SVG, `stroke: currentColor`, 1.5em,
-the tabs' line height, so it is as tall as a tab and follows their type when
-they tighten). Its right edge is as far in from the row's end as Create's left
-edge is from its start (the row's own padding, 8 px, 2 px on a phone). Closed
-it stands raised like an inactive tab (the same bevel and shadow); open
-(`aria-pressed="true"`) it shows selection as the selected tab does, pressed
-flush (top padding 7 px) and joined to the page, with a 3 px white bar along
-its top (`box-shadow: inset 0 3px 0 #fff`; the tabs' `--accent-light` bar would
-not show on blue). Before 21 Oct it was a 44 px blue square right after the
-last tab with a ring when open. A tab never wraps its label.
+bottom, `margin-bottom: -1px` onto the row's line, at least 44 px wide; a gear
+(inline SVG, `stroke: currentColor`, 1.125em; 1.5em, the tabs' line height, when alone) and the word **Settings**
+(`.settings-label`). Its right edge is as far in from the row's end as Create's
+left edge is from its start (the row's own padding, 8 px, 2 px on a phone).
+Closed it is an unselected tab; open (`aria-pressed="true"`) it is the selected
+tab: pressed flush (top padding 7 px), `--text` at weight 650 on `--bg`, the
+3 px `--accent-light` bar along its top and the LED dot. The word needs a row of
+368 px (a 400 px window) with three tabs and of 476 px (a 508 px window) with
+Progress; in a narrower row (`@container`) the gear shows alone. Before 23 Oct
+it was filled `--accent`, its gear and its open-state bar in white. A tab
+never wraps its label.
 `.tabs` is an inline-size container: below 310 px Settings' side padding drops
 to 8 px (44 px wide) and the tab list's right margin to −2 px, the tabs as they
 are; below 300 and 290 px the tabs' and Settings' side padding shrinks (11,
@@ -1011,7 +1024,7 @@ more view is not in the tablist:
   Settings button (`toggleSettings()`) in place of the current page, never
   above it, and closes with the button again, **Close settings**, or any tab
   (`setTab()`, `chooseListen()` call `setSettings(false)`). While it is open
-  the button has `aria-pressed="true"` and its ring, and no tab is
+  the button has `aria-pressed="true"` and the selected tab's look, and no tab is
   `aria-selected` (the tabs' pages are hidden). See [Settings and
   devices](#settings-and-devices).
 
@@ -1464,7 +1477,7 @@ Each page:
   refusal shows under it in `.tag-add-problem`; one of Hilde's tags is just
   turned on). Changes come back in vocabulary order (`canonicalTags()`). It is
   rebuilt only when the vocabulary changes, so focus and a half-typed tag stay.
-- **New voice** (primary, `openVoiceForm(tags)`) opens the editor
+- **New voice** (`button.secondary`, the outline: choosing a voice is the page's main job; `openVoiceForm(tags)`) opens the editor
   (`#voice-form`): the tag picker (`#voice-new-picker`, `voice.tags`), **More
   details** (`#voice-details`, `voice.details`), **Name**, and **Sent to the
   voice model:** (`#voice-instruct`), the server's `derived.voice_instruct`
@@ -1742,23 +1755,32 @@ means designing them again; a test checks each one.
 ### Settings and devices
 
 **Settings** has seven groups, each ending with one "Applies …" note (`.applies`,
-`.group-note`), never one per row. **Reading** (temporary, for the highlight
+`.group-note`), never one per row. A group's technical options sit just above
+that note in a collapsed `<details class="advanced">` named **Advanced**
+(`#advanced-speech`, `#advanced-narration`, `#advanced-adaptation`,
+`#advanced-voice`; a native disclosure, Enter and Space on its summary), its
+everyday options above it; under each advanced option one grey line (`.note`,
+its `aria-describedby`) says when to change it. Moving them changed no id,
+value, default, or rule: `FIELDS`, `collect()`, and the disabled rules in
+`render()` read the same elements, open or closed. **Reading** (temporary, for the highlight
 test): **Highlight style** A / B (`#highlight-style`, a radio switch), applies
-now, this browser only (`hilde.highlightStyle`). **Speech tuning**: precision
-(`auto (recommended)`), attention (`sdpa (recommended)`), language, and seed,
-which reach narration and voice design through `shared_arguments()`, so they
+now, this browser only (`hilde.highlightStyle`). **Speech tuning**: language on
+top; precision (`auto (recommended)`), attention (`sdpa (recommended)`), and
+seed under Advanced. All four
+reach narration and voice design through `shared_arguments()`, so they
 apply to the next audiobook and the next voice preview generated in **New
 voice** (`create_voice_command()`); saved voices' previews
 (`voice_preview_command()`) and answers read aloud (`ChatSpeaker.command()`)
 use `normalize({})` defaults, which the note says. With a narration speech
 server only voice design uses them (`#speech-server-note`), and they are off
-when voice design uses a speech server too. **Narration**: text encoding,
-batch size (off with a narration speech server), chunking, and MP3
-compression, for the next audiobook; a book's new voice keeps the book's
-chunking. **Text preparation**: **Parallel text requests** (`in_flight`) and
-**Paragraphs per request** (`paragraphs_per_worker`). **Voices**: reference-WAV
-encoding inside the collapsed **Advanced voice settings** (`#advanced-voice`),
-kept because the generated WAV is required for local cloning.
+when voice design uses a speech server too. **Narration**: MP3 compression on
+top; text encoding (TXT and Markdown input only; extracted PDFs are UTF-8),
+batch size (off with a narration speech server), and chunking under Advanced,
+for the next audiobook; a book's new voice keeps the book's
+chunking. **Text preparation**: under Advanced, **Parallel text requests**
+(`in_flight`) and **Paragraphs per request** (`paragraphs_per_worker`).
+**Voices**: under Advanced, the reference-WAV encoding (`wav_subtype`), kept
+because the generated WAV is required for local cloning.
 
 **Machines and devices** (`renderMachines()`) is built only from what the
 server reports. `/api/state` adds `machine`: this server's short host name
