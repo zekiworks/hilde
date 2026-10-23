@@ -605,7 +605,12 @@ opens the list); a local model answers from the server that offers it. The
 badge shows **Local** or **Cloud**, so you see where your question goes before
 you send it (screen readers hear the server or the provider and how it is
 reached too, as the list shows them), and the picker remembers the model you
-used last; it never starts on a cloud model by itself. A model that does not
+used last; it never starts on a cloud model by itself. That choice is this
+browser's, kept apart from the model that makes books (Create's **Model for
+this book**); no setting ties the two together. Using the same local model for
+both makes answers slower while a book is being made, since the server then
+writes the book and answers you at once.
+A model that does not
 answer shows in red under the header, with others to use instead.
 Changing the model while Hilde is still writing an answer stops that answer,
 as **Stop** does: what had arrived stays, marked **Stopped**, and nothing more
@@ -772,6 +777,34 @@ playable and downloadable without synchronized text.
 If the player remains silent, check the browser and selected output device. A
 Linux sound server exposing only **Dummy Output** has no real playback sink;
 that does not establish that the generated file is silent.
+
+### A book being made
+
+A new book can be read and asked about as soon as its document has been
+converted, the first step of making it, while Hilde prepares the text and
+narrates it. Its card is in the Library in its usual place (by when it became
+readable), with **Being made · 42%** (the job's own count for the step it is
+on, as on **Progress**; **Stopped · 42%** once it stopped or failed) and no play
+button. A click (or **Enter** or **Space**) opens it: the paper's own text and
+its figures, with no player, **Follow along**, or **Narration text | Source
+text** switch, and a line under the title saying that Hilde is still making it
+and you can listen once it's done. **Ask Hilde** in the header asks about it,
+with the same cards, ¶ links, figures and source pages as a finished book. Hilde
+reads the paper's text at once; each part's narration, description and summary
+arrive as Hilde prepares that part, and a part not ready yet says so. The
+recreated text of a book you already have is not shown this way: that book
+stays in the Library as it was until the new text replaces it.
+
+The conversation is kept with the job on the server. **Stop** keeps it, and
+**Continue from the last completed part** (or **Create audiobook** again with
+the same document and voice) goes on with it. When the book is done, the
+conversation becomes the book's (after any the book already had), and the open
+view turns into the finished book with its player, at the same place in the
+text, with the conversation still in the panel. An answer still being written
+then is given up to two minutes to finish. **⋯** › **Delete…** on the card
+stops the job and removes what it prepared and its conversation, after a
+confirmation that says so; other books and their conversations are not
+touched.
 
 ## Voices
 

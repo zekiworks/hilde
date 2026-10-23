@@ -2616,7 +2616,13 @@ def read_json_file(path):
 def audiobook_title(markdown, fallback):
     """Name a book by its first top-level Markdown heading near the start,
     unless that heading opens a section such as the abstract."""
-    for source in _reader_markdown_sources(markdown)[:8]:
+    return heading_title(_reader_markdown_sources(markdown)[:8], fallback)
+
+
+def heading_title(sources, fallback):
+    """The first top-level Markdown heading opening one of `sources` (blocks
+    or paragraphs), unless it opens a section such as the abstract."""
+    for source in sources:
         # A block can carry a figure after its heading, such as a logo that
         # was printed above the title.
         first = source.strip().split("\n", 1)[0]
@@ -2825,14 +2831,17 @@ def _copy_voice_folder(source, target):
                 shutil.copy2(item, target / item.name)
 
 
-def commit_book(storage, record, narration, reader_markdown, source, voice, audio, timings, history=()):
+def commit_book(storage, record, narration, reader_markdown, source, voice, audio, timings, history=(), chat=None):
     """Publish a book made from its source, with one voice.
 
     `record` holds the book's fields; `voice` is the voice's entry; `history`
     the job's model history, appended to the book's history.jsonl. A book
     already made from the same content keeps its folder, its other voices, and
     the names its source went by; a voice of it whose text differs from the
-    new one becomes stale. Return the book's id.
+    new one becomes stale. `chat`, (the making id, the job's stage), brings
+    the conversation and files Ask Hilde kept while the book was made
+    (making_chat_for_book()): the book is published with them. Return the
+    book's id.
     """
     data = narration_bytes(narration)
     narration_sha256 = hashlib.sha256(data).hexdigest()
@@ -2885,6 +2894,16 @@ def commit_book(storage, record, narration, reader_markdown, source, voice, audi
                 final = old_path
             else:
                 final = storage.audiobooks / book_id(record["title"], record["source_sha256"])
+            if chat is not None:
+                making, stage = chat
+                # Asked while it was made: that conversation becomes the
+                # book's, after any the book already has, never over it.
+                if read_chat(stage):
+                    write_private_json(build / BOOK_CHAT_FILE, making_chat_for_book(
+                        read_json_file(old_path / BOOK_CHAT_FILE) if existing is not None else None,
+                        read_json_file(stage / BOOK_CHAT_FILE), making, final.name,
+                    ))
+                copy_new_files(stage / BOOK_FILES_FOLDER, build / BOOK_FILES_FOLDER)
             record["voices"] = voices
             write_json_atomic(build / "book.json", record)
             if history:
@@ -3016,6 +3035,345 @@ def delete_book(storage, book):
         path, _ = read_book(storage, book)
         trash = storage.audiobooks / f".trash-{os.urandom(6).hex()}"
         path.rename(trash)
+    shutil.rmtree(trash, ignore_errors=True)
+
+
+# --- books being made -----------------------------------------------------------
+#
+# A new book's job (Create, adapted) is readable once its document has been
+# converted, its first step: the job writes MAKING_FILE into its stage, and
+# until the book is published the Library lists it as "making-<job id>"
+# ("Being made · N%", no play button), its reading view shows the paper's own
+# text and figures (no player), and Ask Hilde answers about it from the stage:
+# the paper's text at once, each part's narration, summary and tags as its
+# batch's checkpoint is written. Its conversation (chat.json, 0600, and
+# files/) is kept in the stage, so Stop and Continue keep it and deleting the
+# job removes it; commit_book(chat=…) publishes it with the book.
+
+MAKING_PREFIX = "making-"
+MAKING_ID_PATTERN = re.compile(r"making-([0-9a-f]{64})")
+MAKING_FILE = "making.json"
+# An answer still being written when its book is published is given this
+# long to end, then stopped (ChatRegistry.hold()); a deleted job's answer is
+# stopped at once.
+MAKING_CHAT_WAIT = 120
+# Seconds a deleted job is given to stop before its stage is removed.
+MAKING_STOP_WAIT = 30
+# This process's published books that were being made, making id -> book
+# id: a question sent to the old id lands in the book (chat_key()).
+_MAKING_PUBLISHED = {}
+_MAKING_LOCK = threading.Lock()
+# The converted document of each stage, by its files' size and time (_making_document()).
+_MAKING_DOCUMENTS = {}
+
+
+def making_id(job_id):
+    """The id a job's book has while it is being made."""
+    return f"{MAKING_PREFIX}{job_id}"
+
+
+def making_job(book):
+    """The job id of a book being made, or None for any other id."""
+    match = MAKING_ID_PATTERN.fullmatch(str(book or ""))
+    return match.group(1) if match else None
+
+
+def making_published(book):
+    """The book a book being made became, once published here, or None."""
+    with _MAKING_LOCK:
+        return _MAKING_PUBLISHED.get(str(book or ""))
+
+
+def note_making_published(making, book):
+    with _MAKING_LOCK:
+        _MAKING_PUBLISHED[making] = book
+
+
+def making_stage(storage, book):
+    """A book being made: its job's stage and MAKING_FILE's record. ValueError
+    for another id, FileNotFoundError when the job has no readable document."""
+    job = making_job(book)
+    if job is None:
+        raise ValueError("Select a valid audiobook.")
+    stage = storage.in_progress / job
+    marker = read_json_file(stage / MAKING_FILE)
+    if marker is None:
+        raise FileNotFoundError("no such audiobook")
+    return stage, marker
+
+
+def making_source(stage, marker):
+    """The converted document a book being made is read from, inside its stage."""
+    source = (stage / str(marker.get("source") or "")).resolve()
+    if not source.is_relative_to(stage.resolve()) or source == stage.resolve():
+        raise FileNotFoundError("no such document")
+    return source
+
+
+def making_pdf(stage):
+    """The stage's copy of the job's document when it is a PDF, else None."""
+    name = safe_asset_name((read_json_file(stage / "assets.json") or {}).get("source_name", ""))
+    pdf = stage / "source" / name if name else None
+    return pdf if pdf is not None and pdf.suffix.lower() == ".pdf" and pdf.is_file() else None
+
+
+def book_or_making_pdf(storage, book):
+    """The PDF of a book (book_pdf()) or of a book being made, or None."""
+    if making_job(book) is not None:
+        return making_pdf(making_stage(storage, book)[0])
+    return book_pdf(storage, *read_book(storage, book))
+
+
+def chat_folder(storage, book):
+    """Where a book's conversation and files are kept: its folder, or for a
+    book being made its job's stage."""
+    if making_job(book) is not None:
+        return making_stage(storage, book)[0]
+    return read_book(storage, book)[0]
+
+
+def write_private_json(path, value):
+    """write_json_atomic(), readable only by this user (0600). The folder
+    must exist: a stage removed meanwhile is never made again."""
+    target = Path(path)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+            out.write(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        temporary.replace(target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def copy_new_files(source, target):
+    """Copy the Markdown files of `source` into `target`; a name `target`
+    already has goes in as "<name> (2).md" (3, …), so nothing is replaced."""
+    if not source.is_dir():
+        return
+    for item in sorted(source.iterdir()):
+        if not item.is_file() or item.suffix != ".md":
+            continue
+        target.mkdir(mode=0o750, exist_ok=True)
+        name, number = item.name, 1
+        while (target / name).exists():
+            number += 1
+            name = f"{item.stem} ({number}).md"
+        shutil.copy2(item, target / name)
+
+
+def making_chat_for_book(book_chat, job_chat, making, book):
+    """The conversation a book is published with when it was asked about
+    while it was made: the job's (`job_chat`, its chat.json) with every
+    paragraph id of the document being made (document_id(making)) and the
+    making id itself turned into the book's, after the book's own
+    (`book_chat`, or None), never in place of it. The job's ledger keys move
+    by the entries before them, so what had expired stays expired."""
+    before, after = document_id(making), document_id(book)
+    # Its paragraph ids (<id>:N) and the id alone ("No paragraph of <id> holds …").
+    pattern = re.compile(rf"\b{before}\b")
+
+    def moved(value):
+        if isinstance(value, str):
+            return pattern.sub(after, value).replace(making, book)
+        if isinstance(value, list):
+            return [moved(item) for item in value]
+        if isinstance(value, dict):
+            return {key: moved(item) for key, item in value.items()}
+        return value
+
+    job_chat = job_chat if isinstance(job_chat, dict) else {}
+    entries = [entry for entry in moved(job_chat.get("entries") or []) if isinstance(entry, dict)]
+    context = ask_state(moved(job_chat.get("context")))
+    book_chat = book_chat if isinstance(book_chat, dict) else {}
+    earlier = [entry for entry in book_chat.get("entries") or [] if isinstance(entry, dict)]
+    if earlier:
+        kept = ask_state(book_chat.get("context"))
+
+        def shifted(key):
+            index, dot, rest = key.partition(".")
+            return f"{int(index) + len(earlier)}{dot}{rest}" if index.isdigit() else key
+
+        context = {"expired": kept["expired"] + [shifted(key) for key in context["expired"]],
+                   "dropped": kept["dropped"], "last": context["last"] or kept["last"]}
+    return {"schema": 1, "book": book, "entries": earlier + entries, "context": context}
+
+
+def _making_block(paragraphs, kinds):
+    """A part of a book being made as its reading view shows it: the paper's
+    own paragraphs, with its pictures and tables, without page furniture or
+    the labels read from inside a figure."""
+    parts = []
+    for paragraph, kind in zip(paragraphs, kinds):
+        if kind == "furniture":
+            continue
+        text = reader_visual_markdown(paragraph) if kind in FIGURE_PART_KINDS else (
+            PICTURE_TEXT_PATTERN.sub("", paragraph).strip())
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _making_document(stage, marker):
+    """The parts of a book being made, as the job plans its batches
+    (paper_batches()): one passage each, numbered as the book will number
+    them, without what the model writes, and each part's reading-view
+    Markdown with its pictures embedded. Kept while the converted files stay
+    the same."""
+    source = making_source(stage, marker)
+    pages_path = stage / "extraction" / "document-pages.json"
+    status = source.stat()
+    try:
+        pages_status = pages_path.stat()
+        pages_key = (pages_status.st_size, pages_status.st_mtime_ns)
+    except OSError:
+        pages_key = None
+    key = (status.st_size, status.st_mtime_ns, pages_key, marker.get("paragraphs_per_worker"))
+    with _MAKING_LOCK:
+        cached = _MAKING_DOCUMENTS.get(str(stage))
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    text = source.read_text(encoding=str(marker.get("encoding") or "utf-8"))
+    paragraphs, _ = narrated_source_paragraphs(text)
+    recorded = read_json_file(pages_path) if source.name == "document.md" else None
+    pages = narrated_source_pages(text, recorded.get("pages")) if recorded else None
+    kinds = _layout_kinds(paragraphs)
+    roots = (source.parent, stage / "extraction")
+    passages, blocks = [], []
+    for number, (start, end) in enumerate(paper_batches(paragraphs, int(marker.get("paragraphs_per_worker") or 1)), 1):
+        group, group_kinds = paragraphs[start - 1:end], kinds[start - 1:end]
+        passage = _narration_passage(number, "", start, group, group_kinds, pages,
+                                     _original_markdown(group, group_kinds), False)
+        passages.append({**passage, "paragraphs": [number - 1, number - 1], "batch": [start, end]})
+        blocks.append(embed_reader_images(_making_block(group, group_kinds), roots))
+    value = (tuple(passages), tuple(blocks))
+    with _MAKING_LOCK:
+        for other in [name for name in _MAKING_DOCUMENTS if name != str(stage)][7:]:
+            _MAKING_DOCUMENTS.pop(other, None)
+        _MAKING_DOCUMENTS[str(stage)] = (key, value)
+    return value
+
+
+def making_passages(stage, marker):
+    """A book being made's passages, as narration.json will hold them, and
+    its reading-view blocks. A part whose batch is written (its checkpoint
+    has a summary) has its narration (`text`), `summary`, and `tags`; one
+    not yet has none and is `pending`."""
+    passages, blocks = _making_document(stage, marker)
+    folder = stage / "extraction" / "paragraph-checkpoints"
+    current = []
+    for passage in passages:
+        start, end = passage["batch"]
+        written = read_json_file(folder / f"{start:06d}-{end:06d}.json") or {}
+        narration, summary, tags = written.get("narration"), written.get("summary"), written.get("tags")
+        if written.get("end") == end and isinstance(narration, str) and isinstance(summary, str) and summary.strip():
+            current.append({**passage, "text": narration.strip(), "summary": " ".join(summary.split()),
+                            "tags": [str(tag) for tag in tags] if isinstance(tags, list) else []})
+        else:
+            current.append({**passage, "summary": "", "tags": [], "pending": True})
+    return current, list(blocks)
+
+
+def making_progress(jobs, stage, marker):
+    """How far a book being made is: its job's `status` ("running",
+    "queued", "done", or "stopped": stopped, failed, or no longer known to
+    this server), `phase`, and `percent`, the current phase's real count
+    (the progress view's), else the share of its parts prepared."""
+    state = jobs.making_state(stage.name) if jobs is not None else None
+    status = (state or {}).get("status")
+    count = (state or {}).get("count") or {}
+    percent = None
+    if isinstance(count.get("total"), int) and count["total"] > 0:
+        percent = min(100, count["done"] * 100 // count["total"])
+    if percent is None:
+        try:
+            total = len(_making_document(stage, marker)[0])
+        except (OSError, UnicodeError, ValueError):
+            total = 0
+        prepared = len(list((stage / "extraction" / "paragraph-checkpoints").glob("*.json")))
+        percent = min(100, prepared * 100 // total) if total else 0
+    return {
+        "job": stage.name,
+        "status": "running" if status == "running" else "queued" if status in ("preparing", "queued")
+        else "done" if status == "done" else "stopped",
+        "phase": (state or {}).get("phase") or "",
+        "percent": percent,
+    }
+
+
+def making_catalog(storage, jobs=None):
+    """The books being made, as library_catalog() lists books: `voices`
+    empty, `making` their progress (making_progress()). A job whose book is
+    published, or whose document is not converted (again), is not listed."""
+    books = []
+    for stage in storage.in_progress.iterdir() if storage.in_progress.is_dir() else ():
+        if not SHA256_PATTERN.fullmatch(stage.name) or making_published(making_id(stage.name)):
+            continue
+        marker = read_json_file(stage / MAKING_FILE)
+        try:
+            if marker is None or not making_source(stage, marker).is_file():
+                continue
+        except (OSError, ValueError):
+            continue
+        progress = making_progress(jobs, stage, marker)
+        if progress["status"] == "done":
+            continue
+        pdf = making_pdf(stage)
+        books.append({
+            "id": making_id(stage.name),
+            "title": str(marker.get("title") or Path(str(marker.get("document") or "")).stem or "Untitled"),
+            "source": str(marker.get("document") or ""),
+            "voice": str(marker.get("voice") or ""),
+            "voices": [],
+            "duration": None,
+            # When its document became readable: it lists among the books by that time.
+            "modified": float(marker.get("at") or 0),
+            "legacy_names": [],
+            "has_text": False,
+            "has_source": False,
+            "thumbnail": cached_file_version(pdf) if pdf is not None else None,
+            "making": progress,
+        })
+    return books
+
+
+def making_reader_payload(storage, book):
+    """/api/reader for a book being made: the paper's own text, one block
+    per part (numbered as Ask Hilde cites them), with its figures; no voice,
+    audio, cues, or Original view."""
+    stage, marker = making_stage(storage, book)
+    passages, sources = making_passages(stage, marker)
+    details = passage_details(passages)
+    block_passages = list(range(1, len(passages) + 1))
+    return {
+        "book": book, "voice": "", "title": marker.get("title"), "document": marker.get("document") or "",
+        "voices": [], "has_text": False, "part_models": [], "part_models_summary": "",
+        "sample_rate": 0, "timing_precision": "exact", "word_timing": "unavailable", "word_cues": [], "cues": [],
+        "blocks": [
+            {"id": index, "html": render_reader_original(source), "paragraph": index}
+            for index, source in enumerate(sources)
+        ],
+        "originals": [],
+        "block_passages": block_passages,
+        "passages": details,
+        "figures": reader_figures(book, making_pdf(stage), passages, details, sources, block_passages),
+    }
+
+
+def delete_making(storage, jobs, chats, book):
+    """Delete a book being made: its job stops, and its stage goes with
+    everything in it, the text prepared so far and the conversation about
+    it. RuntimeError when the job does not stop within MAKING_STOP_WAIT."""
+    stage, _ = making_stage(storage, book)
+    with chats.hold(book, 0) if chats is not None else contextlib.nullcontext():
+        if jobs is not None:
+            jobs.cancel(stage.name)
+            if not jobs.wait_stopped(stage.name, MAKING_STOP_WAIT):
+                raise RuntimeError("It is still stopping; delete it again in a moment.")
+            jobs.forget(stage.name)
+        trash = storage.in_progress / f".trash-{os.urandom(6).hex()}"
+        stage.rename(trash)
     shutil.rmtree(trash, ignore_errors=True)
 
 
@@ -5034,23 +5392,30 @@ def reader_figures(book, pdf, passages, details, sources, block_passages):
 def book_figure(storage, book, number, panel=None):
     """A book's figure or table passage `number` as the reader shows it: the
     passage, its crops (reader_passage_images()), and its picture as printed
-    in the source PDF (or panel `panel`'s), or None without one.
+    in the source PDF (or panel `panel`'s), or None without one; for a book
+    being made, from its stage (making_passages()).
     FileNotFoundError when the book has no such passage or no text of its own."""
-    path, record = read_book(storage, book)
-    narration, narration_sha256 = read_narration(path)
-    if narration is None or narration_sha256 != record.get("narration_sha256"):
-        raise FileNotFoundError("This book has no text of its own.")
-    passages = narration["passages"]
+    if making_job(book) is not None:
+        stage, marker = making_stage(storage, book)
+        passages, sources = making_passages(stage, marker)
+        block_passages = list(range(1, len(passages) + 1))
+        pdf = making_pdf(stage)
+    else:
+        path, record = read_book(storage, book)
+        narration, narration_sha256 = read_narration(path)
+        if narration is None or narration_sha256 != record.get("narration_sha256"):
+            raise FileNotFoundError("This book has no text of its own.")
+        passages = narration["passages"]
+        _, voice, _ = book_audio(storage, book)
+        sources = _reader_markdown_sources((path / "reader.md").read_text(encoding="utf-8"))
+        synchronization = read_json_file(voice_folder(path, voice) / "timings.json") or {}
+        paragraphs = synchronization.get("paragraphs") or list(range(len(sources)))
+        block_passages = reader_block_passages(paragraphs, passages)
+        pdf = book_source(storage, path, record)
     if not 1 <= number <= len(passages) or passages[number - 1].get("type") not in FIGURE_PASSAGE_TYPES:
         raise FileNotFoundError("This book has no such figure.")
     passage = passages[number - 1]
-    _, voice, _ = book_audio(storage, book)
-    sources = _reader_markdown_sources((path / "reader.md").read_text(encoding="utf-8"))
-    synchronization = read_json_file(voice_folder(path, voice) / "timings.json") or {}
-    paragraphs = synchronization.get("paragraphs") or list(range(len(sources)))
-    block_passages = reader_block_passages(paragraphs, passages)
     crops = reader_passage_images(sources, block_passages, number)
-    pdf = book_source(storage, path, record)
     if pdf is None or pdf.suffix.lower() != ".pdf":
         return passage, crops, None
     boxes = figure_boxes(pdf, passage, [crop[3] for crop in crops])
@@ -11770,7 +12135,14 @@ class ChatTooLong(RuntimeError):
 
 def chat_book(storage, book):
     """A book's folder, record, and narration passages for Chat. A book made
-    before passages kept their summaries raises ChatUnavailable."""
+    before passages kept their summaries raises ChatUnavailable. A book being
+    made gives its job's stage, a record with its `title` and `making`, and
+    its passages so far (making_passages()), the parts not prepared yet
+    `pending`."""
+    if making_job(book) is not None:
+        stage, marker = making_stage(storage, book)
+        passages, _ = making_passages(stage, marker)
+        return stage, {"title": marker.get("title") or marker.get("document") or book, "making": True}, passages
     path, record = read_book(storage, book)
     narration, _ = read_narration(path)
     passages = narration["passages"] if narration else []
@@ -11928,6 +12300,11 @@ ASK_LABELS = {"paper": "From the paper", "narration": "Hilde's narration", "help
 ASK_VISUALS = ("figure", "table", "equation")
 ASK_VERSIONS = ("paper", "narration", "both")
 ASK_NOT_NARRATED = "(Not narrated: the adaptation left this paragraph out.)"
+# A part of a book being made whose batch is not written yet: no narration,
+# description, or summary, and the paper's own text is there to read.
+ASK_NOT_READY = ("Not ready yet: Hilde has not prepared this part's narration; the book is still being made. "
+                 "The paper's own text is ready: read it without version \"narration\".")
+ASK_NOT_READY_SUMMARY = "(not prepared yet; read it for the paper's text)"
 
 
 def clean_paper_text(text):
@@ -11974,10 +12351,12 @@ class AskDocument:
     read_web_page stored ("web_page"). Each paragraph is a dict with `text`,
     and optionally `summary`, `tags`, `type`, `title`, and `body`; a book's
     are its narration's passages (their `text` Hilde's narration, their
-    `sources` and `original_text` the paper's)."""
+    `sources` and `original_text` the paper's). A book being made
+    (`making`) has `pending` parts, whose narration is not written yet."""
 
-    def __init__(self, id, kind, title, paragraphs, url=""):
+    def __init__(self, id, kind, title, paragraphs, url="", making=False):
         self.id, self.kind, self.title, self.paragraphs, self.url = id, kind, title, paragraphs, url
+        self.making = making
         self._paper = {}
 
     def paper(self, number):
@@ -12001,6 +12380,8 @@ class AskDocument:
         place, a page paragraph's first sentences."""
         paragraph = self.paragraphs[number - 1]
         if self.kind == "paper":
+            if paragraph.get("pending"):
+                return ASK_NOT_READY_SUMMARY
             return " ".join(str(paragraph.get("summary") or "").split()) or _excerpt(paragraph.get("text"))
         if self.kind == "help":
             return f"{paragraph.get('title')}: {_excerpt(paragraph.get('body'), 1)}"
@@ -12016,7 +12397,9 @@ class AskDocument:
         paper"), Hilde's narration ("Hilde's narration"), or both; a figure,
         table, or equation gives, unless "narration", its caption and
         extracted text and then Hilde's description ("Hilde's description").
-        A paragraph the paper has no text for gives the narration."""
+        A paragraph the paper has no text for gives the narration. A part of
+        a book being made that is not prepared yet has, for its narration,
+        ASK_NOT_READY."""
         paragraph, pid = self.paragraphs[number - 1], f"{self.id}:{number}"
         extra = {"type": "heading"} if paragraph.get("type") == "heading" else {}
         if self.kind != "paper":
@@ -12026,7 +12409,8 @@ class AskDocument:
             return [{"kind": self.kind, "id": pid, "label": ASK_LABELS[self.kind], "text": text, **extra}]
         visual = paragraph.get("type") in ASK_VISUALS
         narration = {"kind": "narration", "id": pid, "label": "Hilde's description" if visual else "Hilde's narration",
-                     "text": str(paragraph.get("text") or ASK_NOT_NARRATED), **extra}
+                     "text": ASK_NOT_READY if paragraph.get("pending") else str(paragraph.get("text") or ASK_NOT_NARRATED),
+                     **extra}
         paper = self.paper(number)
         if version == "narration" or not paper:
             return [narration]
@@ -12036,7 +12420,8 @@ class AskDocument:
 
 def ask_book_document(book, record, passages):
     """The open book as a document: its narration's passages, ¶N being <id>:N."""
-    return AskDocument(document_id(book), "paper", record.get("title") or book, passages)
+    return AskDocument(document_id(book), "paper", record.get("title") or book, passages,
+                       making=record.get("making") is True)
 
 
 _HELP_CACHE = {}
@@ -12577,6 +12962,14 @@ Answer a question about Hilde Reader only from what you have read there, in that
 An answer from the developer docs or the code begins "From the developer docs, not the help:" or "From the code, not the help:" and links each place it used with that piece's Link, copied exactly, as a Markdown link; never make up a link or line numbers. A piece whose Link is none is the running code, which no published commit shows: say it is from the running code and give no link."""
 
 
+# Said of the open document while its book is being made (AskDocument.making).
+ASK_MAKING_NOTE = (
+    "\nHilde is still making this document into an audiobook: the paper's own text is all there, while its "
+    "narration, descriptions, and summaries arrive part by part; a part not prepared yet says \"Not ready yet\" "
+    "for them."
+)
+
+
 def ask_system_prompt(document, abstract, help_document, web=False):
     """Hilde's instructions: what stays the same for every book first (so a
     server's prompt cache serves it to every conversation), then the help's
@@ -12606,7 +12999,7 @@ You can write Markdown files the listener downloads, such as a summary or the co
 The help's sections:
 {ask_help_contents(help_document) or "(none)"}
 
-The open document: "{document.title}", document id {doc}, paragraphs {doc}:1 to {doc}:{len(document.paragraphs)}.
+The open document: "{document.title}", document id {doc}, paragraphs {doc}:1 to {doc}:{len(document.paragraphs)}.{ASK_MAKING_NOTE if document.making else ""}
 {what} ({span}):
 {abstract['text']}"""
 
@@ -14327,11 +14720,13 @@ class ChatTurn:
 
     def save(self, path, entries):
         """chat.json: the entries, and the context state (ask_state()) of the
-        conversation as this turn last sent it, or as the file had it."""
+        conversation as this turn last sent it, or as the file had it. A book
+        being made keeps it in its job's stage, readable only by this user."""
         context = getattr(self, "context", None)
         if context is None:
             context = read_chat_context(path)
-        write_json_atomic(path / BOOK_CHAT_FILE, {"schema": 1, "book": self.book, "entries": entries, "context": context})
+        write = write_private_json if making_job(self.book) is not None else write_json_atomic
+        write(path / BOOK_CHAT_FILE, {"schema": 1, "book": self.book, "entries": entries, "context": context})
 
     def keep(self, path, entries, entry):
         """Save an entry and publish it in one step under the lock that
@@ -14350,8 +14745,9 @@ class ChatTurn:
         return document_id(self.book)
 
     def conversation_path(self):
-        """The folder whose chat.json keeps this conversation: the book's."""
-        return read_book(self.storage, self.book)[0]
+        """The folder whose chat.json keeps this conversation: the book's, or
+        the stage of a book being made (chat_folder())."""
+        return chat_folder(self.storage, self.book)
 
     def begin(self):
         """Load the book and keep the listener's message, with the manifest
@@ -14569,9 +14965,12 @@ def help_chat_path(storage):
 def chat_key(book, help_mode=False):
     """A conversation's key in ChatRegistry and the routes: a book's id, or
     HELP_DOCUMENT for the help conversation, reached only by the explicit
-    help flag (never a book named so)."""
+    help flag (never a book named so). A book being made that is published
+    by now is its book (making_published())."""
     book = str(book or "")
-    return HELP_DOCUMENT if help_mode else "" if book == HELP_DOCUMENT else book
+    if help_mode:
+        return HELP_DOCUMENT
+    return "" if book == HELP_DOCUMENT else making_published(book) or book
 
 
 class HelpTurn(ChatTurn):
@@ -14669,12 +15068,18 @@ def chat_display_entry(entry, document=""):
 CHAT_STOP_WAIT = 3
 
 
+# Why a question waits while its book being made is published or deleted.
+CHAT_HELD = "Hilde is finishing this book; ask again in a moment."
+
+
 class ChatRegistry:
     """The turn each book is answering, if any: one at a time per book."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.turns = {}
+        # Conversations that take no new question for now (hold()).
+        self.held = set()
 
     def current(self, book):
         with self.lock:
@@ -14684,12 +15089,15 @@ class ChatRegistry:
         """Begin the turn and run it on its own thread; False while the book
         is still answering another. An answer already stopped (Stop, or the
         listener changing the model) never holds the next message back: it
-        is given CHAT_STOP_WAIT seconds to keep what it wrote, then set aside."""
+        is given CHAT_STOP_WAIT seconds to keep what it wrote, then set aside.
+        A held conversation (hold()) raises ChatUnavailable(CHAT_HELD)."""
         running = self.current(turn.book)
         if running is not None and not running.done and running.stop_requested.is_set():
             if not running.wait_done(CHAT_STOP_WAIT):
                 running.set_aside()
         with self.lock:
+            if turn.book in self.held:
+                raise ChatUnavailable(CHAT_HELD)
             running = self.turns.get(turn.book)
             if running is not None and not running.done:
                 return False
@@ -14697,6 +15105,27 @@ class ChatRegistry:
             self.turns[turn.book] = turn
         threading.Thread(target=turn.run, name=f"chat-{turn.book}", daemon=True).start()
         return True
+
+    @contextlib.contextmanager
+    def hold(self, book, wait):
+        """While the block runs, the book's conversation takes no new
+        question, and the answer it was writing has ended: given `wait`
+        seconds to end by itself, then stopped (what it wrote kept, marked
+        stopped) and, if still waiting on its model after CHAT_STOP_WAIT,
+        set aside, so nothing it does later is written. A book being made
+        is held while it is published or deleted."""
+        with self.lock:
+            self.held.add(book)
+        try:
+            turn = self.current(book)
+            if turn is not None and not turn.done and not turn.wait_done(wait):
+                turn.stop()
+                if not turn.wait_done(CHAT_STOP_WAIT):
+                    turn.set_aside()
+            yield
+        finally:
+            with self.lock:
+                self.held.discard(book)
 
     def stop(self, book, turn_id=""):
         """Stop the book's running turn; with `turn_id`, only that turn, so a
@@ -14711,7 +15140,7 @@ class ChatRegistry:
 def chat_payload(storage, chats, book, search_server=""):
     """What the page shows for a book's chat; `web_search` says whether
     Chat may search the web (the server's --search-server)."""
-    path, record = read_book(storage, book)
+    path = chat_folder(storage, book)
     try:
         _, _, passages = chat_book(storage, book)
         problem = ""
@@ -15835,6 +16264,38 @@ class JobQueue:
             run.stop()
         return result
 
+    def wait_stopped(self, job_id, timeout):
+        """Whether the job's run is not running, waiting up to `timeout`
+        seconds for a stopped one to end."""
+        with self.lock:
+            record = self.records.get(job_id)
+            run = record["run"] if record is not None and any(
+                active is record for active in self.active.values()) else None
+        return run is None or run.finished.wait(timeout)
+
+    def forget(self, job_id):
+        """Drop a stopped job's record (its book being made was deleted), so
+        nothing offers to continue it: one canceled or ended, or whose run
+        has finished even if the queue has not noted it yet."""
+        with self.lock:
+            record = self.records.get(job_id)
+            run = record["run"] if record is not None else None
+            if record is not None and (record["status"] not in self.ACTIVE_STATUSES
+                                       or (run is not None and run.finished.is_set())):
+                self.records.pop(job_id, None)
+
+    def making_state(self, job_id):
+        """A job's `status`, its run's current `phase`, and that phase's
+        last real `count` ({done, total, unit}), or None for a job this
+        server does not know."""
+        with self.lock:
+            record = self.records.get(job_id)
+            if record is None:
+                return None
+            run = record["run"]
+            return {"status": record["status"], "phase": getattr(run, "current_phase", None),
+                    "count": getattr(run, "last_count", None)}
+
     def stop_all(self):
         with self.lock:
             runs = (
@@ -16116,6 +16577,10 @@ class PaperRun(Run):
         self.total_parts = None
         # Per worker thread: the batch being asked and its model requests.
         self.batch_state = threading.local()
+        # Called once the document is converted, with the text it was read
+        # from and its paragraphs: a new book can be read and asked about from
+        # then on (AudiobookRun.mark_readable()).
+        self.on_readable = lambda source, paragraphs: None
 
     @contextlib.contextmanager
     def model_stream(self, url, headers, body):
@@ -17262,6 +17727,7 @@ class PaperRun(Run):
                 paragraphs, _ = narrated_source_paragraphs(stored.read_text(
                     encoding="utf-8" if stored.name == "document.md" else self.encoding
                 ))
+                self.on_readable(stored, paragraphs)
                 self.fidelity = adaptation_fidelity(
                     paragraphs, scratch / "paragraph-checkpoints"
                 )
@@ -17334,6 +17800,8 @@ class PaperRun(Run):
                 "out contents and reference sections"
             )
         if self.adapt:
+            # Converted: the book being made can be read and asked about now.
+            self.on_readable(source_path if input_path.suffix.lower() == ".pdf" else input_path, paragraphs)
             self.publish(
                 "log",
                 f"Adapting {len(paragraphs)} paragraphs with {self.model}, up to "
@@ -17446,6 +17914,29 @@ class AudiobookRun(Run):
         # This start's browser, and whether it is a Retry or a continue after a pause (note_start()).
         self.browser = ""
         self.resuming = False
+        # The server's ChatRegistry: a new book's conversation, asked while
+        # it was made, is held while the book is published (_make_book()).
+        self.chats = None
+
+    def mark_readable(self, source, paragraphs):
+        """A new book's document is converted: MAKING_FILE in the stage makes
+        it a book being made (making_catalog()), readable and askable as
+        making_id() until it is published. A resumed job keeps the time it
+        first became readable."""
+        marker = self.stage / MAKING_FILE
+        earlier = read_json_file(marker) or {}
+        stem = Path(self.values["document_name"]).stem
+        write_json_atomic(marker, {
+            "schema": 1,
+            "job": self.job_id,
+            "title": heading_title(paragraphs[:8], re.sub(r"[-_]+", " ", stem).strip() or stem),
+            "document": self.values["document_name"],
+            "voice": self.values["narrator"],
+            "source": Path(source).resolve().relative_to(self.stage.resolve()).as_posix(),
+            "encoding": "utf-8" if Path(source).name == "document.md" else self.values["encoding"],
+            "paragraphs_per_worker": int(self.values["paragraphs_per_worker"]),
+            "at": earlier.get("at") or round(time.time(), 3),
+        })
 
     def note(self, event, **fields):
         """Add one event to the job's model history, with the time in UTC."""
@@ -17850,6 +18341,10 @@ class AudiobookRun(Run):
             self.paper_run.stop_requested = self.stop_requested
             self.paper_run.note = self.note_paper
             self.paper_run.continued_after = continued_after
+            # A new book can be read and asked about once converted; a remade
+            # one is in the Library as it was meanwhile.
+            if self.values["book_mode"] == "create":
+                self.paper_run.on_readable = self.mark_readable
             narration_input = self.paper_run.prepare_document(extraction_dir)
             self.seconds.update(self.paper_run.seconds)
         else:
@@ -17917,10 +18412,21 @@ class AudiobookRun(Run):
                 for stage in ("reading", "adapting") if stage in self.seconds
             },
         }
-        return commit_book(
-            self.storage, record, narration, markdown, input_path,
-            self._voice_entry(timings, audio), audio, timings, read_history_lines(self.history_path),
-        )
+        # A book being made (MAKING_FILE): its conversation takes no new
+        # question while the book is published with it, and an answer being
+        # written gets MAKING_CHAT_WAIT to end first; then its old id leads to
+        # the book.
+        making = making_id(self.job_id) if (self.stage / MAKING_FILE).is_file() else None
+        held = self.chats.hold(making, MAKING_CHAT_WAIT) if making and self.chats else contextlib.nullcontext()
+        with held:
+            book = commit_book(
+                self.storage, record, narration, markdown, input_path,
+                self._voice_entry(timings, audio), audio, timings, read_history_lines(self.history_path),
+                chat=(making, self.stage) if making else None,
+            )
+            if making:
+                note_making_published(making, book)
+        return book
 
     def pump(self):
         try:
@@ -18386,9 +18892,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such voice")
             return self.send_file(str(voice_preview(voice_dir)[0]), False)
         if route == "/api/library":
+            # The books, and the books being made among them by the time
+            # their documents became readable.
+            books = library_catalog(self.server.storage) + making_catalog(
+                self.server.storage, getattr(self.server, "jobs", None))
+            books.sort(key=lambda book: book["modified"], reverse=True)
             return self.reply(
                 HTTPStatus.OK,
-                {"books": library_catalog(self.server.storage)},
+                {"books": books},
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/chat":
@@ -18400,7 +18911,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route == "/api/chat/file":
             try:
-                path, _ = read_book(self.server.storage, query.get("book", [""])[0])
+                path = chat_folder(self.server.storage, query.get("book", [""])[0])
                 target = chat_file_path(path, query.get("name", [""])[0])
             except (ValueError, FileNotFoundError):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such file")
@@ -18419,12 +18930,20 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/events":
             return self.events(query.get("job", [""])[0])
         if route == "/api/reader":
+            book = query.get("book", [""])[0]
             try:
-                payload = audiobook_reader_payload(
-                    self.server.storage,
-                    query.get("book", [""])[0],
-                    query.get("voice", [""])[0] or None,
-                )
+                if making_job(book) is not None:
+                    # Published meanwhile: the page opens the book instead.
+                    if making_published(book):
+                        return self.reply(HTTPStatus.OK, {"moved": making_published(book)},
+                                          extra=(("Cache-Control", "no-store"),))
+                    payload = making_reader_payload(self.server.storage, book)
+                    stage, marker = making_stage(self.server.storage, book)
+                    payload["making"] = making_progress(self.server.jobs, stage, marker)
+                else:
+                    payload = audiobook_reader_payload(
+                        self.server.storage, book, query.get("voice", [""])[0] or None,
+                    )
             except StaleVoiceError as exc:
                 return self.fail(HTTPStatus.CONFLICT, str(exc))
             except (FileNotFoundError, OSError, UnicodeError, ValueError):
@@ -18490,10 +19009,9 @@ class Handler(BaseHTTPRequestHandler):
             # A Library card's thumbnail: the first page of the book's PDF,
             # rendered on the first request into the thumbnail cache.
             try:
-                path, record = read_book(self.server.storage, query.get("book", [""])[0])
+                pdf = book_or_making_pdf(self.server.storage, query.get("book", [""])[0])
             except (ValueError, FileNotFoundError):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
-            pdf = book_pdf(self.server.storage, path, record)
             made = book_thumbnail(self.server.storage, pdf) if pdf is not None else None
             if made is None:
                 return self.fail(HTTPStatus.NOT_FOUND, "This book has no PDF to show.")
@@ -18515,12 +19033,11 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/source-page":
             # A page of the book's PDF, 1-based.
             try:
-                path, record = read_book(self.server.storage, query.get("book", [""])[0])
+                pdf = book_or_making_pdf(self.server.storage, query.get("book", [""])[0])
                 page = int(query.get("page", [""])[0])
             except (ValueError, FileNotFoundError):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook page")
-            pdf = book_source(self.server.storage, path, record)
-            picture = source_page_png(pdf, page) if pdf is not None and pdf.suffix.lower() == ".pdf" else None
+            picture = source_page_png(pdf, page) if pdf is not None else None
             if picture is None:
                 return self.fail(HTTPStatus.NOT_FOUND, "This book's PDF has no such page.")
             return self.reply(HTTPStatus.OK, picture, "image/png", extra=(("Cache-Control", "no-cache"),))
@@ -19211,7 +19728,7 @@ class Handler(BaseHTTPRequestHandler):
             help_chat_path(self.server.storage).unlink(missing_ok=True)
             return self.reply_chat(book)
         try:
-            path, _ = read_book(self.server.storage, book)
+            path = chat_folder(self.server.storage, book)
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
         (path / BOOK_CHAT_FILE).unlink(missing_ok=True)
@@ -19270,8 +19787,13 @@ class Handler(BaseHTTPRequestHandler):
                 delete_voice(storage, name)
             elif kind == "document":
                 delete_document(storage, name)
+            elif making_job(name) is not None:
+                # A book being made: its job stops, and its stage goes, with the conversation.
+                delete_making(storage, getattr(self.server, "jobs", None), getattr(self.server, "chats", None), name)
             else:
                 delete_book(storage, name)
+        except RuntimeError as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
         except ValueError as exc:
             return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
         except FileNotFoundError:
@@ -19592,6 +20114,7 @@ class Handler(BaseHTTPRequestHandler):
             voice_version,
             record["id"],
         )
+        run.chats = getattr(self.server, "chats", None)
         try:
             run.prepare()
         except (OSError, RuntimeError, ValueError) as exc:
@@ -20622,7 +21145,9 @@ button#voice-search-clear:hover:not(:disabled) { background:none; color:var(--te
 .book-card:is(.is-progress, .is-playing) .book-chip {
   border-color:color-mix(in srgb, var(--accent-light) 65%, var(--card));
   background:color-mix(in srgb, var(--accent-light) 10%, var(--card)); color:var(--accent-light); }
-.book-card.is-new .book-chip { border-color:#7a7e87; color:#c9ccd2; }
+.book-card:is(.is-new, .is-making) .book-chip { border-color:#7a7e87; color:#c9ccd2; }
+/* A book being made opens to be read and asked about; it plays once it is done. */
+.book-card.is-making .book-play { display:none; }
 .book-card.is-finished .book-chip { border-color:color-mix(in srgb, var(--local) 65%, var(--card));
                                     background:color-mix(in srgb, var(--local) 10%, var(--card)); color:var(--local); }
 .book-card .book-play { grid-area:play; display:grid; place-items:center; width:46px; height:46px; min-height:0;
@@ -20778,6 +21303,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 #book-view.dock-only > :not(.reading-column), #book-view.dock-only .reading-column > :not(.player-dock),
 #book-view.dock-only .ask-hilde { display:none !important; }
 #book-view.dock-only :is(.player-dock, .dock-slot) { right:0; }
+/* A book being made: its text and Ask Hilde, no player, Follow along, or text switch (openMaking()). */
+#book-view.making :is(.listen-bar, .player-dock, .back-to-listening) { display:none !important; }
+.reader-making { margin:0; }
 .player-bar { display:grid; gap:8px; max-width:560px; margin:0 auto; padding:8px 0 12px; }
 .player-bar > * { font-size:15px; }
 .player-controls { display:flex; align-items:center; gap:12px; min-width:0; }
@@ -21957,6 +22485,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <span id="reader-meta"></span>
           </p>
           <p id="reader-download" class="note reader-download" aria-live="polite"></p>
+          <!-- A book being made (openMaking()): what can be done now, and when it plays. -->
+          <p id="reader-making" class="note reader-making hidden"></p>
           <div id="reader-models" class="book-models note hidden"></div>
           <details id="book-files" class="book-files note hidden">
             <summary id="book-files-summary"></summary>
@@ -22610,6 +23140,10 @@ let activeReaderBlock = -1, activeReaderWord = -1;
 let readerPayload = null;
 // The whole book, downloaded from the first press of play.
 let readerDownload = null;
+// A book being made, open in the reading view ("making-<job id>"): its text
+// and Ask Hilde, no audio (openMaking()); "" otherwise.
+let readerMaking = "";
+function makingBook(id) { return String(id || "").startsWith("making-"); }
 // One shared player keeps hundreds of preview buttons cheap.
 const previewAudio = new Audio();
 let previewing = "";
@@ -23194,6 +23728,12 @@ function clearReader() {
   $("reader-change-voice").classList.add("hidden");
   $("reader-source").classList.add("hidden");
   $("reader-stale").classList.add("hidden");
+  if (readerMaking) {
+    readerMaking = "";
+    $("book-view").classList.remove("making");
+    $("reader-making").classList.add("hidden");
+    fitDock();
+  }
   if ($("change-voice-dialog").open) $("change-voice-dialog").close();
   hideSelectionAsk(); hideDockAsk();
   setDetached(false);
@@ -23806,7 +24346,7 @@ function firstVisibleText() {
 // What a change of layout keeps in place: the narrated sentence while it is
 // on screen and followed, else the paragraph at the top of the text.
 function readingAnchor() {
-  if (!readerAudio) return null;
+  if (!readerAudio && !readerMaking) return null;
   const listening = listeningElement();
   if (listening && !detached && onScreen(listening))
     return { element:listening, block:activeReaderBlock, passage:passageOfBlock(activeReaderBlock),
@@ -24293,8 +24833,13 @@ function bookById(id) {
 // opens paused where this browser last left it, at the speed chosen for it.
 // From a Library card's play button (inLibrary, play) it loads with the
 // Library still shown and plays in the player bar; fromStart is Start over.
-async function openAudiobook(id, focus, voiceName, { inLibrary = false, play = false, fromStart = false } = {}) {
+// `keep` ({passage, top}) puts that passage where it was on screen instead
+// (a book being made that was just published). A book being made opens
+// without audio (openMaking()).
+async function openAudiobook(id, focus, voiceName,
+                             { inLibrary = false, play = false, fromStart = false, keep = null } = {}) {
   if (!id) return;
+  if (makingBook(id)) { openMaking(id, focus); return; }
   stopPreview();
   clearReader();
   const book = bookById(id);
@@ -24315,7 +24860,7 @@ async function openAudiobook(id, focus, voiceName, { inLibrary = false, play = f
   $("paper-bar-meta").textContent = [voice, length].filter(Boolean).join(" · ");
   // Only a book whose document is kept, or is in Documents, offers it.
   $("reader-source").classList.toggle("hidden", !(book && book.has_source));
-  if (!inLibrary) {
+  if (!inLibrary && !keep) {
     expectScrollUntil = performance.now() + 400;
     window.scrollTo(0, 0);
   }
@@ -24370,6 +24915,7 @@ async function openAudiobook(id, focus, voiceName, { inLibrary = false, play = f
       : "Sentences highlight as they're read";
     $("reader-panel").classList.remove("hidden");
     updateReaderHighlight();
+    if (keep) keepReadingPlace(keep);
   } catch (_) {
     if (readerAudio !== audio) return;
     $("reader-unavailable").textContent =
@@ -24385,6 +24931,118 @@ async function openAudiobook(id, focus, voiceName, { inLibrary = false, play = f
     pendingPlay = null;
     audio.play().catch(() => {});
   }
+}
+
+// A book being made (its card's `making`): the paper's own text and figures
+// as the server converted them, one part per ¶ as Ask Hilde cites it, and
+// Ask Hilde from the header; no player, Follow along, or text switch, since
+// there is no audio until the book is done.
+async function openMaking(id, focus) {
+  stopPreview();
+  clearReader();
+  const book = bookById(id);
+  state.player.book = id; state.player.voice = ""; state.player.in_library = false;
+  state.tab = "player";
+  readerMaking = id; makingPlace = null;
+  $("book-view").classList.add("making");
+  render(); queueSync();
+  resetChatFor(id);
+  $("reader-title").textContent = book ? book.title : "Being made";
+  $("reader-voice-name").textContent = "";
+  $("paper-bar-name").textContent = $("reader-title").textContent;
+  $("reader-making").classList.remove("hidden");
+  renderMakingNote();
+  fitDock();
+  expectScrollUntil = performance.now() + 400;
+  window.scrollTo(0, 0);
+  if (focus) $("reader-title").focus({ preventScroll:true });
+  refreshCards();
+  try {
+    const payload = await jsonRequest("/api/reader?book=" + encodeURIComponent(id));
+    if (readerMaking !== id) return;
+    if (payload.moved) { switchToMadeBook(payload.moved); return; }
+    readerPayload = payload;
+    readerBlocks = renderReaderBlocks(payload.blocks || [], new Map());
+    if (textView === "source") textView = "narration";
+    renderTextView();
+    $("reader-panel").classList.remove("hidden");
+  } catch (_) {
+    if (readerMaking !== id) return;
+    $("reader-unavailable").textContent = "The text of this book can't be shown right now.";
+    $("reader-unavailable").classList.remove("hidden");
+  }
+}
+// How far the book being made is, from its card: "Being made · 42%" (the
+// job's own count, as the progress view shows it), and what can be done now.
+function renderMakingNote() {
+  const making = (bookById(readerMaking) || {}).making;
+  const stopped = !!making && making.status === "stopped";
+  const where = making ? `${stopped ? "Stopped" : "Being made"} · ${making.percent}%` : "Being made";
+  $("reader-meta").textContent = `· ${where}`;
+  $("paper-bar-meta").textContent = where;
+  setText($("reader-making"), stopped
+    ? "Making this audiobook stopped. You can still read it and ask Hilde about it; Continue on the Progress tab "
+      + "finishes it, keeping the conversation."
+    : "Hilde is still making this audiobook. Read it and ask Hilde about it now; you can listen once it's done.");
+}
+// The same passage where it was on screen (after the reading view changed under it).
+function keepReadingPlace(keep) {
+  const element = keep.passage
+    ? $("reader-content").querySelector(`.reader-paragraph[data-passage="${keep.passage}"]`) : null;
+  if (element) scrollPageBy(element.getBoundingClientRect().top - keep.top);
+}
+// The book being made is published: the reading view becomes the book, with
+// its player, at the same place, and the panel keeps the conversation, which
+// is the book's now (the server moved it, its ¶ links with it).
+let switchingMade = false;
+async function switchToMadeBook(id) {
+  const making = readerMaking;
+  if (!making || switchingMade) return;
+  switchingMade = true;
+  try {
+    // The place in the text: where it is now, or where it was when Listen last showed it.
+    const anchor = document.querySelector("main").classList.contains("reading") ? readingAnchor() : null;
+    const keep = anchor ? { passage:anchor.passage, top:anchor.top } : makingPlace || { passage:null, top:0 };
+    await refreshMakingBooks();
+    if (readerMaking !== making) return;
+    if (chatData && chatData.book === making) chatData = { ...chatData, book:id };
+    if (chatKept.book && chatKept.book.book === making) {
+      chatKept.book.book = id;
+      if (chatKept.book.data) chatKept.book.data = { ...chatKept.book.data, book:id };
+    }
+    const opened = openAudiobook(id, false, undefined, { keep });
+    if (chatMode === "book") loadChat();
+    await opened;
+  } finally {
+    switchingMade = false;
+  }
+}
+// The Library's books again, for the books being made: their cards' counts,
+// and a book published meanwhile (the groups are drawn afresh only when the
+// books themselves change, so no card moves under the pointer).
+async function refreshMakingBooks() {
+  let answer;
+  try { answer = await jsonRequest("/api/library"); } catch (_) { return; }
+  const before = books.map((book) => book.id).join("\n");
+  books = (answer.books || []).map((book) => ({...book, words: searchWords(book.title)}));
+  renderLibrary(books.map((book) => book.id).join("\n") !== before);
+  if (readerMaking) renderMakingNote();
+}
+// Each job poll: an open book being made becomes the book once its job is
+// done; while Listen shows a book being made, the cards follow its job.
+let makingPlace = null;
+function followMaking() {
+  if (readerMaking && document.querySelector("main").classList.contains("reading")) {
+    const anchor = readingAnchor();
+    if (anchor) makingPlace = { passage:anchor.passage, top:anchor.top };
+  }
+  if (!state || state.tab !== "player" || settingsOpen) return;
+  if (readerMaking) {
+    const job = readerMaking.slice("making-".length);
+    const made = recent.find((entry) => entry.id === job && entry.status === "done" && entry.book);
+    if (made) { switchToMadeBook(made.book); return; }
+  }
+  if (readerMaking || books.some((book) => book.making)) refreshMakingBooks();
 }
 
 // The voice picker lists the voices that read the book's current text; a
@@ -24762,13 +25420,16 @@ function openFigure(number) {
   page.classList.toggle("hidden", !figure.page);
   page.onclick = () => openSourcePage(figure.page);
   const description = $("figure-description");
-  description.replaceChildren(...[...$("reader-content")
+  // A book being made has no description yet; the text beside it is the paper's.
+  description.replaceChildren(...(readerMaking ? [Object.assign(document.createElement("p"), {
+    textContent:"Not ready yet: this book is still being made.",
+  })] : [...$("reader-content")
     .querySelectorAll(`.reader-paragraph[data-passage="${number}"] > :is(p, h1, h2, h3, h4, h5, h6):not(.reader-label)`)]
     .map((element) => {
       const text = document.createElement("p");
       text.textContent = element.textContent.trim();
       return text;
-    }));
+    })));
   setPanel(true, "figure");
   $("figure-scroll").scrollTop = 0;
   setDetached(true);
@@ -25631,7 +26292,8 @@ function focusControls(focus) {
   listen.textContent = "Listen from here";
   listen.title = "Move the book to the start of this text";
   listen.addEventListener("click", listenFromFocus);
-  row.append(scopes, listen);
+  // A book being made has nothing to listen from yet.
+  row.append(scopes, ...(readerMaking ? [] : [listen]));
   return row;
 }
 // A selection longer than one message can attach (the server's HTTP 413):
@@ -26014,9 +26676,17 @@ async function refreshLibrary(restore) {
       || {}).name || legacy.voice;
     queueSync();
   }
+  // A book being made that was published while no page was open: its job
+  // names the book it became.
+  if (!bookById(state.player.book) && state.player.book.startsWith("making-")) {
+    const job = recent.find((item) => `making-${item.id}` === state.player.book);
+    if (job && job.status === "done" && job.book && bookById(job.book)) {
+      state.player.book = job.book; state.player.voice = ""; queueSync();
+    }
+  }
   if (!bookById(state.player.book)) {
     state.player.book = ""; state.player.voice = ""; render(); queueSync();
-  } else if (state.tab === "player" && !readerAudio) {
+  } else if (state.tab === "player" && !readerAudio && !readerMaking) {
     openAudiobook(state.player.book, false, undefined, { inLibrary:state.player.in_library });
   }
 }
@@ -26095,7 +26765,9 @@ function cell(className, label) {
 // voice no longer reads the book). Finished: it reached the end (`finished`,
 // written as its audio ended). Else in progress: the share heard of that
 // voice's length (1-99%) and when it was last heard (`played`, Unix ms).
+// A book being made (`making`) is "making", with its job's percent.
 function bookStatus(book, place) {
+  if (book.making) return { kind:"making", percent:book.making.percent, voice:null, played:0 };
   const voice = book.voices.find((item) => item.name === place.voice && item.status === "ready") || null;
   const time = Number(place.time), played = Number(place.played) || 0;
   if (voice && place.finished === true) return { kind:"finished", percent:100, voice, played };
@@ -26115,7 +26787,9 @@ const PAGE_ICON = '<svg class="page-icon" viewBox="0 0 56 72" aria-hidden="true"
 // A book's card: its thumbnail, title, "voice · length · PDF", the bar while
 // in progress, the status chip, the round play button, and ⋯. The title is
 // the card's one Tab stop (Enter opens the book, Space plays or pauses it); a
-// click anywhere else on the card opens it too.
+// click anywhere else on the card opens it too. A book being made says
+// "Being made · N%" (or "Stopped · N%"), has no play button, and opens to
+// be read and asked about.
 function bookCard(book) {
   let card = bookCards.get(book.id);
   if (card) { card.book = book; return card; }
@@ -26160,13 +26834,14 @@ function updateCard(card, book, status) {
   card.dataset.book = book.id;
   card.dataset.status = status.kind;
   const open = card.querySelector(".book-open");
-  open.setAttribute("aria-label", `Listen to ${book.title}`);
+  open.setAttribute("aria-label", book.making ? `Read ${book.title}, being made` : `Listen to ${book.title}`);
   open.title = book.title;
   setText(card.querySelector(".book-name"), book.title);
   const voice = status.voice || book.voices.find((item) => item.name === book.voice) || null;
   const type = documentType(book.source);
   const line = card.querySelector(".book-line");
-  line.replaceChildren(`${voice ? voice.name : book.voice} · ${formatDuration(voice ? voice.duration : book.duration)}`);
+  line.replaceChildren(book.making ? book.voice
+    : `${voice ? voice.name : book.voice} · ${formatDuration(voice ? voice.duration : book.duration)}`);
   // The phone leaves out the document's type.
   if (type) {
     const part = document.createElement("span");
@@ -26174,6 +26849,7 @@ function updateCard(card, book, status) {
     line.append(part);
   }
   setText(card.querySelector(".book-chip"), playing ? `Playing · ${percent}%`
+    : kind === "making" ? `${book.making.status === "stopped" ? "Stopped" : "Being made"} · ${percent}%`
     : kind === "progress" ? `${percent}% listened` : kind === "finished" ? "✓ Finished" : "New");
   const bar = card.querySelector(".book-bar");
   bar.classList.toggle("hidden", !(kind === "progress" || playing && status.kind !== "finished"));
@@ -26203,7 +26879,7 @@ function updateCard(card, book, status) {
 }
 function bookMenu(book) {
   const items = [];
-  if (bookStatus(book, bookPlace(book.id)).kind === "progress")
+  if (!book.making && bookStatus(book, bookPlace(book.id)).kind === "progress")
     items.push({ label:"Start over", run:() => playFromLibrary(book, true) });
   items.push({ label:"Delete…", run:(button) => deleteBook(book, button) });
   return items;
@@ -26227,6 +26903,8 @@ function openFromLibrary(book) {
 // bar plays it under the Library. Another book stops the one playing; Start
 // over plays from the beginning.
 function playFromLibrary(book, fromStart = false) {
+  // A book being made has no audio yet: Space on its card opens it.
+  if (book.making) { openFromLibrary(book); return; }
   if (loadedBook(book.id)) {
     if (!fromStart) { togglePlayback(); return; }
     readerAudio.currentTime = 0;
@@ -26692,8 +27370,14 @@ async function renameVoice(name, button) {
     button.disabled = false;
   }
 }
+// A book being made: its job stops, and what it prepared and the
+// conversation about it go with it.
 async function deleteBook(book, button) {
-  const answer = await deleteAsset("audiobooks", book.id, {
+  const answer = await deleteAsset("audiobooks", book.id, book.making ? {
+    title:`Delete '${book.title}' while it is being made?`,
+    text:"Hilde stops making it. The text prepared so far, its notes, and its conversation are removed for good. "
+      + "Your documents are not touched.",
+  } : {
     title:`Delete audiobook '${book.title}'?`,
     text:"Every voice of it, its text, its notes, and its conversation are removed for good. "
       + "Your documents are not touched.",
@@ -29069,6 +29753,7 @@ async function refreshJobs() {
     jobs = current.queue || []; runs = current.runs || [];
     consumers = current.consumers || []; recent = current.recent || [];
     configuration = current.configuration || configuration;
+    followMaking();
     const followed = runs.find(
       (item) => item.active && runKey(item) === followedRunKey
     );
@@ -29148,7 +29833,7 @@ function setTab(tab) {
   if (tab === "voice") { renderVoiceTable(); refreshVoices(); }
   if (tab === "player") {
     refreshLibrary();
-    if (state.player.book && !readerAudio)
+    if (state.player.book && !readerAudio && !readerMaking)
       openAudiobook(state.player.book, false, undefined, { inLibrary:state.player.in_library });
   }
   render(); sync();

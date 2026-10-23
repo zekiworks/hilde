@@ -10430,7 +10430,8 @@ console.log(JSON.stringify([first, liveCitations("{ASK_DOC}:4")]));
         shipped = web.ask_help()
         self.assertGreaterEqual(len(shipped.paragraphs), 8)
         self.assertLess(web.ask_tokens(web.ask_help_contents(shipped)), 250)
-        self.assertLess(sum(len(section["text"].split()) for section in shipped.paragraphs), 1_600)
+        # Under about 1,650 words (Can, 23 Oct: room for asking while a book is being made).
+        self.assertLess(sum(len(section["text"].split()) for section in shipped.paragraphs), 1_650)
         self.assertNotIn("checked:", json.dumps(shipped.paragraphs))
         self.assertEqual(web.ask_help(Path(self.storage.root) / "missing.md").paragraphs, [])
 
@@ -13004,6 +13005,239 @@ console.log(JSON.stringify([
   askModeFor({ tab: "progress", book: "", inLibrary: false, settings: false }),
 ]));""")
         self.assertEqual(results, ["book", "help", "help", "help", "help", "help", "help"])
+
+
+MAKING_TEXT = (
+    "# A Making Paper\n\nStorms come from warm seas and the paper measures them.\n\n"
+    "Dams hold rivers back, the paper says, at some cost.\n\n"
+    "Rivers carry silt to the sea over many years.\n\n"
+    "Lakes keep the water that rivers bring in winter."
+)
+
+
+def making_stage(storage, job="b" * 64, text=MAKING_TEXT, per_worker=2):
+    """A job's stage the way a new book's job leaves it once its document is
+    converted: the source, its assets record, and MAKING_FILE."""
+    stage = storage.in_progress / job
+    (stage / "source").mkdir(parents=True)
+    (stage / "source" / "document.md").write_text(text, encoding="utf-8")
+    web.write_json_atomic(stage / "assets.json", {"schema": 2, "source_name": "document.md"})
+    web.write_json_atomic(stage / web.MAKING_FILE, {
+        "schema": 1, "job": job, "title": "A Making Paper", "document": "paper.md", "voice": "Mimir",
+        "source": "source/document.md", "encoding": "utf-8", "paragraphs_per_worker": per_worker, "at": 1.0,
+    })
+    return stage, web.making_id(job)
+
+
+def making_batches(text=MAKING_TEXT, per_worker=2):
+    return web.paper_batches(web.narrated_source_paragraphs(text)[0], per_worker)
+
+
+def write_batch(stage, start, end, narration, summary, tags=("tag",)):
+    """One batch's checkpoint, as PaperRun writes it once the model answered."""
+    web.write_json_atomic(stage / "extraction" / "paragraph-checkpoints" / f"{start:06d}-{end:06d}.json",
+                          {"end": end, "narration": narration, "summary": summary, "tags": list(tags),
+                           "model": "lm-studio/fake"})
+
+
+class AskWhileMakingTests(unittest.TestCase):
+    """A new book can be read and asked about once its document is converted;
+    its conversation is kept with the job and published with the book."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+
+    def test_ids_and_where_a_book_being_made_keeps_its_conversation(self):
+        stage, making = making_stage(self.storage)
+        self.assertEqual(web.making_job(making), "b" * 64)
+        for other in ("a-paper--" + "a" * 12, "making-" + "b" * 63, "making-../x", "", None):
+            self.assertIsNone(web.making_job(other))
+        self.assertIsNone(web.BOOK_ID_PATTERN.fullmatch(making))
+        self.assertEqual(web.chat_folder(self.storage, making), stage)
+        book = store_book(self.storage, narration=chat_narration("S."))
+        self.assertEqual(web.chat_folder(self.storage, book), self.storage.audiobooks / book)
+        with self.assertRaises(FileNotFoundError):
+            web.chat_folder(self.storage, web.making_id("c" * 64))
+        # The question goes into the stage, readable only by this user.
+        turn = web.ChatTurn(self.storage, making, "What is this?", "lm-studio/fake", [])
+        turn.begin()
+        self.assertEqual([entry["text"] for entry in web.read_chat(stage)], ["What is this?"])
+        self.assertEqual(stat.S_IMODE((stage / "chat.json").stat().st_mode), 0o600)
+        self.assertEqual(json.loads((stage / "chat.json").read_text())["book"], making)
+        self.assertFalse(any(self.storage.audiobooks.glob("*/chat.json")))
+
+    def test_passages_arrive_as_batches_are_written(self):
+        stage, making = making_stage(self.storage)
+        batches = making_batches()
+        self.assertGreater(len(batches), 2)
+        _, record, passages = web.chat_book(self.storage, making)
+        self.assertEqual((record["title"], record["making"]), ("A Making Paper", True))
+        self.assertEqual(len(passages), len(batches))
+        self.assertTrue(all(passage["pending"] for passage in passages))
+        document = web.ask_book_document(making, record, passages)
+        self.assertTrue(document.making)
+        number = next(index for index, passage in enumerate(passages, 1) if "Dams" in passage["original_text"])
+        pid = f"{document.id}:{number}"
+        # The paper's text is there at once; Hilde's narration is not ready, and says so.
+        self.assertEqual(document.items(number), [
+            {"kind": "paper", "id": pid, "label": "From the paper", "text": web.ask_paper_text(passages[number - 1])}])
+        self.assertIn("Dams hold rivers back", document.items(number)[0]["text"])
+        self.assertEqual(document.items(number, "narration"), [
+            {"kind": "narration", "id": pid, "label": "Hilde's narration", "text": web.ASK_NOT_READY}])
+        self.assertEqual(document.summary(number), web.ASK_NOT_READY_SUMMARY)
+        self.assertIn("No paragraph", web.search_document(document, "zebrafinch")[0][0]["text"])
+        self.assertIn("still making this document", web.ask_system_prompt(
+            document, web.chat_abstract(passages), web.AskDocument("help", "help", "Help", [])))
+        # Its batch is written: narration, summary, and tags come with it.
+        start, end = batches[number - 1]
+        write_batch(stage, start, end, "Dams hold rivers back.", "Zebrafinch dams and their cost.")
+        _, _, passages = web.chat_book(self.storage, making)
+        document = web.ask_book_document(making, record, passages)
+        self.assertNotIn("pending", passages[number - 1])
+        self.assertEqual(document.items(number, "narration")[0]["text"], "Dams hold rivers back.")
+        self.assertEqual([item.get("id") for item in web.search_document(document, "zebrafinch")[0]], [pid])
+        self.assertEqual(sum(1 for passage in passages if passage.get("pending")), len(batches) - 1)
+        # A finished book's prompt never says it is being made.
+        book = store_book(self.storage, narration=chat_narration("S."))
+        _, book_record, book_passages = web.chat_book(self.storage, book)
+        self.assertNotIn("still making", web.ask_system_prompt(
+            web.ask_book_document(book, book_record, book_passages), web.chat_abstract(book_passages),
+            web.AskDocument("help", "help", "Help", [])))
+
+    def test_library_card_and_reading_view_while_being_made(self):
+        stage, making = making_stage(self.storage)
+        batches = making_batches()
+        write_batch(stage, *batches[0], "Heading.", "The title.")
+        [card] = web.making_catalog(self.storage)
+        self.assertEqual({key: card[key] for key in ("id", "title", "source", "voice", "voices", "has_text")},
+                         {"id": making, "title": "A Making Paper", "source": "paper.md", "voice": "Mimir",
+                          "voices": [], "has_text": False})
+        # No job on this server: stopped, at the share of its parts prepared.
+        self.assertEqual(card["making"], {"job": "b" * 64, "status": "stopped", "phase": "",
+                                          "percent": 100 // len(batches)})
+        payload = web.making_reader_payload(self.storage, making)
+        self.assertEqual(len(payload["blocks"]), len(batches))
+        self.assertEqual(payload["block_passages"], list(range(1, len(batches) + 1)))
+        self.assertEqual((payload["cues"], payload["voices"], payload["originals"]), ([], [], []))
+        self.assertIn("Dams hold rivers back", " ".join(block["html"] for block in payload["blocks"]))
+        # A job that is running says so, with its own count.
+        jobs = mock.Mock()
+        jobs.making_state.return_value = {"status": "running", "phase": "extraction",
+                                          "count": {"done": 3, "total": 4, "unit": "paragraph"}}
+        self.assertEqual(web.making_catalog(self.storage, jobs)[0]["making"]["percent"], 75)
+        # Published: it is the book now, never listed twice.
+        web.note_making_published(making, "a-making-paper--" + "b" * 12)
+        self.addCleanup(web._MAKING_PUBLISHED.pop, making, None)
+        self.assertEqual(web.making_catalog(self.storage), [])
+        self.assertEqual(web.chat_key(making), "a-making-paper--" + "b" * 12)
+
+    def test_a_job_marks_its_book_readable_once_converted(self):
+        job = "d" * 64
+        stage = self.storage.in_progress / job
+        (stage / "extraction").mkdir(parents=True)
+        (stage / "extraction" / "document.md").write_text(MAKING_TEXT)
+        run = web.AudiobookRun({"document_name": "my-paper.pdf", "narrator": "Mimir", "encoding": "utf-8",
+                                "paragraphs_per_worker": "2"}, self.storage, "e" * 64, "f" * 64, job)
+        run.mark_readable(stage / "extraction" / "document.md", web.narrated_source_paragraphs(MAKING_TEXT)[0])
+        marker = json.loads((stage / web.MAKING_FILE).read_text())
+        self.assertEqual({key: marker[key] for key in ("title", "document", "voice", "source", "encoding",
+                                                       "paragraphs_per_worker")},
+                         {"title": "A Making Paper", "document": "my-paper.pdf", "voice": "Mimir",
+                          "source": "extraction/document.md", "encoding": "utf-8", "paragraphs_per_worker": 2})
+        # A resumed job keeps when it first became readable.
+        first = marker["at"]
+        run.mark_readable(stage / "extraction" / "document.md", [])
+        self.assertEqual(json.loads((stage / web.MAKING_FILE).read_text())["at"], first)
+        self.assertEqual(json.loads((stage / web.MAKING_FILE).read_text())["title"], "my paper")
+
+    def test_the_conversation_moves_into_the_book_with_its_ids(self):
+        making, book = web.making_id("b" * 64), "a-making-paper--" + "b" * 12
+        before, after = web.document_id(making), web.document_id(book)
+        job = {"schema": 1, "book": making, "entries": [
+            {"role": "user", "text": "What about dams?"},
+            {"role": "assistant", "text": "", "calls": [
+                {"id": "c", "name": "read_paragraphs", "arguments": f'{{"ids": ["{before}:3"]}}'}]},
+            {"role": "tool", "id": "c", "name": "read_paragraphs", "label": "Read ¶3",
+             "items": [{"kind": "paper", "id": f"{before}:3", "text": "Dams."}]},
+            {"role": "assistant", "text": f"Dams hold rivers ({before}:3).", "ids": [f"{before}:3"], "links": []},
+        ], "context": {"expired": ["2.0"], "dropped": 0, "last": {"model": "lm-studio/fake", "at": 5.0}}}
+        alone = web.making_chat_for_book(None, job, making, book)
+        self.assertEqual(alone["book"], book)
+        self.assertNotIn(before, json.dumps(alone))
+        self.assertEqual(alone["entries"][3]["text"], f"Dams hold rivers ({after}:3).")
+        self.assertEqual(alone["entries"][1]["calls"][0]["arguments"], f'{{"ids": ["{after}:3"]}}')
+        self.assertEqual(alone["context"]["expired"], ["2.0"])
+        # A book that already has a conversation keeps it first; the job's follows.
+        earlier = {"schema": 1, "entries": [{"role": "user", "text": "Old question"},
+                                            {"role": "assistant", "text": "Old answer."}],
+                   "context": {"expired": ["1.0"], "dropped": 1, "last": {"model": "x", "at": 1.0}}}
+        merged = web.making_chat_for_book(earlier, job, making, book)
+        self.assertEqual([entry.get("text") for entry in merged["entries"]][:3],
+                         ["Old question", "Old answer.", "What about dams?"])
+        self.assertEqual(len(merged["entries"]), 6)
+        self.assertEqual(merged["context"], {"expired": ["1.0", "4.0"], "dropped": 1,
+                                             "last": {"model": "lm-studio/fake", "at": 5.0}})
+
+    def test_publishing_brings_the_conversation_and_files_into_the_book(self):
+        stage, making = making_stage(self.storage, job="a" * 64)
+        doc = web.document_id(making)
+        web.write_private_json(stage / "chat.json", {"schema": 1, "book": making, "entries": [
+            {"role": "user", "text": "Q?"}, {"role": "assistant", "text": f"A ({doc}:1)."}]})
+        (stage / "files").mkdir()
+        (stage / "files" / "notes.md").write_text("# Asked while made\n")
+        book = store_book(self.storage, narration=chat_narration("S."), source_sha256="a" * 64)
+        # Without a conversation of its own, the job's becomes the book's.
+        self.assertFalse((self.storage.audiobooks / book / "chat.json").exists())
+        path = self.storage.audiobooks / book
+        (path / "files").mkdir()
+        (path / "files" / "notes.md").write_text("# The book's own\n")
+        web.write_json_atomic(path / "chat.json", {"schema": 1, "entries": [{"role": "user", "text": "Old?"}]})
+        staged = self.storage.in_progress / "staged.mp3"
+        sf.write(staged, np.zeros(2400, dtype=np.float32), 24000, format="MP3", subtype="MPEG_LAYER_III")
+        now = web.utc_timestamp()
+        remade = web.commit_book(
+            self.storage, {"schema": web.BOOK_SCHEMA, "source_sha256": "a" * 64, "title": "A Paper",
+                           "source_filenames": ["A Paper.pdf"], "source_file": None, "created_at": now,
+                           "updated_at": now, "chunk_max_chars": 500},
+            chat_narration("S."), "<!-- audiobook-tts:block=0 -->\n\nBody text.", None,
+            {"name": "Narrator", "created_at": now, "duration": 0.1}, staged, dict(ONE_BLOCK_TIMINGS),
+            chat=(making, stage),
+        )
+        self.assertEqual(remade, book)
+        # Remade: the book's conversation stays first, never overwritten; the job's follows, its ids the book's.
+        self.assertEqual([entry["text"] for entry in web.read_chat(path)],
+                         ["Old?", "Q?", f"A ({web.document_id(book)}:1)."])
+        self.assertEqual(stat.S_IMODE((path / "chat.json").stat().st_mode), 0o600)
+        self.assertEqual((path / "files" / "notes.md").read_text(), "# The book's own\n")
+        self.assertEqual((path / "files" / "notes (2).md").read_text(), "# Asked while made\n")
+        # The stage is the job's to remove; the conversation was copied, not moved.
+        self.assertTrue((stage / "chat.json").is_file())
+
+    def test_a_held_conversation_takes_no_question(self):
+        _, making = making_stage(self.storage)
+        chats = web.ChatRegistry()
+        with chats.hold(making, 0):
+            with self.assertRaisesRegex(web.ChatUnavailable, "finishing this book"):
+                chats.start(web.ChatTurn(self.storage, making, "Q?", "lm-studio/fake", []))
+        self.assertEqual(chats.held, set())
+
+    def test_deleting_a_book_being_made_removes_its_stage_and_conversation_only(self):
+        stage, making = making_stage(self.storage)
+        web.write_private_json(stage / "chat.json", {"schema": 1, "entries": [{"role": "user", "text": "Q?"}]})
+        other, _ = making_stage(self.storage, job="c" * 64)
+        book = store_book(self.storage, narration=chat_narration("S."))
+        web.write_json_atomic(self.storage.audiobooks / book / "chat.json", {"schema": 1, "entries": []})
+        queue = web.JobQueue()
+        web.delete_making(self.storage, queue, web.ChatRegistry(), making)
+        self.assertFalse(stage.exists())
+        self.assertTrue((other / web.MAKING_FILE).is_file())
+        self.assertTrue((self.storage.audiobooks / book / "chat.json").is_file())
+        self.assertEqual([entry["id"] for entry in web.making_catalog(self.storage)], [web.making_id("c" * 64)])
+        with self.assertRaises(FileNotFoundError):
+            web.delete_making(self.storage, queue, None, making)
 
 
 _TEST_HOME = None

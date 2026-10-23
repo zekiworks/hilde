@@ -223,12 +223,16 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │           └── timings.json
 ├── Documents/
 ├── in_progress/
+│   ├── <job id>/
+│   │   ├── making.json
+│   │   ├── chat.json
+│   │   └── files/<name>.md
 │   └── voice-drafts/
 ├── voice-tags.json
 └── workers.yaml
 ```
 
-Browser state contains only flat asset names and book ids. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser; `read_book()` accepts only an id matching `BOOK_ID_PATTERN` and `voice_folder()` only a single safe component. File-serving and AirDrop paths must resolve inside the shared root.
+Browser state contains only flat asset names and book ids. `safe_asset_name()` and `resolve_asset()` reject traversal and never accept an arbitrary filesystem path from a browser; `read_book()` accepts only an id matching `BOOK_ID_PATTERN`, `making_stage()` only `making-<64 hex>` (`MAKING_ID_PATTERN`, a book being made, never a book id), and `voice_folder()` only a single safe component. File-serving and AirDrop paths must resolve inside the shared root.
 
 `asset_catalog()` returns sorted shared voice and document names; the Listen page reads books from `GET /api/library`. Existing files are not migrated automatically when the root changes.
 
@@ -397,9 +401,14 @@ and the full hash in `book.json`.
   A file without `context`, and entries saved before these fields, load as
   they are; their entries are never changed, and a new question appends.
   Rebuilding the book (`commit_book()` for the same content) drops it, since
-  it cites the old text's paragraph numbers.
+  it cites the old text's paragraph numbers, unless the job brings a
+  conversation asked while the book was being made (`chat`, see
+  [Books being made](#books-being-made)): then the book's conversation stays,
+  first, and the job's follows; one never replaces the other.
 - `files/`: the Markdown files Chat wrote. `commit_book()` copies them into a
-  rebuilt book; only Chat's `delete_file` removes one.
+  rebuilt book, and those Chat wrote while the book was being made beside them
+  (`copy_new_files()`: a name the book has already goes in as "<name> (2).md");
+  only Chat's `delete_file` removes one.
 
 `commit_book()` publishes a book with one voice: it writes everything into a
 hidden `Audiobooks/.build-<random>` folder, `book.json` last, and
@@ -438,7 +447,9 @@ first served (`release_migration_backup()`). The empty `.versions` and
   and a title longer than `BOOK_DOWNLOAD_TITLE_CHARS` (120) is cut at a word; a
   book without a title uses its document's stem. A non-ASCII name goes in
   `filename*` (RFC 5987) with an ASCII `filename` fallback (`send_file()`).
-- Unfinished workflow: `in_progress/<job-id>/`.
+- Unfinished workflow: `in_progress/<job-id>/`; a new book's job adds
+  `making.json` once its document is converted, and `chat.json` (0600) and
+  `files/` once it is asked about (see [Books being made](#books-being-made)).
 - Voice draft: `in_progress/voice-drafts/<id>/`, a clip **Generate preview**
   made that **Save voice** stores under a voice name. Only the newest ten
   drafts are kept.
@@ -468,7 +479,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, New voice's `tags` (`stored_voice_tags()`: the valid ones, once each, at most 12, in vocabulary order) and `details` (More details), reference WAV subtype. `values_of()` composes `instruct` from them (`compose_voice_instruct()`), and `derived()` returns it as `voice_instruct`;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `player`: the book open on Listen, the voice playing, so a refresh reopens them, `in_library`, whether that book plays from the Library (loaded, with the Library shown and of the book's view only the player bar; true only when stored as `true`), `chat_model`, the model chosen for Ask Hilde, and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
+- `player`: the book open on Listen (or a book being made, `making-<job id>`, which opens without audio; see [Books being made](#books-being-made)), the voice playing, so a refresh reopens them, `in_library`, whether that book plays from the Library (loaded, with the Library shown and of the book's view only the player bar; true only when stored as `true`), `chat_model`, the model chosen for Ask Hilde (this browser's, apart from the book's model), and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
 
@@ -803,6 +814,114 @@ leaves the stage; success publishes the book or voice, then removes the stage.
 A finished run's `done` event carries `book`, `voice`, and `title`.
 
 `AudiobookRun.stop()` signals document workers, terminates converter children, cuts off in-flight model requests, stops the narration child, and closes the run with code 130. Restarting with the same assets/settings resumes from the durable state.
+
+### Books being made
+
+A new book (`book_mode` `create`, adapted) can be read and asked about from the
+moment its document is converted, the job's first step, while preparation and
+narration go on; it plays only once published. Conversion is quick: about
+0.8–1 s a page, CPU only (pymupdf4llm and RapidOCR on onnxruntime's CPU
+provider, one child per page), so a 15-page paper is readable about 15 s after
+the job starts.
+
+**States.** A job's stage is *readable* once `PaperRun.prepare_document()`
+has its paragraphs (after `convert_pdf()` for a PDF, at once for text, and on
+every resume, a completed extraction included): it calls `on_readable`, which
+for a new book is `AudiobookRun.mark_readable()`, writing `making.json`
+(`MAKING_FILE`: `job`, `title` (`heading_title()` of the first paragraphs,
+else the document's stem), `document`, `voice`, `source` (the converted text,
+relative to the stage: `extraction/document.md` or `source/document.<ext>`),
+`encoding`, `paragraphs_per_worker`, and `at`, when it first became readable,
+kept on resume). From then until it is published it is a *book being made*
+with the id `making-<job id>` (`making_id()`, `MAKING_ID_PATTERN`; never a
+`BOOK_ID_PATTERN` id). A remake (`recreate`) or a new voice writes no marker:
+its book is in the Library as it was. A stage whose converted text is gone
+(another identity cleared it) is not listed until converted again.
+
+**Its document.** `_making_document()` reads the converted text as the job
+does (`narrated_source_paragraphs()`, the recorded pages, `_layout_kinds()`)
+and plans its batches with `paper_batches()` and the job's
+`paragraphs_per_worker`: one passage per batch, made by the same
+`_narration_passage()` as `narration.json`, so ¶N and `<id>:N` are the
+numbers the published book gives the same parts. Each part's reading-view
+block is the paper's own paragraphs (`_making_block()`: pictures and tables
+kept, furniture and figure labels left out, images embedded from the stage).
+It is cached by the files' size and time. `making_passages()` reads each
+batch's checkpoint (`paragraph-checkpoints/<start>-<end>.json`) on every
+call: a written one gives the part its narration (`text`), `summary`, and
+`tags`; one not written yet is `pending`, with none.
+
+**Library and reading view.** `GET /api/library` adds `making_catalog()`'s
+entries to the books, sorted together by `modified` (for a book being made,
+`at`): `voices` empty, `has_text` false, `thumbnail` from the stage's PDF,
+and `making` (`making_progress()`: `status` `running`, `queued`, or `stopped`
+(stopped, failed, canceled, or unknown to this process), `phase`, and
+`percent`, the current phase's `Run.last_count`, the progress view's count,
+else the share of batches written). A published one, or one whose job is
+`done`, is not listed. The card (`bookStatus()` kind `making`) reads
+**Being made · N%** or **Stopped · N%** in the New chip's gray, has no play
+button (Space opens it), and **⋯** holds **Delete…** alone. `openAudiobook()`
+hands a making id to `openMaking()`: no audio, `readerMaking` set,
+`#book-view.making` hiding `.listen-bar`, `.player-dock`, and Back to reading
+position, `#reader-making` saying what can be done now, and
+`making_reader_payload()` as `/api/reader`: the blocks, one per part, in
+`render_reader_original()`, `block_passages` 1…N, `passages`
+(`passage_details()`), and `figures` (`reader_figures()`, so figure cards,
+the figure view, and `/api/figure`, `/api/source-page`, and `/api/thumbnail`
+(`book_or_making_pdf()`) work from the stage's PDF); no cues, voices, or
+originals; plus `making`. The figure view says the description is not ready;
+the card's Listen from here is left out.
+
+**Ask Hilde.** Book mode on a book being made is the same engine:
+`chat_book()` gives the stage, `{title, making: true}`, and
+`making_passages()`; `chat_folder()` is the stage, so `chat.json` (written
+0600 by `write_private_json()`, never making a missing stage again) and
+`files/` live there. `AskDocument(making=True)` adds `ASK_MAKING_NOTE` after
+the open document's line of the instructions; a `pending` part's narration
+or description is `ASK_NOT_READY` (labelled "Hilde's narration" or "Hilde's
+description", never the paper), its weak-match line `ASK_NOT_READY_SUMMARY`,
+and its paper text reads as any book's, so `read_paragraphs` version
+`narration` before its batch is written says not ready, and a search finds a
+summary's words only after it. Cards, selections, figures, and ¶ links use
+the same passages.
+
+**Stop, Continue, delete.** Stop and failure keep the stage, with the
+conversation; Continue (or Create again with the same document and voice)
+resumes the same stage and keeps it. A server restart forgets the job but
+not the stage: its card stays, **Stopped**, from the share prepared.
+Deleting the card (`POST /api/audiobooks/delete` with the making id,
+`delete_making()`) holds the conversation (`ChatRegistry.hold(…, 0)`: an
+answer is stopped and set aside), cancels the job, waits up to
+`MAKING_STOP_WAIT` (30 s) for it to stop (else HTTP 409), forgets its record
+(`JobQueue.forget()`, so nothing offers to continue it), and renames the
+stage to `.trash-<random>` before removing it; no book or other conversation
+is touched.
+
+**Publish.** `_make_book()` publishes a book being made inside
+`ChatRegistry.hold(making id, MAKING_CHAT_WAIT)`: no new question starts
+(`CHAT_HELD`, HTTP 409), and an answer being written gets up to 120 s to end
+before it is stopped (kept, marked stopped). `commit_book(…, chat=(making id,
+stage))` then writes into the build folder, with the rest of the book,
+`making_chat_for_book()`: the job's entries with every `document_id(making
+id):` paragraph id and the making id turned into the book's, after the
+entries of the book's own `chat.json` when the book already has one (a book
+of the same content published meanwhile), whose context's expired keys
+(`<entry>.<n>`) move by the entries before them; it is written 0600. The
+job's `files/` go in beside the book's (`copy_new_files()`). Then
+`note_making_published()` maps the making id to the book (`making_published()`:
+`chat_key()` sends a later question to the book, `/api/reader` answers
+`{moved: <book>}`, and the catalog leaves it out). The publishing order, the
+history lines, and the stage's removal after publishing are unchanged. The
+page's job poll (`followMaking()`) sees the job `done` in `recent` and
+`switchToMadeBook()`: the passage at the top of the view and its offset
+(`readingAnchor()`) are kept, `chatData.book` becomes the book (so
+`resetChatFor()` keeps the panel), `openAudiobook(book, …, {keep})` opens it
+with its player and puts that passage back in place, and the conversation is
+loaded again from the book. A page opened after the book was published (its
+state still names `making-<job id>`) opens the book its job became
+(`refreshLibrary(true)` looks the job up in `recent`: `done`, `book`), not the
+Library. While Listen shows a book being made, each poll refreshes the cards
+(`refreshMakingBooks()`, drawn afresh only when the books change).
 
 ## Audiobook worker pool
 
@@ -3034,7 +3153,7 @@ read aloud by **Read answers aloud**.
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
-| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice's entry in `voice-tags.json` goes too. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
+| `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice's entry in `voice-tags.json` goes too. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice; a book being made (`making-<job id>`) is its job, stopped, and its stage with the text prepared so far and its conversation (`delete_making()`, see [Books being made](#books-being-made)), HTTP 409 while the job is still stopping. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were; its entry in `voice-tags.json`, if any, moves to the new name. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
@@ -3045,14 +3164,14 @@ read aloud by **Read answers aloud**.
 | `GET /api/voices/preview?name=...` | A voice's preview: `reference.wav` when its transcript is the fixed passage, else a rendered `preview.wav`, else the older reference clip. |
 | `GET /api/voices/draft?id=...` | A draft's clip, so the editor can play it before it is saved. |
 | `POST /api/voices/save` | Save the draft named by JSON `draft` as the voice named by `name`: the same samples, transcript, and prompt, replacing an existing voice and its stale `preview.wav`, then remove the draft and store JSON `tags` and `details` as the voice's confirmed tag entry. `compose_voice_instruct(tags, details)` must equal the draft's `description.txt`, else HTTP 409 and nothing is written. A missing draft returns HTTP 404; a bad name, a bad tag, or a linked voice folder returns HTTP 400. |
-| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, `has_source`, whether `book_source()` finds its document, and `thumbnail`, the SHA-256 of that document when it is a PDF (`cached_file_version()`), else `null`. |
+| `GET /api/library` | Books newest first: `id`, `title`, `source` (the first document name), `voice` (the newest ready voice), `voices` (each with `status`, `duration`, and `modified`, its audio's modification time in Unix seconds), `duration` and `modified` of the book (its newest voice), `legacy_names` (MP3 names from before book folders, so a browser's open book survives the migration), `has_text`, `has_source`, whether `book_source()` finds its document, and `thumbnail`, the SHA-256 of that document when it is a PDF (`cached_file_version()`), else `null`. Books being made are among them (`making_catalog()`, by when each became readable): `voices` empty, `duration` `null`, and `making` (`job`, `status`, `phase`, `percent`; see [Books being made](#books-being-made)). |
 | `GET /api/thumbnail?book=...&v=...` | The Library card's thumbnail: the first page of the book's PDF (`book_pdf()`) as a 160 px tall PNG, rendered on the first request into `<root>/.cache/thumbnails/<sha256>.png` (`book_thumbnail()`) and read from there after. `ETag` is the PDF's SHA-256; with `v` equal to it `Cache-Control: private, max-age=31536000, immutable`, else `no-cache`; `If-None-Match` with it answers 304. HTTP 404 for an invalid id or a book without a PDF (or one that cannot be rendered). |
 | `GET /api/audio?book=...&voice=...`, `GET /api/download?book=...&voice=...` | Serve a voice's audio with exact byte ranges, the newest ready voice when none is named; download is an attachment named `<title> - <voice>.mp3` (`book_download_name()`). `container=mp4` serves the MP3 losslessly behind a cached, exactly indexed MP4 header with a QuickTime `.mp3` sample entry, or HTTP 415 when its frames cannot be indexed. A stale voice returns HTTP 409, an invalid id HTTP 400. The first audio request of a migrated book removes its backup. |
 | `GET /api/source?book=...` | Download the book's document (`book_source()`: its own `source.<ext>`, else a document in Documents with the same content) as an attachment named after the first name it was added under, with the file's own extension. HTTP 404 when neither is found, 400 for an invalid id. |
 | `GET /api/source-page?book=...&page=N` | Page N (1-based) of the book's PDF (`book_source()`) as PNG at `SOURCE_PAGE_DPI`, cached in memory. HTTP 404 when the book has no PDF or no such page, or for an invalid id or page. |
 | `GET /api/figure?book=...&passage=N[&panel=I]` | Figure or table passage N as printed in the book's PDF: its region of the page (`figure_regions()`: the box around its crops, found by template matching in `figure_boxes()`, with the titles, labels, legends and rules printed around them, never a caption, the running text, or another figure), or with `panel` that panel's region (0-based), rendered from the PDF as PNG at `FIGURE_RENDER_DPI` (`book_figure()`), cached in memory. HTTP 404 without a PDF, for a passage that is no figure or table, for no such panel, or when a crop is not found on its page. |
 | `GET /api/certificate` | With `--https`, Hilde's certificate authority (`~/.hilde/tls/ca.pem`, never its key) as `hilde-certificate.crt`, `application/x-x509-ca-cert`, to install on a device; HTTP 404 otherwise. |
-| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). |
+| `GET /api/reader?book=...&voice=...` | Return sanitized rendered Markdown blocks with their paragraph index, plus validated sentence and optional word cues in source-audio samples for one voice, the book's voices and `has_text`, its Original view's batches, and, with its own text, `block_passages` (each block's passage number or `null`), `passages` (`{N: {type, page, section, label, caption, sources}}`), and `figures` (`{N: {label, page, composite, panels: [{block, image, position, picture}]}}`; see Reader). For a book being made (`making-<job id>`), `making_reader_payload()`: the paper's own text, one block per part, `passages` and `figures` as above, no cues or voices, and `making`; once it is published, `{moved: <book id>}`. `/api/thumbnail`, `/api/source-page`, and `/api/figure` take a book being made too, from its stage's PDF. |
 | `GET /api/paper/models` | Adaptation model catalog (`paper_model_catalog()`): the local servers' models (`local_endpoints()`, in the order of Settings › Providers), server by server, each `{provider, selector, server, endpoint (the server's name), label: "<model> · <server name>", images (`true`/`false`, or `null` while not known), image_check (`image_check_view()`: `{state: "tested"|"reported"|"checking"|"unchecked", images, override}`), loaded}` (a model two servers offer is listed once, on the first); `loaded` is `true`/`false` where the server says (`local_loaded_names()`: Ollama `/api/ps` against `/api/tags`, a server's optional `/api/v0/models` states) and `null` otherwise (a server that lists only what it serves). Each list a registered server gives is remembered (`remember_local_models()`, see Local model servers). Then the signed-in ChatGPT account's models, Claude Code's aliases once it is signed in and used (`CLAUDE_CODE_USED`), the Anthropic key's, the OpenAI API key's, and the Gemini key's (`images: true`, as `PaperRun.sees_images()` sends them figures), then the DeepSeek key's, each with `images` from its live `/models` entry's `input_modalities` (`deepseek_models()`), then the xAI sign-in's (`xai/`) and the xAI key's (`xai-api/`), each with `images` from xAI's `/language-models` (`xai_models()`). Every model has `name` (`model_name()`/`short_model_name()`: "GLM 4 9B"), `kind` (`local` or `cloud`), `badge` (`model_badge()`: "Local · <server name>", or "Cloud: <Provider> · Subscription" for `openai-codex`, `claude-code` (Anthropic), and `xai`, "Cloud: <Provider> · API key" for `openai`, `anthropic`, `gemini` (Google), `deepseek`, and `xai-api`), `size` (`model_size_text()`: "35B" from the name, or `""`), and `running: true`. `models` holds only what can be used now. `rows` (`catalog_rows()`): first the Local rows of `offline_local_rows()`: for each local server that does not answer, each model it listed when it last answered (`read_remembered_models()`) that no answering server lists, as `{kind: "local", row: "offline", selector (as when it answers), provider, name, badge ("Local · <server name>"), size, state: "server unreachable", disabled: true, endpoint (its name), server, address, images (its vision mark), note (its error), image_check}`, its images as found out before; a server that does not answer and never listed a model, one `{kind: "local", row: "not-running", label (its name), address, server, provider, note}`; then each local default model (`SERVER_DEFAULT_MODELS`) that no server lists or remembers, `{kind: "local", row: "offline", selector, provider, name, badge: "Local", size, state: "not listed by any reachable server", disabled: true, images: null}` with no `endpoint`, `server`, or `address` (no server is guessed); each selector is one row. Then each provider with no way in that is connected and lists its models (`{kind: "cloud", row: "provider", label, provider, action: "connect", note}`; `CONNECT_PROVIDER_LABELS`: `openai` "OpenAI" for both the ChatGPT sign-in and the API key, `gemini`, `anthropic` (its Connect row covers Claude Code), `deepseek`, `xai` "xAI (Grok)" for both the xAI sign-in and its key, with `problem: true` for "Sign in to xAI again" and also `refused: true` for a 403), never a made-up model. `defaults` (`default_model_entries()`): the server's default models (`SERVER_DEFAULT_MODELS`) as `{text, image}`, each `null` when unset, else `{selector, name, badge, kind, size, images, reachable}`; `first_use` (`first_use_models()`): per field `{selector, how, unreachable}`, text the default text narration model (`how: "default"`, `unreachable` while not listed), else the only model there is (`"only"`), else `""` (`"none"`); figures the default image narration model, else `"same"` (the text model). Never a fallback to another model. Also `endpoints` (each local server as Settings › Providers lists it: `{name, label (host:port), server, provider, reads_images (the models set by hand), from_flag, running, error}`), Claude Code's status line, `*_connected` flags, `openai_account` and `xai_account` (a sign-in's e-mail from its id token's claims, or `""`; nothing else of the sign-in), `xai_refused`, and per-source errors (`local_error`, naming each local server that did not answer as "<host:port>: <error>", joined by "; ", `openai_error`, `anthropic_error`, `openai_api_error`, `gemini_error`, `deepseek_error`, `xai_error`, `xai_api_error`). |
 | `POST /api/providers/local/save`, `POST /api/providers/local/remove` | Settings › Providers' local servers; both return the refreshed catalog. Save takes JSON `{original, name, address}` (`save_local_endpoint()`; the models set by hand stay while the address does): `original` empty adds a server, else changes the one of that name. A new or changed address is asked what it is (`local_server_type()`: Ollama when it answers `/api/version`, else OpenAI-compatible, which `/v1/models` must list either way; HTTP 502 otherwise); HTTP 400 for a name (1 to `LOCAL_ENDPOINT_NAME_MAX` (32) characters) or address that is invalid or already used, more than `LOCAL_ENDPOINTS_MAX` (16) servers, or a changed address of a server set at startup. Remove takes `{name}` (`remove_local_endpoint()`; 400 for an unknown name or a server set at startup). Both write `providers.yaml` (`write_providers()`); a removed server, or the old address of a moved one, loses its remembered models (`forget_local_models()`), a renamed one keeps them. Both types are called through `/v1/chat/completions`. A job refuses a local text, checking, or figure model with no server of its type ("No local server of this model's type is added: add one under Settings › Providers."). |
 | `POST /api/providers/local/images` | The provider dialog's models: `{name, model, images: "auto"|"yes"|"no"}` sets one model of the local server `name` by hand (`set_model_images()`, kept in `providers.yaml`'s `reads_images`; `auto` removes it), or `{name, check: true}` drops what was found out about all of its models (`forget_image_checks()`), which are then checked anew. Under `/api/providers/`, so only a browser that may manage; HTTP 400 for an unknown server or choice; returns the refreshed catalog. |
@@ -3071,7 +3190,7 @@ read aloud by **Read answers aloud**.
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
-| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` alone (`chat_key()`: only that flag reaches the help conversation). |
 
 Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine, or from any device when Hilde starts with --manage-from-network." (`PROVIDERS_LOCAL_ONLY`) unless `Handler.may_manage()` (loopback, or `--manage-from-network`), the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers` and `manage_workers`. `POST /api/models/defaults` follows the same rule (`DEFAULTS_LOCAL_ONLY`), and the page shows the default models read-only without `manage_providers`. `may_manage()` is the only use of `local_client()`; nothing else depends on where a browser is. With `--manage-from-network` the server prints "Providers and machines can be changed from any device that reaches this server." at startup.
@@ -3111,7 +3230,8 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Ask Hilde never sends a book's paragraph map or the paper whole: the model gets the abstract and reads paragraphs by id.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.
-- An `in_progress` stage is removed only after its book or voice is published.
+- An `in_progress` stage is removed only after its book or voice is published, or when its book being made is deleted on purpose (`delete_making()`).
+- A book being made is read only from its own stage, never from or into a book's folder, until `commit_book()` publishes it: its conversation and files stay in the stage (`chat.json` 0600) and go into the book's build folder with the rest of the book. A job's conversation never replaces a book's: it follows it. Nothing Hilde has not written yet is ever shown as written: a part not prepared is `ASK_NOT_READY`, labelled as Hilde's, never the paper's.
 - A voice's `timings.json` lives with its `audio.mp3`, and a voice whose `narration_sha256` differs from the book's is stale: its audio and reader are refused, never shown against the new text.
 - A new voice reads `narration.json` exactly as stored; no model writes a book's text again except an explicit **Recreate**.
 - Reader word cues must reference a valid rendered block and remain within the
