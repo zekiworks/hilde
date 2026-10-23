@@ -9,7 +9,9 @@ The app is called **Hilde Reader**, and so is its browser tab. The header shows
 its emblem, a copper leaf, beside the name "Hilde Reader", and under the name
 "Listen to your documents. Follow the text. Ask to understand." (smaller on a
 phone). The same leaf is the tab's icon and, when you add the page to a phone's
-home screen, the icon there, labelled "Hilde". Below the header are the tabs: **Create**,
+home screen, the icon there, labelled "Hilde". At the header's top right, on
+every page, is **Ask Hilde** (see [Ask Hilde on every page](#ask-hilde-on-every-page)).
+Below the header are the tabs: **Create**,
 **Voices**, and **Listen**, then **Progress** while there is a job to follow.
 **Listen** opens the **Library**, the list of your audiobooks, or the book you
 had open.
@@ -587,7 +589,9 @@ notes on a section. Hilde sees the book's abstract (or, without one, its
 first paragraphs), never the whole book: it searches the book and reads the
 paragraphs it needs before answering, however long the book is. It can also
 answer questions about Hilde Reader itself, from the [help](help.md), and
-says when the help doesn't cover something. A paragraph it cites shows as
+when the help does not say how something works, from the developer docs and
+the code, linking the place (see [Ask Hilde on every page](#ask-hilde-on-every-page));
+it says when none of them covers something. A paragraph it cites shows as
 ¶12, a link that scrolls the book to it (also while the answer is still
 arriving). When the server has web search (see
 [Web search for Chat](configuration.md#web-search-for-chat)), Hilde can also
@@ -950,6 +954,56 @@ This narrates the fixed passage with each such voice into its `preview.wav`
 and exits; the voices themselves are unchanged. Until then, **Voices** notes
 that their previews read an older passage. Voices made before descriptions were
 saved have none; give them tags with **Edit** to make them searchable.
+
+## Ask Hilde on every page
+
+At the top right of the header, on every page (Create, Voices, Listen and
+Settings), is **Ask Hilde**: a teal pill with Hilde's sparkle and the words,
+or, on a phone narrower than 600 px, a round 44 px button with the sparkle
+alone (still named "Ask Hilde" for screen readers). It opens the same panel as
+the player bar's **Ask Hilde** and is filled teal while the panel is open. From
+900 px the panel sits at the right under the tab row (or the lowest bar pinned
+at the top), never over the header, the tabs or **Settings**; the page under
+the tabs narrows so nothing of it hides behind the panel. Narrower, it is the
+bottom sheet described under [Listen](#listen); with a phone's keyboard open it
+takes the visible screen, so the question box and **Send** stay in view.
+
+The screen decides what the panel is for:
+
+- In a book's reading view, **book mode**: the book's chat, as described under
+  [Listen](#listen); the header button does what the player bar's does.
+- Everywhere else (Create, Voices, Settings, the Library, also while a book
+  plays from the Library), **help mode**. The header still reads **Ask
+  Hilde**; inside are the heading **Help with Hilde Reader**, the line "Ask how
+  something works in Hilde Reader. To ask about a paper, open it in Listen.",
+  and three example questions as quiet teal buttons. A click puts one in the
+  box; nothing is sent until you send it. Nothing of a book goes with a help
+  question: no card, no selection, no part playing, no title; a book playing
+  keeps playing.
+
+In help mode Hilde answers from the [help](help.md) first. When the help does
+not say how or why something works, it searches the developer docs (README,
+ARCHITECTURE and this folder), then Hilde Reader's code; such an answer begins
+"From the developer docs, not the help:" or "From the code, not the help:" and
+links the exact place on GitHub at the commit the server runs (code by its
+lines, a doc by its heading). A server running changed files, or without git,
+gives no links, and the answer says it comes from the running code. Each help
+section also ends with a **More detail** link to the matching developer doc,
+made the same way. In a book, questions about Hilde Reader reach the same help,
+docs and code. Hilde only explains: in help mode it cannot change a setting,
+start, stop or delete anything, or write a file, and a question about something
+else gets one friendly line.
+
+Help questions and answers are a conversation of their own, kept on the server
+apart from every book's chat (see [Storage](configuration.md#storage)) and
+shown as a list in the panel, like a book's. **⋯** › **New conversation** in
+help mode clears the help conversation alone; a book's chat and notes are never
+touched. Each mode keeps its panel as you left it (the conversation, what you
+typed, where you scrolled) while the other shows. An answer still arriving when
+you change screens goes on and is saved to the conversation it was asked in;
+the panel shows it when you come back. The model picker is the same in both
+modes: a model that cannot be reached stays listed, greyed, with why, and Hilde
+never switches to another by itself.
 
 ## Settings
 

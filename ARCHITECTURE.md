@@ -205,7 +205,9 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 ├── .cache/
 │   ├── thumbnails/<pdf sha256>.png
 │   ├── chat-docs/<document id>.json
+│   ├── app-index/<commit>.json
 │   └── ask-models.json
+├── help-chat/chat.json
 ├── Voices/
 ├── Audiobooks/
 │   └── <slug>--<hash12>/
@@ -2336,8 +2338,11 @@ when they start; an answer read aloud keeps its place when paused this way.
 ### Ask Hilde
 
 One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
-a source page (`#page-view`), with a tab for each one opened. On a screen
-900 px or wider it sits fixed at the right from `--panel-top` (see Reader) to the bottom, `--panel-w` wide (440 px by
+a source page (`#page-view`), with a tab for each one opened. It belongs to no
+page (it and `#panel-backdrop` are children of `main`, after the pages), so it
+opens on every screen. On a screen
+900 px or wider it sits fixed at the right from `--panel-top` (see Reader) to the bottom, `--panel-w` wide (on the
+root; 440 px by
 default, 400 to 720 by dragging its left edge or with ← and → on it, 360 at
 the least in a window under 1100 px, and at most the window less 700 px;
 `setPanelWidth()`, kept as `hilde.panelWidth`, fitted again on every resize;
@@ -2351,7 +2356,47 @@ restored on return, or the end when it was at the end), and an answer still
 arriving, which keeps streaming into the hidden conversation. Under the
 book's title, `#book-files` lists the book's `files/` as download links.
 
-**Ask Hilde**, in the player bar, is the one way in. `askHilde()` opens the
+**The header's Ask Hilde** (`#header-ask`, in `.app-header` after the brand,
+`margin-left:auto`): on every page a teal pill (the player bar button's 12%
+`--ask` tint, 65% border, `--ask` text; filled `--ask` with dark ink while
+`aria-expanded`) with the sparkle and "Ask Hilde"; under 600 px a round 44 px
+button with the sparkle alone, its `aria-label` "Ask Hilde". `headerAsk()`
+opens the panel in the screen's mode.
+
+**Help mode and book mode** (23 Oct). The screen decides
+(`askModeFor()`, `askMode()`): the Listen tab with a book open in the reading
+view (not in the Library, Settings closed) is **book mode**, everything else
+(Create, Voices, Progress, Settings, the Library, a book playing from the
+Library) **help mode**. `render()` calls `syncAskMode()`, which on a change
+keeps the leaving mode's panel in `chatKept` (`keepChat()`: `chatData`, the
+live answer, the log's nodes, the scroll, `chatAbout`, the draft, the figure
+and page tabs) and restores the other's (`restoreChat()`; a kept book panel
+only for the same book), stops the stream, bumps `chatEpoch` (so a reload or
+a send's reply for the other mode is dropped, and a sent question's draft and
+card are cleared from what that mode kept), and reloads the shown
+conversation, which brings what arrived meanwhile. Every request names the
+conversation shown: `chatScope()`, `chatQuery()` (`book=…` or `help=1`),
+`chatTarget()` (`{book}` or `{help: true}`); `stopChatTurn()` and
+`cancelChatAnswer()` take the target of the conversation they started in. In
+help mode the panel's `data-mode` is `help` and its label "Ask Hilde"; the
+header still reads **Ask Hilde** in teal; the log starts with `#help-intro`
+(`HELP_INTRO`, put first by `applyChat()` and `restoreChat()`): the heading
+"Help with Hilde Reader", "Ask how something works in Hilde Reader. To ask
+about a paper, open it in Listen.", and three `.help-example` buttons (quiet
+teal: outlined, `--ask` text) whose click puts its question in the box and
+sends nothing. Nothing of a book is ever attached or shown there: no card
+(`sendChat()` sends `about` only in book mode), no book or section in **⋯**
+(`.chat-where` hidden), no files, and a book playing in the background keeps
+playing (`pauseBookForQuestion()` is book mode's). **⋯** › **New
+conversation** asks "Start a new help conversation?" and clears the help
+conversation alone. On a wide screen `main.help-panel-open` keeps the header
+and the tabs in place and narrows the pages under them by `--help-room`
+(`fitHelpRoom()`: how far the panel reaches into the column, plus 16 px), and
+a book's player bar docked under the Library stays beside the panel. The model
+picker is the same `chat` picker in both modes.
+
+**Ask Hilde**, in the player bar, and the header's in book mode, are the way
+into a book's chat. `askHilde()` opens the
 chat as it was left and, if the book plays, pauses it
 (`pauseBookForQuestion()`, a plain pause: the time and the sentence stay);
 nothing resumes it but Play. **Ask about this** and the slot's **Ask Hilde**
@@ -2486,17 +2531,37 @@ everything it does later dropped, so a turn still waiting on a connection
 never writes over the next turn's conversation). `begin()` loads the book through `chat_book()` and
 saves the listener's message, with the manifest of what it is about as
 `context`; `run()` asks the model and runs its tool calls
-until it answers without one.
+until it answers without one; `setting()` gives it the open document's id,
+its `AskShelf`, the instructions, and the tools.
+
+**The help conversation.** A `HelpTurn` (a `ChatTurn` keyed `HELP_DOCUMENT`
+in the same `ChatRegistry`, so one help answer at a time, as per book; the
+routes reach it only through `chat_key()` with the explicit help flag) keeps
+its entries in `<root>/help-chat/chat.json` (`help_chat_path()`, `{schema,
+help: true, entries, context}`, the same ledger state as a book's), never in
+a book's folder; nothing is attached, its display entries link no ¶, and
+its notices land there too (`conversation_path()`). Its `setting()` is the
+help-mode instructions (`ask_help_system_prompt()`), an `AskShelf` without a
+book, and `HELP_TOOLS` (`search_document` and `read_paragraphs` over `help`,
+`docs`, and `code`; no file, web, or other tool, and `chat_tool()` answers a
+file tool without a book's path as unknown). An answer arriving after the
+page changed screens is saved by its own turn into its own conversation;
+`help_chat_payload()` is what the page loads. New in help mode deletes that
+file alone.
 
 **Documents and ids.** A document's id is `document_id()`: 8 hex characters of
 the SHA-256 of its name (the book's id; a web page's link without its
-fragment); Hilde Reader's help is `help` (`HELP_DOCUMENT`). A paragraph's id
+fragment); Hilde Reader's help is `help` (`HELP_DOCUMENT`), its developer docs
+`docs` and its code `code` (`APP_KINDS`). A paragraph's id
 is `<document id>:<n>`, n the passage's 1-based position in `narration.json`
 (so a book's `<id>:12` is the page's ¶12). `AskDocument` is one document
-(`kind` `paper`, `help`, or `web_page`); `AskShelf` resolves an id to the open
-book (`ask_book_document()`), the help (`ask_help()`: `docs/help.md`, HTML
+(`kind` `paper`, `help`, `docs`, `code`, or `web_page`); `AskShelf` resolves an id to the open
+book (`ask_book_document()`; none in help mode, where a bare number is refused
+for want of a document), the help (`ask_help()`: `docs/help.md`, HTML
 comments dropped, one paragraph per `##`/`###` section, read again when the
-file changes), or a stored web page (`ask_web_document()`).
+file changes; a section's `<!-- more: <path> › <heading> -->` becomes its
+closing "More detail: <link>" line, see below), the docs and the code
+(`ask_app_documents()`, read the first time one is asked for), or a stored web page (`ask_web_document()`).
 
 **The instructions** (`ask_system_prompt()`), the same for every book first so
 a server's prompt cache serves them to every conversation. They open with
@@ -2504,9 +2569,15 @@ what Hilde Reader is and how far to trust it: it rewrites documents for
 listening, its narration and descriptions can be wrong, invented, or
 incomplete, and the original document is always the source of truth. Then:
 how to find,
-read, and cite paragraphs by full id; that questions about using Hilde Reader
-are answered only from help sections read, saying "not sure" when the help
-does not cover it, never inventing features; that an off-topic question gets
+read, and cite paragraphs by full id; `ASK_APP_PROMPT`: the three documents
+that describe Hilde Reader (`help`, `docs`, `code`), one line each, and that a
+question about it is answered only from what was read there, the help first,
+then for a how or why question the docs, then the code, an answer from those
+beginning "From the developer docs, not the help:" or "From the code, not the
+help:" and linking each piece by its Link exactly (never a made-up link or
+line), a piece without a link being the running code, said so; that a help
+section's More detail link is given when the listener wants more, and "not
+sure" when none of them covers it, never inventing features; that an off-topic question gets
 one friendly line and a related question to ask; that earlier answers come
 shortened and marked "Earlier conversation, for reference", the listener's
 last message is the current question, `EXPIRED` means removed to save room,
@@ -2530,6 +2601,55 @@ labelled "From the paper" (or "Hilde's narration" when a paragraph has no
 paper text). The paragraph map (summaries, tags) and the paper are never sent;
 they stay on the server.
 
+**Help mode's instructions** (`ask_help_system_prompt()`), the same for every
+help conversation: what Hilde Reader is; that the listener is on a page
+without a document and asks how Hilde Reader works, and that to ask about a
+paper they open it in Listen; `ASK_APP_PROMPT`; that Hilde only explains and
+points the way, never changing settings, starting, stopping, or deleting
+anything or saying it did; one friendly line for anything else; earlier
+answers shortened, a follow-up such as "explain more" reading again what the
+earlier answer used; the listener's language; then the help's contents. No
+book, abstract, file, or web text.
+
+**Hilde Reader's developer docs and code** (`ask_app_documents()`). The
+checkout the server runs is read once at start (`app_source()`,
+`app_source_state()`: `git rev-parse HEAD`, whether `git status --porcelain
+--untracked-files=no` is empty, `git ls-files`; without git, or when the
+folder is not its repository's top level, no commit). `app_index_files()`
+takes, among the files git tracks (without git, those in the folder),
+`APP_DOCS` (`README.md`, `ARCHITECTURE.md`, `docs/*.md` except `docs/help.md`)
+and `APP_CODE` (`audiobook_tts_web.py`, `audiobook_tts.py`, `prompts/*.md`),
+never a file under `workspace/` or a `test_*` file. `build_app_index()` splits
+them into pieces, each with its `path`, `title`, `start` and `end` line, and
+`body` (exactly those lines): `split_markdown()` at every heading outside code
+fences, titled by the file and the headings above, each with its GitHub anchor
+(`github_anchor()`: the rendered text lowercased, all but letters, numbers,
+`_`, `-`, and spaces dropped, spaces as `-`, a repeat `-1`, `-2`); `split_python()`
+by top-level function and class with the comments and decorators above (the
+statements between together, titled by the names they set), a class too long
+for one piece by method, and the `PAGE` string by `_split_page()`: its markup in
+blocks titled by their first id, its CSS by rule block (`_split_css()`, an
+`@media` block whole, small ones packed), its script by top-level statement
+(`_split_script()`: each function a piece, the rest packed). A piece holds at
+most `APP_PIECE_LINES` (60) lines and about `APP_PIECE_CHARS` (4,000)
+characters; a longer one is split at blank lines (`_app_runs()`), titled
+"(part 2)" on. Every non-blank code line is in one piece. The index is cached
+as `<root>/.cache/app-index/<key>.json` (`{schema, key, docs, code}`), the key
+the commit (a changed tree `<commit>-dirty-<hash>`, no git `nogit-<hash>`, of
+the files' bytes), only the current one kept; `main()` reads or makes it in the
+background at start. `app_piece()` gives the model each piece as its title
+and lines, `Link: <link>` (`app_source_link()`:
+`HILDE_REPOSITORY_URL/blob/<commit>/<path>#L<a>-L<b>` for code, `?plain=1`
+before it for a Markdown file so the lines show, `#<anchor>` for a doc; ""
+without a commit or with changed files, then "Link: none; this is the running
+code, which no published commit shows"), then the lines. `HILDE_REPOSITORY_URL`
+is a constant, never in the help. A help section's More detail line is built
+the same way (`ask_help(source=…)`, the heading's anchor). A search of the docs
+or the code gives at most `ASK_SOURCE_GOOD_MAX` (3) pieces whole and the rest
+by place; a read is labelled with the piece's title (code with its lines).
+Both modes reach `docs` and `code` (book mode's tool descriptions and
+instructions name them too).
+
 **Paper text and labels.** A book paragraph has two texts: the paper's own,
 `ask_paper_text()` (its `original_text`, else its sources; for a figure,
 table, or equation its caption and then the text extracted from it, a table's
@@ -2540,7 +2660,7 @@ emphasis, and heading marks go; `<sub>x</sub>` reads `_x`, `<sup>x</sup>`
 "41 _._ 0", is joined; every digit and symbol stays); and Hilde's narration
 (passage `text`; a visual's is Hilde's description). Every text the model gets
 carries its label (`ASK_LABELS`): "From the paper", "Hilde's narration",
-"Hilde's description", "Hilde's summary", "Help", "Web page". Nothing Hilde
+"Hilde's description", "Hilde's summary", "Help", "Developer docs", "Code", "Web page". Nothing Hilde
 wrote is ever labelled as the paper: not in reads, searches, attachments, the
 abstract, or the ledger's kinds (`paper` is only the paper's own text,
 `narration` Hilde's narration or description).
@@ -2644,7 +2764,7 @@ kind, its paragraph id if any, the entry (question or tool result) it
 belongs to, its estimated tokens (`ask_tokens()`, `CHAT_CHARS_PER_TOKEN`), the
 turn it arrived in, and the turn it is due to expire: `expiry_turns` of
 `ask.yaml` (`web_search` and `document_search` hit lists 3, `web_page` reads
-and stored-page listings 5, `help` paragraphs 3, `list_files` 3), times the
+and stored-page listings 5, `help` paragraphs and `docs` and `code` pieces 3, `list_files` 3), times the
 model's `expiry_multiplier`; the paper's paragraphs and Hilde's narration and
 descriptions of them (`paper` and `narration`: read, found, or attached to a
 question, both copies) and notes (`write_file`/`delete_file` confirmations,
@@ -2687,7 +2807,7 @@ model's prefill speed, over `cap.trigger_seconds` (30), or over
 `cap.target_seconds` (15) of prefill, `cap.target_window_share` (0.5) of the
 window, and `cap.target_reliable_share` (0.5) of `reliable_up_to`: due items
 expire, then, oldest first, web page reads, web searches, and the documents'
-results (paper, narration, help, hit lists, file lists), then whole old turns (question,
+results (paper, narration, help, docs and code, hit lists, file lists), then whole old turns (question,
 short answer, calls), oldest first; never the current question or the latest
 round's results. Leaving out turns publishes `trimmed`. The state
 (`ask_state()`: `expired`, `dropped`, `last`) is saved in `chat.json`.
@@ -2712,7 +2832,7 @@ input plus cache read plus cache creation, the read cached), and
 `_gemini_text()` (`usageMetadata`); anything else is unknown, taken as cold.
 `ask_log()` prints one line per request: `Ask: model=… turn=<turn id>
 question=<n> round=<n> prompt=<reported> tokens (estimated N: fixed, questions,
-answers, calls, paper, help, web, hits, files, notes) cached=… first token=…s
+answers, calls, paper, narration, help, source (docs and code), web, hits, files, notes) cached=… first token=…s
 total=…s cache=warm|cold (predicted uncached N) decision=append|prune: …|compact: …`.
 
 **Settings** (`ask_config()`): `~/.hilde/ask.yaml` (`ASK_CONFIG_FILE` in
@@ -2945,14 +3065,14 @@ read aloud by **Read answers aloud**.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). |
-| `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, or web search. |
+| `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. `help=1` instead of `book` follows the help conversation's turn. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
-| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. HTTP 409 while the book answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
-| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). |
+| `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message or for a book without summaries, 400 for an empty message or model or an invalid `about`. |
+| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` alone (`chat_key()`: only that flag reaches the help conversation). |
 
 Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine, or from any device when Hilde starts with --manage-from-network." (`PROVIDERS_LOCAL_ONLY`) unless `Handler.may_manage()` (loopback, or `--manage-from-network`), the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers` and `manage_workers`. `POST /api/models/defaults` follows the same rule (`DEFAULTS_LOCAL_ONLY`), and the page shows the default models read-only without `manage_providers`. `may_manage()` is the only use of `local_client()`; nothing else depends on where a browser is. With `--manage-from-network` the server prints "Providers and machines can be changed from any device that reaches this server." at startup.
 
@@ -2985,7 +3105,9 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
-- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages and model measurements live in `<root>/.cache/chat-docs/` and `<root>/.cache/ask-models.json`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
+- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages, model measurements, and index of Hilde Reader's docs and code live in `<root>/.cache/chat-docs/`, `<root>/.cache/ask-models.json`, and `<root>/.cache/app-index/`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
+- The help conversation lives in `<root>/help-chat/chat.json` alone: never in a book's folder, and nothing of help mode (a question, its New) reads or writes a book's `chat.json` or `files/`. Help mode never carries a book's context: no `about`, selection, part playing, title, or abstract goes with a help question, and its tools (`HELP_TOOLS`) only read the help, the docs, and the code.
+- Answers link Hilde Reader's code only at the commit the server runs (`app_source()`, read once at start): a dirty tree or no git gives no link, and the pieces say "the running code". The `docs` and `code` documents hold only files git tracks at that commit, never tests or `workspace/`.
 - Ask Hilde never sends a book's paragraph map or the paper whole: the model gets the abstract and reads paragraphs by id.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.

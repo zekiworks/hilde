@@ -25,6 +25,7 @@ owned by the server process and is never accepted from a browser.
 """
 
 import argparse
+import ast
 import array
 import base64
 import collections
@@ -11631,8 +11632,8 @@ CHAT_TOOLS = (
         "name": "search_document",
         "description": (
             "Find paragraphs of a document by keywords: the open document's id, \"help\" for "
-            "Hilde Reader's help, or a stored web page's id. The best matches come back whole, "
-            "weaker ones as summaries with their ids."
+            "Hilde Reader's help, \"docs\" and \"code\" for its developer docs and code, or a stored web "
+            "page's id. The best matches come back whole, weaker ones as summaries with their ids."
         ),
         "parameters": {
             "type": "object",
@@ -11647,7 +11648,8 @@ CHAT_TOOLS = (
         "name": "read_paragraphs",
         "description": (
             "Read paragraphs by their ids, such as 0a1b2c3d:12, or a run as 0a1b2c3d:12-14: "
-            "the open document's, the help's (help:3), or a stored web page's. For the open document, "
+            "the open document's, the help's (help:3), the developer docs' or code's (docs:12, code:40), "
+            "or a stored web page's. For the open document, "
             "version says which text: paper (the default), the paper's own text; narration, Hilde's "
             "rewrite that the listener hears; both. A figure, table, or equation comes with its caption "
             "and extracted text and Hilde's description."
@@ -11690,6 +11692,28 @@ CHAT_TOOLS = (
             "type": "object",
             "properties": {"name": {"type": "string", "description": "The file's name."}},
             "required": ["name"],
+        },
+    },
+)
+# Help mode (a page without a book): only the reading tools, over the help,
+# the developer docs, and the code; nothing that writes or changes anything.
+HELP_TOOLS = (
+    {
+        "name": "search_document",
+        "description": (
+            "Find paragraphs of a document by keywords: \"help\" for Hilde Reader's help, \"docs\" for its "
+            "developer docs, \"code\" for its code. The best matches come back whole, weaker ones as their "
+            "place with their ids."
+        ),
+        "parameters": CHAT_TOOLS[0]["parameters"],
+    },
+    {
+        "name": "read_paragraphs",
+        "description": "Read paragraphs by their ids, such as help:3, docs:12, or a run as code:40-42.",
+        "parameters": {
+            "type": "object",
+            "properties": {"ids": {"type": "array", "items": {"type": "string"}, "description": "Paragraph ids."}},
+            "required": ["ids"],
         },
     },
 )
@@ -11768,7 +11792,8 @@ ASK_DEFAULTS = {
     "store_results_over_tokens": 1_500,
     "abstract_tokens": 500,
     # Turns (questions) a tool result stays before it is due to expire.
-    "expiry_turns": {"web_search": 3, "document_search": 3, "web_page": 5, "help": 3, "list_files": 3},
+    "expiry_turns": {"web_search": 3, "document_search": 3, "web_page": 5, "help": 3, "docs": 3, "code": 3,
+                     "list_files": 3},
     # The hard cap: the whole context, read cold, over trigger_seconds (or
     # the window share, or the model's reliable_up_to) is compacted to the
     # target_ values.
@@ -11898,7 +11923,8 @@ def _excerpt(text, sentences=2, limit=300):
 
 # How each kind of text is labelled where the model reads it. Nothing Hilde
 # wrote (narration, descriptions, summaries) is ever labelled as the paper.
-ASK_LABELS = {"paper": "From the paper", "narration": "Hilde's narration", "help": "Help", "web_page": "Web page"}
+ASK_LABELS = {"paper": "From the paper", "narration": "Hilde's narration", "help": "Help", "web_page": "Web page",
+              "docs": "Developer docs", "code": "Code"}
 ASK_VISUALS = ("figure", "table", "equation")
 ASK_VERSIONS = ("paper", "narration", "both")
 ASK_NOT_NARRATED = "(Not narrated: the adaptation left this paragraph out.)"
@@ -11971,17 +11997,21 @@ class AskDocument:
 
     def summary(self, number):
         """A weak match's line: a book paragraph's summary (Hilde's), a help
-        section's title and first sentence, a page paragraph's first sentences."""
+        section's title and first sentence, a piece of the docs or code by its
+        place, a page paragraph's first sentences."""
         paragraph = self.paragraphs[number - 1]
         if self.kind == "paper":
             return " ".join(str(paragraph.get("summary") or "").split()) or _excerpt(paragraph.get("text"))
         if self.kind == "help":
             return f"{paragraph.get('title')}: {_excerpt(paragraph.get('body'), 1)}"
+        if self.kind in APP_KINDS:
+            return f"{paragraph.get('title')} (lines {paragraph.get('start')}–{paragraph.get('end')})"
         return _excerpt(paragraph.get("text"))
 
     def items(self, number, version=None):
         """Paragraph `number` as context items, each with its `label`. A help
-        section or page paragraph is one text. A book paragraph by `version`
+        section (ending with its More detail line), a piece of the docs or
+        code, or a page paragraph is one text. A book paragraph by `version`
         (ASK_VERSIONS; None is "paper"): the paper's own text ("From the
         paper"), Hilde's narration ("Hilde's narration"), or both; a figure,
         table, or equation gives, unless "narration", its caption and
@@ -11990,8 +12020,10 @@ class AskDocument:
         paragraph, pid = self.paragraphs[number - 1], f"{self.id}:{number}"
         extra = {"type": "heading"} if paragraph.get("type") == "heading" else {}
         if self.kind != "paper":
-            return [{"kind": self.kind, "id": pid, "label": ASK_LABELS[self.kind],
-                     "text": str(paragraph.get("text") or ""), **extra}]
+            text = str(paragraph.get("text") or "")
+            if paragraph.get("more_line"):
+                text += "\n\n" + paragraph["more_line"]
+            return [{"kind": self.kind, "id": pid, "label": ASK_LABELS[self.kind], "text": text, **extra}]
         visual = paragraph.get("type") in ASK_VISUALS
         narration = {"kind": "narration", "id": pid, "label": "Hilde's description" if visual else "Hilde's narration",
                      "text": str(paragraph.get("text") or ASK_NOT_NARRATED), **extra}
@@ -12010,32 +12042,54 @@ def ask_book_document(book, record, passages):
 _HELP_CACHE = {}
 
 
-def ask_help(path=None):
+# A help section names the developer doc that says more, in a comment the
+# model never reads: <!-- more: docs/web-ui.md › Voice tags -->.
+HELP_MORE = re.compile(r"<!--\s*more:\s*(\S+)\s*›\s*(.*?)\s*-->")
+
+
+def ask_help(path=None, source=None):
     """docs/help.md as the document `help`: one paragraph per section (each
     `##` or `###` heading and what follows it), HTML comments left out. A
+    section's `more` (path, heading) is the developer doc its More detail
+    line links (app_source_link(), at the commit this server runs, `source`;
+    without a link it names the doc and says it is the running code's). A
     missing file is a help with no sections."""
     path = Path(path or HELP_FILE)
     try:
         stat = path.stat()
         key = (str(path), stat.st_mtime_ns, stat.st_size)
         if key not in _HELP_CACHE:
-            text = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.DOTALL)
-            sections, title, lines = [], None, []
+            text = HELP_MORE.sub(lambda match: f"\0more {match[1]}\0{match[2]}", path.read_text(encoding="utf-8"))
+            text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+            sections, title, lines, more = [], None, [], None
             for line in text.splitlines() + ["## "]:
+                if line.startswith("\0more "):
+                    more = tuple(line[6:].split("\0", 1))
+                    continue
                 heading = re.match(r"#{2,3}\s+(.*)", line)
                 if not heading:
                     lines.append(line)
                     continue
                 if title:
                     body = "\n".join(lines).strip()
-                    sections.append({"title": title, "body": body, "text": f"{title}\n\n{body}".strip()})
-                title, lines = heading.group(1).strip(), []
+                    sections.append({"title": title, "body": body, "text": f"{title}\n\n{body}".strip(),
+                                     **({"more": more} if more else {})})
+                title, lines, more = heading.group(1).strip(), [], None
             _HELP_CACHE.clear()
             _HELP_CACHE[key] = sections
         sections = _HELP_CACHE[key]
     except OSError:
         sections = []
-    return AskDocument(HELP_DOCUMENT, "help", "Hilde Reader help", sections)
+    source = app_source() if source is None else source
+    linked = []
+    for section in sections:
+        if section.get("more"):
+            where, heading = section["more"]
+            link = app_source_link(source, where, anchor=github_anchor(heading))
+            section = {**section, "more_line": f"More detail: {link}" if link else (
+                f"More detail: {where} › {heading}, in the developer docs of the running code (no link).")}
+        linked.append(section)
+    return AskDocument(HELP_DOCUMENT, "help", "Hilde Reader help", linked)
 
 
 def ask_help_contents(help_document):
@@ -12043,6 +12097,428 @@ def ask_help_contents(help_document):
     return "\n".join(
         f"{HELP_DOCUMENT}:{number} {section['title']}" for number, section in enumerate(help_document.paragraphs, 1)
     )
+
+
+# --- Ask Hilde: Hilde Reader's own developer docs and code ----------------------
+#
+# Two more documents answer how and why Hilde Reader works when the help does
+# not: `docs` (README.md, ARCHITECTURE.md, docs/*.md, split at headings) and
+# `code` (the server and its page, the command-line tool, the prompts, split by
+# function, class, CSS rule block, and markup block). Only files tracked in git
+# at the commit this server runs, never tests or workspace/; each piece keeps
+# its file and line range, and links the exact place on GitHub at that commit.
+
+# Where Hilde Reader's code is published; links name the running commit.
+HILDE_REPOSITORY_URL = "https://github.com/zekiworks/hilde"
+# This checkout: the server's own files.
+APP_SOURCE_DIR = Path(__file__).resolve().parent
+APP_KINDS = ("docs", "code")
+APP_DOCS = ("README.md", "ARCHITECTURE.md", "docs/*.md")
+APP_CODE = ("audiobook_tts_web.py", "audiobook_tts.py", "prompts/*.md")
+# The help is its own document.
+APP_NOT_DOCS = ("docs/help.md",)
+# A piece holds at most this many lines and about this many characters; a
+# longer function, class, section, or run of rules is split further.
+APP_PIECE_LINES = 60
+APP_PIECE_CHARS = 4_000
+# The index, made once per commit: <root>/.cache/app-index/<key>.json.
+APP_INDEX_FOLDER = "app-index"
+APP_INDEX_SCHEMA = 1
+# A search of the docs or the code gives at most this many pieces whole.
+ASK_SOURCE_GOOD_MAX = 3
+_APP_SOURCE = {}
+_APP_DOCUMENTS = {}
+_APP_LOCK = threading.Lock()
+
+
+def _git(directory, *arguments):
+    done = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, timeout=30)
+    if done.returncode:
+        raise OSError(done.stderr.strip() or f"git {arguments[0]} failed")
+    return done.stdout
+
+
+def app_source_state(directory=APP_SOURCE_DIR):
+    """A checkout of Hilde Reader: `commit` (git rev-parse HEAD; "" without
+    git, or when the folder is not its repository's top level), `clean` (no
+    tracked file changed), and `tracked` (git ls-files; None without git)."""
+    directory = Path(directory).resolve()
+    try:
+        if Path(_git(directory, "rev-parse", "--show-toplevel").strip()).resolve() != directory:
+            raise OSError("not the repository's top level")
+        commit = _git(directory, "rev-parse", "HEAD").strip()
+        changed = _git(directory, "status", "--porcelain", "--untracked-files=no").strip()
+        tracked = [name for name in _git(directory, "ls-files", "-z").split("\0") if name]
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": "", "clean": False, "tracked": None}
+    return {"commit": commit, "clean": not changed, "tracked": tracked}
+
+
+def app_source():
+    """This server's checkout as it was when the server started."""
+    with _APP_LOCK:
+        if "state" not in _APP_SOURCE:
+            _APP_SOURCE["state"] = app_source_state()
+        return _APP_SOURCE["state"]
+
+
+def app_source_link(source, path, start=0, end=0, anchor=""):
+    """A place in Hilde Reader's code at the commit `source` runs: a heading
+    (#anchor) of a doc, lines (#L<a>-L<b>; a Markdown file with ?plain=1 so
+    its lines show) of code, else the file. "" without a commit or with
+    changed files: no published commit shows what runs."""
+    if not source.get("commit") or not source.get("clean"):
+        return ""
+    url = f"{HILDE_REPOSITORY_URL}/blob/{source['commit']}/{urllib.parse.quote(path)}"
+    if anchor:
+        return f"{url}#{anchor}"
+    if start:
+        return f"{url}{'?plain=1' if path.endswith('.md') else ''}#L{start}-L{end or start}"
+    return url
+
+
+def app_index_files(directory, source):
+    """The files of `docs` and `code`: APP_DOCS and APP_CODE among the files
+    git tracks (without git, those in the folder), never docs/help.md, a file
+    under workspace/, or a test."""
+    directory = Path(directory)
+    if source.get("tracked") is not None:
+        names = source["tracked"]
+    else:
+        names = [str(path.relative_to(directory)) for pattern in APP_DOCS + APP_CODE for path in directory.glob(pattern)]
+
+    def pick(patterns):
+        return sorted({
+            name for name in names
+            if any(fnmatch.fnmatchcase(name, pattern) and name.count("/") == pattern.count("/") for pattern in patterns)
+            and name not in APP_NOT_DOCS and not name.startswith("workspace/")
+            and not Path(name).name.startswith("test_") and (directory / name).is_file()
+        })
+    return pick(APP_DOCS), pick(APP_CODE)
+
+
+def _heading_text(heading):
+    """A Markdown heading as it reads: links as their text, no images, tags, code marks, or emphasis."""
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", heading)
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    return " ".join(re.sub(r"<[^>]+>", "", text).replace("`", "").replace("*", "").split())
+
+
+def github_anchor(heading, seen=None):
+    """A heading's anchor as GitHub makes it: its text lowercased, all but
+    letters, numbers, underscores, hyphens, and spaces dropped, spaces as
+    hyphens. `seen` counts the file's anchors so far: a repeat gets -1, -2."""
+    slug = re.sub(r"[^\w\- ]", "", _heading_text(heading).lower()).replace(" ", "-")
+    if seen is None:
+        return slug
+    count = seen.get(slug, 0)
+    seen[slug] = count + 1
+    return f"{slug}-{count}" if count else slug
+
+
+def _app_runs(lines, start, end, limit=APP_PIECE_LINES):
+    """Lines start..end (from 1, blank ones at either end left out) as runs
+    of at most `limit` lines and about APP_PIECE_CHARS characters, broken
+    after the last non-blank line before a blank one when that keeps at least
+    half the run: [(first, last)]."""
+    runs = []
+    while start <= end:
+        while start <= end and not lines[start - 1].strip():
+            start += 1
+        if start > end:
+            break
+        last, size, cut, number = start, 0, None, start
+        while number <= end:
+            size += len(lines[number - 1]) + 1
+            if number - start + 1 > limit or (size > APP_PIECE_CHARS and number > start):
+                break
+            if number > start and not lines[number - 1].strip() and lines[number - 2].strip():
+                cut = number - 1
+            last = number
+            number += 1
+        if number <= end and cut is not None and cut - start + 1 >= limit // 2:
+            last = cut
+        stop = last
+        while stop > start and not lines[stop - 1].strip():
+            stop -= 1
+        runs.append((start, stop))
+        start = last + 1
+    return runs
+
+
+def _app_pieces(path, lines, start, end, title, limit, **extra):
+    """One titled piece of lines start..end, or its runs (_app_runs()) titled
+    "(part 2)" on."""
+    return [{"title": title + (f" (part {number})" if number > 1 else ""), "path": path, "start": first,
+             "end": last, "anchor": "", "body": "\n".join(lines[first - 1:last]), **extra}
+            for number, (first, last) in enumerate(_app_runs(lines, start, end, limit), 1)]
+
+
+def split_markdown(text, path, limit=APP_PIECE_LINES):
+    """A Markdown file as pieces: what comes before its first heading, then
+    each heading (outside code fences) with what follows it up to the next
+    heading, titled by the file and the headings above it, each with the
+    heading's GitHub anchor (github_anchor()); a long section in parts."""
+    lines = text.split("\n")
+    headings, fence, seen = [], None, {}
+    for number, line in enumerate(lines, 1):
+        mark = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if mark:
+            if fence is None:
+                fence = mark[1]
+            elif mark[1][0] == fence[0] and len(mark[1]) >= len(fence):
+                fence = None
+            continue
+        heading = None if fence else re.match(r" {0,3}(#{1,6})\s+(.*?)\s*#*\s*$", line)
+        if heading:
+            headings.append((number, len(heading[1]), _heading_text(heading[2]), github_anchor(heading[2], seen)))
+    pieces = _app_pieces(path, lines, 1, (headings[0][0] - 1) if headings else len(lines), path, limit)
+    stack = []
+    for index, (number, level, words, anchor) in enumerate(headings):
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, words))
+        end = headings[index + 1][0] - 1 if index + 1 < len(headings) else len(lines)
+        title = " › ".join([path] + [words for _, words in stack])
+        pieces += [{**piece, "anchor": anchor} for piece in _app_pieces(path, lines, number, end, title, limit)]
+    return pieces
+
+
+_CSS_SELECTOR = re.compile(r"\s*([^{]+?)\s*\{")
+
+
+def _split_css(path, lines, start, end, limit):
+    """The page's CSS by rule blocks (each with the comment above it, an
+    @media block whole), consecutive small ones together up to `limit` lines."""
+    units, first, depth, comment = [], start, 0, False
+    for number in range(start, end + 1):
+        line = lines[number - 1]
+        position = 0
+        while position < len(line):
+            if comment:
+                close = line.find("*/", position)
+                if close < 0:
+                    break
+                comment, position = False, close + 2
+            elif line.startswith("/*", position):
+                comment, position = True, position + 2
+            else:
+                depth += {"{": 1, "}": -1}.get(line[position], 0)
+                position += 1
+        if depth <= 0 and not comment and "}" in line:
+            depth = 0
+            units.append((first, number))
+            first = number + 1
+    if first <= end:
+        units.append((first, end))
+    return _pack(path, lines, units, limit, "PAGE style", lambda first, last: next(
+        (found[1][:60] for found in (_CSS_SELECTOR.match(lines[n - 1]) for n in range(first, last + 1))
+         if found and not found[1].lstrip().startswith(("/*", "*"))), ""))
+
+
+_JS_FUNCTION = re.compile(r"((?:async\s+)?function)\s*\*?\s*([\w$]+)")
+
+
+def _split_script(path, lines, start, end, limit):
+    """The page's script by top-level statement: each function (the comment
+    above it included) a piece of its own, the statements between packed up
+    to `limit` lines. A statement starts at a line in the first column that
+    is not a comment or a closing bracket."""
+    starts = [number for number in range(start, end + 1) if re.match(r"[^\s})\]/*]", lines[number - 1])
+              and not lines[number - 1].startswith(("//", "/*", "*"))]
+    units = []
+    for index, number in enumerate(starts):
+        first = start if index == 0 else units[-1][1] + 1
+        following = starts[index + 1] if index + 1 < len(starts) else end + 1
+        last = following - 1
+        # The comment block just above the next statement goes with it.
+        while last > number and lines[last - 1].lstrip().startswith(("//", "/*", "*")):
+            last -= 1
+        units.append((first, last))
+    if units and units[-1][1] < end:
+        units[-1] = (units[-1][0], end)
+    if not units and start <= end:
+        units = [(start, end)]
+    pieces, others = [], []
+    for first, last in units:
+        found = next((_JS_FUNCTION.match(lines[n - 1]) for n in range(first, last + 1)
+                      if re.match(r"[^\s})\]/*]", lines[n - 1]) and not lines[n - 1].startswith(("//", "/*"))), None)
+        if found:
+            pieces += _pack(path, lines, others, limit, "PAGE script", _first_words(lines))
+            others = []
+            pieces += _app_pieces(path, lines, first, last, f"{path} › PAGE script › {found[1]} {found[2]}", limit)
+        else:
+            others.append((first, last))
+    return pieces + _pack(path, lines, others, limit, "PAGE script", _first_words(lines))
+
+
+def _first_words(lines):
+    """A run's first statement, cut to 60 characters, for its title."""
+    return lambda first, last: next((" ".join(lines[n - 1].split())[:60] for n in range(first, last + 1)
+                                      if lines[n - 1].strip() and not lines[n - 1].lstrip().startswith(("//", "/*", "*"))),
+                                     "")
+
+
+def _pack(path, lines, units, limit, part, name):
+    """Consecutive units (first, last) as pieces of up to `limit` lines; a
+    unit longer than that in parts. Each titled "<path> › <part> › name()"."""
+    pieces, group = [], []
+
+    def flush():
+        if group:
+            first, last = group[0][0], group[-1][1]
+            pieces.extend(_app_pieces(path, lines, first, last, " › ".join(filter(None, (path, part, name(first, last)))),
+                                      limit))
+            group.clear()
+    for first, last in units:
+        if group and last - group[0][0] + 1 > limit:
+            flush()
+        group.append((first, last))
+    flush()
+    return pieces
+
+
+def _split_page(path, lines, start, end, limit):
+    """The PAGE string: its markup in blocks (titled by the first id in each),
+    its CSS by rule blocks (_split_css()), its script by function
+    (_split_script())."""
+    marks = {}
+    for number in range(start, end + 1):
+        stripped = lines[number - 1].strip()
+        if stripped in ("<style>", "</style>", "<script>", "</script>") and stripped not in marks:
+            marks[stripped] = number
+    if len(marks) < 4 or not marks["<style>"] < marks["</style>"] < marks["<script>"] < marks["</script>"]:
+        return _pack(path, lines, [(start, end)], limit, "PAGE markup", lambda first, last: "")
+
+    def markup(first, last):
+        pieces = []
+        for a, b in _app_runs(lines, first, last, limit):
+            found = next((match[1] for match in (re.search(r'\bid="([^"]+)"', lines[n - 1]) for n in range(a, b + 1))
+                          if match), "")
+            title = " › ".join(filter(None, (path, "PAGE markup", found and f"#{found}")))
+            pieces += _app_pieces(path, lines, a, b, title, limit)
+        return pieces
+    return (markup(start, marks["<style>"])
+            + _split_css(path, lines, marks["<style>"] + 1, marks["</style>"] - 1, limit)
+            + markup(marks["</style>"], marks["<script>"])
+            + _split_script(path, lines, marks["<script>"] + 1, marks["</script>"] - 1, limit)
+            + markup(marks["</script>"], end))
+
+
+def _assigned_names(node):
+    targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+    return [target.id for target in targets if isinstance(target, ast.Name)]
+
+
+def split_python(text, path, limit=APP_PIECE_LINES):
+    """A Python file as pieces: each top-level function and class with the
+    comments and decorators above it, the statements between them together
+    (titled by the names they set); a class too long for one piece by
+    method, a long function in parts; the PAGE string by _split_page().
+    Every non-blank line is in one piece."""
+    lines = text.split("\n")
+    pieces, pending, previous = [], [], 0
+
+    def flush():
+        for a, b in _app_runs(lines, pending[0][0], pending[-1][1], limit) if pending else ():
+            names = [name for _, _, at, found in pending if a <= at <= b for name in found]
+            words = ", ".join(names[:4]) + (" …" if len(names) > 4 else "") if names else "top level"
+            pieces.append({"title": f"{path} › {words}", "path": path, "start": a, "end": b, "anchor": "",
+                           "body": "\n".join(lines[a - 1:b])})
+        pending.clear()
+    body = ast.parse(text).body
+    for index, node in enumerate(body):
+        first, last = previous + 1, len(lines) if index == len(body) - 1 else node.end_lineno
+        previous = last
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            flush()
+            kind = {ast.ClassDef: "class", ast.AsyncFunctionDef: "async def"}.get(type(node), "def")
+            title = f"{path} › {kind} {node.name}"
+            if not isinstance(node, ast.ClassDef) or len(_app_runs(lines, first, last, limit)) <= 1:
+                pieces += _app_pieces(path, lines, first, last, title, limit)
+                continue
+            # The class line and what is not a method in one piece, each method in its own.
+            head, cursor = first, min([node.body[0].lineno] + [d.lineno for d in getattr(node.body[0], "decorator_list", ())]) - 1
+            for child_index, child in enumerate(node.body):
+                child_last = last if child_index == len(node.body) - 1 else child.end_lineno
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if head <= cursor:
+                        pieces += _app_pieces(path, lines, head, cursor, title, limit)
+                    pieces += _app_pieces(path, lines, cursor + 1, child_last, f"{title} › def {child.name}", limit)
+                    head = child_last + 1
+                cursor = child_last
+            if head <= last:
+                pieces += _app_pieces(path, lines, head, last, title, limit)
+        elif isinstance(node, ast.Assign) and _assigned_names(node) == ["PAGE"]:
+            flush()
+            pieces += _split_page(path, lines, first, last, limit)
+        else:
+            names = _assigned_names(node) if isinstance(node, (ast.Assign, ast.AnnAssign)) else []
+            pending.append((first, last, node.lineno, names))
+    flush()
+    return pieces
+
+
+def build_app_index(directory, docs_files, code_files):
+    """The pieces of `docs` (split_markdown()) and `code` (split_python(),
+    or split_markdown() for a prompt) from the files as they are on disk."""
+    def pieces(name):
+        text = (Path(directory) / name).read_text(encoding="utf-8")
+        return split_python(text, name) if name.endswith(".py") else split_markdown(text, name)
+    return {"docs": [piece for name in docs_files for piece in pieces(name)],
+            "code": [piece for name in code_files for piece in pieces(name)]}
+
+
+def app_piece(piece, kind, source):
+    """A piece of `docs` or `code` as the model reads it: where it is (its
+    title and lines), its link (app_source_link(): a doc by its heading, code
+    by its lines) or, without one, that it is the running code; then its text."""
+    if kind == "docs":
+        link = app_source_link(source, piece["path"], anchor=piece.get("anchor") or "")
+    else:
+        link = app_source_link(source, piece["path"], piece["start"], piece["end"])
+    where = link or "none; this is the running code, which no published commit shows"
+    return {**piece, "link": link,
+            "text": f"{piece['title']} (lines {piece['start']}–{piece['end']})\nLink: {where}\n{piece['body']}"}
+
+
+def ask_app_documents(storage, directory=None, source=None):
+    """The documents `docs` and `code` of this server's checkout (or
+    `directory`, at `source`), from <root>/.cache/app-index/<key>.json, made
+    once (build_app_index()) when it is missing. The key is the commit; a
+    changed tree's is <commit>-dirty-<hash>, one without git nogit-<hash>, of
+    the indexed files' bytes. Only the current key's file is kept."""
+    directory = Path(directory or APP_SOURCE_DIR).resolve()
+    if source is None:
+        source = app_source() if directory == APP_SOURCE_DIR else app_source_state(directory)
+    docs_files, code_files = app_index_files(directory, source)
+    key = source["commit"]
+    if not (source["commit"] and source["clean"]):
+        digest = hashlib.sha256()
+        for name in docs_files + code_files:
+            digest.update(name.encode("utf-8") + b"\0" + (directory / name).read_bytes() + b"\0")
+        key = f"{source['commit'] + '-dirty' if source['commit'] else 'nogit'}-{digest.hexdigest()[:12]}"
+    memo = (str(storage.root), str(directory), key, bool(source["clean"]))
+    with _APP_LOCK:
+        if memo not in _APP_DOCUMENTS:
+            folder = storage.root / ".cache" / APP_INDEX_FOLDER
+            path = folder / f"{key}.json"
+            data = read_json_file(path)
+            if not (isinstance(data, dict) and data.get("schema") == APP_INDEX_SCHEMA and data.get("key") == key
+                    and all(isinstance(data.get(kind), list) for kind in APP_KINDS)):
+                data = {"schema": APP_INDEX_SCHEMA, "key": key, **build_app_index(directory, docs_files, code_files)}
+                folder.mkdir(parents=True, exist_ok=True)
+                write_json_atomic(path, data)
+                for old in folder.glob("*.json"):
+                    if old != path:
+                        old.unlink(missing_ok=True)
+            _APP_DOCUMENTS[memo] = (
+                AskDocument("docs", "docs", "Hilde Reader's developer docs",
+                            [app_piece(piece, "docs", source) for piece in data["docs"]]),
+                AskDocument("code", "code", "Hilde Reader's code",
+                            [app_piece(piece, "code", source) for piece in data["code"]]),
+            )
+        return _APP_DOCUMENTS[memo]
 
 
 ABSTRACT_HEADING = re.compile(r"(?:[0-9IVX]+\.?\s*)?abstract\s*[.:]?", re.IGNORECASE)
@@ -12091,6 +12567,16 @@ def chat_abstract(passages, tokens=ASK_DEFAULTS["abstract_tokens"]):
             "label": ASK_LABELS["narration"] if narrated else ASK_LABELS["paper"]}
 
 
+# How the model answers about Hilde Reader itself, in both modes: the help
+# first, then the developer docs, then the code, each place linked.
+ASK_APP_PROMPT = """Three documents describe Hilde Reader; find their paragraphs with search_document and read them with read_paragraphs:
+- "help": the user help, how to use Hilde Reader. Always look here first.
+- "docs": the developer docs (README.md, ARCHITECTURE.md, docs/*.md), for how or why something works when the help does not say.
+- "code": Hilde Reader's code, for what the developer docs do not settle.
+Answer a question about Hilde Reader only from what you have read there, in that order: the help; when it does not cover a "how" or "why does it work" question, search "docs", then "code". When none of them covers it, say you are not sure; never invent features, buttons, or settings. Name a help section you used, such as "Help › Playback and speed", never its id. A help section ends with its "More detail" link: give it when the listener wants more detail.
+An answer from the developer docs or the code begins "From the developer docs, not the help:" or "From the code, not the help:" and links each place it used with that piece's Link, copied exactly, as a Markdown link; never make up a link or line numbers. A piece whose Link is none is the running code, which no published commit shows: say it is from the running code and give no link."""
+
+
 def ask_system_prompt(document, abstract, help_document, web=False):
     """Hilde's instructions: what stays the same for every book first (so a
     server's prompt cache serves it to every conversation), then the help's
@@ -12105,7 +12591,7 @@ You are Hilde, the reading companion in Hilde Reader. The listener is listening 
 
 You see the document's abstract, not the document: find its paragraphs with search_document and read them with read_paragraphs, which gives the paper's own text, labelled "From the paper" (version "narration" gives Hilde's narration instead, "both" gives both; a figure, table, or equation comes with Hilde's description). A search gives the best matches as the paper prints them and weaker ones as Hilde's summaries; summaries are not the text, so read a paragraph before quoting it or answering about its details. When a search misses, search again with other words. Cite every paragraph you use by its full id, such as 0a1b2c3d:12, or 0a1b2c3d:12–14 for a run; the listener sees them as links into the book.
 
-Hilde Reader's help is the document "help". Answer a question about using Hilde Reader only from help sections you have read (read_paragraphs with ids such as "help:3", or search_document with "help"). When the help does not cover it, say you are not sure; never invent features, buttons, or settings. Name the help section you used, such as "Help › Playback and speed", never its id.
+{ASK_APP_PROMPT}
 
 For a question about neither the document nor Hilde Reader, answer in one friendly line that you are here for this document and Hilde Reader, and suggest one related question the listener could ask about the document.
 
@@ -12125,6 +12611,27 @@ The open document: "{document.title}", document id {doc}, paragraphs {doc}:1 to 
 {abstract['text']}"""
 
 
+def ask_help_system_prompt(help_document):
+    """Hilde's instructions in help mode (a page without a book: Create,
+    Voices, Settings, the Library): the same for every help conversation, so
+    a server's prompt cache serves them, then the help's contents. No book,
+    no files, no web; Hilde only explains."""
+    return f"""Hilde Reader turns technical documents into audiobooks and rewrites them for listening.
+
+You are Hilde, the help in Hilde Reader. The listener is on a page of Hilde Reader without a document open (Create, Voices, Settings, or the Library) and asks how something in Hilde Reader works. No document is open here: for a question about a paper, say that to ask about a paper, they open it in Listen.
+
+{ASK_APP_PROMPT}
+
+You only explain and point the way: you never change settings, start, stop, or delete anything, and never say you did; say where the listener does it.
+
+For a question about something other than Hilde Reader, answer in one friendly line that you are here for questions about Hilde Reader, and suggest one related question about Hilde Reader they could ask.
+
+Earlier questions come in full; earlier answers are shortened to their first and last sentence, with the links they used, and marked "Earlier conversation, for reference". The listener's last message is the current question: answer it. A follow-up such as "explain more" is about what the earlier answer used: read that help section (or piece of the docs or code) again and say more from it. A tool result shown as EXPIRED was removed to save room: call the tool again when you need it. Answer in the language the listener writes in.
+
+The help's sections:
+{ask_help_contents(help_document) or "(none)"}"""
+
+
 def _ask_words(keywords):
     """A search's words as given, and its words to look for: whole words of
     three letters or more, or numbers, without repeats."""
@@ -12139,11 +12646,13 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
     """The paragraphs that hold most of the words (any case; the words
     together count most), looking in each one's haystack (a book's paper
     text, narration, summary, and tags): the best as items (at most
-    `good_max`, each scoring at least `good_share` of the best; a book's as
-    the paper prints them, AskDocument.items()), the next `weak_max` as one
-    list of summaries, a book's labelled as Hilde's. Return (items, label)."""
+    `good_max`, ASK_SOURCE_GOOD_MAX for the docs and the code, each scoring
+    at least `good_share` of the best; a book's as the paper prints them,
+    AskDocument.items()), the next `weak_max` as one list of summaries, a
+    book's labelled as Hilde's. Return (items, label)."""
     query, words = _ask_words(keywords)
-    where = {"paper": "the book", "help": "Help"}.get(document.kind) or _short_link(document.url) or document.id
+    where = {"paper": "the book", "help": "Help", "docs": "the developer docs", "code": "the code"}.get(
+        document.kind) or _short_link(document.url) or document.id
     if not words:
         return [{"kind": "note", "text": "Give words to look for."}], "Searched nothing"
     label = f'Searched {where} for "{query}"'
@@ -12163,7 +12672,8 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
         return [{"kind": "note", "text": f"No paragraph of {document.id} holds {', '.join(words)}."}], label
     found.sort()
     best, items, used, good = -found[0][0], [], 0, 0
-    for score, number in found[:settings["good_max"]]:
+    most = min(settings["good_max"], ASK_SOURCE_GOOD_MAX) if document.kind in APP_KINDS else settings["good_max"]
+    for score, number in found[:most]:
         parts = document.items(number)
         size = sum(len(part["text"]) for part in parts)
         if -score < settings["good_share"] * best or (items and used + size > CHAT_READ_MAX_CHARS):
@@ -12175,6 +12685,7 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
     if weak:
         head = ("Weaker matches, as Hilde's summaries (Hilde wrote them; they are not the paper's text); "
                 "read one with read_paragraphs:" if document.kind == "paper"
+                else "Weaker matches, by their place; read one with read_paragraphs:" if document.kind in APP_KINDS
                 else "Weaker matches, by their first sentence; read one with read_paragraphs:")
         items.append({"kind": "document_search", "label": "Hilde's summary" if document.kind == "paper" else "Excerpt",
                       "text": head + "\n" + "\n".join(f"{document.id}:{number} {document.summary(number)}"
@@ -12182,7 +12693,9 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
     return items, label
 
 
-ASK_PARAGRAPH_ID = re.compile(r"\s*(?:(help|[0-9a-f]{8}):)?(\d+)(?:\s*[-–]\s*(?:(?:help|[0-9a-f]{8}):)?(\d+))?\s*")
+ASK_PARAGRAPH_ID = re.compile(
+    r"\s*(?:(help|docs|code|[0-9a-f]{8}):)?(\d+)(?:\s*[-–]\s*(?:(?:help|docs|code|[0-9a-f]{8}):)?(\d+))?\s*"
+)
 
 
 def ask_read(shelf, ids, version=None):
@@ -12204,6 +12717,9 @@ def ask_read(shelf, ids, version=None):
         match = ASK_PARAGRAPH_ID.fullmatch(str(raw))
         if not match:
             problems.append(f"{raw} is not a paragraph id.")
+            continue
+        if not match[1] and shelf.book is None:
+            problems.append(f"{raw} names no document: give full ids, such as help:3 or code:12.")
             continue
         document = shelf.get(match[1] or shelf.book.id)
         if document is None:
@@ -12235,16 +12751,20 @@ def ask_read(shelf, ids, version=None):
 
 def _ask_read_label(shelf, ids):
     """What the listener sees of a read: "Read ¶2–4, ¶9" for the book, the
-    help's section titles, a web page's link."""
+    help's section titles, a piece of the docs or code by its title (code
+    with its lines), a web page's link."""
     if not ids:
         return "Read nothing"
     numbers, others = [], []
     for paragraph in ids:
         doc, _, number = paragraph.partition(":")
-        if doc == shelf.book.id:
+        if shelf.book is not None and doc == shelf.book.id:
             numbers.append(int(number))
         elif doc == HELP_DOCUMENT:
             others.append(f"Help › {shelf.help.paragraphs[int(number) - 1]['title']}")
+        elif doc in APP_KINDS:
+            piece = shelf.get(doc).paragraphs[int(number) - 1]
+            others.append(piece["title"] + (f", lines {piece['start']}–{piece['end']}" if doc == "code" else ""))
         else:
             document = shelf.get(doc)
             others.append(_short_link(document.url) if document is not None and document.url else doc)
@@ -12259,18 +12779,29 @@ def _ask_read_label(shelf, ids):
 
 
 class AskShelf:
-    """The documents one conversation reaches: the open book, the help, and
-    the web pages read_web_page stored under the library's cache."""
+    """The documents one conversation reaches: the open book (None in help
+    mode), the help, Hilde Reader's developer docs and code
+    (ask_app_documents(), read when first asked for), and the web pages
+    read_web_page stored under the library's cache."""
 
-    def __init__(self, storage, book, help_document=None):
+    def __init__(self, storage, book, help_document=None, sources=None):
         self.storage, self.book = storage, book
         self.help = help_document if help_document is not None else ask_help()
+        self.sources = sources
 
     def get(self, doc):
-        if doc == self.book.id:
+        if self.book is not None and doc == self.book.id:
             return self.book
         if doc == HELP_DOCUMENT:
             return self.help
+        if doc in APP_KINDS:
+            if self.sources is None and self.storage is not None:
+                try:
+                    self.sources = ask_app_documents(self.storage)
+                except (OSError, ValueError, SyntaxError) as exc:
+                    print(f"Ask Hilde: the developer docs and code could not be read: {exc}", flush=True)
+                    self.sources = ()
+            return self.sources[APP_KINDS.index(doc)] if self.sources else None
         if self.storage is not None and re.fullmatch(r"[0-9a-f]{8}", str(doc or "")):
             return ask_web_document(self.storage, doc)
         return None
@@ -12832,7 +13363,8 @@ def chat_tool(path, shelf, call, search_server="", config=ASK_DEFAULTS):
     """Run one tool call. Return what the model is told as context items
     ({"kind", "text", and "id" for a paragraph or page}), the label the
     listener sees, and whether the book's files changed. The web tools
-    exist only with a search server."""
+    exist only with a search server; the file tools only with a book
+    (`path`), never in help mode."""
     name, arguments = call.get("name"), call.get("arguments") or {}
 
     def note(text, label, changed=False):
@@ -12846,22 +13378,22 @@ def chat_tool(path, shelf, call, search_server="", config=ASK_DEFAULTS):
         doc = str(arguments.get("document_id") or "").strip()
         document = shelf.get(doc)
         if document is None:
-            return note(
-                f"There is no document {doc or 'without an id'}: use {shelf.book.id} (the open document), "
-                f"{HELP_DOCUMENT}, or a stored web page's id.", "Searched nothing",
-            )
+            documents = ([f"{shelf.book.id} (the open document)"] if shelf.book is not None else []) + [
+                HELP_DOCUMENT, *APP_KINDS] + (["a stored web page's id"] if shelf.book is not None else [])
+            return note(f"There is no document {doc or 'without an id'}: use {', '.join(documents)}.",
+                        "Searched nothing")
         return (*search_document(document, arguments.get("keywords"), config["search"]), False)
     if search_server and name == "web_search":
         text, label = web_search(search_server, arguments.get("query"))
         return [{"kind": "web_search" if "\n" in text else "note", "text": text}], label, False
     if search_server and name == "read_web_page":
         return (*read_web_page(shelf.storage, arguments.get("url"), config["store_results_over_tokens"]), False)
+    if path is None or name not in ("list_files", "write_file", "delete_file"):
+        return note(f"There is no tool named {name}.", f"Unknown tool {name}")
     if name == "list_files":
         files = chat_files(path)
         listed = "\n".join(f"{item['name']} ({item['bytes']:,} bytes)" for item in files)
         return [{"kind": "list_files", "text": listed or "No files yet."}], "Listed files", False
-    if name not in ("write_file", "delete_file"):
-        return note(f"There is no tool named {name}.", f"Unknown tool {name}")
     try:
         target = chat_file_path(path, arguments.get("name"))
     except ValueError as exc:
@@ -12910,12 +13442,14 @@ ASK_EXPIRED = "EXPIRED"
 ASK_ALREADY = "(already above)"
 # Compaction takes, oldest first, web page reads, then web searches, then
 # what was read, attached, or found in the documents; then whole old turns.
-ASK_COMPACTION = (("web_page",), ("web_search",), ("paper", "narration", "help", "document_search", "list_files"))
+ASK_COMPACTION = (("web_page",), ("web_search",),
+                  ("paper", "narration", "help", "docs", "code", "document_search", "list_files"))
 # The kinds the log adds up (ask_log()).
 ASK_LOG_KINDS = (
     ("fixed", ("fixed",)), ("questions", ("question",)), ("answers", ("answer",)), ("calls", ("calls",)),
-    ("paper", ("paper",)), ("narration", ("narration",)), ("help", ("help",)), ("web", ("web_page", "web_search")),
-    ("hits", ("document_search",)), ("files", ("list_files",)), ("notes", ("note",)),
+    ("paper", ("paper",)), ("narration", ("narration",)), ("help", ("help",)), ("source", ("docs", "code")),
+    ("web", ("web_page", "web_search")), ("hits", ("document_search",)), ("files", ("list_files",)),
+    ("notes", ("note",)),
 )
 
 
@@ -12944,7 +13478,9 @@ def ask_cited(text, document):
     """The paragraph ids an answer cites (an older answer's ¶N as
     <document>:N) and the links it gives, each once."""
     ids = [f"{match[1]}:{match[2]}" + (f"–{match[3]}" if match[3] else "") for match in ASK_CITATION_PATTERN.finditer(text)]
-    ids += [f"{document}:{match[1]}" + (f"–{match[2]}" if match[2] else "") for match in CHAT_CITATION_PATTERN.finditer(text)]
+    if document:
+        ids += [f"{document}:{match[1]}" + (f"–{match[2]}" if match[2] else "")
+                for match in CHAT_CITATION_PATTERN.finditer(text)]
     links = [link.rstrip(".,;:") for link in re.findall(r"https?://[^\s)\]>\"'<]+", text)]
     return list(dict.fromkeys(ids)), list(dict.fromkeys(links))
 
@@ -13807,7 +14343,15 @@ class ChatTurn:
             entries.append(entry)
             self.save(path, entries)
             self.partial = ""
-            self.publish({"type": "message", "entry": chat_display_entry(entry, document_id(self.book))})
+            self.publish({"type": "message", "entry": chat_display_entry(entry, self.display_document())})
+
+    def display_document(self):
+        """The document whose ids an answer shows as ¶ links: the book's."""
+        return document_id(self.book)
+
+    def conversation_path(self):
+        """The folder whose chat.json keeps this conversation: the book's."""
+        return read_book(self.storage, self.book)[0]
 
     def begin(self):
         """Load the book and keep the listener's message, with the manifest
@@ -13815,6 +14359,7 @@ class ChatTurn:
         shows it at once. ChatUnavailable says why Chat cannot answer about
         this book."""
         self.path, self.record, self.passages = chat_book(self.storage, self.book)
+        self.files_path = self.path
         self.entries = read_chat(self.path)
         self.context = read_chat_context(self.path)
         self.asked = {"role": "user", "text": self.text, "at": utc_timestamp()}
@@ -13823,13 +14368,20 @@ class ChatTurn:
         self.entries.append(self.asked)
         self.save(self.path, self.entries)
 
+    def setting(self, config, web):
+        """The open document's id, the documents the model reaches (AskShelf),
+        the instructions, and the tools: the book's."""
+        document = ask_book_document(self.book, self.record, self.passages)
+        shelf = AskShelf(self.storage, document)
+        system = ask_system_prompt(document, chat_abstract(self.passages, config["abstract_tokens"]), shelf.help, web)
+        return document.id, shelf, system, CHAT_TOOLS + CHAT_WEB_TOOLS if web else CHAT_TOOLS
+
     def run(self):
         try:
-            path, record, passages, entries = self.path, self.record, self.passages, self.entries
+            path, entries = self.path, self.entries
             config = ask_config()
             settings = ask_model_settings(config, self.selector)
             web = bool(self.search_server)
-            all_tools = CHAT_TOOLS + CHAT_WEB_TOOLS if web else CHAT_TOOLS
             # The server a local model runs on reports its window and counts tokens.
             server = (
                 local_route(self.selector, self.local_servers)["server"]
@@ -13838,9 +14390,7 @@ class ChatTurn:
             )
             window = chat_context_window(self.selector, server)
             stats = AskStats(self.storage)
-            document = ask_book_document(self.book, record, passages)
-            shelf = AskShelf(self.storage, document)
-            system = ask_system_prompt(document, chat_abstract(passages, config["abstract_tokens"]), shelf.help, web)
+            doc, shelf, system, all_tools = self.setting(config, web)
             images = self.attachment[1] if self.attachment else []
             calls_made, rounds, force, retried = 0, 0, None, False
             while True:
@@ -13848,7 +14398,7 @@ class ChatTurn:
                     raise InterruptedError("chat stopped")
                 tools = all_tools if calls_made < CHAT_MAX_TOOL_CALLS else ()
                 fixed = {"tokens": ask_tokens(system + json.dumps(tools)), "hash": ask_fingerprint([system, tools])}
-                ledger = AskLedger(entries, document.id, config, settings["expiry_multiplier"])
+                ledger = AskLedger(entries, doc, config, settings["expiry_multiplier"])
                 # The latest round's results (after the turn's last answer with calls) stay.
                 answered = [index for index in ledger.turns[-1] if entries[index].get("role") == "assistant"]
                 protect_from = answered[-1] if answered else len(entries)
@@ -13916,7 +14466,7 @@ class ChatTurn:
                     entry["calls"] = calls
                 else:
                     # What an earlier answer keeps when it is shortened (ask_short_answer()).
-                    entry["ids"], entry["links"] = ask_cited(entry["text"], document.id)
+                    entry["ids"], entry["links"] = ask_cited(entry["text"], doc)
                 # Provider fields, such as Gemini's parts, go back with the answer.
                 entry.update(kept)
                 self.keep(path, entries, entry)
@@ -13932,7 +14482,7 @@ class ChatTurn:
                             "answer with what you have."
                         )}], "Tool limit reached", False
                     else:
-                        items, label, changed = chat_tool(path, shelf, call, self.search_server, config)
+                        items, label, changed = chat_tool(self.files_path, shelf, call, self.search_server, config)
                     self.keep(path, entries, {
                         "role": "tool", "id": call["id"], "name": call["name"], "items": items, "label": label,
                     })
@@ -13998,12 +14548,65 @@ class ChatTurn:
             if self.set_aside_:
                 return
             try:
-                path, _ = read_book(self.storage, self.book)
+                path = self.conversation_path()
                 self.save(path, read_chat(path) + [entry])
             except (OSError, ValueError):
                 pass
             self.partial = ""
-            self.publish({"type": "message", "entry": chat_display_entry(entry, document_id(self.book))})
+            self.publish({"type": "message", "entry": chat_display_entry(entry, self.display_document())})
+
+
+# The help conversation: one, shared by every browser like a book's, in its
+# own folder of the library, never in a book's folder.
+HELP_CHAT_FOLDER = "help-chat"
+
+
+def help_chat_path(storage):
+    """Where help mode's conversation is kept: <root>/help-chat/chat.json."""
+    return storage.root / HELP_CHAT_FOLDER / BOOK_CHAT_FILE
+
+
+def chat_key(book, help_mode=False):
+    """A conversation's key in ChatRegistry and the routes: a book's id, or
+    HELP_DOCUMENT for the help conversation, reached only by the explicit
+    help flag (never a book named so)."""
+    book = str(book or "")
+    return HELP_DOCUMENT if help_mode else "" if book == HELP_DOCUMENT else book
+
+
+class HelpTurn(ChatTurn):
+    """One answer in help mode, on a page without a book (Create, Voices,
+    Settings, the Library): kept in the help conversation (help_chat_path()),
+    never a book's; the model reaches the help, the developer docs, and the
+    code with the reading tools only (HELP_TOOLS), and nothing else."""
+
+    def __init__(self, storage, text, selector, local_servers):
+        super().__init__(storage, HELP_DOCUMENT, text, selector, local_servers)
+
+    def display_document(self):
+        return ""
+
+    def conversation_path(self):
+        return help_chat_path(self.storage).parent
+
+    def save(self, path, entries):
+        context = getattr(self, "context", None)
+        if context is None:
+            context = read_chat_context(path)
+        path.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(path / BOOK_CHAT_FILE, {"schema": 1, "help": True, "entries": entries, "context": context})
+
+    def begin(self):
+        self.path, self.files_path = self.conversation_path(), None
+        self.entries = read_chat(self.path)
+        self.context = read_chat_context(self.path)
+        self.asked = {"role": "user", "text": self.text, "at": utc_timestamp()}
+        self.entries.append(self.asked)
+        self.save(self.path, self.entries)
+
+    def setting(self, config, web):
+        shelf = AskShelf(self.storage, None)
+        return "", shelf, ask_help_system_prompt(shelf.help), HELP_TOOLS
 
 
 def chat_model_name(selector):
@@ -14144,6 +14747,26 @@ def chat_payload(storage, chats, book, search_server=""):
             str(number): passage["paragraphs"][0]
             for number, passage in enumerate(passages, 1) if passage.get("paragraphs")
         },
+    }
+
+
+def help_chat_payload(storage, chats):
+    """What the page shows in help mode: the help conversation (`help`
+    true; no book, document, files, passages, or web search)."""
+    turn = chats.current(HELP_DOCUMENT)
+    with turn.condition if turn is not None else contextlib.nullcontext():
+        running = turn is not None and not turn.done
+        entries = read_chat(help_chat_path(storage).parent)
+        conversation = [chat_display_entry(entry) for entry in entries]
+        partial = turn.partial if running else ""
+        event_index = len(turn.events) if running else 0
+    return {
+        "help": True, "book": "", "document": "", "problem": "", "conversation": conversation,
+        "running": running, "partial": partial, "event_index": event_index,
+        "turn": turn.id if turn is not None else "",
+        "running_model": turn.selector if running else "",
+        "running_model_name": chat_model_name(turn.selector) if running else "",
+        "files": [], "web_search": False, "passages": {},
     }
 
 
@@ -17769,10 +18392,11 @@ class Handler(BaseHTTPRequestHandler):
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/chat":
-            return self.reply_chat(query.get("book", [""])[0])
+            return self.reply_chat(chat_key(query.get("book", [""])[0], query.get("help", [""])[0] == "1"))
         if route == "/api/chat/events":
             return self.chat_events(
-                query.get("book", [""])[0], query.get("from", ["0"])[0], query.get("turn", [""])[0],
+                chat_key(query.get("book", [""])[0], query.get("help", [""])[0] == "1"),
+                query.get("from", ["0"])[0], query.get("turn", [""])[0],
             )
         if route == "/api/chat/file":
             try:
@@ -18107,10 +18731,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.chat_send(body)
         if route == "/api/chat/stop":
             # `turn`, when given, stops only that answer (a page's stale Stop never ends a newer one).
-            self.server.chats.stop(str(body.get("book") or ""), str(body.get("turn") or ""))
-            return self.reply_chat(str(body.get("book") or ""))
+            key = chat_key(body.get("book"), body.get("help") is True)
+            self.server.chats.stop(key, str(body.get("turn") or ""))
+            return self.reply_chat(key)
         if route == "/api/chat/new":
-            return self.chat_new(str(body.get("book") or ""))
+            return self.chat_new(chat_key(body.get("book"), body.get("help") is True))
         if route == "/api/airdrop":
             return self.airdrop(body.get("path", ""))
         if route in (
@@ -18469,11 +19094,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.CREATED, reply)
 
     def reply_chat(self, book):
-        """Answer with a book's conversation, files, and whether Hilde is answering."""
+        """Answer with a book's conversation, files, and whether Hilde is
+        answering; with HELP_DOCUMENT, the help conversation."""
         try:
-            payload = chat_payload(
-                self.server.storage, self.server.chats, book, self.server.search_server
-            )
+            payload = help_chat_payload(self.server.storage, self.server.chats) if book == HELP_DOCUMENT else (
+                chat_payload(self.server.storage, self.server.chats, book, self.server.search_server))
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
         payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE
@@ -18541,8 +19166,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.OK, attachment[0], extra=(("Cache-Control", "no-store"),))
 
     def chat_send(self, body):
-        """Start Hilde's answer to a listener's message about a book."""
-        book = str(body.get("book") or "")
+        """Start Hilde's answer to a listener's message about a book, or, with
+        `help` true, in help mode (no book, nothing attached)."""
+        book = chat_key(body.get("book"), body.get("help") is True)
         text = str(body.get("text") or "").strip()
         model = str(body.get("model") or "").strip()
         if not text:
@@ -18554,14 +19180,17 @@ class Handler(BaseHTTPRequestHandler):
         if not model:
             return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
         attachment = None
-        if body.get("about") is not None:
-            attachment, failure = self.chat_attach(book, model, body["about"])
-            if failure:
-                return self.fail(*failure)
-        turn = ChatTurn(
-            self.server.storage, book, text, model, local_endpoints(), attachment,
-            self.server.search_server,
-        )
+        if book == HELP_DOCUMENT:
+            turn = HelpTurn(self.server.storage, text, model, local_endpoints())
+        else:
+            if body.get("about") is not None:
+                attachment, failure = self.chat_attach(book, model, body["about"])
+                if failure:
+                    return self.fail(*failure)
+            turn = ChatTurn(
+                self.server.storage, book, text, model, local_endpoints(), attachment,
+                self.server.search_server,
+            )
         try:
             started = self.server.chats.start(turn)
         except ChatUnavailable as exc:
@@ -18573,10 +19202,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply_chat(book)
 
     def chat_new(self, book):
-        """Clear a book's conversation; its files stay."""
+        """Clear a book's conversation (its files stay), or the help
+        conversation alone (HELP_DOCUMENT); never another."""
         turn = self.server.chats.current(book)
         if turn is not None and not turn.done:
             return self.fail(HTTPStatus.CONFLICT, "Hilde is still answering; stop it first.")
+        if book == HELP_DOCUMENT:
+            help_chat_path(self.server.storage).unlink(missing_ok=True)
+            return self.reply_chat(book)
         try:
             path, _ = read_book(self.server.storage, book)
         except (ValueError, FileNotFoundError):
@@ -19193,6 +19826,22 @@ body.server-down [inert] { opacity:.5; }
 .brand-name { font-size:24px; font-weight:600; white-space:nowrap; }
 .brand-name span { font-weight:400; color:#c9ccd2; }
 .brand-tagline { color:var(--dim); font-size:13px; }
+/* Ask Hilde at the header's top right on every page: Ask Hilde's teal pill (the player bar button's tint, border
+   and text), the sparkle and the words; filled teal while its panel is open. On a phone, the sparkle alone in a
+   round 44 px button, still named "Ask Hilde". */
+.header-ask { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:8px; margin-left:auto;
+              min-height:40px; padding:0 18px; border:1px solid color-mix(in srgb, var(--ask) 65%, var(--surface));
+              border-radius:999px; background:color-mix(in srgb, var(--ask) 12%, var(--surface)); box-shadow:none;
+              color:var(--ask); font-size:15px; font-weight:600; white-space:nowrap; }
+.header-ask:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 18%, var(--surface)); }
+.header-ask[aria-expanded=true], .header-ask[aria-expanded=true]:hover:not(:disabled) {
+  border-color:var(--ask); background:var(--ask); color:#0e1a18; }
+.header-ask .ask-icon { width:16px; height:16px; stroke-width:1.4; }
+@media (max-width:599.98px) {
+  .header-ask { width:44px; height:44px; min-height:44px; padding:0; }
+  .header-ask .ask-icon { width:18px; height:18px; }
+  .header-ask-label { display:none; }
+}
 /* Inline, not flex: flex drops the spaces around the mark, so copied text
    read "byZeki Works". */
 .signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
@@ -19215,7 +19864,7 @@ button { background:var(--raised); color:var(--text); border:1px solid var(--lin
          box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55);
          transition:filter .1s ease-out; }
 button:hover:not(:disabled) { background:var(--hover); }
-button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button, .ask-hilde,
+button:active:not(:disabled):not(.link, [role=tab], [role=radio], .menu button, .settings-button, .ask-hilde, .header-ask,
                                  .paper-bar-title) {
   --lift:1px; transform:translateY(1px); filter:brightness(1.18); transition:none; }
 button:disabled { opacity:.45; cursor:default; box-shadow:none; }
@@ -20038,7 +20687,7 @@ main.reading > :is(.app-header, .tabs, #status, #server-down) { max-width:920px;
 /* Every page keeps the scroll bar's room, so the column never shifts as a
    page starts or stops scrolling (Create, Voices, a book). */
 html { scrollbar-gutter:stable; }
-.listen-workspace { --panel-w:440px; }
+:root { --panel-w:440px; }
 .reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
 .reading-column > :not(.reader-panel) { font-size:15px; }
 /* The book's title, with the way back to the library at its top right. */
@@ -20267,6 +20916,7 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
                     font-size:13px; line-height:1.4; white-space:normal; overflow-wrap:anywhere; }
 .menu .menu-notes p { margin:0; }
 .menu .menu-notes p + p { margin-top:4px; }
+.menu .menu-notes:not(:has(> :not(.hidden))) { display:none; }
 .chat-section:not(:empty)::before { content:" · "; }
 .menu [role=menuitemcheckbox] { display:flex; align-items:center; gap:10px; }
 .menu [role=menuitemcheckbox]::before { content:""; display:grid; flex:none; place-items:center; width:16px;
@@ -20292,6 +20942,20 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .chat-problem p { margin:0; }
 .chat-log { display:grid; flex:1; align-content:start; gap:14px; min-height:0; overflow:auto;
             overscroll-behavior:contain; padding:16px; }
+/* Help mode: at the top of the conversation, the heading, what the panel is for, and three example questions as
+   quiet teal buttons (outlined, the text left-aligned); a click puts one in the box. */
+.help-intro { display:grid; gap:8px; margin:0 0 6px; }
+/* Only at the top of the help conversation (applyChat()); the markup's own copy outside it never shows. */
+#chat-pane > .help-intro { display:none; }
+.help-intro > * { margin:0; }
+.help-title { font-size:17px; font-weight:650; }
+.help-intro p { color:var(--dim); line-height:1.5; }
+.help-examples { display:grid; gap:8px; margin-top:6px; }
+button.help-example { justify-content:flex-start; min-height:40px; padding:8px 14px; text-align:left;
+                      border:1px solid color-mix(in srgb, var(--ask) 55%, var(--surface)); border-radius:10px;
+                      background:transparent; box-shadow:none; color:var(--ask); font-size:14px; font-weight:400; }
+button.help-example:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 10%, var(--surface)); }
+@media (pointer:coarse) { button.help-example { min-height:44px; } }
 /* A question: its card (what went with it) the panel's width, the words right-aligned in a bubble. */
 .chat-user { display:grid; gap:12px; margin:0; }
 .chat-user-text { justify-self:end; max-width:90%; margin:0; padding:4px 10px; border-radius:8px;
@@ -20482,10 +21146,14 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .shortcut-table td { padding:5px 0; color:var(--dim); }
 .shortcut-table kbd { padding:1px 6px; border:1px solid var(--line); border-radius:4px;
                       background:var(--field); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
-/* With the panel open on a wide screen, the text and the player move left to make room. */
+/* With the panel open on a wide screen, the text and the player move left to make room. In help mode the header
+   and the tabs stay where they are (the panel starts under them) and the page under them narrows by what the panel
+   would cover (--help-room, fitHelpRoom()); a book playing from the Library keeps its player bar beside the panel. */
 @media (min-width:900px) {
   .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
   .listen-workspace.panel-open :is(.player-dock, .dock-slot) { right:var(--panel-w); }
+  main.help-panel-open > :is(.page, #status, #server-down) { margin-right:var(--help-room, 0px); }
+  main.help-panel-open #book-view.dock-only :is(.player-dock, .dock-slot) { right:var(--panel-w); }
 }
 /* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
    grabber, 60% of the visible viewport high, the book dimmed above it (a tap there closes it). With the keyboard
@@ -20704,6 +21372,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <h1 class="brand-name">Hilde<span> Reader</span></h1>
       <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
     </div>
+    <!-- Ask Hilde on every page: a teal pill with the sparkle (the sparkle alone, round, on a phone). In a book's
+         reading view it opens the book's chat, as the player bar's Ask Hilde does; on every other screen the panel
+         in help mode (askMode()). -->
+    <button id="header-ask" class="header-ask" type="button" aria-label="Ask Hilde" aria-controls="side-panel"
+      aria-expanded="false"><svg class="ask-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"
+      focusable="false"><path d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
+      /></svg><span class="header-ask-label">Ask Hilde</span></button>
   </header>
 
   <nav class="tabs" aria-label="Main">
@@ -21375,6 +22050,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
         </div>
       </div>
+      <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
+    </div>
+  </section>
+  <!-- The side panel (Ask Hilde, a figure, a source page) belongs to no page: the header's Ask Hilde opens it on
+       every screen, in help mode or, in a book's reading view, book mode (askMode()). -->
       <div id="panel-backdrop" class="panel-backdrop hidden" aria-hidden="true" onclick="closePanel()"></div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
         <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
@@ -21428,6 +22108,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             </div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
+          <!-- Help mode only: what the panel is for and three questions to start with; a click puts one in the
+               box and sends nothing. Kept at the top of the conversation (applyChat()), scrolling with it. -->
+          <div id="help-intro" class="help-intro">
+            <h2 class="help-title">Help with Hilde Reader</h2>
+            <p>Ask how something works in Hilde Reader. To ask about a paper, open it in Listen.</p>
+            <div class="help-examples">
+              <button type="button" class="help-example">How do I add a document?</button>
+              <button type="button" class="help-example">How do I change the voice?</button>
+              <button type="button" class="help-example">What is the difference between Local and Cloud?</button>
+            </div>
+          </div>
           <!-- Fixed under the conversation's scroll: one teal button for what Hilde is doing (Stop while she writes,
                Pause while she reads an answer aloud, Resume once paused; hidden otherwise) with its status, the
                card attached to the next question, and the question box (renderChatAction()). -->
@@ -21477,9 +22168,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
         </section>
       </aside>
-      <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
-    </div>
-  </section>
 
   <datalist id="server-voice-presets">
     <option value="alloy"><option value="ash"><option value="ballad">
@@ -23869,10 +24557,93 @@ let panelOpen = false, panelView = "chat", figureShown = 0, pageShown = 0;
 let chatScroll = null;  // { top, atEnd } of the conversation while it is hidden
 function narrowScreen() { return !window.matchMedia("(min-width:900px)").matches; }
 function chatShown() { return panelOpen && panelView === "chat"; }
+
+// --- Ask Hilde's mode: the screen decides ------------------------------------
+// A book's reading view is book mode: that book's chat, as before. Every other
+// screen (Create, Voices, Settings, the Library, a book playing from the
+// Library) is help mode: the help conversation, with nothing of a book, its
+// selection, or the part playing. Each mode keeps its own panel (the
+// conversation, the draft, the card, the scroll) while the other shows; an
+// answer still arriving goes on on the server into its own conversation, and
+// the panel loads that again on return.
+function askModeFor(screen) {
+  return screen.tab === "player" && screen.book && !screen.inLibrary && !screen.settings ? "book" : "help";
+}
+function askMode() {
+  return state ? askModeFor({ tab:state.tab, book:state.player.book, inLibrary:state.player.in_library,
+                              settings:settingsOpen }) : "help";
+}
+let chatMode = "help";  // the mode the panel shows
+const chatKept = { book:null, help:null };  // the other mode's panel while it is hidden
+let panelOpener = null;  // the button that opened the panel: the focus goes back to it
+const HELP_INTRO = $("help-intro");
+function keepChat() {
+  if (chatShown()) rememberChatScroll();
+  return { book:state.player.book, data:chatData, live:chatLive, scroll:chatScroll, about:chatAbout,
+           input:$("chat-input").value, nodes:[...$("chat-log").childNodes].filter((node) => node !== HELP_INTRO),
+           figure:figureShown, page:pageShown, view:panelView };
+}
+function restoreChat(kept) {
+  chatData = kept ? kept.data : null; chatLive = kept ? kept.live : null; chatScroll = kept ? kept.scroll : null;
+  chatAbout = kept ? kept.about : null;
+  figureShown = kept ? kept.figure : 0; pageShown = kept ? kept.page : 0; panelView = kept ? kept.view : "chat";
+  $("chat-input").value = kept ? kept.input : "";
+  $("chat-log").replaceChildren(...(chatMode === "help" ? [HELP_INTRO] : []), ...(kept ? kept.nodes : []));
+  renderChatAbout();
+}
+function syncAskMode() {
+  const mode = askMode();
+  if (mode === chatMode) return;
+  stopChatStream();
+  stopSpeaking();
+  if (popup && popup.panel === $("chat-menu")) closePopup();
+  chatKept[chatMode] = keepChat();
+  // What the panel followed is dropped here (a reload, a send's reply); the server keeps each answer.
+  chatEpoch++; chatRetry = 0; clearTimeout(chatRetryTimer);
+  chatQueued = false; chatStopping = false;
+  chatHint();
+  chatMode = mode;
+  const kept = chatKept[mode];
+  chatKept[mode] = null;
+  restoreChat(kept && (mode === "help" || kept.book === state.player.book) ? kept : null);
+  $("side-panel").dataset.mode = mode;
+  $("side-panel").setAttribute("aria-label", mode === "help" ? "Ask Hilde" : "Ask Hilde, figure, and source page");
+  renderPanel();
+  if (chatShown() && chatScroll) {
+    const log = $("chat-log");
+    log.scrollTop = chatScroll.atEnd ? log.scrollHeight : chatScroll.top;
+  }
+  if (mode === "help" || state.player.book) loadChat();
+}
+// The conversation the panel shows, as the server's routes name it.
+function chatScope() { return chatMode === "help" ? "help" : `book:${state.player.book}`; }
+function chatQuery() { return chatMode === "help" ? "help=1" : "book=" + encodeURIComponent(state.player.book); }
+function chatTarget() { return chatMode === "help" ? { help:true } : { book:state.player.book }; }
+// The header's Ask Hilde: in a book's reading view what the player bar's Ask
+// Hilde does; on every other screen the panel in help mode, as it was left.
+function headerAsk() {
+  syncAskMode();
+  panelOpener = $("header-ask");
+  if (chatMode === "book") { askHilde(); return; }
+  setPanel(true, "chat");
+  if (!chatData) loadChat();
+  focusChatInput();
+  refreshPaperModels();
+}
+// Help mode on a wide screen: the page under the tabs narrows by what the
+// panel would cover; the header and the tabs stay.
+function fitHelpRoom() {
+  const main = document.querySelector("main");
+  if (!(panelOpen && chatMode === "help") || narrowScreen()) { main.style.removeProperty("--help-room"); return; }
+  const inner = main.getBoundingClientRect().right - parseFloat(getComputedStyle(main).paddingRight);
+  const room = Math.max(0, Math.ceil(inner - $("side-panel").getBoundingClientRect().left + 16));
+  main.style.setProperty("--help-room", `${room}px`);
+}
 function renderPanel() {
   $("side-panel").classList.toggle("hidden", !panelOpen);
   $("panel-backdrop").classList.toggle("hidden", !panelOpen);
   $("book-view").classList.toggle("panel-open", panelOpen);
+  document.querySelector("main").classList.toggle("help-panel-open", panelOpen && chatMode === "help");
   document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
   for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"]]) {
     const selected = view === panelView;
@@ -23886,8 +24657,10 @@ function renderPanel() {
   $("chat-model-pick").classList.toggle("hidden", panelView !== "chat");
   $("chat-menu-wrap").classList.toggle("hidden", panelView !== "chat");
   $("panel-head").classList.toggle("has-tabs", !!(figureShown || pageShown));
-  $("ask-hilde").setAttribute("aria-expanded", String(chatShown()));
+  $("ask-hilde").setAttribute("aria-expanded", String(chatShown() && chatMode === "book"));
+  $("header-ask").setAttribute("aria-expanded", String(chatShown()));
   if (panelOpen) fitPinned();
+  fitHelpRoom();
 }
 function rememberChatScroll() {
   const log = $("chat-log");
@@ -23910,7 +24683,9 @@ function showPanelView(view) { setPanel(true, view); }
 function closePanel() {
   setPanel(false);
   stopSpeaking();
-  $("ask-hilde").focus({ preventScroll:true });
+  const back = panelOpener && shown(panelOpener) ? panelOpener : $(chatMode === "book" ? "ask-hilde" : "header-ask");
+  panelOpener = null;
+  back.focus({ preventScroll:true });
 }
 // Ask Hilde's ⋯ menu: what the conversation is about, then Read answers
 // aloud and New conversation. Enter, Space, or ArrowDown on ⋯ opens it on
@@ -23937,8 +24712,9 @@ function setPanelWidth(width, save) {
   const least = window.innerWidth < 1100 ? 360 : 400;
   const most = Math.max(least, Math.min(720, window.innerWidth - 700));
   const value = Math.round(Math.min(most, Math.max(least, width)));
-  if ($("book-view").style.getPropertyValue("--panel-w") !== `${value}px`)
-    keepPlace(() => $("book-view").style.setProperty("--panel-w", `${value}px`));
+  if (document.documentElement.style.getPropertyValue("--panel-w") !== `${value}px`)
+    keepPlace(() => document.documentElement.style.setProperty("--panel-w", `${value}px`));
+  fitHelpRoom();
   const handle = $("panel-resize");
   handle.setAttribute("aria-valuenow", String(value));
   handle.setAttribute("aria-valuemin", String(least));
@@ -24038,8 +24814,13 @@ let chatData = null, chatStream = null, chatLive = null;
 let chatEpoch = 0, chatCancel = null, chatRetry = 0, chatRetryTimer = 0;
 const chatCancelled = new Set();
 
-// Opening another book closes the panel and shows that book's files.
+// Opening another book closes the panel and shows that book's files. In help
+// mode the panel is the help's: only the book's kept panel goes.
 function resetChatFor(book) {
+  if (chatMode === "help") {
+    if (chatKept.book && chatKept.book.book !== book) chatKept.book = null;
+    return;
+  }
   if (chatData && chatData.book === book) return;
   stopChatStream();
   stopSpeaking();
@@ -24064,11 +24845,11 @@ function focusChatInput() {
 // every 15 seconds; meanwhile the answer counts as ended, so it never holds a
 // question back (the server still refuses one while an answer runs).
 async function loadChat() {
-  const book = state.player.book, epoch = chatEpoch;
+  const scope = chatScope(), epoch = chatEpoch;
   clearTimeout(chatRetryTimer);
   try {
-    const data = await jsonRequest("/api/chat?book=" + encodeURIComponent(book));
-    if (state.player.book !== book || epoch !== chatEpoch) return;
+    const data = await jsonRequest("/api/chat?" + chatQuery());
+    if (chatScope() !== scope || epoch !== chatEpoch) return;
     if (chatRetry) {
       chatRetry = 0;
       if ($("chat-hint").dataset.kind === "reload") chatHint();
@@ -24076,7 +24857,7 @@ async function loadChat() {
     applyChat(data);
     if (chatData.running && !chatStream) connectChat(data.event_index, data.turn);
   } catch (error) {
-    if (state.player.book !== book || epoch !== chatEpoch) return;
+    if (chatScope() !== scope || epoch !== chatEpoch) return;
     if (chatData) chatData.running = false;
     chatStopping = false;
     chatRetry++;
@@ -24094,9 +24875,9 @@ function applyChat(data) {
     chatStopping = false;
     if ($("chat-hint").dataset.kind === "busy") chatHint();
   }
-  renderChatFiles(data.files || []);
+  if (!data.help) renderChatFiles(data.files || []);
   const log = $("chat-log");
-  log.replaceChildren(...data.conversation.map(chatEntryElement).filter(Boolean));
+  log.replaceChildren(...(data.help ? [HELP_INTRO] : []), ...data.conversation.map(chatEntryElement).filter(Boolean));
   chatLive = null;
   if (data.partial) {
     setLiveText(data.partial);
@@ -24478,11 +25259,14 @@ function chatModel() {
   return model && !problem ? model.selector : "";
 }
 // The panel's head: the book, the section the question is about (else the
-// one playing), and where the chosen model runs, before anything is sent.
+// one playing), and where the chosen model runs, before anything is sent. In
+// help mode no book and no section: nothing of a book goes with a question.
 function renderChatHeader() {
-  const book = bookById(state.player.book);
+  const help = chatMode === "help";
+  const book = help ? null : bookById(state.player.book);
   $("chat-book").textContent = book ? book.title : "";
-  const passage = passageOfBlock(activeReaderBlock);
+  $("chat-book").parentElement.classList.toggle("hidden", help);
+  const passage = help ? null : passageOfBlock(activeReaderBlock);
   const detail = readerPayload && passage ? readerPayload.passages[passage] : null;
   $("chat-section").textContent = (chatAbout && chatAbout.manifest ? chatAbout.manifest.section
     : detail ? detail.section : "") || "";
@@ -24560,7 +25344,8 @@ async function sendChat(event) {
   // What was used is this browser's last used model for Ask Hilde.
   if (state.player.chat_model !== model) { state.player.chat_model = model; queueSync(); }
   noteRecentModel(model);
-  const sent = chatAbout && chatAbout.manifest ? chatAbout : null;
+  const sent = chatMode === "book" && chatAbout && chatAbout.manifest ? chatAbout : null;
+  const mode = chatMode, target = chatTarget();
   if (state.player.chat_speak) unlockChatVoice();
   chatSending = true;
   chatSendCancelled = false;
@@ -24572,7 +25357,7 @@ async function sendChat(event) {
   try {
     const data = await jsonRequest("/api/chat/send", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book, model,
+      body:JSON.stringify({ ...target, model,
         text:typed || DEFAULT_QUESTION,
         ...(sent ? { about:sent.about } : {}) }),
     });
@@ -24580,10 +25365,17 @@ async function sendChat(event) {
       // The model changed while the question was on its way: its answer is
       // stopped like the one running would be; the box and the card stay.
       chatCancelled.add(data.turn);
-      await stopChatTurn(data.turn).catch(() => {});
+      await stopChatTurn(data.turn, target).catch(() => {});
       return;
     }
-    if (epoch !== chatEpoch) return;  // another book opened meanwhile
+    if (epoch !== chatEpoch) {
+      // Another book opened, or the screen changed modes: the question went, so
+      // the box and card kept for that mode let it go; the answer is its own.
+      const kept = mode !== chatMode ? chatKept[mode] : null;
+      if (kept && kept.input.trim() === typed) kept.input = "";
+      if (kept && sent && kept.about === sent) kept.about = null;
+      return;
+    }
     // What was typed meanwhile stays.
     if ($("chat-input").value.trim() === typed) $("chat-input").value = "";
     if (sent && chatAbout === sent) clearAbout();
@@ -24602,9 +25394,8 @@ async function sendChat(event) {
 // another turn, such as an answer cancelled by a model change, is dropped.
 function connectChat(from, turn = "") {
   stopChatStream();
-  const book = state.player.book;
   const source = new EventSource(
-    "/api/chat/events?book=" + encodeURIComponent(book) + "&from=" + encodeURIComponent(from)
+    "/api/chat/events?" + chatQuery() + "&from=" + encodeURIComponent(from)
     + (turn ? "&turn=" + encodeURIComponent(turn) : "")
   );
   chatStream = source;
@@ -24658,11 +25449,12 @@ async function stopChat() {
     setStatus(error.message, true);
   }
 }
-// The server stops the book's answer; naming its turn, only that one.
-function stopChatTurn(turn) {
+// The server stops the answer of the conversation shown (or `target`'s);
+// naming its turn, only that one.
+function stopChatTurn(turn, target = chatTarget()) {
   return jsonRequest("/api/chat/stop", {
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ book:state.player.book, ...(turn ? { turn } : {}) }),
+    body:JSON.stringify({ ...target, ...(turn ? { turn } : {}) }),
   });
 }
 // Changing Ask Hilde's model ends what the old one is doing, as Stop does:
@@ -24673,7 +25465,7 @@ function stopChatTurn(turn) {
 // for this cancel first, so the server never refuses it as still answering).
 function cancelChatAnswer() {
   const turn = chatData && chatData.running ? chatData.turn : "";
-  const sending = chatSending ? chatSendTask : null;
+  const sending = chatSending ? chatSendTask : null, target = chatTarget();
   chatEpoch++;
   chatQueued = false;
   if (sending) chatSendCancelled = true;
@@ -24689,7 +25481,7 @@ function cancelChatAnswer() {
   const task = chatCancel = (async () => {
     if (sending) await sending;
     if (turn) {
-      try { await stopChatTurn(turn); }
+      try { await stopChatTurn(turn, target); }
       catch (error) {
         chatHint(`The answer from ${name || "the earlier model"} couldn't be stopped: ${error.message}`, true);
       }
@@ -24698,18 +25490,25 @@ function cancelChatAnswer() {
     if (chatCancel === task) chatCancel = null;
   })();
 }
+// New conversation: the book's (its notes stay), or in help mode the help
+// conversation alone; a book's chat is never touched from help mode.
 async function newChat() {
-  const book = bookById(state.player.book);
-  if (!(await askConfirm({
+  const book = bookById(state.player.book), target = chatTarget();
+  if (!(await askConfirm(target.help ? {
+    title:"Start a new help conversation?",
+    text:"The help conversation so far is cleared. Conversations about your books stay as they are.",
+    confirm:"Start a new conversation", danger:true,
+  } : {
     title:`Start a new conversation about '${book ? book.title : "this book"}'?`,
     text:"The conversation so far is cleared. Notes Hilde wrote stay.",
     confirm:"Start a new conversation", danger:true,
   }))) return;
   try {
-    applyChat(await jsonRequest("/api/chat/new", {
-      method:"POST", headers:{ "Content-Type":"application/json" },
-      body:JSON.stringify({ book:state.player.book }),
-    }));
+    const data = await jsonRequest("/api/chat/new", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(target),
+    });
+    if (!!data.help !== (chatMode === "help")) return;
+    applyChat(data);
     $("chat-input").focus();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -28245,7 +29044,7 @@ function followActive(info, reconnecting) {
 // text, and its views stay, so a book already downloaded plays on.
 const SERVER_PARTS = [
   "#page-settings", "#page-audiobook", "#page-progress", "#page-voice",
-  "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#chat-pane",
+  "#library-view", "#more-menu", "#reader-stale", "#ask-hilde", "#header-ask", "#chat-pane",
   "#figure-view .panel-actions", "#selection-ask", "#dock-ask",
 ];
 let serverDown = false;
@@ -28322,7 +29121,9 @@ function render() {
   document.querySelector("main").classList.toggle("reading", reading);
   document.querySelector("main").classList.toggle("library-docked", docked);
   queuePinned();
-  document.documentElement.classList.toggle("sheet-open", reading && panelOpen && narrowScreen());
+  // The screen decides Ask Hilde's mode: a book's reading view, or help (syncAskMode()).
+  syncAskMode();
+  document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
   // The player bar's speed menu stays while the bar shows under the Library.
@@ -29810,7 +30611,21 @@ $("reader-content").addEventListener("pointermove", trackReaderPress, { passive:
 $("reader-content").addEventListener("pointercancel", cancelReaderPress);
 $("reader-content").addEventListener("pointerup", tapReaderText);
 $("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection() || dockPicked; });
-$("ask-hilde").addEventListener("click", askHilde);
+$("ask-hilde").addEventListener("click", () => { panelOpener = $("ask-hilde"); askHilde(); });
+// The header's Ask Hilde takes a selection in the book as the player bar's does, in book mode only.
+$("header-ask").addEventListener("pointerdown", () => {
+  if (askMode() === "book") askSelection = readerSelection() || dockPicked;
+});
+$("header-ask").addEventListener("click", headerAsk);
+// Help mode's example questions: a click puts one in the box; nothing is sent.
+for (const example of HELP_INTRO.querySelectorAll(".help-example")) {
+  example.addEventListener("click", () => {
+    $("chat-input").value = example.textContent;
+    chatHint();
+    renderSendButton();
+    focusChatInput();
+  });
+}
 $("speed-menu").append(...SPEED_CHOICES.map((speed) => {
   const item = document.createElement("button");
   item.type = "button";
@@ -29952,8 +30767,7 @@ window.visualViewport?.addEventListener("scroll", fitVisualViewport);
 window.addEventListener("resize", () => {
   fitVisualViewport(); fitDock(); observePaperBar(); queuePinned();
   setPanelWidth(Number(stored("panelWidth")) || 440, false);
-  document.documentElement.classList.toggle(
-    "sheet-open", state && state.tab === "player" && !!state.player.book && panelOpen && narrowScreen());
+  document.documentElement.classList.toggle("sheet-open", !!state && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
 // The view's controls pinned on a wide screen (none on a phone: display:contents) under the paper bar: what
@@ -30416,6 +31230,13 @@ def main():
     server.storage = storage
     server.verbose = args.verbose
     server.manage_from_network = args.manage_from_network
+    # The commit Ask Hilde links to is the checkout's own, as it is now; the
+    # index of its docs and code is made (or read from the cache) meanwhile.
+    source = app_source()
+    print(f"Ask Hilde: links to {HILDE_REPOSITORY_URL} at {source['commit'][:12]}" if source["clean"] else
+          "Ask Hilde: this checkout has changes or no git, so answers from the docs or code name the running code"
+          " without links", flush=True)
+    threading.Thread(target=ask_app_documents, args=(storage,), name="app-index", daemon=True).start()
     if nodes and tts_models["clone"]["source"] != "local":
         print(
             f"{workers_path} is not used: its nodes narrate with --voice-clone-model.",

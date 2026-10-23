@@ -12742,6 +12742,270 @@ class RateModelsScriptTests(unittest.TestCase):
         self.assertEqual(outcome["audio"], 3.0)
 
 
+def git_checkout(root, files):
+    """A small git checkout in `root` with `files` ({path: text}) committed; its HEAD."""
+    for name, text in files.items():
+        path = Path(root) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    for arguments in (("init", "-q"), ("add", "-A"),
+                      ("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "t")):
+        subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+class AskEverywhereTests(unittest.TestCase):
+    """Ask Hilde on every page (23 Oct): help mode and its own history, the
+    documents `docs` and `code` with links to the exact running commit, and
+    which mode a screen is in."""
+
+    COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.storage = web.SharedStorage(self.root / "library")
+        self.storage.ensure()
+
+    def test_markdown_splits_at_headings_outside_code_fences_each_piece_with_its_github_anchor(self):
+        text = ("Intro line.\n\n# Title\n\nOne.\n\n## Web search for Chat\n\n```yaml\n# not a heading\nkey: 1\n```\n\n"
+                "## `SharedStorage` and **Books**\n\nTwo.\n\n## Web search for Chat\n\nAgain.\n")
+        pieces = web.split_markdown(text, "docs/x.md")
+        self.assertEqual([(p["title"], p["start"], p["end"], p["anchor"]) for p in pieces], [
+            ("docs/x.md", 1, 1, ""),
+            ("docs/x.md › Title", 3, 5, "title"),
+            ("docs/x.md › Title › Web search for Chat", 7, 12, "web-search-for-chat"),
+            ("docs/x.md › Title › SharedStorage and Books", 14, 16, "sharedstorage-and-books"),
+            ("docs/x.md › Title › Web search for Chat", 18, 20, "web-search-for-chat-1"),
+        ])
+        lines = text.split("\n")
+        for piece in pieces:
+            self.assertEqual(piece["body"], "\n".join(lines[piece["start"] - 1:piece["end"]]))
+        # A long section is split further at blank lines; every part keeps the section's anchor.
+        long = "## Long one\n\n" + "\n\n".join(f"Paragraph {n} words." for n in range(80)) + "\n"
+        parts = web.split_markdown(long, "README.md")
+        self.assertGreater(len(parts), 2)
+        self.assertTrue(all(p["anchor"] == "long-one" and p["end"] - p["start"] < web.APP_PIECE_LINES for p in parts))
+        self.assertEqual(parts[1]["title"], "README.md › Long one (part 2)")
+        self.assertEqual(web.github_anchor("Ask Hilde: what's sent (v2)"), "ask-hilde-whats-sent-v2")
+
+    def test_python_splits_by_top_level_function_and_class_long_ones_further_with_exact_lines(self):
+        source = ('"""Doc."""\nimport os\n\nX = 1\nY = 2\n\n\n# A comment about f.\ndef f():\n    return 1\n\n\n'
+                  "@decorator\ndef g():\n    pass\n\n\nclass C:\n    \"\"\"C.\"\"\"\n\n    def a(self):\n        return 1\n")
+        pieces = web.split_python(source, "m.py")
+        self.assertEqual([(p["title"], p["start"], p["end"]) for p in pieces], [
+            ("m.py › X, Y", 1, 5), ("m.py › def f", 8, 10), ("m.py › def g", 13, 15), ("m.py › class C", 18, 22),
+        ])
+        lines = source.split("\n")
+        # A class longer than the limit goes by method, a long function at blank lines; every line is kept.
+        long_source = source + "".join(f"\n    def m{n}(self):\n        x = {n}\n\n        return x\n" for n in range(6))
+        small = web.split_python(long_source, "m.py", limit=6)
+        long_lines = long_source.split("\n")
+        covered = {n for p in small for n in range(p["start"], p["end"] + 1)}
+        self.assertTrue(all(n in covered for n, line in enumerate(long_lines, 1) if line.strip()))
+        self.assertTrue(all(p["end"] - p["start"] < 6 for p in small))
+        self.assertIn("m.py › class C › def m3", [p["title"] for p in small])
+        for piece in pieces + small:
+            text = long_lines if piece in small else lines
+            self.assertEqual(piece["body"], "\n".join(text[piece["start"] - 1:piece["end"]]))
+        # The page: its CSS by rule blocks, its markup by blocks, its script by function.
+        page = ('X = 1\nPAGE = r"""<!doctype html>\n<style>\n.a { color:red; }\n/* b */\n.b {\n  color:blue;\n}\n'
+                '</style>\n<body>\n<header class="app-header">x</header>\n<script>\nlet one = 1;\n'
+                "function alpha() {\n  return 1;\n}\nasync function beta(x) {\n  return x;\n}\n</script>\n</body>\n"
+                '"""\n')
+        titles = {p["title"]: (p["start"], p["end"]) for p in web.split_python(page, "w.py")}
+        self.assertEqual(titles["w.py › PAGE script › function alpha"], (14, 16))
+        self.assertEqual(titles["w.py › PAGE script › async function beta"], (17, 19))
+        self.assertTrue(any(title.startswith("w.py › PAGE style › .a") for title in titles))
+        self.assertTrue(any(title.startswith("w.py › PAGE markup") for title in titles))
+
+    def test_the_index_takes_tracked_files_only_without_tests_or_workspace(self):
+        repo = self.root / "repo"
+        commit = git_checkout(repo, {
+            "README.md": "# R\n", "ARCHITECTURE.md": "# A\n", "docs/a.md": "# A\n", "docs/help.md": "## H\n",
+            "audiobook_tts_web.py": "def a():\n    return 1\n", "audiobook_tts.py": "X = 1\n",
+            "prompts/P.md": "# P\n", "test_audiobook_tts.py": "def test():\n    pass\n",
+            "workspace/w.md": "# W\n", "qa/x.py": "Y = 2\n", ".gitignore": "docs/ignored.md\n",
+        })
+        (repo / "docs" / "new.md").write_text("# New\n")
+        (repo / "docs" / "ignored.md").write_text("# Ignored\n")
+        source = web.app_source_state(repo)
+        self.assertEqual((source["commit"], source["clean"]), (commit, True))
+        self.assertEqual(web.app_index_files(repo, source), (
+            ["ARCHITECTURE.md", "README.md", "docs/a.md"], ["audiobook_tts.py", "audiobook_tts_web.py", "prompts/P.md"]))
+        (repo / "docs" / "a.md").write_text("# A changed\n")
+        self.assertEqual(web.app_source_state(repo)["clean"], False)
+        # Without git: the same files from the folder, no commit.
+        bare = self.root / "bare"
+        shutil.copytree(repo, bare, ignore=shutil.ignore_patterns(".git"))
+        source = web.app_source_state(bare)
+        self.assertEqual((source["commit"], source["clean"]), ("", False))
+        self.assertEqual(web.app_index_files(bare, source)[1], ["audiobook_tts.py", "audiobook_tts_web.py", "prompts/P.md"])
+
+    def test_links_name_the_exact_commit_and_vanish_on_a_dirty_tree_or_without_git(self):
+        self.assertEqual(web.HILDE_REPOSITORY_URL, "https://github.com/zekiworks/hilde")
+        clean = {"commit": self.COMMIT, "clean": True}
+        base = f"https://github.com/zekiworks/hilde/blob/{self.COMMIT}"
+        self.assertEqual(web.app_source_link(clean, "audiobook_tts_web.py", 10, 20), f"{base}/audiobook_tts_web.py#L10-L20")
+        self.assertEqual(web.app_source_link(clean, "prompts/P.md", 3, 3), f"{base}/prompts/P.md?plain=1#L3-L3")
+        self.assertEqual(web.app_source_link(clean, "docs/web-ui.md", anchor="ask-hilde"), f"{base}/docs/web-ui.md#ask-hilde")
+        self.assertEqual(web.app_source_link(clean, "README.md"), f"{base}/README.md")
+        for source in ({"commit": self.COMMIT, "clean": False}, {"commit": "", "clean": False}):
+            self.assertEqual(web.app_source_link(source, "audiobook_tts_web.py", 10, 20), "")
+        # What the model reads: each piece with its place and its link, or "the running code" without one.
+        piece = {"title": "w.py › def f", "path": "w.py", "start": 2, "end": 3, "anchor": "", "body": "def f():\n    pass"}
+        linked = web.app_piece(piece, "code", clean)
+        self.assertEqual(linked["link"], f"{base}/w.py#L2-L3")
+        self.assertEqual(linked["text"], f"w.py › def f (lines 2–3)\nLink: {base}/w.py#L2-L3\ndef f():\n    pass")
+        dirty = web.app_piece(piece, "code", {"commit": self.COMMIT, "clean": False})
+        self.assertEqual(dirty["link"], "")
+        self.assertIn("the running code", dirty["text"])
+
+    def test_the_index_is_cached_under_the_cache_keyed_by_the_commit(self):
+        repo = self.root / "repo"
+        commit = git_checkout(repo, {"README.md": "# R\n\nText.\n", "audiobook_tts_web.py": "def a():\n    return 1\n"})
+        source = web.app_source_state(repo)
+        docs, code = web.ask_app_documents(self.storage, repo, source)
+        self.assertEqual((docs.id, docs.kind, code.id, code.kind), ("docs", "docs", "code", "code"))
+        self.assertEqual([p["title"] for p in code.paragraphs], ["audiobook_tts_web.py › def a"])
+        cache = self.storage.root / ".cache" / "app-index"
+        self.assertEqual([p.name for p in cache.iterdir()], [f"{commit}.json"])
+        with mock.patch.object(web, "build_app_index", side_effect=AssertionError("built again")):
+            again = web.ask_app_documents(self.storage, repo, source)[1]
+        self.assertEqual(again.paragraphs, code.paragraphs)
+        self.assertIn(f"/blob/{commit}/audiobook_tts_web.py#L1-L2", code.items(1)[0]["text"])
+        self.assertEqual(code.items(1)[0]["label"], "Code")
+        # A changed tree is another index, without links; the old one goes.
+        (repo / "audiobook_tts_web.py").write_text("def b():\n    return 2\n")
+        dirty = web.app_source_state(repo)
+        code = web.ask_app_documents(self.storage, repo, dirty)[1]
+        self.assertEqual([p["title"] for p in code.paragraphs], ["audiobook_tts_web.py › def b"])
+        names = [p.name for p in cache.iterdir()]
+        self.assertEqual(len(names), 1)
+        self.assertTrue(names[0].startswith(f"{commit}-dirty-"))
+        self.assertNotIn("github.com", code.items(1)[0]["text"])
+
+    def test_help_and_book_shelves_reach_docs_and_code_and_help_sections_link_more_detail(self):
+        repo = self.root / "repo"
+        commit = git_checkout(repo, {
+            "docs/web-ui.md": "# Web UI\n\n## Ask Hilde\n\nThe panel.\n",
+            "docs/help.md": "# Help\n\n## Asking\n\nPress Ask Hilde.\n<!-- more: docs/web-ui.md › Ask Hilde -->\n",
+            "audiobook_tts_web.py": "def ask():\n    return 'help'\n",
+        })
+        source = web.app_source_state(repo)
+        help_document = web.ask_help(repo / "docs" / "help.md", source=source)
+        self.assertEqual(help_document.items(1)[0]["text"], (
+            "Asking\n\nPress Ask Hilde.\n\nMore detail: "
+            f"https://github.com/zekiworks/hilde/blob/{commit}/docs/web-ui.md#ask-hilde"))
+        unlinked = web.ask_help(repo / "docs" / "help.md", source={"commit": "", "clean": False})
+        self.assertTrue(unlinked.items(1)[0]["text"].endswith(
+            "More detail: docs/web-ui.md › Ask Hilde, in the developer docs of the running code (no link)."))
+        docs, code = web.ask_app_documents(self.storage, repo, source)
+        shelf = web.AskShelf(self.storage, None, help_document, sources=(docs, code))
+        self.assertIs(shelf.get("code"), code)
+        items, label = web.search_document(code, "ask help")
+        self.assertEqual((items[0]["id"], label), ("code:1", 'Searched the code for "ask help"'))
+        items, label = web.ask_read(shelf, ["docs:2", "3"])
+        self.assertEqual(label, "Read docs/web-ui.md › Web UI › Ask Hilde")
+        self.assertIn("full ids", items[-1]["text"])
+        # The book's shelf reaches them too, for questions about the app.
+        book = web.AskDocument("0a1b2c3d", "paper", "Book", [{"text": "T."}])
+        self.assertIs(web.AskShelf(self.storage, book, help_document, sources=(docs, code)).get("docs"), docs)
+        # The shipped help: every section names a heading of the developer docs for its More detail.
+        shipped = web.ask_help()
+        heads = {}
+        for path in sorted((Path(web.__file__).parent / "docs").glob("*.md")) + [Path(web.__file__).parent / "README.md"]:
+            relative = str(path.relative_to(Path(web.__file__).parent))
+            heads[relative] = {p["title"].split(" › ")[-1].removesuffix(" (part 2)") for p in
+                               web.split_markdown(path.read_text(), relative)}
+        for section in shipped.paragraphs:
+            with self.subTest(section["title"]):
+                self.assertIsNotNone(section.get("more"))
+                self.assertIn(section["more"][1], heads[section["more"][0]])
+
+    def test_help_mode_instructions_name_help_docs_and_code_in_order_and_offer_no_files(self):
+        help_document = web.AskDocument("help", "help", "Help", [{"title": "Voices", "body": "Pick.", "text": "Voices\n\nPick."}])
+        prompt = web.ask_help_system_prompt(help_document)
+        at = [prompt.index(f'"{name}"') for name in ("help", "docs", "code")]
+        self.assertEqual(at, sorted(at))
+        for words in ("From the code, not the help:", "From the developer docs, not the help:", "the running code",
+                      "help:1 Voices", "never change settings", "open it in Listen"):
+            self.assertIn(words, prompt)
+        self.assertNotIn("The open document", prompt)
+        self.assertEqual({tool["name"] for tool in web.HELP_TOOLS}, {"search_document", "read_paragraphs"})
+        # The book's instructions name docs and code for questions about the app, after the help.
+        book = web.AskDocument("0a1b2c3d", "paper", "Book", [{"text": "T."}])
+        book_prompt = web.ask_system_prompt(book, web.chat_abstract([{"text": "T."}]), help_document)
+        self.assertLess(book_prompt.index('"help"'), book_prompt.index('"docs"'))
+        self.assertLess(book_prompt.index('"docs"'), book_prompt.index('"code"'))
+
+    def test_help_history_is_its_own_file_outside_books_and_new_leaves_book_chats(self):
+        self.assertEqual(web.help_chat_path(self.storage), self.storage.root / "help-chat" / "chat.json")
+        self.assertNotIn(self.storage.audiobooks, web.help_chat_path(self.storage).parents)
+        book = store_book(self.storage, narration=chat_narration("S."))
+        path = web.read_book(self.storage, book)[0]
+        web.write_json_atomic(path / "chat.json", {"schema": 1, "book": book, "entries": [
+            {"role": "user", "text": "Book question?"}, {"role": "assistant", "text": "Book answer."}]})
+        before = (path / "chat.json").read_bytes()
+        FakeChatModel.requests = []
+        FakeChatModel.replies = [[({"content": "Press Create."}, "stop")]]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        chats = web.ChatRegistry()
+        turn = web.HelpTurn(self.storage, "How do I add a document?", "lm-studio/fake", local_servers_at(server))
+        self.assertEqual(turn.book, web.HELP_DOCUMENT)
+        self.assertTrue(chats.start(turn))
+        self.assertTrue(turn.wait_done(10))
+        request = FakeChatModel.requests[0]
+        self.assertEqual({tool["function"]["name"] for tool in request["tools"]}, {"search_document", "read_paragraphs"})
+        self.assertIn('"code"', request["messages"][0]["content"])
+        saved = json.loads(web.help_chat_path(self.storage).read_text())
+        self.assertEqual([(e["role"], e["text"]) for e in saved["entries"]],
+                         [("user", "How do I add a document?"), ("assistant", "Press Create.")])
+        self.assertEqual((path / "chat.json").read_bytes(), before)
+        payload = web.help_chat_payload(self.storage, chats)
+        self.assertEqual((payload["help"], payload["book"], payload["document"], payload["files"], payload["web_search"]),
+                         (True, "", "", [], False))
+        self.assertEqual([e["text"] for e in payload["conversation"]], ["How do I add a document?", "Press Create."])
+        # The page's routes: help=1 and {"help": true}; New clears the help history alone.
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as http:
+            http.daemon_threads = True
+            http.storage, http.chats, http.chat_speaker, http.search_server, http.verbose = (
+                self.storage, chats, None, "", False)
+            thread = threading.Thread(target=http.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{http.server_port}"
+                with urllib.request.urlopen(f"{base}/api/chat?help=1") as response:
+                    self.assertEqual(len(json.load(response)["conversation"]), 2)
+                request = urllib.request.Request(f"{base}/api/chat/new", data=b'{"help": true}', method="POST",
+                                                 headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(json.load(response)["conversation"], [])
+            finally:
+                http.shutdown()
+                thread.join()
+        self.assertFalse(web.help_chat_path(self.storage).exists())
+        self.assertEqual((path / "chat.json").read_bytes(), before)
+
+    def test_the_screen_decides_the_mode(self):
+        results = run_node(page_script("askModeFor") + """
+console.log(JSON.stringify([
+  askModeFor({ tab: "player", book: "b--1", inLibrary: false, settings: false }),
+  askModeFor({ tab: "player", book: "b--1", inLibrary: true, settings: false }),
+  askModeFor({ tab: "player", book: "", inLibrary: false, settings: false }),
+  askModeFor({ tab: "player", book: "b--1", inLibrary: false, settings: true }),
+  askModeFor({ tab: "audiobook", book: "b--1", inLibrary: false, settings: false }),
+  askModeFor({ tab: "voice", book: "b--1", inLibrary: false, settings: false }),
+  askModeFor({ tab: "progress", book: "", inLibrary: false, settings: false }),
+]));""")
+        self.assertEqual(results, ["book", "help", "help", "help", "help", "help", "help"])
+
+
 _TEST_HOME = None
 
 

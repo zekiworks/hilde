@@ -275,10 +275,13 @@ to review one voice at a time, and designs new voices from tags. Tags live in
 much is listened, finished, playing) and a play button that plays it without
 opening it, the books in progress first; it
 plays a book with its synchronized text, its source text, and its figures as
-printed in the PDF; **Ask Hilde** answers questions about what you are hearing
-(it gets the book's abstract and looks up the paragraphs it needs, never the
-whole book) and about Hilde Reader itself (from [the help](docs/help.md)),
-and writes Markdown notes, in a panel beside the text from 900 px wide (below
+printed in the PDF; **Ask Hilde**, at the top right of every page, answers
+questions about the book open in Listen (it gets the book's abstract and looks
+up the paragraphs it needs, never the whole book) and, on every other page in
+a help conversation of its own, about Hilde Reader itself (from
+[the help](docs/help.md), then the developer docs and the code, linking the
+exact lines at the commit the server runs), and writes Markdown notes about a
+book, in a panel at the right from 900 px wide (below
 that, a sheet rising from the bottom) with its model in the header and a **⋯**
 menu for **Read answers aloud** and **New conversation**. A **Progress** tab, there while audiobooks are being
 made or one stopped or failed, follows them, and the **Settings** tab with a

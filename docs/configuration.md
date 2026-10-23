@@ -269,7 +269,7 @@ store_results_over_tokens: 1500
 abstract_tokens: 500
 # How many questions a result stays before it is due to be dropped. The
 # book's own paragraphs and file confirmations are never dropped by age.
-expiry_turns: {web_search: 3, document_search: 3, web_page: 5, help: 3, list_files: 3}
+expiry_turns: {web_search: 3, document_search: 3, web_page: 5, help: 3, docs: 3, code: 3, list_files: 3}
 # The hard cap: when reading the whole conversation from scratch would take
 # the model over trigger_seconds (or fill trigger_window_share of its window,
 # or pass its reliable_up_to), it is compacted to target_seconds,
@@ -294,6 +294,14 @@ log has one `Ask:` line per model request with its prompt tokens by kind, the
 cached tokens the provider reported, the time to the first token, and what
 was dropped and why.
 
+Ask Hilde also answers how Hilde Reader works, from the help and then from
+this repository's developer docs and code (only the files git tracks, never
+the tests). Such an answer links the exact lines on GitHub at the commit the
+server runs (`git rev-parse HEAD` of its own checkout when it starts). The
+repository's address is fixed in the code (`HILDE_REPOSITORY_URL`); there is
+no setting for it. A checkout with changed files, or without git, gives no
+links, and the answer says it comes from the running code.
+
 ## Storage
 
 `--storage-root` defaults to `~/.hilde/library`, outside the project folder, so
@@ -305,7 +313,10 @@ alone. The server creates and owns this fixed layout:
 ├── .cache/
 │   ├── thumbnails/
 │   ├── chat-docs/
+│   ├── app-index/
 │   └── ask-models.json
+├── help-chat/
+│   └── chat.json
 ├── Voices/
 ├── Audiobooks/
 │   └── attention-is-all-you-need--bdfaa68d8984/
@@ -328,8 +339,13 @@ alone. The server creates and owns this fixed layout:
 
 - **.cache** holds what Hilde can make again: the Library's thumbnails, the
   long web pages Ask Hilde read (`chat-docs/<id>.json`, by the page's link),
+  the index of Hilde Reader's own developer docs and code that Ask Hilde
+  searches (`app-index/<commit>.json`, made once per commit the server runs),
   and what Hilde measured of each chat model (`ask-models.json`). Nothing in
   it is ever written into a book's folder; deleting it costs only a redo.
+- **help-chat** holds the help conversation: what you asked Ask Hilde on
+  Create, Voices, Settings, or the Library, kept apart from every book's
+  `chat.json`. **New conversation** there clears this file alone.
 - **Voices** contains one directory per narrator: `reference.wav`, the exact
   UTF-8 `transcript.txt` used to create it, its `description.txt`, and, for
   voices made before fixed previews, a rendered `preview.wav`.

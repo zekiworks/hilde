@@ -9,6 +9,7 @@ Hilde Reader turns a document, such as a research paper, into an audiobook. Befo
 
 The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen** (your **Library** and the open book), **Progress** (while a book is being made) and **Settings** (the gear at the right; technical options sit under **Advanced**).
 
+<!-- more: README.md › What it does -->
 <!-- checked: docs/web-ui.md "Header and navigation", "Create an audiobook" steps 1-4; README.md "What it does" -->
 
 ## Adding a document
@@ -23,6 +24,7 @@ You can queue several books; they are made in order. **Progress** shows each sta
 
 If you add a document you already have, Hilde says **You already have this one** and offers **Open**, **Overwrite** and **Change voice**.
 
+<!-- more: docs/web-ui.md › Create an audiobook -->
 <!-- checked: docs/web-ui.md "Create an audiobook" (three cards, Continue, Summary, You already have this one, queue), "Following an audiobook being made" (Stop, Continue from the last completed part) -->
 
 ## Choosing and changing a voice
@@ -33,12 +35,14 @@ To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitch
 
 To hear a finished book in another voice, open it in **Listen**, then **⋯** › **Change voice…**. The text stays the same; the new voice is added beside the others, and nothing is replaced. If a book has several voices, pick one in the line under its title.
 
+<!-- more: docs/web-ui.md › Voices -->
 <!-- checked: docs/web-ui.md "Voices", "Making a new voice", Listen "⋯ holds … Change voice…", "A book read by more than one voice shows a voice picker" -->
 
 ## Voice tags
 
 Tags are short words that describe a voice, in groups: voice, pitch, texture, pace, manner, and what it suits (for example *narrator*). You can add your own. A tag has at most 32 characters, and a voice at most 12 tags. Hilde may suggest tags it finds in a voice's description; nothing changes until you confirm them under **Review**.
 
+<!-- more: docs/web-ui.md › Voice tags -->
 <!-- checked: docs/web-ui.md "Voice tags" (table, 32 chars, 12 tags, "4 suggested · Review", "Nothing changes until you confirm") -->
 
 ## Playback and speed
@@ -53,6 +57,7 @@ Keyboard: Space or K plays or pauses, J goes back and L forward 10 seconds, ← 
 
 **⋯** in the book also offers **Download MP3** and **Download source**.
 
+<!-- more: docs/web-ui.md › Listen -->
 <!-- checked: docs/web-ui.md "Listen" (Library groups, play button, player bar, speed 0.75×–2×, tap a word, browser-only place, shortcuts incl. < > 0.25×–2×, ⋯ menu) -->
 
 ## Follow-along highlighting
@@ -61,22 +66,24 @@ While a book plays, the paragraph being read has a thin blue line at its left, t
 
 **Narration text** shows what Hilde reads aloud. **Source text** shows the document's own words, with the page each passage starts on and a label: **Original**, **Unchanged** or **Not narrated**. Descriptions the model wrote of figures and tables are labelled **Hilde's description**. Books made without adapting the text have no **Source text**.
 
+<!-- more: docs/web-ui.md › Listen -->
 <!-- checked: docs/web-ui.md "Listen" (highlight paragraphs, Follow along, Back to reading position pill, Narration text | Source text, Original/Unchanged/Not narrated, Hilde's description); Settings "Highlight style" omitted as a temporary test -->
 
 ## Ask Hilde
 
-Press **Ask Hilde** in the player bar to ask about the book. To ask about a passage, select it: on a computer, press **Ask about this**; on a phone, tap the teal **Ask Hilde** button that appears above the player bar while text is selected. To ask about a figure, click it and press **Ask about this figure**. The book pauses while you ask.
+**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's **Ask Hilde**. To ask about a passage, select it, then press **Ask about this** (on a phone, the teal **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
 
 What you asked about shows as a card above the question box. **Context details** lists exactly what goes with your question. **Word | Sentence | Paragraph** widens the selection. Press **Explain this part**, or type your own question.
 
-Hilde looks up the paragraphs it needs and cites them, such as ¶12; click one to jump there. Ask follow-ups, such as "give an example". Hilde can also write Markdown notes, such as a summary, listed under **Notes Hilde wrote**. If the server has web search, Hilde can search the web too.
+Hilde looks up the paragraphs it needs and cites them, such as ¶12; click one to jump there. Ask follow-ups, such as "give an example". Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
 
-Pick the model in the chat header; its badge says **Local** or **Cloud**. Under each answer, a gray label names the model that wrote it. **🔈 Read aloud** reads an answer in Hilde's voice. The conversation is kept with the book; **⋯** › **New conversation** starts over.
+On other pages it answers questions about Hilde Reader, apart from book conversations, with nothing of a book. It uses this help, or else the developer docs or the code, saying so and linking the place; otherwise it says it isn't sure. It only explains, never changes settings.
 
-Hilde can also answer questions about Hilde Reader itself, from this help. If the help doesn't cover something, Hilde says it isn't sure.
+Pick the model in the header; its badge says **Local** or **Cloud**, and a gray label under each answer names its model. **🔈 Read aloud** reads an answer aloud. **⋯** › **New conversation** starts over: the book's, or the help questions alone.
 
 The narration can be wrong; when it differs from the document, Hilde says so and goes by the document.
 
+<!-- more: docs/web-ui.md › Ask Hilde on every page -->
 <!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()). -->
 
 ## Local and Cloud: what data leaves your computer
@@ -87,18 +94,20 @@ The narration can be wrong; when it differs from the document, Hilde says so and
 
 **When you make a book with a Cloud model**, the document's text, and figure pictures when figures are read from their pictures, go to that provider.
 
-**When you ask a Cloud model**, the provider receives, with each question: Hilde's instructions and the list of help sections; the book's title and abstract (or its first few hundred words); your question and the card you attached (your selection, its sentence, the paragraph's narration and the paper's text, a figure's caption and description, and its picture if the model reads images); earlier questions, and earlier answers cut to their first and last sentence; and the paragraphs, help sections and web results Hilde looks up while answering. The whole book is not sent. Only the provider of the model in the header receives it.
+**When you ask a Cloud model**, the provider receives, with each question: Hilde's instructions and the list of help sections; the book's title and abstract (or its first few hundred words; none on other pages); your question and the card you attached (your selection, its sentence, the paragraph's narration and the paper's text, a figure's caption and description, and its picture if the model reads images); earlier questions, and earlier answers cut to their first and last sentence; and the paragraphs, help sections, developer docs, code and web results Hilde looks up while answering. The whole book is not sent. Only the provider of the model in the header receives it.
 
 **Web search**, if set up, sends the search words Hilde chooses to the server's search service (SearXNG), which passes them to public search engines such as Google and Bing. Pages Hilde reads are fetched by the Hilde server; their text goes to the model.
 
 Use a Local model for private documents.
 
+<!-- more: docs/configuration.md › Provider sign-ins and keys -->
 <!-- checked: docs/configuration.md "Provider sign-ins and keys" (providers table, page never receives a key), "Web search for Chat", "Ask Hilde settings", "Storage"; README.md "Known limitations: Cloud providers receive your document", "Local first"; docs/web-ui.md "Listen" (Context details, picture sent only when the model takes pictures; browser-only place), Settings "Providers"; audiobook_tts_web.py ask_system_prompt() (instructions, help sections, title, abstract or opening cut to ASK_DEFAULTS abstract_tokens, 500 tokens), AskLedger.render() (questions in full, ask_short_answer(), tool results), chat_attachment() (narration and source text), read_web_page() (fetched by the server, long pages stored in .cache/chat-docs), web_search() (SearXNG JSON API) -->
 
 ## File types
 
 Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` or `.markdown`), up to 64 MiB. A file of another type is refused with a message naming these. Links may point to such a file or to an arXiv paper. Web pages (HTML) and EPUB books are not supported.
 
+<!-- more: docs/web-ui.md › Create an audiobook -->
 <!-- checked: docs/web-ui.md "Create an audiobook" (supported types, 64 MiB, arXiv); README.md "Known limitations: Inputs" -->
 
 ## Common problems and fixes
@@ -114,4 +123,5 @@ Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` 
 - **No sound**: check the browser's volume and the computer's output device.
 - **Settings are read-only**: providers and machines can be changed only from a browser on the Hilde server.
 
+<!-- more: docs/web-ui.md › Following an audiobook being made -->
 <!-- checked: docs/web-ui.md "Create an audiobook" ("Choose a document first", Not ready fixes, unreachable alternatives), "Following an audiobook being made" (stopped/failed card, Paused, Retry), "Listen" (chat red box + Providers…, Claude Code models cannot, no paragraph summaries → recreate, player silent), "Settings" (Read-only from this device) -->
