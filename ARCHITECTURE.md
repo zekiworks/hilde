@@ -1093,7 +1093,9 @@ events the same way (`loadJobHistory()`) while the server keeps the job. If
 the server restarted, the browser reports interruption and directs the user to
 resubmit; durable audiobook work then resumes from its version-pair stage.
 
-The page resets ETA at every step: one series of progress reports with the same unit and total (extraction reads pages, then paragraphs; narration speaks parts, then joins them). There is no estimate before the step has made headway, and none from an earlier run. `updateEta()` estimates from the step's average pace: the seconds since the step's first report over the units finished since it, which leaves out work a resumed narration kept. Workers finish chunks in bursts, so a pace measured between reports, or smoothed from them, swung between minutes and hours; the step's average moves little with each report. It shows once the step has finished 5% of its remaining units, and at least three, as `About N min left at the current pace` (`renderEta()`, every five seconds), and disappears when the step completes. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines; the narrator's `Joined chunk N/T` lines (`JOIN_LINE`) become progress of their own step, unit `join`. `progressDetail()` says what each step does: "Reading page N of T", "Preparing the text for listening: paragraph N of T", "Generating audio: part N of T", "Joining the parts into one recording: N of T", and "Aligning text and audio: sentence N of T", with thousands separators, so a long step never looks stuck.
+The page resets ETA at every step: one series of progress reports with the same unit and total (extraction reads pages, then paragraphs; narration speaks parts, then joins them). There is no estimate before the step has made headway, and none from an earlier run. `updateEta()` estimates from the step's average pace: the seconds since the step's first report over the units finished since it, which leaves out work a resumed narration kept. Workers finish chunks in bursts, so a pace measured between reports, or smoothed from them, swung between minutes and hours; the step's average moves little with each report. It shows once the step has finished 5% of its remaining units, and at least three, as `About N min left at the current pace` (`renderEta()`, every five seconds), and disappears when the step completes. Narration progress is driven by committed `Checkpointed chunk N/T` lines, not request-start lines; the narrator's `Joined chunk N/T` lines (`JOIN_LINE`) become progress of their own step, unit `join`. `progressDetail()` says what each step does: "Reading page N of T", "Preparing the text for listening: N of T paragraphs done", "Generating audio: part N of T", "Joining the parts into one recording: N of T", and "Aligning text and audio: sentence N of T", with thousands separators, so a long step never looks stuck.
+
+Preparing the text counts one number everywhere, the paragraphs finished: batches run side by side (`in_flight`) and finish out of order, so `activity` (`completed`, after every finished batch) runs ahead of `progress` (unit `paragraph`, only when batches commit in source order). `recordEvent()` keeps the larger of the two for unit `paragraph`, so the meter and its label, the step line, the stage note, and a stopped job's "What was finished" all show `completed` and never go back when a later in-order `progress` event arrives. The ETA samples that same count at each `progress` event, with that event's `phase_elapsed` (`activity` carries no elapsed time).
 
 ## UI contract
 
@@ -1328,6 +1330,13 @@ Each page:
      PDF|Markdown|Text", else "No document chosen yet"; **Continue** refuses
      other types. Reopened from step 3 (`reachedCreate`), **Continue** returns
      to step 3 with every choice kept; Overwrite and Change voice go through step 2.
+     Step 2 shows done only once step 3 was open for this book (`voiceReady()
+     && reachedCreate` in `renderCreate()`): `clearBookChoice()` resets
+     `reachedCreate`, so a new book starts with steps 2 and 3 upcoming and the
+     last voice still chosen inside step 2 (one **Continue** confirms it).
+     `reachedCreate` lives in the page only: a reload on step 3 sets it again
+     from the saved step; a reload elsewhere leaves step 2 upcoming until it is
+     passed again.
      Server errors for links and uploads become short plain sentences in `#book-problem`. An
      upload or link whose predicted file name (`predictedDownloadNames()`) is
      already in Documents asks first (`replaceDocumentOk()`). A link still to

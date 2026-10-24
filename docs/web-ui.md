@@ -60,6 +60,10 @@ green, then what you chose (the file name and its type, or the voice), then
 **Change** (a pencil and the word, in blue). On a phone, **Change** sits under
 what you chose. A step not reached yet is gray, and so is step 3 while you
 have gone back to an earlier step. A long file name is cut short with "…".
+Green means done for this book: when you start a new book (after **Create
+audiobook** or **Create another book**), steps 2 and 3 are gray again, though
+the voice you used last is still chosen in step 2, so one **Continue** there
+confirms it.
 
 **Change**, or a click on a finished step's title, opens that step again;
 nothing in the other steps is cleared. **Continue** in a reopened step goes
@@ -330,9 +334,12 @@ text or Markdown file is not read page by page, so **Reading the document** is
 skipped (and so is preparing, when it is not adapted), and a new voice of an
 existing book skips both. Under
 the bar the count reads, for example, `900 of 35,226 parts · 2%`, and a line
-says what is happening. Counts come only from the work itself. A time
-estimate, "About N min left at the current pace", appears only once the
-current stage has made headway; there is none before.
+says what is happening. Counts come only from the work itself. While the text
+is prepared, the bar, its count, and the line (`Preparing the text for
+listening: 287 of 302 paragraphs done`) all count the paragraphs finished so
+far, including those finished ahead of earlier ones, so they agree and never
+go back. A time estimate, "About N min left at the current pace", appears
+only once the current stage has made headway; there is none before.
 
 **Stop** ends a running book after you confirm ("Stop making '<title>'?");
 what is finished is kept. **Cancel** takes a waiting one out of the queue. A
