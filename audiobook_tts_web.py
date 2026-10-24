@@ -32,6 +32,7 @@ import collections
 import concurrent.futures
 import contextlib
 import difflib
+import fcntl
 import fnmatch
 import functools
 import datetime
@@ -3227,12 +3228,546 @@ def library_catalog(storage):
 
 
 def delete_book(storage, book):
-    """Delete a book with all its voices; one rename takes it out of the library."""
+    """Delete a book with all its voices, and its marks (delete_marks()), as
+    its conversation goes with its folder; one rename takes it out of the
+    library."""
     with _BOOK_LOCK:
         path, _ = read_book(storage, book)
         trash = storage.audiobooks / f".trash-{os.urandom(6).hex()}"
         path.rename(trash)
+    delete_marks(storage, book)
     shutil.rmtree(trash, ignore_errors=True)
+
+
+# --- marks ----------------------------------------------------------------------
+#
+# Listen's highlights, notes and saved Ask Hilde answers (--enable-notes):
+# one file per book, <storage-root>/Marks/<book id>.json (0600), holding
+# {"schema": 1, "book", "items": {id: item}}. It lives outside the book's
+# folder, so Recreate (swap_into_place()) never deletes it; deleting the book
+# deletes it (delete_book()). An item is one mark, by the UUID v4 its page
+# chose. A save or delete merges that one item into the file under the book's
+# lock (a thread lock, and flock() on Marks/.lock so a second server on the
+# same library waits too): the file is read again, the item put in by id, and
+# the file replaced atomically, so marks saved at once from two devices are
+# all kept. A deleted item stays as a tombstone without its words, so no
+# older copy brings it back. A save naming the stored copy it edits
+# (base_updated_at) is refused when that copy has changed (MarkConflict).
+# Each mark's place is found again whenever marks are listed, in the text the
+# reading view renders (reader_mark_texts(), mark_place()).
+
+MARKS_FOLDER = "Marks"
+MARKS_SCHEMA = 1
+MARKS_LOCK_FILE = ".lock"
+MARK_KINDS = ("highlight", "note", "answer")
+MARK_VIEWS = ("narration", "source")
+MARK_ID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+MARK_NOTE_MAX = 20_000
+MARK_QUOTE_MAX = 2_000
+# The page sends up to MARK_CONTEXT characters (UTF-16 units) of the
+# paragraph's text on each side of a quote: fewer only at its start or end.
+MARK_CONTEXT = 64
+MARK_CONTEXT_LIMIT = 256
+MARK_SECTION_MAX = 1_000
+MARK_QUESTION_MAX = 20_000
+MARK_ANSWER_MAX = 200_000
+MARK_LABEL_MAX = 300
+# A quote at least this long, found once in the whole view, is its place
+# even when the words around it changed (a Recreate reworded its neighbors).
+MARK_DISTINCT_QUOTE = 40
+# The reading view's paragraph and heading elements: a sentence in the page.
+READER_SENTENCE_TAGS = frozenset({"p", "h1", "h2", "h3", "h4", "h5", "h6"})
+_MARKS_LOCKS = {}
+_MARKS_LOCKS_GUARD = threading.Lock()
+# reader_mark_texts() of recently listed books, by their files (book_mark_texts()).
+_MARK_TEXTS = collections.OrderedDict()
+_MARK_TEXTS_LOCK = threading.Lock()
+MARK_TEXTS_KEPT = 8
+
+
+class MarkConflict(Exception):
+    """A save refused: the stored mark (`item`) was deleted, or changed since
+    the copy the page edited."""
+
+    def __init__(self, item):
+        super().__init__(
+            "This note was deleted on another device." if item.get("deleted")
+            else "This note was changed on another device."
+        )
+        self.item = item
+
+
+class MarksUnreadable(RuntimeError):
+    """A book's marks file that can't be read: it is never written over."""
+
+
+def marks_book(storage, book):
+    """A published book's record, by its id: ValueError for another id (a
+    book being made has none of its own yet), FileNotFoundError without one."""
+    return read_book(storage, book)[1]
+
+
+@contextlib.contextmanager
+def marks_lock(storage, book):
+    """Hold a book's marks: one thread at a time in this server, and one
+    server at a time on the library (flock() on Marks/.lock). Yields the
+    Marks folder."""
+    with _MARKS_LOCKS_GUARD:
+        lock = _MARKS_LOCKS.setdefault(book, threading.Lock())
+    with lock:
+        folder = storage.root / MARKS_FOLDER
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(folder / MARKS_LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield folder
+        finally:
+            # Closing it releases the flock().
+            os.close(descriptor)
+
+
+def read_marks(storage, book):
+    """A book's marks by id, tombstones included; {} before its first.
+    MarksUnreadable for a file that is not a marks file."""
+    path = storage.root / MARKS_FOLDER / f"{book}.json"
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    try:
+        marks = json.loads(data)
+    except ValueError:
+        marks = None
+    if (
+        not isinstance(marks, dict) or marks.get("schema") != MARKS_SCHEMA
+        or marks.get("book") != book or not isinstance(marks.get("items"), dict)
+    ):
+        raise MarksUnreadable("This book's notes file can't be read, so nothing was changed in it.")
+    return marks["items"]
+
+
+def write_marks(folder, book, items):
+    write_private_json(folder / f"{book}.json", {"schema": MARKS_SCHEMA, "book": book, "items": items})
+
+
+def mark_time(after=None):
+    """Now in UTC to the millisecond, always later than `after` (an earlier
+    mark_time()), so each change of a mark has its own updated_at."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        previous = datetime.datetime.strptime(str(after), "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=datetime.timezone.utc)
+    except ValueError:
+        previous = None
+    if previous is not None and now < previous + datetime.timedelta(milliseconds=1):
+        now = previous + datetime.timedelta(milliseconds=1)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _mark_text(value, name, limit, *, empty=True, null=True):
+    if value is None and null:
+        return None
+    if not isinstance(value, str) or len(value) > limit or not empty and not value.strip():
+        raise ValueError(f"A note's {name} must be text of at most {limit:,} characters.")
+    return value
+
+
+def clean_mark(item):
+    """The fields of a mark its page sends, checked: ValueError says what is
+    wrong. The server's own fields (times, deleted, place) are not taken."""
+    if not isinstance(item, dict):
+        raise ValueError("Send the note to save.")
+    if not isinstance(item.get("id"), str) or not MARK_ID_PATTERN.fullmatch(item["id"]):
+        raise ValueError("A note's id is a UUID (version 4).")
+    kind = item.get("kind")
+    if not isinstance(kind, str) or kind not in MARK_KINDS:
+        raise ValueError("A note is a highlight, a note, or an answer.")
+    anchor = item.get("anchor")
+    if not isinstance(anchor, dict):
+        raise ValueError("A note needs its place in the text.")
+    if not isinstance(anchor.get("view"), str) or anchor["view"] not in MARK_VIEWS:
+        raise ValueError("A note's place is in Narration text or Source text.")
+    paragraph, source_id = anchor.get("paragraph"), anchor.get("source_id")
+    if type(paragraph) is not int or paragraph < 0:
+        raise ValueError("A note's paragraph is a number.")
+    if source_id is not None and (type(source_id) is not int or source_id < 1):
+        raise ValueError("A note's source paragraph is a passage number, or null.")
+    clean = {
+        "id": item["id"],
+        "kind": kind,
+        "anchor": {
+            "view": anchor["view"], "paragraph": paragraph, "source_id": source_id,
+            "quote": _mark_text(anchor.get("quote"), "quote", MARK_QUOTE_MAX, empty=False, null=False),
+            "prefix": _mark_text(anchor.get("prefix"), "prefix", MARK_CONTEXT_LIMIT) or "",
+            "suffix": _mark_text(anchor.get("suffix"), "suffix", MARK_CONTEXT_LIMIT) or "",
+            "section": _mark_text(anchor.get("section"), "section", MARK_SECTION_MAX),
+        },
+        "highlight": item.get("highlight", False),
+        "note": _mark_text(item.get("note"), "note", MARK_NOTE_MAX),
+        "answer": None,
+        "confirmed_place": item.get("confirmed_place", False),
+    }
+    if not isinstance(clean["highlight"], bool) or not isinstance(clean["confirmed_place"], bool):
+        raise ValueError("A note's highlight and confirmed_place are true or false.")
+    answer = item.get("answer")
+    if kind != "answer":
+        if answer is not None:
+            raise ValueError("Only a saved answer has an answer.")
+    elif not isinstance(answer, dict):
+        raise ValueError("A saved answer needs its question and Hilde's answer.")
+    else:
+        clean["answer"] = {
+            "question": _mark_text(answer.get("question"), "question", MARK_QUESTION_MAX, null=False),
+            "text": _mark_text(answer.get("text"), "answer", MARK_ANSWER_MAX, empty=False, null=False),
+            "model": _mark_text(answer.get("model"), "model", MARK_LABEL_MAX, null=False),
+            "asked_at": _mark_text(answer.get("asked_at"), "time asked", MARK_LABEL_MAX),
+        }
+    return clean
+
+
+def save_mark(storage, book, item):
+    """Create a mark, or update it by its id, and return it as stored.
+
+    Under the book's lock the file is read again and only this item changes.
+    MarkConflict (with the stored item) for a deleted mark, or when
+    `item["base_updated_at"]` is given and the stored copy's updated_at is no
+    longer it. A mark whose place the listener chose (confirmed_place) keeps
+    the text it was chosen in (`confirmed_for`, the book's narration_sha256),
+    so its paragraph decides between equal matches only in that text."""
+    mark = clean_mark(item)
+    base = item.get("base_updated_at")
+    if base is not None and not isinstance(base, str):
+        raise ValueError("base_updated_at is the updated_at of the copy edited.")
+    if not BOOK_ID_PATTERN.fullmatch(str(book)):
+        raise ValueError("Select a valid audiobook.")
+    with marks_lock(storage, book) as folder:
+        # Checked under the lock: a book deleted meanwhile gets no new file.
+        record = marks_book(storage, book)
+        items = read_marks(storage, book)
+        stored = items.get(mark["id"])
+        if stored is not None:
+            if stored.get("deleted") or base is not None and stored.get("updated_at") != base:
+                raise MarkConflict(stored)
+            if stored.get("kind") != mark["kind"]:
+                raise ValueError("A note keeps its kind.")
+        now = mark_time(stored.get("updated_at") if stored else None)
+        saved = {**mark, "created_at": stored.get("created_at", now) if stored else now,
+                 "updated_at": now, "deleted": False}
+        if mark["confirmed_place"]:
+            same = stored is not None and stored.get("confirmed_place") and stored.get("anchor") == mark["anchor"]
+            saved["confirmed_for"] = stored.get("confirmed_for") if same else record.get("narration_sha256")
+        items[mark["id"]] = saved
+        write_marks(folder, book, items)
+    return saved
+
+
+def delete_mark(storage, book, mark_id):
+    """Delete a mark: it stays as a tombstone (its id, kind and times), so a
+    device's older copy never brings it back. An id never saved gets one too."""
+    if not isinstance(mark_id, str) or not MARK_ID_PATTERN.fullmatch(mark_id):
+        raise ValueError("A note's id is a UUID (version 4).")
+    if not BOOK_ID_PATTERN.fullmatch(str(book)):
+        raise ValueError("Select a valid audiobook.")
+    with marks_lock(storage, book) as folder:
+        marks_book(storage, book)
+        items = read_marks(storage, book)
+        stored = items.get(mark_id) or {}
+        if stored.get("deleted"):
+            return stored
+        now = mark_time(stored.get("updated_at"))
+        tombstone = {"id": mark_id, "kind": stored.get("kind"), "created_at": stored.get("created_at", now),
+                     "updated_at": now, "deleted": True}
+        items[mark_id] = tombstone
+        write_marks(folder, book, items)
+    return tombstone
+
+
+def delete_marks(storage, book):
+    """Remove a deleted book's marks file, once its folder is gone. A save
+    that took the lock first is waited for; one after finds no book."""
+    if not (storage.root / MARKS_FOLDER).is_dir():
+        return
+    with marks_lock(storage, book) as folder:
+        (folder / f"{book}.json").unlink(missing_ok=True)
+
+
+def list_marks(storage, book):
+    """A book's marks without the deleted ones, oldest first, each with its
+    place (mark_place())."""
+    marks_book(storage, book)
+    # The file is only ever replaced whole: read without the lock.
+    items = [item for item in read_marks(storage, book).values()
+             if isinstance(item, dict) and not item.get("deleted")]
+    items.sort(key=lambda item: (str(item.get("created_at")), str(item.get("id"))))
+    return marks_with_places(storage, book, items)
+
+
+def marks_with_places(storage, book, items):
+    """Each mark with its place in the book as it reads now; a tombstone has none."""
+    if not any(not item.get("deleted") for item in items):
+        return list(items)
+    units, narration_sha256 = book_mark_texts(storage, book)
+    return [
+        item if item.get("deleted") else {**item, "place": mark_place(
+            item["anchor"], units,
+            chosen=item["anchor"]["paragraph"] if item.get("confirmed_place") and narration_sha256
+            and item.get("confirmed_for") == narration_sha256 else None,
+        )}
+        for item in items
+    ]
+
+
+class _TopNodes(html.parser.HTMLParser):
+    """A fragment of rendered HTML as the browser's DOM holds it, as far as
+    text goes: its top-level nodes, each [tag (None for text), its text
+    (textContent), whether it holds a picture]."""
+
+    VOID = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+                      "source", "track", "wbr"})
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.nodes, self.depth = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if self.depth == 0:
+            self.nodes.append([tag, "", tag == "img"])
+        elif tag == "img":
+            self.nodes[-1][2] = True
+        if tag not in self.VOID:
+            self.depth += 1
+
+    def handle_startendtag(self, tag, attrs):
+        if self.depth == 0:
+            self.nodes.append([tag, "", tag == "img"])
+        elif tag == "img":
+            self.nodes[-1][2] = True
+
+    def handle_endtag(self, tag):
+        if tag not in self.VOID:
+            self.depth = max(0, self.depth - 1)
+
+    def handle_data(self, data):
+        if self.depth == 0:
+            self.nodes.append([None, data, False])
+        else:
+            self.nodes[-1][1] += data
+
+
+def _top_nodes(fragment):
+    parser = _TopNodes()
+    parser.feed(fragment)
+    parser.close()
+    return parser.nodes
+
+
+def reader_mark_texts(payload):
+    """The text of each paragraph as the reading view renders it, where a
+    mark's quote, prefix, suffix and offsets are taken: {"narration":
+    {paragraph: text}, "source": {passage: text}}, from /api/reader's payload
+    (audiobook_reader_payload()).
+
+    Narration text: a .reader-paragraph section (data-paragraph), one per run
+    of blocks with the same paragraph, as renderReaderBlocks() builds it: of
+    each block's top-level elements, a p or heading without a picture is a
+    sentence, its text after one space when it is a block's first element, a
+    p, and the section's last part was a sentence too; the other elements
+    (lists, tables, pictures) form a group in a .reader-block, whose text is
+    theirs unless the group holds a picture (a .reader-picture: none).
+    Source text: a .reader-original aside (data-passage, the passage's
+    number), the text of its original's HTML; the aside's tag and flags are
+    not its text. Labels, figure cards and the page's own markers are no one's."""
+    narration, current, parts, line = {}, None, None, False
+    for block in payload.get("blocks") or ():
+        if parts is None or block["paragraph"] != current:
+            current, line = block["paragraph"], False
+            parts = narration.setdefault(current, [])
+        group, index = None, 0
+        for tag, text, picture in _top_nodes(block["html"]):
+            if tag is None:
+                continue
+            first, index = index == 0, index + 1
+            if tag in READER_SENTENCE_TAGS and not picture:
+                group = None
+                parts.append([" " + text if line and first and tag == "p" else text, False])
+                line = True
+            elif group is None:
+                group, line = [text, picture], False
+                parts.append(group)
+            else:
+                group[0] += text
+                group[1] = group[1] or picture
+    return {
+        "narration": {
+            paragraph: "".join(text for text, picture in parts if not picture)
+            for paragraph, parts in narration.items()
+        },
+        "source": {
+            number: "".join(node[1] for node in _top_nodes(original["html"]))
+            for number, original in enumerate(payload.get("originals") or (), 1)
+            if original.get("html")
+        },
+    }
+
+
+def _collapse(text):
+    """`text` with each run of whitespace as one space, and where each of its
+    characters is in `text`."""
+    out, where, space = [], [], False
+    for index, char in enumerate(text):
+        if char.isspace():
+            if space:
+                continue
+            char = " "
+        space = char == " "
+        out.append(char)
+        where.append(index)
+    return "".join(out), where
+
+
+def utf16_offset(text, index):
+    """The offset in JavaScript's UTF-16 string of `text[index]`."""
+    return index + sum(1 for char in text[:index] if ord(char) > 0xFFFF)
+
+
+def mark_units(payload):
+    """The places marks are looked for, by view: (paragraph, the passage it
+    belongs to (data-passage), its rendered text, that text collapsed, and
+    where each collapsed character is in it)."""
+    texts = reader_mark_texts(payload)
+    passages = {}
+    for block in payload.get("blocks") or ():
+        # A section's passage, as passageOfBlock() finds it for its first block.
+        if block["paragraph"] not in passages:
+            owners = (payload.get("block_passages") or [])[:block["id"] + 1]
+            passages[block["paragraph"]] = next((owner for owner in reversed(owners) if owner), None)
+    return {
+        "narration": [(number, passages.get(number), text, *_collapse(text))
+                      for number, text in texts["narration"].items()],
+        "source": [(number, number, text, *_collapse(text)) for number, text in texts["source"].items()],
+    }
+
+
+def book_mark_texts(storage, book):
+    """mark_units() of the reader the page opens a book with (its default
+    voice's), kept while the book's files stay the same, and the book's
+    narration_sha256; units None when it has no reader to show."""
+    path = storage.audiobooks / book
+    record = read_json_file(path / "book.json") or {}
+    voice = default_voice(record)
+    files = [path / "book.json", path / "reader.md", path / "narration.json"]
+    if voice:
+        try:
+            files.append(voice_folder(path, voice) / "timings.json")
+        except ValueError:
+            pass
+
+    def identity(file):
+        try:
+            found = file.stat()
+        except OSError:
+            return None
+        return found.st_ino, found.st_mtime_ns, found.st_size
+
+    key = (str(path), voice, tuple(identity(file) for file in files))
+    with _MARK_TEXTS_LOCK:
+        if key in _MARK_TEXTS:
+            _MARK_TEXTS.move_to_end(key)
+            return _MARK_TEXTS[key], record.get("narration_sha256")
+    try:
+        units = mark_units(audiobook_reader_payload(storage, book))
+    except (OSError, UnicodeError, ValueError):
+        units = None
+    with _MARK_TEXTS_LOCK:
+        _MARK_TEXTS[key] = units
+        while len(_MARK_TEXTS) > MARK_TEXTS_KEPT:
+            _MARK_TEXTS.popitem(last=False)
+    return units, record.get("narration_sha256")
+
+
+def _mark_matches(units, quote):
+    """Every occurrence of a collapsed quote in a view's units: (unit, start, end) in the collapsed text."""
+    found = []
+    for unit in units:
+        start = unit[3].find(quote)
+        while start != -1:
+            found.append((unit, start, start + len(quote)))
+            start = unit[3].find(quote, start + 1)
+    return found
+
+
+def _mark_sides(match, anchor):
+    """Whether the text before and after an occurrence is the anchor's prefix
+    and suffix: all of it, when the page's was cut short by the paragraph's
+    start or end."""
+    (_, _, _, flat, _), start, end = match
+    before, after = flat[:start].rstrip(), flat[end:].lstrip()
+    prefix = re.sub(r"\s+", " ", anchor["prefix"]).rstrip()
+    suffix = re.sub(r"\s+", " ", anchor["suffix"]).lstrip()
+    whole_before = utf16_offset(anchor["prefix"], len(anchor["prefix"])) < MARK_CONTEXT
+    whole_after = utf16_offset(anchor["suffix"], len(anchor["suffix"])) < MARK_CONTEXT
+    return (
+        before.endswith(prefix) and (not whole_before or before.lstrip() == prefix.lstrip()),
+        after.startswith(suffix) and (not whole_after or after.rstrip() == suffix.rstrip()),
+    )
+
+
+def _confirmed(view, match):
+    (number, _, text, _, where), start, end = match
+    return {"status": "confirmed", "view": view, "paragraph": number,
+            "start": utf16_offset(text, where[start]), "end": utf16_offset(text, where[end - 1] + 1)}
+
+
+def _view_place(found, anchor, quote, view, chosen):
+    """The place among one view's occurrences of a quote (mark_place())."""
+    if not found:
+        return {"status": "missing"}
+    sides = [_mark_sides(match, anchor) for match in found]
+    both = [match for match, (before, after) in zip(found, sides) if before and after]
+    either = [match for match, (before, after) in zip(found, sides) if before or after]
+    if len(both) == 1:
+        return _confirmed(view, both[0])
+    if not both and len(either) == 1:
+        return _confirmed(view, either[0])
+    if len(found) == 1 and len(quote) >= MARK_DISTINCT_QUOTE:
+        return _confirmed(view, found[0])
+    tied = both or either or found
+    if chosen is not None:
+        here = [match for match in tied if match[0][0] == chosen]
+        if len(here) == 1:
+            return _confirmed(view, here[0])
+    return {"status": "unclear", "candidates": len(tied)}
+
+
+def mark_place(anchor, units, chosen=None):
+    """Where a mark's quote is in the book as the page renders it now.
+
+    Looked for in the view it was made in (whitespace aside): "confirmed"
+    (view, paragraph, and UTF-16 offsets in that paragraph's rendered text)
+    where one occurrence has the anchor's prefix and suffix around it, or
+    else one of them; or the only occurrence of a quote of at least
+    MARK_DISTINCT_QUOTE characters. Several equal ones are never decided by
+    order: "unclear" with their number, unless the listener chose the place
+    in this same text (`chosen`, its paragraph) and one of them is there. An
+    occurrence whose surroundings all differ is "unclear" too (candidates 1).
+    Not confirmed there (a Recreate reworded it) and with a source paragraph
+    (source_id, a passage number): the other view is tried, confirmed only
+    for the quote's one occurrence in that whole view, in that same passage.
+    Nowhere: "missing"."""
+    if units is None:
+        return {"status": "missing"}
+    quote = re.sub(r"\s+", " ", anchor["quote"]).strip()
+    view = anchor["view"]
+    place = _view_place(_mark_matches(units[view], quote), anchor, quote, view, chosen)
+    if place["status"] == "confirmed" or anchor.get("source_id") is None:
+        return place
+    other = "source" if view == "narration" else "narration"
+    elsewhere = _mark_matches(units[other], quote)
+    if len(elsewhere) == 1 and elsewhere[0][0][1] == anchor["source_id"]:
+        return _confirmed(other, elsewhere[0])
+    if place["status"] == "missing" and elsewhere:
+        return {"status": "unclear", "candidates": len(elsewhere)}
+    return place
 
 
 # --- books being made -----------------------------------------------------------
@@ -15274,12 +15809,16 @@ def chat_display_entry(entry, document=""):
     Hilde's answer as HTML with citations of the open `document` as ¶
     links (chat_cite_links()), a tool's label, or a notice. An answer, or a
     failure, saved with its `model` names it (the selector and its short
-    name) for the label under it; older ones have none."""
+    name) for the label under it; older ones have none. What the listener
+    wrote and Hilde's answers carry their time (`at`, ISO UTC) when saved
+    with one: Save to notes copies it as the answer's asked_at."""
     role = entry.get("role")
     if role == "user":
         shown = {"role": "user", "text": entry.get("text", "")}
         if entry.get("context"):
             shown["context"] = entry["context"]
+        if isinstance(entry.get("at"), str):
+            shown["at"] = entry["at"]
         return shown
     if role == "tool":
         return {"role": "tool", "text": entry.get("label") or entry.get("name") or "Tool"}
@@ -15289,6 +15828,8 @@ def chat_display_entry(entry, document=""):
         # An answer stopped while it was being written: the page marks it "Stopped".
         if entry.get("stopped"):
             shown["stopped"] = True
+        if isinstance(entry.get("at"), str):
+            shown["at"] = entry["at"]
     else:
         shown = {"role": "notice", "text": entry.get("text", "")}
         # The model couldn't answer: the page says what to do.
@@ -19298,6 +19839,8 @@ class Handler(BaseHTTPRequestHandler):
                         # Hilde's own certificate authority, to install on a device.
                         "certificate": self.authority() is not None,
                     },
+                    # Listen's highlights and notes (--enable-notes); off, /api/marks* answer 404.
+                    "notes_enabled": self.notes_enabled(),
                 },
                 extra=(("Cache-Control", "no-store"),),
             )
@@ -19346,6 +19889,11 @@ class Handler(BaseHTTPRequestHandler):
                 {"books": books},
                 extra=(("Cache-Control", "no-store"),),
             )
+        if route == "/api/marks":
+            if not self.notes_enabled():
+                return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
+            book = query.get("book", [""])[0]
+            return self.marks_reply(lambda: {"items": list_marks(self.server.storage, book)}, book)
         if route == "/api/chat":
             return self.reply_chat(chat_key(query.get("book", [""])[0], query.get("help", [""])[0] == "1"))
         if route == "/api/chat/events":
@@ -19702,6 +20250,14 @@ class Handler(BaseHTTPRequestHandler):
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                 },
             )
+        if route in ("/api/marks/save", "/api/marks/delete"):
+            if not self.notes_enabled():
+                return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
+            storage, book = self.server.storage, str(body.get("book") or "")
+            if route == "/api/marks/delete":
+                return self.marks_reply(lambda: {"item": delete_mark(storage, book, body.get("id"))}, book)
+            return self.marks_reply(lambda: {"item": marks_with_places(
+                storage, book, [save_mark(storage, book, body.get("item"))])[0]}, book)
         if route == "/api/chat/speak":
             return self.chat_speak(body)
         if route == "/api/chat/context":
@@ -20258,6 +20814,32 @@ class Handler(BaseHTTPRequestHandler):
         except (RuntimeError, ValueError) as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, catalog)
+
+    def notes_enabled(self):
+        """Whether this server keeps Listen's highlights and notes (--enable-notes)."""
+        return getattr(self.server, "notes_enabled", False) is True
+
+    def marks_reply(self, act, book):
+        """Answer a /api/marks route with act()'s JSON, or why it was not done:
+        409 with the stored mark (MarkConflict), 400, 404 for a book that is
+        not in the library, 500 when the book's notes file can't be read or
+        written (nothing is changed then)."""
+        try:
+            body = act()
+        except MarkConflict as exc:
+            item = marks_with_places(self.server.storage, book, [exc.item])[0]
+            return self.reply(HTTPStatus.CONFLICT, {"error": str(exc), "item": item})
+        except MarksUnreadable as exc:
+            return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+        except FileNotFoundError:
+            return self.fail(HTTPStatus.NOT_FOUND, "That book is no longer in the library.")
+        except ValueError as exc:
+            return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+        except OSError as exc:
+            # Operating-system messages name server paths; browsers get the reason.
+            return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR,
+                             f"Could not keep the note: {exc.strerror or 'file system error'}.")
+        return self.reply(HTTPStatus.OK, body, extra=(("Cache-Control", "no-store"),))
 
     def delete_asset(self, kind, name):
         storage = self.server.storage
@@ -32761,6 +33343,13 @@ def build_parser():
             "the server can then add keys, sign it out, or add SSH machines that run as this user."
         ),
     )
+    parser.add_argument(
+        "--enable-notes", action="store_true",
+        help=(
+            "Turn on Listen's highlights and notes: marks are kept on this server in "
+            "<storage-root>/Marks, one file per book (default: off, and /api/marks answers 404)."
+        ),
+    )
     secure = parser.add_argument_group("HTTPS")
     secure.add_argument(
         "--https", action="store_true",
@@ -32975,6 +33564,7 @@ def main():
     server.drafts = DraftGuard(storage.in_progress / CREATE_DRAFTS_FILE)
     server.verbose = args.verbose
     server.manage_from_network = args.manage_from_network
+    server.notes_enabled = args.enable_notes
     # The commit Ask Hilde links to is the checkout's own, as it is now; the
     # index of its docs and code is made (or read from the cache) meanwhile.
     source = app_source()
@@ -33000,6 +33590,8 @@ def main():
     print("State: per-browser cookies", flush=True)
     print(f"Shared storage: {storage.root}", flush=True)
     print(f"Web search for Chat: {args.search_server or 'off'}", flush=True)
+    print(f"Highlights and notes (Listen): {'on, kept in ' + str(storage.root / MARKS_FOLDER) if args.enable_notes else 'off'}",
+          flush=True)
     print("Local model servers (Settings › Providers, " + str(providers_path()) + "): "
           + (", ".join(f"{entry['name']} = {local_server_label(entry['server'])} ({entry['provider']}"
                        f"{', set at startup' if entry['from_flag'] else ''})"

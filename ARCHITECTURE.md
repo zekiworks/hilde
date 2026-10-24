@@ -452,7 +452,9 @@ one back and removes `.build-` and `.trash-` folders, at the top level and in
 each book's `voices/`. `commit_voice()` publishes one voice the same way inside
 `voices/` and then rewrites `book.json`; it refuses when the book's
 `narration_sha256` changed since the job started. Commits hold `_BOOK_LOCK`.
-`delete_book()` renames the folder to `.trash-<random>` and removes it.
+`delete_book()` renames the folder to `.trash-<random>`, deletes the book's
+marks file (`delete_marks()`, see [Marks](#marks-highlights-and-notes)), and
+removes the folder.
 
 `migrate_legacy_books()` moves the earlier layout (`Audiobooks/<name>.mp3`,
 `.versions/<name>.json`, `.readers/<name>.<hash>.md|json`) into book folders
@@ -467,6 +469,70 @@ book plays but has no text for a new voice. Audio is hard-linked; the earlier
 files move to `Audiobooks/.backup/<id>/` and stay until the book's audio is
 first served (`release_migration_backup()`). The empty `.versions` and
 `.readers` folders go. Rerunning finishes a migration a crash interrupted.
+
+### Marks (highlights and notes)
+
+Listen's highlights, notes, and saved Ask Hilde answers exist only with
+`--enable-notes` (`server.notes_enabled`, `Handler.notes_enabled()`; `/api/state`
+says `notes_enabled`). Off, `/api/marks*` answer 404 like an unknown route and
+nothing reads or writes `Marks/`.
+
+- **Storage:** one file per book, `<root>/Marks/<book id>.json` (0600, in a 0700
+  folder), `{"schema": 1, "book", "items": {<id>: item}}`, replaced atomically
+  (`write_private_json()`). It is outside the book's folder: Recreate's
+  `commit_book()`/`swap_into_place()` replaces the folder and never touches it;
+  the book id stays the same (`book_for_source()`), so the marks follow.
+  `delete_book()` deletes it, as the book's `chat.json` goes with the folder.
+  Books have no rename (the id is the title's slug and the document's hash),
+  so nothing moves. A book being made (`making-<job>`) takes no marks: its id
+  changes when it is published.
+- **Item:** the page's `id` (UUID v4, `MARK_ID_PATTERN`), `kind` (`highlight`,
+  `note`, `answer`), `anchor` (`view` `narration`|`source`, `paragraph`,
+  `source_id` (the passage number, `data-passage`, or null), `quote`,
+  `prefix`, `suffix` (up to `MARK_CONTEXT` 64 UTF-16 units of the paragraph's
+  rendered text on each side), `section`), `highlight`, `note`, `answer`
+  (`{question, text, model, asked_at}`, kind `answer` only), `confirmed_place`;
+  the server sets `created_at`, `updated_at` (UTC to the millisecond,
+  `mark_time()`, always later than the stored one), `deleted`, and, for a
+  place the listener chose, `confirmed_for` (the book's `narration_sha256`
+  then). `clean_mark()` checks it (note ≤ `MARK_NOTE_MAX` 20,000 characters,
+  quote ≤ `MARK_QUOTE_MAX` 2,000 and not empty, kinds, views, types) and keeps
+  only those fields.
+- **Merging:** `save_mark()` and `delete_mark()` hold `marks_lock()`: a
+  per-book `threading.Lock` and `fcntl.flock()` on `Marks/.lock`, so a second
+  server on the same library waits too. Under it they check the book still
+  exists, read the file again (`read_marks()`), change the one item by id,
+  and write the file. Different items never overwrite each other. A save
+  with `base_updated_at` other than the stored `updated_at` raises
+  `MarkConflict` (HTTP 409 with the stored item and its place); a save of a
+  tombstoned id always does. `delete_mark()` leaves a tombstone (`id`,
+  `kind`, times, `deleted: true`; the words go), also for an id never saved.
+  A file that is not a marks file raises `MarksUnreadable` (HTTP 500) and is
+  never written over.
+- **Rendered text:** `reader_mark_texts()` rebuilds, from `/api/reader`'s
+  payload (`audiobook_reader_payload()`, the default voice), each place's
+  text exactly as the page's DOM holds it: Narration text, per
+  `.reader-paragraph` (`data-paragraph`), the text of `renderReaderBlocks()`'s
+  sentences (a block's first `<p>` continuing a line gets one space before
+  it) and of its non-sentence groups, except a group holding a picture
+  (`.reader-picture`) and labels; Source text, per `.reader-original`
+  (`data-passage`, the passage number), the text of the original's HTML,
+  without its tag or flags. Offsets are UTF-16 units (`utf16_offset()`).
+  `book_mark_texts()` keeps the last `MARK_TEXTS_KEPT` books' texts while
+  their `book.json`, `reader.md`, `narration.json`, and timings stay the same.
+- **Place:** `mark_place()` on every list and save, whitespace runs counting as
+  one space. In the anchor's view: `confirmed` with `view`, `paragraph`,
+  `start`, `end` where exactly one occurrence has the anchor's prefix and
+  suffix (all of either when the page's was cut by the paragraph's start or
+  end), else exactly one has one of them, else it is the only occurrence and
+  at least `MARK_DISTINCT_QUOTE` (40) characters long. Otherwise `unclear`
+  with the number tied (1 when the only occurrence's surroundings changed),
+  except that a mark whose place the listener chose in this same text
+  (`confirmed_for` equals the book's `narration_sha256`) is confirmed at its
+  paragraph when exactly one tied occurrence is there. Not confirmed and with
+  a `source_id`: the other view is tried, and confirmed only when the quote
+  occurs exactly once in that whole view and in passage `source_id`. Found
+  nowhere: `missing`.
 
 ### Naming
 
@@ -3349,7 +3415,7 @@ read aloud by **Read answers aloud**.
 | Route | Behavior |
 | --- | --- |
 | `GET /` | Embedded HTML/CSS/JS page served with `Cache-Control: no-store` so a refresh cannot retain an obsolete player implementation. |
-| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, and non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install). |
+| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install), and `notes_enabled` (`--enable-notes`). |
 | `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; never a host); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Paste text, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
@@ -3386,7 +3452,7 @@ read aloud by **Read answers aloud**.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, or web search. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, or web search. |
 | `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. `help=1` instead of `book` follows the help conversation's turn. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
@@ -3394,6 +3460,9 @@ read aloud by **Read answers aloud**.
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are `local_endpoints()`. Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` alone (`chat_key()`: only that flag reaches the help conversation). |
+| `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
+| `POST /api/marks/save` | With `--enable-notes` only (else 404). JSON `{book, item}`: creates or updates the mark by `item.id` under the book's lock (`save_mark()`) and returns `{item}` as stored, with `place`. HTTP 409 `{error, item}` with the stored item when `item.base_updated_at` is not its `updated_at`, or when it was deleted; 400 for an invalid item (`clean_mark()`), a changed `kind`, or an invalid book id; 404 for a book not in the library; 500 when the marks file can't be read or written, with nothing changed. |
+| `POST /api/marks/delete` | With `--enable-notes` only (else 404). JSON `{book, id}`: leaves a tombstone (`delete_mark()`) and returns it as `{item}`; 400 for an id that is no UUID v4. |
 
 Every route that adds, changes, or removes a provider (`/api/providers/local/*`, the `/api/paper/*/key`, `/remove`, `/login`, `/cancel` routes, and `/api/paper/claude-code/*`) answers HTTP 403 "Providers are added, changed, and removed in a browser on the server's own machine, or from any device when Hilde starts with --manage-from-network." (`PROVIDERS_LOCAL_ONLY`) unless `Handler.may_manage()` (loopback, or `--manage-from-network`), the same rule as `/api/workers`; `/api/state`'s capabilities say so as `manage_providers` and `manage_workers`. `POST /api/models/defaults` follows the same rule (`DEFAULTS_LOCAL_ONLY`), and the page shows the default models read-only without `manage_providers`. `may_manage()` is the only use of `local_client()`; nothing else depends on where a browser is. With `--manage-from-network` the server prints "Providers and machines can be changed from any device that reaches this server." at startup.
 
@@ -3426,6 +3495,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - A resumable extraction never mixes pages or paragraph batches from different preparation identities.
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
+- A book's marks live only in `<root>/Marks/<book id>.json`, outside its folder: Recreate and new voices never touch them, deleting the book deletes them, and nothing of them is kept in browser storage. Every change rereads the file under the book's lock (thread lock and `flock`) and changes one item; a deleted mark stays a tombstone; an unreadable marks file is never written over. A mark's place is never decided by order: a quote that occurs several times without words around it to tell them apart stays `unclear` until the listener chooses its place.
 - Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages, model measurements, and index of Hilde Reader's docs and code live in `<root>/.cache/chat-docs/`, `<root>/.cache/ask-models.json`, and `<root>/.cache/app-index/`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
 - The help conversation lives in `<root>/help-chat/chat.json` alone: never in a book's folder, and nothing of help mode (a question, its New) reads or writes a book's `chat.json` or `files/`. Help mode never carries a book's context: no `about`, selection, part playing, title, or abstract goes with a help question, and its tools (`HELP_TOOLS`) only read the help, the docs, and the code.
 - Answers link Hilde Reader's code only at the commit the server runs (`app_source()`, read once at start): a dirty tree or no git gives no link, and the pieces say "the running code". The `docs` and `code` documents hold only files git tracks at that commit, never tests or `workspace/`.

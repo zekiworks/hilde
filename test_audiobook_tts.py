@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from unittest import mock
 import urllib.request
@@ -14083,6 +14084,507 @@ class AskWhileMakingTests(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in web.making_catalog(self.storage)], [web.making_id("c" * 64)])
         with self.assertRaises(FileNotFoundError):
             web.delete_making(self.storage, queue, None, making)
+
+
+def reader_timings(paragraphs):
+    """Sentence timings of a reader whose blocks belong to `paragraphs`."""
+    return {
+        "schema": 3, "sample_rate": 24000, "duration_samples": 2400 * len(paragraphs),
+        "block_count": len(paragraphs), "paragraphs": list(paragraphs),
+        "cues": [{"block": index, "start_sample": 2400 * index, "end_sample": 2400 * (index + 1)}
+                 for index in range(len(paragraphs))],
+        "word_timing": "unavailable", "word_cues": [],
+    }
+
+
+def reader_markdown(blocks):
+    return "\n\n".join(f"<!-- audiobook-tts:block={index} -->\n\n{block}" for index, block in enumerate(blocks))
+
+
+# A paper whose words repeat: "a fast model" twice, told apart by the words
+# around it, and "Same words twice." alone in two paragraphs.
+MARKS_BLOCKS = [
+    ("# Results", 0),
+    ("We built a fast model for translation.", 1),
+    ("It trains in a day.", 1),
+    ("Others call it a fast model too.", 2),
+    ("Same words twice.", 3),
+    ("Same words twice.", 4),
+    ("A unique sentence about attention heads.", 5),
+]
+
+
+def marks_narration(blocks):
+    """narration.json for MARKS_BLOCKS-like blocks, one passage per paragraph;
+    passage 2's author text holds "a fast model for translation" once."""
+    passages = []
+    for paragraph in sorted({paragraph for _, paragraph in blocks}):
+        text = " ".join(markdown for markdown, owner in blocks if owner == paragraph)
+        adapted = paragraph == 1
+        passages.append({
+            "id": paragraph + 1, "type": "heading" if text.startswith("#") else "body", "page": 1,
+            "text": text.lstrip("# "), "unchanged": not adapted, "paragraphs": [paragraph, paragraph],
+            "original_text": "We present a fast model for translation, which trains in one day." if adapted else text,
+            "sources": [{"type": "body", "page": 1, "text": text}],
+        })
+    return {"schema": 2, "original_view": True, "passages": passages}
+
+
+class MarksTests(unittest.TestCase):
+    """Listen's highlights, notes and saved answers (--enable-notes): one
+    file per book in <storage-root>/Marks, merged item by item under a lock,
+    and each mark's place found again in the text the page renders."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+        self.book = self.store(MARKS_BLOCKS)
+
+    def store(self, blocks, source_sha256="b" * 64):
+        return store_book(
+            self.storage, title="Fast Models", source_sha256=source_sha256,
+            markdown=reader_markdown([markdown for markdown, _ in blocks]),
+            timings=reader_timings([paragraph for _, paragraph in blocks]),
+            narration=marks_narration(blocks),
+        )
+
+    def texts(self, book=None):
+        return web.reader_mark_texts(web.audiobook_reader_payload(self.storage, book or self.book))
+
+    def anchor(self, view, paragraph, quote, occurrence=0, source_id=None, texts=None):
+        """The anchor the page sends for the `occurrence`th `quote` in a paragraph's rendered text."""
+        text = (texts or self.texts())[view][paragraph]
+        start = -1
+        for _ in range(occurrence + 1):
+            start = text.index(quote, start + 1)
+        end = start + len(quote)
+        return {"view": view, "paragraph": paragraph, "source_id": source_id, "quote": quote,
+                "prefix": text[max(0, start - 64):start], "suffix": text[end:end + 64], "section": "Results"}
+
+    @staticmethod
+    def item(anchor, kind="highlight", **fields):
+        return {"id": str(uuid.uuid4()), "kind": kind, "anchor": anchor, "highlight": kind == "highlight",
+                "note": None, "answer": None, "confirmed_place": False, **fields}
+
+    def place(self, item):
+        return next(entry["place"] for entry in web.list_marks(self.storage, self.book)
+                    if entry["id"] == item["id"])
+
+    def test_the_rendered_text_is_the_pages_paragraph_and_original_text(self):
+        texts = web.reader_mark_texts({
+            "blocks": [
+                {"id": 0, "paragraph": 0, "html": "<h2>Results</h2>\n"},
+                {"id": 1, "paragraph": 1, "html": "<p>We built a <em>fast</em> model.</p>\n"},
+                {"id": 2, "paragraph": 1, "html": "<p>It trains &amp; runs.</p>\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n"},
+                {"id": 3, "paragraph": 1,
+                 "html": "<p>After the list.</p>\n<p><img src=\"data:image/png;base64,AA\" alt=\"Figure\"> Caption</p>\n"},
+                {"id": 4, "paragraph": 2, "html": "<p>Next 😀 paragraph.</p>\n"},
+            ],
+            "originals": [
+                {"html": "<p>Orig <strong>one</strong>.</p>\n<p>Two.</p>\n"},
+                {"html": ""},
+            ],
+        })
+        # Sentences of a paragraph flow with one space; a list keeps its own
+        # whitespace and breaks the line; a picture's group shows no text.
+        self.assertEqual(texts["narration"], {
+            0: "Results",
+            1: "We built a fast model. It trains & runs.\none\ntwo\nAfter the list.",
+            2: "Next 😀 paragraph.",
+        })
+        # An original with no text of its own (Unchanged) is no place in Source text.
+        self.assertEqual(texts["source"], {1: "Orig one.\nTwo.\n"})
+
+    def test_a_mark_is_kept_on_the_server_and_comes_back_with_its_place(self):
+        anchor = self.anchor("narration", 1, "a fast model", source_id=2)
+        item = self.item(anchor, kind="note", note="Fast how?", highlight=True)
+        saved = web.save_mark(self.storage, self.book, item)
+        path = self.storage.root / "Marks" / f"{self.book}.json"
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        stored = json.loads(path.read_text())
+        self.assertEqual((stored["schema"], stored["book"], list(stored["items"])), (1, self.book, [item["id"]]))
+        self.assertEqual(saved["created_at"], saved["updated_at"])
+        self.assertRegex(saved["updated_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+        self.assertFalse(saved["deleted"])
+        for key in ("kind", "anchor", "highlight", "note", "answer", "confirmed_place"):
+            self.assertEqual(saved[key], item[key], key)
+        # The book's folder is not touched: Recreate never deletes the marks.
+        self.assertFalse(any(path.name.startswith("mark") for path in (self.storage.audiobooks / self.book).iterdir()))
+
+        listed = web.list_marks(self.storage, self.book)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["place"], {"status": "confirmed", "view": "narration", "paragraph": 1,
+                                              "start": 9, "end": 21})
+        # An edit keeps the id and the creation time.
+        edited = web.save_mark(self.storage, self.book, {**item, "note": "Fast because of attention."})
+        self.assertEqual(edited["created_at"], saved["created_at"])
+        self.assertGreater(edited["updated_at"], saved["updated_at"])
+        self.assertEqual([entry["note"] for entry in web.list_marks(self.storage, self.book)],
+                         ["Fast because of attention."])
+        # A saved answer keeps its question, answer, and model.
+        answer = self.item(self.anchor("narration", 5, "attention heads"), kind="answer", highlight=False,
+                           note="Like a softmax temperature.",
+                           answer={"question": "Why heads?", "text": "Each head looks elsewhere.",
+                                   "model": "lm-studio/gemma", "asked_at": "2026-10-24T16:05:00Z"})
+        self.assertEqual(web.save_mark(self.storage, self.book, answer)["answer"]["model"], "lm-studio/gemma")
+        self.assertEqual(len(web.list_marks(self.storage, self.book)), 2)
+
+    def test_marks_saved_at_once_from_many_threads_are_all_kept(self):
+        anchor = self.anchor("narration", 5, "attention heads")
+        items = [self.item(anchor, kind="note", note=f"Note {number}") for number in range(40)]
+        slow = web.read_marks
+
+        def read_slowly(*args):
+            # A wider window between reading and writing the file.
+            found = slow(*args)
+            time.sleep(0.002)
+            return found
+
+        with mock.patch.object(web, "read_marks", read_slowly):
+            threads = [threading.Thread(target=web.save_mark, args=(self.storage, self.book, item)) for item in items]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(sorted(entry["id"] for entry in web.list_marks(self.storage, self.book)),
+                         sorted(item["id"] for item in items))
+
+    def test_marks_saved_at_once_by_two_servers_on_one_library_are_all_kept(self):
+        anchor = self.anchor("narration", 5, "attention heads")
+        script = (
+            "import json, sys, time, uuid\n"
+            "from pathlib import Path\n"
+            "import audiobook_tts_web as web\n"
+            "storage, book, name, count = web.SharedStorage(Path(sys.argv[1])), sys.argv[2], sys.argv[3], int(sys.argv[4])\n"
+            "anchor = json.loads(sys.argv[5])\n"
+            "slow = web.read_marks\n"
+            "def read_slowly(*args):\n"
+            "    found = slow(*args); time.sleep(0.002); return found\n"
+            "web.read_marks = read_slowly\n"
+            "go = Path(sys.argv[1]) / 'go'\n"
+            "while not go.exists(): time.sleep(0.001)\n"
+            "for number in range(count):\n"
+            "    web.save_mark(storage, book, {'id': str(uuid.uuid4()), 'kind': 'note', 'anchor': anchor,\n"
+            "                  'highlight': False, 'note': f'{name} {number}', 'answer': None, 'confirmed_place': False})\n"
+        )
+        processes = [
+            subprocess.Popen([sys.executable, "-c", script, str(self.storage.root), self.book, name, "30",
+                              json.dumps(anchor)], cwd=Path(__file__).resolve().parent)
+            for name in ("phone", "desktop")
+        ]
+        time.sleep(0.5)
+        (self.storage.root / "go").touch()
+        self.assertEqual([process.wait(timeout=60) for process in processes], [0, 0])
+        notes = sorted(entry["note"] for entry in web.list_marks(self.storage, self.book))
+        self.assertEqual(notes, sorted(f"{name} {number}" for name in ("phone", "desktop") for number in range(30)))
+
+    def test_an_edit_made_from_an_older_copy_is_refused_with_the_stored_mark(self):
+        item = self.item(self.anchor("narration", 5, "attention heads"), kind="note", note="First.")
+        first = web.save_mark(self.storage, self.book, item)
+        # The desktop edits from the copy it loaded…
+        desktop = web.save_mark(self.storage, self.book,
+                                {**item, "note": "Desktop.", "base_updated_at": first["updated_at"]})
+        # …and the phone, from the same copy, is refused with what is stored now.
+        with self.assertRaises(web.MarkConflict) as refused:
+            web.save_mark(self.storage, self.book, {**item, "note": "Phone.", "base_updated_at": first["updated_at"]})
+        self.assertEqual(refused.exception.item["note"], "Desktop.")
+        self.assertEqual(refused.exception.item["updated_at"], desktop["updated_at"])
+        self.assertEqual(web.list_marks(self.storage, self.book)[0]["note"], "Desktop.")
+        # Keeping the phone's text, on top of the stored copy, goes through.
+        kept = web.save_mark(self.storage, self.book,
+                             {**item, "note": "Phone.", "base_updated_at": desktop["updated_at"]})
+        self.assertEqual(kept["note"], "Phone.")
+        self.assertNotIn("base_updated_at", json.loads(
+            (self.storage.root / "Marks" / f"{self.book}.json").read_text())["items"][item["id"]])
+
+    def test_a_deleted_mark_stays_deleted(self):
+        item = self.item(self.anchor("narration", 5, "attention heads"), kind="note", note="Secret thought.")
+        saved = web.save_mark(self.storage, self.book, item)
+        tombstone = web.delete_mark(self.storage, self.book, item["id"])
+        self.assertTrue(tombstone["deleted"])
+        self.assertGreater(tombstone["updated_at"], saved["updated_at"])
+        self.assertEqual(web.list_marks(self.storage, self.book), [])
+        # Its words go; the id stays as a tombstone.
+        self.assertNotIn("Secret", (self.storage.root / "Marks" / f"{self.book}.json").read_text())
+        # A device that still had it saves its older copy: refused, still deleted.
+        for base in (saved["updated_at"], None):
+            with self.assertRaises(web.MarkConflict) as refused:
+                web.save_mark(self.storage, self.book, {**item, "base_updated_at": base})
+            self.assertTrue(refused.exception.item["deleted"])
+        self.assertEqual(web.list_marks(self.storage, self.book), [])
+        self.assertTrue(web.read_marks(self.storage, self.book)[item["id"]]["deleted"])
+        # Deleting again, or an id never saved, leaves a tombstone too.
+        self.assertTrue(web.delete_mark(self.storage, self.book, item["id"])["deleted"])
+        other = str(uuid.uuid4())
+        web.delete_mark(self.storage, self.book, other)
+        with self.assertRaises(web.MarkConflict):
+            web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 5, "attention heads"), id=other))
+
+    def test_a_mark_is_checked_before_it_is_kept(self):
+        anchor = self.anchor("narration", 5, "attention heads")
+        good = self.item(anchor, kind="note", note="Fine.")
+        refused = {
+            "id": {**good, "id": "not-a-uuid"},
+            "uuid v1": {**good, "id": "a8098c1a-f86e-11da-bd1a-00112444be1e"},
+            "kind": {**good, "kind": "bookmark"},
+            "view": {**good, "anchor": {**anchor, "view": "pdf"}},
+            "paragraph": {**good, "anchor": {**anchor, "paragraph": "5"}},
+            "empty quote": {**good, "anchor": {**anchor, "quote": "  "}},
+            "long quote": {**good, "anchor": {**anchor, "quote": "q" * 2001}},
+            "long note": {**good, "note": "n" * 20_001},
+            "note type": {**good, "note": 5},
+            "highlight type": {**good, "highlight": "yes"},
+            "answer missing": {**good, "kind": "answer"},
+            "answer on a note": {**good, "answer": {"question": "Q", "text": "A", "model": "m", "asked_at": "t"}},
+            "answer fields": {**good, "kind": "answer", "answer": {"question": "Q", "text": 5, "model": "m"}},
+            "anchor": {**good, "anchor": None},
+        }
+        for name, item in refused.items():
+            with self.assertRaises(ValueError, msg=name):
+                web.save_mark(self.storage, self.book, item)
+        self.assertEqual(web.list_marks(self.storage, self.book), [])
+        # The longest note and quote allowed are kept.
+        web.save_mark(self.storage, self.book, {**good, "note": "n" * 20_000,
+                                                "anchor": {**anchor, "quote": "q" * 2000}})
+        with self.assertRaises(ValueError):
+            web.save_mark(self.storage, "../etc", good)
+        with self.assertRaises(FileNotFoundError):
+            web.save_mark(self.storage, "no-such-book--" + "0" * 12, good)
+        with self.assertRaises(ValueError):
+            web.save_mark(self.storage, web.making_id("c" * 64), good)
+        # A kind never changes.
+        with self.assertRaises(ValueError):
+            web.save_mark(self.storage, self.book, {**good, "kind": "highlight"})
+
+    def serve(self, enabled):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.storage = self.storage
+        server.jobs = web.JobQueue()
+        server.tts_models = web.unconfigured_tts_models()
+        server.verbose = False
+        server.worker_nodes, server.workers_path = [], self.storage.root / web.WORKERS_FILE
+        server.workers_lock, server.worker_setup = threading.Lock(), None
+        server.manage_from_network = False
+        server.notes_enabled = enabled
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.jobs.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    request = staticmethod(WorkerNodeTests.request)
+
+    def test_the_routes_answer_only_with_the_switch_on(self):
+        item = self.item(self.anchor("narration", 1, "a fast model"), kind="note", note="Hm.")
+        off = self.serve(False)
+        with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
+            self.assertIs(self.request(off, "/api/state")[1]["notes_enabled"], False)
+        self.assertEqual(self.request(off, f"/api/marks?book={self.book}")[0], 404)
+        self.assertEqual(self.request(off, "/api/marks/save", {"book": self.book, "item": item})[0], 404)
+        self.assertEqual(self.request(off, "/api/marks/delete", {"book": self.book, "id": item["id"]})[0], 404)
+        self.assertFalse((self.storage.root / "Marks").exists())
+
+        on = self.serve(True)
+        with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cpu", "label": "CPU"}]):
+            self.assertIs(self.request(on, "/api/state")[1]["notes_enabled"], True)
+        status, saved = self.request(on, "/api/marks/save", {"book": self.book, "item": item})
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["item"]["place"]["status"], "confirmed")
+        status, listed = self.request(on, f"/api/marks?book={self.book}")
+        self.assertEqual((status, [entry["id"] for entry in listed["items"]]), (200, [item["id"]]))
+        stale = {**item, "note": "Older.", "base_updated_at": "2026-01-01T00:00:00.000Z"}
+        status, conflict = self.request(on, "/api/marks/save", {"book": self.book, "item": stale})
+        self.assertEqual((status, conflict["item"]["note"]), (409, "Hm."))
+        self.assertIn("place", conflict["item"])
+        self.assertEqual(self.request(on, "/api/marks/save", {"book": self.book, "item": {**item, "kind": 1}})[0], 400)
+        self.assertEqual(self.request(on, "/api/marks/save", {"book": "x--" + "0" * 12, "item": item})[0], 404)
+        self.assertEqual(self.request(on, "/api/marks?book=../x")[0], 400)
+        status, deleted = self.request(on, "/api/marks/delete", {"book": self.book, "id": item["id"]})
+        self.assertEqual((status, deleted["item"]["deleted"]), (200, True))
+        self.assertEqual(self.request(on, f"/api/marks?book={self.book}")[1], {"items": []})
+        self.assertEqual(self.request(on, "/api/marks/delete", {"book": self.book, "id": "x"})[0], 400)
+
+    def test_a_quote_is_placed_only_where_its_words_around_it_say(self):
+        texts = self.texts()
+        # Unique: confirmed, at its offsets in the paragraph's rendered text.
+        unique = web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 5, "attention heads")))
+        self.assertEqual(self.place(unique), {"status": "confirmed", "view": "narration", "paragraph": 5,
+                                              "start": 24, "end": 39})
+        # Twice, told apart by the words around each.
+        first = web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 1, "a fast model")))
+        second = web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 2, "a fast model")))
+        self.assertEqual(self.place(first), {"status": "confirmed", "view": "narration", "paragraph": 1,
+                                             "start": 9, "end": 21})
+        self.assertEqual(self.place(second), {"status": "confirmed", "view": "narration", "paragraph": 2,
+                                              "start": 15, "end": 27})
+        # Twice with nothing around either to tell them apart: never the first.
+        same = self.anchor("narration", 4, "Same words twice.")
+        self.assertEqual((same["prefix"], same["suffix"]), ("", ""))
+        unclear = web.save_mark(self.storage, self.book, self.item(same))
+        self.assertEqual(self.place(unclear), {"status": "unclear", "candidates": 2})
+        # Its paragraph decides only once the listener chose the place ("Choose its place…").
+        chosen = web.save_mark(self.storage, self.book, {**unclear, "confirmed_place": True})
+        self.assertEqual(self.place(chosen), {"status": "confirmed", "view": "narration", "paragraph": 4,
+                                              "start": 0, "end": 17})
+        # Whitespace differences in the quote (a selection's line breaks) don't matter.
+        loose = web.save_mark(self.storage, self.book, self.item(
+            {**self.anchor("narration", 1, "translation. It trains"), "quote": "translation.\n It  trains"}))
+        self.assertEqual(self.place(loose)["start"], texts["narration"][1].index("translation."))
+        # Gone from the book: missing; a quote in Source text is found there.
+        gone = web.save_mark(self.storage, self.book, self.item({**same, "quote": "Words nowhere in it."}))
+        self.assertEqual(self.place(gone), {"status": "missing"})
+        source = web.save_mark(self.storage, self.book, self.item(self.anchor("source", 2, "which trains in one day")))
+        self.assertEqual(self.place(source), {"status": "confirmed", "view": "source", "paragraph": 2,
+                                              "start": 41, "end": 64})
+        # Offsets count UTF-16 code units, as the page's strings do.
+        self.assertEqual(web.utf16_offset("😀 ab", 2), 3)
+
+    def recreate(self, blocks):
+        """Make the book again from its source with new narration, the way Recreate publishes it."""
+        book = self.store(blocks)
+        self.assertEqual(book, self.book)
+        return book
+
+    def test_after_a_recreate_a_quote_is_found_again_or_its_place_is_not_confirmed(self):
+        marks = self.storage.root / "Marks" / f"{self.book}.json"
+        short = web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 1, "a fast model")))
+        sourced = web.save_mark(self.storage, self.book, self.item(
+            self.anchor("narration", 1, "a fast model for translation", source_id=2)))
+        unsourced = web.save_mark(self.storage, self.book, self.item(
+            self.anchor("narration", 1, "a fast model for translation")))
+        kept = web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 5, "attention heads")))
+        chosen = web.save_mark(self.storage, self.book, {
+            **self.item(self.anchor("narration", 4, "Same words twice.")), "confirmed_place": True})
+        before = marks.read_bytes()
+        old_folder = (self.storage.audiobooks / self.book).stat().st_ino
+        # The narration of paragraph 1 changes; the rest reads as before.
+        changed = [("We built a quick model for translating.", 1) if markdown.startswith("We built") else (markdown, p)
+                   for markdown, p in MARKS_BLOCKS]
+        changed.insert(4, ("An added sentence.", 2))
+        self.recreate(changed)
+        self.assertNotEqual((self.storage.audiobooks / self.book).stat().st_ino, old_folder)
+        self.assertEqual(marks.read_bytes(), before)
+        # Its only other "a fast model" has other words around it: never moved there.
+        self.assertEqual(self.place(short), {"status": "unclear", "candidates": 1})
+        # Found in the passage's author text, the one place it is: confirmed there.
+        self.assertEqual(self.place(sourced), {"status": "confirmed", "view": "source", "paragraph": 2,
+                                               "start": 11, "end": 39})
+        self.assertEqual(self.place(unsourced), {"status": "missing"})
+        self.assertEqual(self.place(kept), {"status": "confirmed", "view": "narration", "paragraph": 5,
+                                            "start": 24, "end": 39})
+        # A place chosen against the earlier text no longer decides between equals.
+        self.assertEqual(self.place(chosen), {"status": "unclear", "candidates": 2})
+        self.assertEqual(len(web.list_marks(self.storage, self.book)), 5)
+
+    def test_deleting_a_book_deletes_its_marks_and_no_other_books(self):
+        other = self.store(MARKS_BLOCKS, source_sha256="c" * 64)
+        anchor = self.anchor("narration", 5, "attention heads")
+        web.save_mark(self.storage, self.book, self.item(anchor))
+        web.save_mark(self.storage, other, self.item(anchor))
+        web.delete_book(self.storage, self.book)
+        self.assertFalse((self.storage.root / "Marks" / f"{self.book}.json").exists())
+        self.assertEqual(len(web.list_marks(self.storage, other)), 1)
+        with self.assertRaises(FileNotFoundError):
+            web.save_mark(self.storage, self.book, self.item(anchor))
+        self.assertFalse((self.storage.root / "Marks" / f"{self.book}.json").exists())
+
+    def test_a_question_and_its_answer_say_when_they_were_written_for_save_to_notes(self):
+        asked = web.chat_display_entry({"role": "user", "text": "Why?", "at": "2026-10-24T16:04:58Z"})
+        answered = web.chat_display_entry({"role": "assistant", "text": "Because.", "at": "2026-10-24T16:05:00Z",
+                                           "model": "lm-studio/gemma"})
+        self.assertEqual((asked["at"], answered["at"]), ("2026-10-24T16:04:58Z", "2026-10-24T16:05:00Z"))
+        self.assertNotIn("at", web.chat_display_entry({"role": "assistant", "text": "Old."}))
+
+    def test_an_unreadable_marks_file_is_never_written_over(self):
+        web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 5, "attention heads")))
+        path = self.storage.root / "Marks" / f"{self.book}.json"
+        path.write_text("{not json")
+        with self.assertRaises(web.MarksUnreadable):
+            web.save_mark(self.storage, self.book, self.item(self.anchor("narration", 5, "attention heads")))
+        with self.assertRaises(web.MarksUnreadable):
+            web.list_marks(self.storage, self.book)
+        self.assertEqual(path.read_text(), "{not json")
+
+
+REAL_BOOK = Path.home() / ".hilde" / "library" / "Audiobooks" / "attention-is-all-you-need--bdfaa68d8984"
+
+
+@unittest.skipUnless((REAL_BOOK / "narration.json").is_file(), "needs a copy of a real book")
+class MarksOnARealBookTests(MarksTests.__base__):
+    """Recreate on a COPY of a real book (read only): its narration.json,
+    reader.md and a voice's timings are copied into a temporary library."""
+
+    ABSTRACT = "The best performing models also connect the encoder and decoder through an attention mechanism."
+    DISTANT = "This makes it more difficult to learn dependencies between distant positions."
+    RECURRENT = "Recurrent models typically factor computation along the symbol positions of the input and output sequences."
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.storage = web.SharedStorage(Path(temporary.name))
+        self.storage.ensure()
+        record = json.loads((REAL_BOOK / "book.json").read_text())
+        self.record = record
+        voice = web.default_voice(record)
+        self.timings = json.loads((REAL_BOOK / "voices" / voice / "timings.json").read_text())
+        self.markdown = (REAL_BOOK / "reader.md").read_text(encoding="utf-8")
+        self.narration = json.loads((REAL_BOOK / "narration.json").read_text())
+        self.book = self.publish(self.markdown, self.narration)
+        self.assertEqual(self.book, REAL_BOOK.name)
+
+    def publish(self, markdown, narration):
+        return store_book(self.storage, title=self.record["title"], source_sha256=self.record["source_sha256"],
+                          markdown=markdown, timings=self.timings, narration=narration)
+
+    def mark(self, quote):
+        payload = web.audiobook_reader_payload(self.storage, self.book)
+        texts = web.reader_mark_texts(payload)
+        paragraph = next(number for number, text in texts["narration"].items() if quote in text)
+        block = next(block["id"] for block in payload["blocks"] if block["paragraph"] == paragraph)
+        anchor = MarksTests.anchor(self, "narration", paragraph, quote, texts=texts,
+                                   source_id=payload["block_passages"][block])
+        item = MarksTests.item(anchor, kind="note", note=f"About: {quote[:20]}")
+        return web.save_mark(self.storage, self.book, item), texts
+
+    def place(self, item):
+        return MarksTests.place(self, item)
+
+    def test_a_recreated_real_book_keeps_its_marks_and_says_where_each_still_is(self):
+        abstract, texts = self.mark(self.ABSTRACT)
+        distant, _ = self.mark(self.DISTANT)
+        recurrent, _ = self.mark(self.RECURRENT)
+        for item in (abstract, distant, recurrent):
+            self.assertEqual(self.place(item)["status"], "confirmed")
+        marks = self.storage.root / "Marks" / f"{self.book}.json"
+        before = marks.read_bytes()
+        # Recreate: the model words two sentences differently this time.
+        markdown = self.markdown.replace(self.ABSTRACT, "The strongest models also link encoder and decoder with attention.")
+        markdown = markdown.replace(self.DISTANT, "So it is harder to learn how far-apart positions depend on each other.")
+        # Only the narration (each passage's "text") changes; the author's text is the same paper.
+        narration = json.loads(json.dumps(self.narration))
+        for passage in narration["passages"]:
+            passage["text"] = passage["text"].replace(self.ABSTRACT, "x").replace(self.DISTANT, "y")
+        self.assertNotEqual(narration, self.narration)
+        self.assertEqual(self.publish(markdown, narration), self.book)
+        self.assertEqual(marks.read_bytes(), before)
+        after = web.reader_mark_texts(web.audiobook_reader_payload(self.storage, self.book))
+        # The abstract's sentence is the paper's own: found in Source text, once, in its passage.
+        place = self.place(abstract)
+        self.assertEqual((place["status"], place["view"], place["paragraph"]),
+                         ("confirmed", "source", abstract["anchor"]["source_id"]))
+        source = after["source"][place["paragraph"]]
+        self.assertEqual(source[place["start"]:place["end"]], self.ABSTRACT)
+        # A sentence only the narration had is gone: kept, its place not confirmed.
+        self.assertEqual(self.place(distant), {"status": "missing"})
+        place = self.place(recurrent)
+        self.assertEqual(place["status"], "confirmed")
+        self.assertEqual(after["narration"][place["paragraph"]][place["start"]:place["end"]], self.RECURRENT)
+        self.assertEqual(len(web.list_marks(self.storage, self.book)), 3)
 
 
 _TEST_HOME = None

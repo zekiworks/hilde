@@ -33,6 +33,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines and sets the default models. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
+| `--enable-notes` | Off. Turns on Listen's highlights and notes: highlights, your notes, and Ask Hilde answers you save are kept on the server, one file per book in `<storage-root>/Marks/` (see [Storage](#storage)), so every device shows the same ones. Off, the page offers none of it and `/api/marks` answers 404; marks already saved stay on disk untouched. |
 | `--local-server PROVIDER=URL` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server. Only the provider and the address: a comma and anything after it is refused, as an invalid address. Whether each of its models reads images is [found out automatically](#which-local-models-read-images). At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-design-server`, `--voice-design-server-model` | A speech server for voice design instead of the model; the server model defaults to `gpt-4o-mini-tts`. See [Speech models](#speech-models). |
@@ -332,6 +333,9 @@ alone. The server creates and owns this fixed layout:
 │           └── Eir/
 │               ├── audio.mp3
 │               └── timings.json
+├── Marks/
+│   ├── .lock
+│   └── attention-is-all-you-need--bdfaa68d8984.json
 ├── Documents/
 ├── in_progress/
 ├── voice-tags.json
@@ -398,6 +402,18 @@ alone. The server creates and owns this fixed layout:
   that do not, its GPUs by UUID (`GPU-…`, as `nvidia-smi -L` shows them; a
   `cuda:N` written by an older version becomes the UUID at the next start);
   see [Narration workers on other machines](ssh-workers.md).
+- **Marks**, present once a highlight or note is saved with
+  `--enable-notes`, holds one `<book id>.json` per book (readable only by
+  you, like the folder): each highlight, note, and saved Ask Hilde answer by
+  its id, with its quote, the words around it, its view (Narration text or
+  Source text), and its times; a deleted one stays as a tombstone without its
+  words, so another device's older copy can't bring it back. It is kept
+  outside the book's folder, so **Recreate** never deletes it: after one, each
+  mark is found again in the new text or shows "Place not confirmed".
+  Deleting the book deletes its marks file. Every save rereads the file under
+  a lock (`.lock`, held with `flock`, so two servers on one library wait for
+  each other) and changes only that mark, so notes saved at once from two
+  devices are all kept.
 
 On its first start, this version moves audiobooks kept in the earlier layout
 (`Audiobooks/<name>.mp3` with hidden `.readers` and `.versions` folders) into
