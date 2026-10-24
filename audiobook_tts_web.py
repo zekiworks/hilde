@@ -80,9 +80,11 @@ from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
     VOICE_VERSIONS_DIR,
+    WORKER_READY_SECONDS,
     NarrationWorkerProcess,
     clip_token_limit,
     gpu_free_mebibytes,
+    positive_float,
     read_voice,
     save_voice,
     speech_endpoint,
@@ -502,6 +504,11 @@ CHECKPOINT_LINE = re.compile(r"^Checkpointed chunk (\d+)/(\d+)")
 JOIN_LINE = re.compile(r"^Joined chunk (\d+)/(\d+)")
 WROTE_LINE = re.compile(r"^Wrote (.+) \([\d.]+s, \d+ Hz\)$")
 SAVED_LINE = re.compile(r"^Saved voice: (.+) \([\d.]+s, \d+ Hz\)$")
+# A narration worker that could not start (audiobook_tts.py's coordinator):
+# its label ("Local GPU-…", "Local cuda:N", or "SSH host device") and why.
+LEFT_OUT_LINE = re.compile(r"^Narration worker left out: (.+?): (.+)$")
+# The reason the narration command gives when it stops with an error.
+NARRATION_ERROR_LINE = re.compile(r"^audiobook_tts\.py: error: (.+)$")
 READER_BLOCK_PATTERN = re.compile(
     r"^<!-- audiobook-tts:block=(\d+) -->[ \t]*$",
     flags=re.MULTILINE,
@@ -1312,47 +1319,80 @@ print(f"Extracted PDF page {page + 1} ({len(markdown)} Markdown characters).")
 """
 _DEVICE_OPTIONS = None
 _DEVICE_OPTIONS_LOCK = threading.Lock()
+# How long the device check (torch's import and CUDA's start, in a child) may take.
+DEVICE_PROBE_SECONDS = 60
+# How long each narration worker may take to load the model and say it is
+# ready; --worker-ready-timeout sets it for the server's narrations.
+WORKER_READY_TIMEOUT = WORKER_READY_SECONDS
 _MP4_LAYOUTS = {}
 _MP4_LAYOUT_LOCK = threading.Lock()
 
 
+def probe_devices():
+    """This machine's usable devices now, from a fresh child process.
+
+    The child imports torch and initializes CUDA, so this process never does
+    (it starts narration children). Raises RuntimeError saying why when the
+    probe cannot run or reports nothing."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _DEVICE_PROBE],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=DEVICE_PROBE_SECONDS,
+        )
+        choices = json.loads(result.stdout.strip().splitlines()[-1])
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"the device check did not finish within {DEVICE_PROBE_SECONDS} s") from None
+    except subprocess.CalledProcessError as exc:
+        said = (exc.stderr or "").strip().splitlines()
+        raise RuntimeError("the device check failed" + (f": {said[-1]}" if said else "")) from None
+    except (OSError, ValueError, IndexError) as exc:
+        raise RuntimeError(f"the device check failed: {exc}") from None
+    devices = [
+        {
+            "value": item["value"],
+            "label": item["label"],
+            **{
+                key: item[key]
+                for key, kind in (("name", str), ("memory", int), ("uuid", str))
+                if isinstance(item.get(key), kind)
+            },
+        }
+        for item in (choices if isinstance(choices, list) else ())
+        if isinstance(item, dict)
+        and isinstance(item.get("value"), str)
+        and isinstance(item.get("label"), str)
+    ]
+    if not devices:
+        raise RuntimeError("the device check reported no devices")
+    return devices
+
+
 def available_devices():
-    """Probe devices in a child so importing torch does not burden the web process."""
+    """This machine's devices as Settings shows them: the server's first
+    probe, then each narration start's (refresh_devices()). A display list:
+    narration checks its GPUs again when it starts."""
     global _DEVICE_OPTIONS
     with _DEVICE_OPTIONS_LOCK:
         if _DEVICE_OPTIONS is not None:
             return _DEVICE_OPTIONS
         try:
-            result = subprocess.run(
-                [sys.executable, "-c", _DEVICE_PROBE],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            choices = json.loads(result.stdout.strip().splitlines()[-1])
-            if not isinstance(choices, list) or not choices:
-                raise ValueError("device probe returned no choices")
-            _DEVICE_OPTIONS = [
-                {
-                    "value": item["value"],
-                    "label": item["label"],
-                    **{
-                        key: item[key]
-                        for key, kind in (("name", str), ("memory", int), ("uuid", str))
-                        if isinstance(item.get(key), kind)
-                    },
-                }
-                for item in choices
-                if isinstance(item, dict)
-                and isinstance(item.get("value"), str)
-                and isinstance(item.get("label"), str)
-            ]
-            if not _DEVICE_OPTIONS:
-                raise ValueError("device probe returned no valid choices")
-        except (OSError, subprocess.SubprocessError, ValueError):
+            _DEVICE_OPTIONS = probe_devices()
+        except RuntimeError:
             _DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
         return _DEVICE_OPTIONS
+
+
+def refresh_devices():
+    """Probe this machine's devices again, show them in Settings, and return
+    them; raises RuntimeError as probe_devices() does."""
+    global _DEVICE_OPTIONS
+    devices = probe_devices()
+    with _DEVICE_OPTIONS_LOCK:
+        _DEVICE_OPTIONS = devices
+    return devices
 
 
 def resolve_device(requested, devices=None):
@@ -1395,7 +1435,8 @@ def pin_cuda(command, devices=None):
     can be another card than the server's. The child sees just the GPUs its
     --device and --worker-device name, listed by UUID and renumbered from 0. A
     GPU turned off is never listed: CUDA hides every GPU after one it cannot
-    open. Without UUIDs the command runs unchanged.
+    open. Without UUIDs the command runs unchanged. `devices` is the device
+    list the GPUs' numbers come from; narration passes its fresh check's.
     """
     flags = ("--device", "--worker-device")
     used = []
@@ -1414,7 +1455,7 @@ def pin_cuda(command, devices=None):
         for flag, value in zip(command, command[1:])
     ]
     visible = ",".join(f"GPU-{uuids[device]}" for device in used)
-    return pinned, {**os.environ, "CUDA_VISIBLE_DEVICES": visible}
+    return pinned, {**os.environ, "CUDA_VISIBLE_DEVICES": visible, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
 
 
 def public_device_label(value):
@@ -1505,6 +1546,7 @@ def audiobook_consumers(clone_model, devices=None, nodes=()):
             "public": public_device(choice),
             "worker": {
                 "kind": "local",
+                "id": local_device_id(choice),
                 "device": choice["value"],
                 "label": choice["label"],
             },
@@ -1522,6 +1564,51 @@ def local_device_id(choice):
     renumbers the ones after it."""
     value = choice["value"]
     return f"GPU-{choice['uuid']}" if value.startswith("cuda:") and choice.get("uuid") else value
+
+
+def worker_key(worker):
+    """The pool's ID of a job's worker: a local device's lasting name, or a
+    node's host and device."""
+    if worker.get("kind") == "ssh":
+        return f"ssh:{worker['target']}:{worker['device']}"
+    return worker.get("id") or worker.get("device")
+
+
+def worker_name(worker):
+    """A job's worker as its warnings name it in browsers: GPU n and the
+    start of its UUID, or a node's machine number and device; no host."""
+    if worker.get("kind") != "local":
+        return worker.get("name") or "A narration worker"
+    identity = worker.get("id") or ""
+    name = public_device_label(worker["device"])
+    return f"{name} ({identity[:12]})" if identity.startswith("GPU-") else name
+
+
+def narration_workers_now(workers, devices, failure=""):
+    """Check a job's workers against this machine's devices found just now.
+
+    Returns (kept, left_out): each local worker whose device the check found,
+    by its lasting name (a GPU's UUID), with the number CUDA gives it now;
+    and (worker, reason) for each it did not. Nodes are kept: each checks its
+    own device when it starts. `devices` is None when the check failed, and
+    `failure` says why."""
+    found = {local_device_id(choice): choice for choice in devices or ()}
+    gpus = sum(1 for choice in devices or () if choice["value"].startswith("cuda:"))
+    kept, left_out = [], []
+    for worker in workers:
+        if worker.get("kind") != "local":
+            kept.append(worker)
+            continue
+        choice = found.get(worker_key(worker))
+        if choice is not None:
+            kept.append({**worker, "device": choice["value"]})
+        elif devices is None:
+            left_out.append((worker, failure))
+        else:
+            left_out.append((worker, "the device check did not find it: CUDA finds "
+                                     + (f"{gpus} GPU{'' if gpus == 1 else 's'}" if gpus else "no GPU")
+                                     + " on this machine now"))
+    return kept, left_out
 
 
 def remote_consumers(nodes):
@@ -1546,6 +1633,8 @@ def remote_consumers(nodes):
                 "python": node["python"],
                 "model": node["model"],
                 "label": f"SSH {node['host']} — {device}",
+                # What a job's warnings call it in browsers.
+                "name": f"Machine {number} · {public_device_label(device)}",
             },
         }
         for number, node in enumerate(nodes, 1)
@@ -11363,6 +11452,9 @@ def narrate_command(values):
                 f"python={worker['python']}",
                 f"model={worker['model']}",
             ))]
+    # Each worker of a narration on more than one has this long to start.
+    if "--worker-device" in arguments or "--ssh-worker" in arguments:
+        arguments += ["--worker-ready-timeout", f"{WORKER_READY_TIMEOUT:g}"]
     return (
         arguments
         + model_arguments(model, "--clone-model-path")
@@ -15779,6 +15871,9 @@ class JobQueue:
         self.exclusive = None
         # This machine's devices taken out of narration under Settings.
         self.local_off = frozenset()
+        # This machine's workers whose device the last device check, at a
+        # narration's start, did not find (refresh_local_devices()).
+        self.missing = frozenset()
         # The device the last voice design ran on, for Settings.
         self.design_device = None
         self.pending = []
@@ -15797,6 +15892,7 @@ class JobQueue:
             if worker is None and kind == "local":
                 worker = {
                     "kind": "local",
+                    "id": str(consumer["id"]),
                     "device": device,
                     "label": str(consumer["label"]),
                 }
@@ -15873,6 +15969,34 @@ class JobQueue:
                 "or add another machine first."
             )
 
+    def refresh_local_devices(self, devices):
+        """Show this machine's workers as a device check found them just now:
+        each by its lasting name, with the number CUDA gives it now, and
+        those it did not find as missing, with no device number for browsers
+        (another GPU may have its old one). A narration checks its own GPUs
+        when it starts; this is what browsers see."""
+        found = {local_device_id(choice): choice for choice in devices}
+        with self.lock:
+            consumers = []
+            for consumer in self.consumers:
+                choice = found.get(consumer["id"]) if consumer["kind"] == "local" else None
+                if choice is not None:
+                    consumer = {
+                        **consumer,
+                        "device": choice["value"],
+                        "label": choice["label"],
+                        "public": {**consumer["public"], **public_device(choice)},
+                        "worker": {**consumer["worker"], "device": choice["value"], "label": choice["label"]},
+                    }
+                elif consumer["kind"] == "local":
+                    consumer = {**consumer, "public": {**consumer["public"], "device": ""}}
+                consumers.append(consumer)
+            self.consumers = tuple(consumers)
+            self.missing = frozenset(
+                consumer["id"] for consumer in self.consumers
+                if consumer["kind"] == "local" and consumer["id"] not in found
+            )
+
     def busy_consumer_ids(self):
         with self.lock:
             return set(self.active)
@@ -15898,6 +16022,8 @@ class JobQueue:
                     **consumer["public"],
                     "id": consumer["id"],
                     "narrates": consumer["id"] not in self.local_off,
+                    # Not found by the last device check: `device` is its old number.
+                    "missing": consumer["id"] in self.missing,
                     "busy": consumer["id"] in self.active,
                 }
                 for consumer in self.consumers
@@ -16233,8 +16359,12 @@ class JobQueue:
                         if consumer["id"] in self.local_off
                         else "reserved"
                         if exclusive is not None
+                        else "left_out"
+                        if consumer["id"] in getattr(self.active.get(consumer["id"], {}).get("run"), "left_out", ())
                         else "running"
                         if consumer["id"] in self.active
+                        else "missing"
+                        if consumer["id"] in self.missing
                         else "idle"
                     ),
                     "job_id": (
@@ -16314,6 +16444,8 @@ class JobQueue:
                     "progress": record["run"].last_count,
                     # A job a model stopped answering in (AudiobookRun.paused).
                     "paused": getattr(record["run"], "paused", None),
+                    # Narration workers left out as it started (AudiobookRun.leave_out()).
+                    "warnings": list(getattr(record["run"], "worker_warnings", ())),
                     # Which model wrote which parts of a finished book.
                     "part_models": (record["run"].result or {}).get("part_models") or [],
                     "finished_at": record["finished_at"],
@@ -18001,6 +18133,88 @@ class AudiobookRun(Run):
         # The server's ChatRegistry: a new book's conversation, asked while
         # it was made, is held while the book is published (_make_book()).
         self.chats = None
+        # The server's JobQueue, shown the devices each narration start finds.
+        self.jobs = None
+        # Narration workers left out as narration started (leave_out()): the
+        # warnings its card shows, and their pool IDs.
+        self.worker_warnings = []
+        self.left_out = set()
+        # Why the narration command stopped, as it said (inspect()).
+        self.narration_error = ""
+
+    def snapshot(self):
+        return {**super().snapshot(), "warnings": list(self.worker_warnings)}
+
+    def leave_out(self, worker, reason):
+        """Leave one of this job's narration workers out: why, and which
+        narrate now, in its log, on its card, and in the server's log."""
+        self.left_out.add(worker_key(worker))
+        remaining = [
+            worker_name(item) for item in self.values.get("workers") or ()
+            if worker_key(item) not in self.left_out
+        ]
+        text = (
+            f"{worker_name(worker)} was left out of this book: {reason}. "
+            + (f"Narrating on {', '.join(remaining)}." if remaining else "No narration worker is left.")
+        )
+        self.worker_warnings.append(text)
+        self.publish("log", f"Warning: {text} [{worker_key(worker)}]\n")
+        history_log(self.job_id, f"narration worker {worker_key(worker)} left out: {reason}")
+
+    def inspect(self, line):
+        super().inspect(line)
+        left = LEFT_OUT_LINE.match(line)
+        if left is not None:
+            label, reason = left.groups()
+            self.leave_out(self._worker_labelled(label), reason)
+        error = NARRATION_ERROR_LINE.match(line)
+        if error is not None:
+            self.narration_error = error.group(1)
+
+    def _worker_labelled(self, label):
+        """The worker of this job that the narration command calls `label`:
+        "Local GPU-<UUID>", "Local <device>", or "SSH <host> <device>"."""
+        for worker in self.values.get("workers") or ():
+            if worker.get("kind") == "ssh":
+                labels = (f"SSH {worker['target']} {worker['device']}",)
+            else:
+                labels = (f"Local {worker.get('id')}", f"Local {worker['device']}")
+            if label in labels:
+                return worker
+        return {"kind": "unknown", "id": label, "name": label}
+
+    def check_workers(self):
+        """Check this job's devices on this machine again as its narration
+        starts, and narrate on those found now.
+
+        The GPUs the queue gave the job are named by UUID; a fresh device
+        check gives each its number now, and one it does not find is left out
+        with a warning. Returns the devices found, for pin_cuda(); raises
+        RuntimeError, a resumable failure, when no worker is left."""
+        workers = self.values.get("workers") or []
+        if not any(worker.get("kind") == "local" for worker in workers):
+            return None
+        try:
+            devices, failure = refresh_devices(), ""
+        except RuntimeError as exc:
+            devices, failure = None, str(exc)
+        if devices is not None and self.jobs is not None:
+            self.jobs.refresh_local_devices(devices)
+        kept, left_out = narration_workers_now(workers, devices, failure)
+        self.values["workers"] = kept
+        local = next((worker for worker in kept if worker.get("kind") == "local"), None)
+        # With every GPU of this machine left out, the nodes narrate alone
+        # (--no-local-worker), and --device names no worker.
+        self.values["device"] = local["device"] if local is not None else "cpu"
+        for worker, reason in left_out:
+            self.leave_out(worker, reason)
+        if not kept:
+            raise RuntimeError(
+                "No narration worker can start: "
+                + "; ".join(f"{worker_name(worker)}: {reason}" for worker, reason in left_out)
+                + ". Continue once a GPU of this machine works again, or add a machine under Settings."
+            )
+        return devices
 
     def mark_readable(self, source, paragraphs):
         """A new book's document is converted: MAKING_FILE in the stage makes
@@ -18214,15 +18428,16 @@ class AudiobookRun(Run):
         narration_dir = self.stage / "narration"
         narration_dir.mkdir(mode=0o750, parents=True, exist_ok=True)
         staged_output = narration_dir / "audio.mp3"
+        devices = self.check_workers()
         command_values = {
             **self.values,
             "input": str(input_path),
             "output": str(staged_output),
             "resume_dir": str(narration_dir / "chunks"),
         }
-        command = narrate_command(command_values)
-        self.publish("log", " ".join(command) + "\n\n")
-        command, environment = pin_cuda(command)
+        command, environment = pin_cuda(narrate_command(command_values), devices)
+        visible = (environment or {}).get("CUDA_VISIBLE_DEVICES")
+        self.publish("log", (f"CUDA_VISIBLE_DEVICES={visible} " if visible else "") + " ".join(command) + "\n\n")
         try:
             self.process = subprocess.Popen(
                 command,
@@ -18244,7 +18459,7 @@ class AudiobookRun(Run):
         if self.stop_requested.is_set():
             raise InterruptedError("audiobook workflow stopped")
         if code != 0:
-            raise RuntimeError(f"narration exited with {code}")
+            raise RuntimeError(f"narration exited with {code}" + (f": {self.narration_error}" if self.narration_error else ""))
         if not staged_output.is_file():
             raise RuntimeError("narration did not create its staged MP3")
         return staged_output
@@ -20206,6 +20421,7 @@ class Handler(BaseHTTPRequestHandler):
             record["id"],
         )
         run.chats = getattr(self.server, "chats", None)
+        run.jobs = self.server.jobs
         try:
             run.prepare()
         except (OSError, RuntimeError, ValueError) as exc:
@@ -20781,6 +20997,8 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
 .book-models .part-models-details ul { margin:4px 0 0; padding-left:18px; }
 /* A model chosen or preferred that does not answer: red, with its icon in the text. */
 .model-reason.unreachable { color:var(--bad); font-weight:600; }
+/* Narration workers left out as a book's narration started: one line each. */
+.worker-warning { white-space:pre-line; overflow-wrap:anywhere; }
 .alternatives { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin-top:6px; }
 .alternatives .alt-title { font-size:13px; color:var(--dim); flex:0 0 100%; }
 .alternatives button.alt { display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:4px 10px;
@@ -22430,6 +22648,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <p id="progress-detail" class="note"></p>
         <p id="progress-eta" class="note"></p>
         <p id="progress-workers" class="note"></p>
+        <p id="progress-warning" class="model-reason unreachable worker-warning hidden" role="alert"></p>
         <div class="actions">
           <button id="stop" type="button" onclick="stopRun()">Stop</button>
         </div>
@@ -29326,9 +29545,14 @@ function renderProgress() {
     $("progress-count").textContent = "";
   }
   $("progress-detail").textContent = runHistory.current ? "" : runHistory.detail;
-  const workers = consumers.filter((consumer) => consumer.job_id === currentJobId);
+  // A worker left out as narration started still shows here as a warning.
+  const workers = consumers.filter((consumer) => consumer.job_id === currentJobId && consumer.status !== "left_out");
   $("progress-workers").textContent = workers.length
     ? `Narrating on ${workers.map((worker) => worker.label).join(", ")}` : "";
+  const run = runs.find((item) => item.job_id === currentJobId);
+  const warnings = run && run.warnings ? run.warnings : [];
+  $("progress-warning").textContent = warnings.map((text) => `⚠ ${text}`).join("\n");
+  $("progress-warning").classList.toggle("hidden", !warnings.length);
   $("stop").disabled = !currentJobId;
 }
 
@@ -29537,7 +29761,12 @@ function fillFailureCard(card, entry) {
   dismiss.setAttribute("aria-label", `Dismiss: ${jobTitle(entry)}`);
   dismiss.addEventListener("click", () => dismissProblem(entry));
   actions.append(dismiss);
-  card.replaceChildren(title, subject, where, finished, resume, details, actions);
+  // Narration workers left out as it started: which, and why.
+  const warned = document.createElement("p");
+  warned.className = "model-reason unreachable worker-warning";
+  warned.textContent = (entry.warnings || []).map((text) => `⚠ ${text}`).join("\n");
+  card.replaceChildren(title, subject, where, ...(entry.warnings && entry.warnings.length ? [warned] : []),
+                       finished, resume, details, actions);
 }
 // A paused job goes on with the model clicked: the one that stopped
 // answering (Retry, after the model list is asked again) or another, which
@@ -29732,7 +29961,7 @@ function progressJobRow(job) {
   name.title = `${job.document}\n${job.id}`;
   const status = document.createElement("span");
   status.className = "job-state";
-  const workers = consumers.filter((consumer) => consumer.job_id === job.id);
+  const workers = consumers.filter((consumer) => consumer.job_id === job.id && consumer.status !== "left_out");
   status.textContent = jobStage(job)
     + (workers.length ? ` · on ${workers.map((worker) => worker.label).join(", ")}` : "");
   const actions = document.createElement("div");
@@ -30784,7 +31013,8 @@ function renderWorkers() {
 let machinesSignature = "";
 const DEVICE_KINDS = { cuda:"CUDA GPU", mps:"Apple GPU (MPS)", cpu:"CPU" };
 const WORKER_STATES = { idle:"idle", running:"narrating", reserved:"held while a voice is designed",
-                        off:"off, excluded in settings" };
+                        off:"off, excluded in settings", left_out:"left out of the current book: it could not start",
+                        missing:"not found by the last device check" };
 // A device of another machine: workers.yaml names it, nothing more.
 function nodeDevice(value) {
   return { device:value, kind:value.startsWith("cuda:") ? "cuda" : value, name:"", memory:"", id:"" };
@@ -30907,10 +31137,18 @@ function renderMachines(force = false) {
   const voiceDesign = design.source === "local" && design.model && machine.devices.length ? ["available", ""]
     : design.source === "server" ? ["not available", "A speech server designs voices."]
     : ["not available", "No voice design model is configured."];
+  // A worker whose GPU the last device check did not find has no number now
+  // (another GPU may have its old one): it is listed after the devices found.
+  const missing = consumers.filter((worker) => worker.kind === "local" && worker.status === "missing");
+  const ownOf = (worker) => own.find((entry) => entry.missing && entry.label === worker.label);
   $("machine-here").replaceChildren(machineBlock(machine.name || "Name not reported", "",
-    machine.devices.map((device) => deviceItem(device,
+    [...machine.devices.map((device) => deviceItem(device,
       workers.find((worker) => worker.device === device.device),
       own.find((entry) => entry.device === device.device), true)),
+     ...missing.map((worker) => deviceItem(
+      { device:"", kind:"cuda", name:`${worker.label} (not found)`,
+        id:ownOf(worker) ? ownOf(worker).id.slice(0, 12) : "" },
+      worker, ownOf(worker), true))],
     [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]));
   // Other machines: by host for a browser that may manage them, else by number.
   const nodes = manage && workerNodes
@@ -30958,7 +31196,7 @@ async function setLocalDevice(own, narrates) {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ device:own.id, narrates }),
     }));
-    setStatus(`${deviceName(own.device)} ${narrates ? "narrates again" : "no longer narrates"}.`);
+    setStatus(`${own.device ? deviceName(own.device) : own.label} ${narrates ? "narrates again" : "no longer narrates"}.`);
   } catch (error) {
     setStatus(error.message, true);
     renderWorkers();
@@ -31902,6 +32140,17 @@ def build_parser():
         help="Remote narration model (default with --voice-clone-server: tts-1).",
     )
     models.add_argument(
+        "--worker-ready-timeout",
+        type=positive_float,
+        default=WORKER_READY_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "How long each narration worker may take to load the model and say it is ready "
+            f"(default: {WORKER_READY_SECONDS}). A worker that fails or is not ready by then is "
+            "left out of that book, with a warning, and the others narrate it."
+        ),
+    )
+    models.add_argument(
         "--render-voice-previews",
         action="store_true",
         help=(
@@ -31920,6 +32169,8 @@ def main():
     # each child still gets its GPUs by UUID (pin_cuda), since a GPU that
     # fails renumbers the ones after it.
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    global WORKER_READY_TIMEOUT
+    WORKER_READY_TIMEOUT = args.worker_ready_timeout
     if not SCRIPT.is_file():
         parser.error(f"audiobook_tts.py is missing next to this script: {SCRIPT}")
     tts_models = configured_tts_models(args, parser)

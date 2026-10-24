@@ -97,6 +97,9 @@ MAX_WORKER_WAV_BYTES = 256 * 1024 * 1024
 NARRATION_MIN_FREE_MIB = 6 * 1024
 # How often a GPU without room is checked again during a narration.
 GPU_RECHECK_SECONDS = 60
+# How long a narration worker may take to load its model and say it is ready
+# (--worker-ready-timeout); one that takes longer is left out of the narration.
+WORKER_READY_SECONDS = 600
 
 
 def split_sentences(text):
@@ -535,6 +538,17 @@ def build_parser():
         metavar="DEVICE",
         help="PyTorch device on SSH workers that name none (default: cuda:0).",
     )
+    narration.add_argument(
+        "--worker-ready-timeout",
+        type=positive_float,
+        metavar="SECONDS",
+        help=(
+            "Seconds each --worker-device or --ssh-worker worker may take to load the "
+            f"model and say it is ready (default: {WORKER_READY_SECONDS}). A worker that "
+            "exits, fails, or is not ready by then is left out and the others narrate; "
+            "narration fails only when no worker starts."
+        ),
+    )
     output = narrate.add_argument_group("audio output")
     output.add_argument(
         "--output", type=Path, required=True,
@@ -858,8 +872,12 @@ def _checkpoint_path(directory, index):
     return directory / f"chunk-{index:06d}.wav"
 
 
-def prepare_resume(args, text, chunks, voice_version, sf):
-    """Return a durable checkpoint directory and verified completed chunk indexes."""
+def prepare_resume(args, text, chunks, voice_version, sf, legacy_version=None):
+    """Return a durable checkpoint directory and verified completed chunk indexes.
+
+    Checkpoints made under another identity are deleted. A manifest of
+    `legacy_version`, the same clips under an older identity's formula, keeps
+    them and is rewritten with the current identity."""
     if args.resume_dir is None:
         return None, set()
     directory = args.resume_dir.expanduser()
@@ -870,9 +888,11 @@ def prepare_resume(args, text, chunks, voice_version, sf):
         current = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         current = None
+    legacy = legacy_version is not None and current == _resume_identity(args, text, chunks, legacy_version)
     if current != identity:
-        for checkpoint in directory.glob("chunk-*.wav"):
-            checkpoint.unlink(missing_ok=True)
+        if not legacy:
+            for checkpoint in directory.glob("chunk-*.wav"):
+                checkpoint.unlink(missing_ok=True)
         temporary = directory / ".manifest.json.tmp"
         temporary.write_text(
             json.dumps(identity, sort_keys=True, separators=(",", ":")),
@@ -1261,6 +1281,7 @@ class NarrationWorkerProcess:
         # None inherits this process's environment.
         self.environment = environment
         self.process = None
+        self.error_reader = None
         self.input_lock = threading.Lock()
 
     def start(self):
@@ -1274,8 +1295,11 @@ class NarrationWorkerProcess:
             bufsize=1,
             errors="replace",
         )
+        # Its error output is read to the end before its exit is reported, so
+        # the reason a worker gives for failing comes before the exit.
+        self.error_reader = threading.Thread(target=self._read_errors, daemon=True)
+        self.error_reader.start()
         threading.Thread(target=self._read_output, daemon=True).start()
-        threading.Thread(target=self._read_errors, daemon=True).start()
 
     def _read_output(self):
         try:
@@ -1297,6 +1321,7 @@ class NarrationWorkerProcess:
                 self.events.put((self, payload))
         finally:
             self.process.stdout.close()
+            self.error_reader.join()
             self.events.put(
                 (self, {"type": "exit", "code": self.process.wait()})
             )
@@ -1480,13 +1505,44 @@ def _stage_ssh_worker(args, worker, voice_dir):
     )
 
 
+def _local_worker(device, environment=None):
+    """Return the label, child device, and environment of one local worker.
+
+    A GPU worker sees only its own GPU, as cuda:0: CUDA_VISIBLE_DEVICES is the
+    entry of this process's own list that `device` names (a GPU-<UUID> when
+    the server pinned this narration's GPUs by UUID), or its index when no
+    list is set. A GPU that cannot start then fails only its own worker, and
+    CUDA's numbering of the others cannot shift it. None keeps the environment.
+    """
+    environment = os.environ if environment is None else environment
+    kind, _, number = device.partition(":")
+    if kind != "cuda" or not (number or "0").isdigit():
+        return f"Local {device}", device, None
+    index = int(number or 0)
+    listed = environment.get("CUDA_VISIBLE_DEVICES")
+    entries = [entry.strip() for entry in listed.split(",")] if listed is not None else None
+    if entries is not None and not (index < len(entries) and entries[index]):
+        # Not visible here: the worker reports CUDA's own error at startup.
+        return f"Local {device}", device, None
+    entry = entries[index] if entries is not None else str(index)
+    pinned = {**environment, "CUDA_VISIBLE_DEVICES": entry}
+    if not entry.isdigit():
+        # A UUID names the same GPU in any order; PCI bus order, as nvidia-smi
+        # lists them, is what the server uses everywhere else.
+        pinned["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    return f"Local {entry if not entry.isdigit() else device}", "cuda:0", pinned
+
+
 def _narration_worker_specifications(args, voice_dir):
-    """Describe every worker as (label, command, cleanup, local device or None)."""
-    specifications = []
+    """Describe every worker as (label, command, cleanup, local device or None,
+    environment or None), and list the SSH workers that could not be staged
+    as (label, reason): they are left out like a worker failing at startup."""
+    specifications, left_out = [], []
     for device in _local_worker_devices(args):
+        label, child_device, environment = _local_worker(device)
         specifications.append(
             (
-                f"Local {device}",
+                label,
                 [
                     sys.executable,
                     "-u",
@@ -1495,24 +1551,28 @@ def _narration_worker_specifications(args, voice_dir):
                         args,
                         args.clone_model_path,
                         voice_dir,
-                        device,
+                        child_device,
                     ),
                 ],
                 None,
                 device,
+                environment,
             )
         )
     try:
         for worker in args.ssh_worker:
-            specifications.append(
-                (*_stage_ssh_worker(args, worker, voice_dir), None)
-            )
+            try:
+                staged = _stage_ssh_worker(args, worker, voice_dir)
+            except (OSError, RuntimeError) as exc:
+                left_out.append((f"SSH {worker['target']} {worker['device']}", str(exc)))
+                continue
+            specifications.append((*staged, None, None))
     except BaseException:
-        for _, _, cleanup, _ in specifications:
+        for _, _, cleanup, _, _ in specifications:
             if cleanup is not None:
                 cleanup()
         raise
-    return specifications
+    return specifications, left_out
 
 
 def _worker_audio(index, encoded, sf):
@@ -1547,15 +1607,41 @@ def _local_worker_devices(args):
     return [] if args.no_local_worker else [args.device, *args.worker_device]
 
 
-def _worker_topology(args):
-    return {
-        "local_devices": _local_worker_devices(args),
-        # The Python executable does not change the audio, so it is left out.
-        "ssh_workers": [
-            {key: worker[key] for key in ("target", "device", "model")}
-            for worker in args.ssh_worker
-        ],
+def _narration_voice_version(args, voice_dir, legacy=False):
+    """The identity of a local narration's clips: what changes their audio.
+
+    That is the saved voice's files, the Base model, the dtype, the attention
+    backend, the seed, and the batch size. Which workers make the clips is
+    not part of it, so a narration resumed with a GPU or a node fewer, or
+    more, keeps every finished part. With dtype auto each worker picks the
+    precision its device supports, as workers of one narration always have.
+
+    `legacy` is the identity from before 24 Oct 2026, which also named the
+    device and the workers; a resume dir written then still matches it when
+    its workers are the same (prepare_resume())."""
+    identity = {
+        "voice_files": _digest_files((voice_dir / "reference.wav", voice_dir / "transcript.txt")),
+        "clone_model": args.clone_model_path,
+        "dtype": args.dtype,
+        "attention": args.attn_implementation,
+        "seed": args.seed,
+        "batch_size": args.batch_size,
     }
+    if legacy:
+        identity["device"] = args.device
+        if args.worker_device or args.ssh_worker:
+            identity["workers"] = {
+                "local_devices": _local_worker_devices(args),
+                "ssh_workers": [
+                    {key: worker[key] for key in ("target", "device", "model")}
+                    for worker in args.ssh_worker
+                ],
+            }
+    return hashlib.sha256(json.dumps(
+        identity,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
 
 
 _GPU_UUID_PROBE = """\
@@ -1638,13 +1724,16 @@ def _narrate_distributed(
 ):
     events = queue.Queue()
     try:
-        specifications = _narration_worker_specifications(args, voice_dir)
+        specifications, left_out = _narration_worker_specifications(args, voice_dir)
     except (OSError, RuntimeError) as exc:
         parser.error(f"Cannot prepare narration workers: {exc}")
     print(
         "Narration workers: " + ", ".join(label for label, *_ in specifications),
         flush=True,
     )
+    ready_timeout = args.worker_ready_timeout or WORKER_READY_SECONDS
+    for label, reason in left_out:
+        print(f"Narration worker left out: {label}: {reason}", flush=True)
     stop_requested = threading.Event()
     previous_sigterm = None
     if threading.current_thread() is threading.main_thread():
@@ -1670,15 +1759,34 @@ def _narrate_distributed(
         memory = GpuMemory([spec[3] for spec in specifications if spec[3]])
         local = {spec[3]: spec for spec in specifications if spec[3]}
         alive, ready, idle, inflight, waiting = set(), set(), set(), {}, set()
+        # When each starting worker was launched, and the last line it wrote:
+        # one that exits, fails, or has not said it is ready within
+        # ready_timeout is left out of this narration (startup_failed()).
+        launched, last_line = {}, {}
         # Each chunk's clips so far, (seconds, WAV bytes), while it is made again.
         tries = {}
 
         def launch(specification):
-            label, command, cleanup, device = specification
-            worker = NarrationWorkerProcess(label, command, events, cleanup, device)
+            label, command, cleanup, device, environment = specification
+            worker = NarrationWorkerProcess(label, command, events, cleanup, device, environment)
             workers.append(worker)
             alive.add(worker)
+            launched[worker] = time.monotonic()
             worker.start()
+
+        def startup_failed(worker, reason):
+            """Leave a worker that could not start out of this narration. It
+            was never sent a chunk: chunks go only to workers that are ready."""
+            alive.discard(worker)
+            workers.remove(worker)
+            worker.finish(False)
+            left_out.append((worker.label, reason))
+            print(f"Narration worker left out: {worker.label}: {reason}", flush=True)
+            remaining = [item.label for item in workers if item in alive] + [
+                f"{local[device][0]} (waiting for GPU memory)" for device in sorted(waiting)
+            ]
+            if remaining:
+                print(f"Narration continues on: {', '.join(remaining)}", flush=True)
 
         def admit(devices):
             free = memory.free_mib()
@@ -1751,18 +1859,26 @@ def _narrate_distributed(
             if waiting and time.monotonic() >= next_check:
                 next_check = time.monotonic() + GPU_RECHECK_SECONDS
                 admit(sorted(waiting))
+            for worker in [item for item in workers if item in alive and item not in ready]:
+                if time.monotonic() - launched[worker] >= ready_timeout:
+                    startup_failed(worker, f"no ready signal within {ready_timeout:g} s")
             if not alive and not waiting:
-                raise RuntimeError("no narration worker is left")
+                reasons = "; ".join(f"{label}: {reason}" for label, reason in left_out)
+                if not ready:
+                    raise RuntimeError(f"no narration worker could start ({reasons})")
+                raise RuntimeError("no narration worker is left" + (f" (left out: {reasons})" if reasons else ""))
             try:
                 worker, event = events.get(timeout=0.2)
             except queue.Empty:
                 continue
             kind = event.get("type")
             if kind == "log":
+                last_line[worker] = event.get("message", "")
                 print(f"[{worker.label}] {event.get('message', '')}", flush=True)
                 continue
             if worker not in alive:
-                # A worker that ran out of memory is exiting; it is already replaced.
+                # A worker that ran out of memory is exiting; it is already
+                # replaced. One left out at startup is already stopped.
                 continue
             if kind == "ready":
                 ready.add(worker)
@@ -1776,14 +1892,18 @@ def _narrate_distributed(
                     "out of memory" in lowered or "alloc_failed" in lowered
                 ):
                     release(worker)
+                elif worker not in ready:
+                    startup_failed(worker, message)
                 else:
                     raise RuntimeError(f"{worker.label}: {message}")
             elif kind == "exit":
                 if worker not in ready:
-                    raise RuntimeError(
-                        f"{worker.label} exited during startup with code "
-                        f"{event.get('code')}"
+                    said = last_line.get(worker, "").strip()
+                    startup_failed(
+                        worker,
+                        f"exited during startup with code {event.get('code')}" + (f": {said}" if said else ""),
                     )
+                    continue
                 if worker in inflight:
                     raise RuntimeError(
                         f"{worker.label} exited with code {event.get('code')}"
@@ -1841,7 +1961,8 @@ def _narrate_distributed(
         parser.error(f"Distributed narration failed: {exc}")
     finally:
         for worker in workers:
-            worker.finish(graceful)
+            # One still starting has nothing to finish: it is stopped at once.
+            worker.finish(graceful and worker in ready)
         if previous_sigterm is not None:
             signal.signal(signal.SIGTERM, previous_sigterm)
 
@@ -1860,29 +1981,11 @@ def _narrate_resumable_local(
     subtype,
     sf,
 ):
-    voice_files_version = _digest_files(
-        (voice_dir / "reference.wav", voice_dir / "transcript.txt")
-    )
-    voice_identity = {
-        "voice_files": voice_files_version,
-        "clone_model": args.clone_model_path,
-        "device": args.device,
-        "dtype": args.dtype,
-        "attention": args.attn_implementation,
-        "seed": args.seed,
-        "batch_size": args.batch_size,
-    }
     distributed = bool(args.worker_device or args.ssh_worker)
-    if distributed:
-        voice_identity["workers"] = _worker_topology(args)
-    voice_version = hashlib.sha256(json.dumps(
-        voice_identity,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")).hexdigest()
     try:
         checkpoint_dir, completed = prepare_resume(
-            args, text, chunks, voice_version, sf
+            args, text, chunks, _narration_voice_version(args, voice_dir), sf,
+            legacy_version=_narration_voice_version(args, voice_dir, legacy=True),
         )
     except (OSError, ValueError, sf.LibsndfileError) as exc:
         parser.error(f"Cannot prepare narration checkpoints: {exc}")
@@ -2086,6 +2189,7 @@ def check_mode(args, parser):
             ("--no-local-worker", args.no_local_worker or None),
             ("--ssh-worker", args.ssh_worker or None),
             ("--ssh-model-path", args.ssh_model_path),
+            ("--worker-ready-timeout", args.worker_ready_timeout),
         ]
     else:
         local_only.append(("--model-path", args.model_path))

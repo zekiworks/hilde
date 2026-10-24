@@ -128,12 +128,12 @@ the same through its batch queue, keeping each chunk's tries until one passes.
 `--resume-dir` enables a checkpointed publication path:
 
 1. `prepare_resume()` writes a manifest describing the text, chunk sequence, language, and voice/inference identity.
-2. A changed identity removes incompatible `chunk-*.wav` files.
+2. A changed identity removes incompatible `chunk-*.wav` files. A manifest of the identity from before 24 Oct 2026 (`_narration_voice_version(legacy=True)`, which also named the device and the workers) keeps its checkpoints when those were the same, and is rewritten with the current identity.
 3. Existing checkpoints are accepted only when SoundFile can read them and they contain frames, a sample rate, and channels, and when `clip_problem()` finds nothing: a clip saved before the length check that ran on or ended early is made again.
 4. Each newly generated chunk is written to a temporary WAV and atomically renamed.
 5. `assemble_checkpoints()` validates format consistency, encodes every checkpoint in order to a temporary final container, and atomically replaces the requested output. Joining tens of thousands of chunks takes minutes, so it prints `Joined chunk N/T` from 0, about 200 times over the book.
 
-Single-worker local identity includes the contents of `reference.wav` and `transcript.txt`, clone-model selector, device, dtype, attention backend, seed, and batch size. Distributed local identity adds the ordered worker topology. OpenAI-compatible identity includes endpoint, remote model, and remote voice ID. Container compression/subtype is intentionally not part of the waveform identity; checkpoints can be re-encoded into a different final container.
+Local identity (`_narration_voice_version()`) is what changes the audio: the contents of `reference.wav` and `transcript.txt`, clone-model selector, dtype, attention backend, seed, and batch size. Which workers make the clips is not part of it: a narration resumed with a GPU or a node fewer, or more, keeps every finished part, and parts made on different devices are mixed as a distributed run always mixed them (with dtype `auto` each worker uses the precision its device supports). Changing the voice, the model, or one of those settings still starts the parts again. OpenAI-compatible identity includes endpoint, remote model, and remote voice ID. Container compression/subtype is intentionally not part of the waveform identity; checkpoints can be re-encoded into a different final container.
 
 ### Distributed narration workers
 
@@ -160,18 +160,46 @@ CUDA context, so measuring never takes memory from a full GPU. A GPU without
 room waits and is measured again every `GPU_RECHECK_SECONDS` (60); a device
 that cannot be measured (CPU, no `nvidia-smi`, no UUID) starts at once.
 
-Each worker receives a batch as soon as it is ready, keeps one in flight, and
-gets the next source-ordered batch when it finishes. Idle workers stay loaded
+Each local GPU worker is a fresh `subprocess.Popen` child that sees only its
+own GPU, as `cuda:0` (`_local_worker()`): `CUDA_VISIBLE_DEVICES` is the entry of
+the coordinator's own list its device names (the `GPU-<UUID>` that `pin_cuda()`
+put there, with `CUDA_DEVICE_ORDER=PCI_BUS_ID`), or its index when no list is
+set. A GPU that cannot start then fails only its own worker. Its label is
+`Local GPU-<UUID>` (`Local cuda:N` without a UUID). No process here imports
+torch before starting children, and none forks after CUDA starts.
+
+**Startup readiness.** A worker is starting from its launch until it sends the
+protocol's `ready`, which `narration_worker()` sends only after reading the
+voice, loading the model on its device (`load_model()` checks the device), and
+building the clone prompt: the real narration path, so no extra model copy is
+loaded to check it. A starting worker that exits, reports an error, or has not
+said `ready` within `--worker-ready-timeout` (`WORKER_READY_SECONDS`, 600) is
+left out of this narration (`startup_failed()`): it is stopped, its SSH
+staging is cleaned up, and the coordinator prints `Narration worker left out:
+<label>: <reason>` (an exit's reason ends with the worker's last line, read
+to the end before its exit is handled) and `Narration continues on: <labels>`.
+An SSH worker whose staging fails is left out the same way
+(`_narration_worker_specifications()` returns it with its reason). The
+others narrate. When no worker is alive or waiting and none was ever ready,
+narration fails with `no narration worker could start (<label>: <reason>;
+…)`, keeping every checkpoint, so the job can be continued. A relaunch after
+running out of memory is a startup like any other. Workers still starting
+when the last chunk is committed are stopped at once.
+
+Each worker receives a batch only once it is ready, keeps one in flight, and
+gets the next source-ordered batch when it finishes; so a worker left out at
+startup never held a chunk, and nothing has to be taken back from it. Only
+the coordinator writes checkpoints, from results of workers it still counts
+alive, so a stopped worker cannot write one. Idle workers stay loaded
 until the book is done, so returned chunks always find a worker. A local worker
 whose error says `out of memory` (or cuBLAS/cuDNN `*_ALLOC_FAILED`) is dropped:
 its in-flight batch returns to the front of the queue and its GPU waits as
-above. Any other failure, including an SSH worker running out of memory, aborts
-the run, as does having no worker alive and none waiting; committed chunks are
-kept. The coordinator validates and atomically commits each returned
-checkpoint immediately, then assembles all checkpoints in source order.
-Waiting GPUs do not change the checkpoint identity, which names the configured
-worker topology: the local devices and each SSH worker's target, device, and
-model, but not its Python, which does not change the audio.
+above. Any other failure of a ready worker, including an SSH worker running
+out of memory, aborts the run, as does having no worker alive and
+none waiting; committed chunks are kept. The coordinator validates and
+atomically commits each returned checkpoint immediately, then assembles all
+checkpoints in source order. Neither waiting GPUs nor workers left out change
+the checkpoint identity.
 
 An SSH transport stages the current script plus the saved `reference.wav` and
 `transcript.txt` in a unique remote `/tmp/audiobook-tts-*` directory. The text
@@ -970,6 +998,44 @@ child (narration, voice runs, previews, answer speech) with
 `--worker-device` name, renumbered from `cuda:0`: a GPU that fails after the
 server started cannot shift them, and an off GPU is never listed, since CUDA
 hides every GPU after one it cannot open.
+
+**Devices checked at every narration start.** The device list the server
+probed at startup (`available_devices()`) is a display list for Settings and
+the pool; no narration trusts it, nor a number stored with a job. When a job
+(new, or continued from its last completed part, which resubmits it and so
+gets its workers from the pool again) reaches narration,
+`AudiobookRun.check_workers()` probes the devices again in a fresh child
+(`refresh_devices()`, `probe_devices()`; up to `DEVICE_PROBE_SECONDS`, 60) on
+the machine that runs the workers. `narration_workers_now()` finds each local
+worker the queue gave the job by its lasting name (a GPU's UUID, carried in
+the worker's `id`), gives it the number CUDA gives it now, and leaves out one
+the check did not find, or every local one when the check failed, with its
+reason. Nodes are kept; each checks its own device as it starts (above). The
+narration command is then pinned by UUID from that same fresh list
+(`pin_cuda(command, devices)`). The fresh list also becomes the display list
+(Settings shows the devices found now), and `JobQueue.refresh_local_devices()`
+renumbers this machine's workers by UUID and reports those not found as
+`missing`. With no worker left, narration does not start: the job fails with
+`No narration worker can start: …`, its resume data kept. A browser's choices
+play no part: the cookie state holds no device (`normalize()`), every
+submission asks for the automatic pool, and the server-wide `workers.yaml`
+(`local_off`, nodes) decides which workers exist.
+
+**Workers left out.** `AudiobookRun.leave_out()` records each worker left out,
+by the fresh check or by the narration command's `Narration worker left out:`
+line (`LEFT_OUT_LINE`, matched to the job's worker by its label in
+`_worker_labelled()`): a warning naming it (`worker_name()`: `GPU n
+(GPU-xxxxxxxx)`, or a node's `Machine N · device`, never a host), why, and the
+workers that narrate on, in the job's log, in the server's log
+(`history_log()`, with the worker's pool ID), in the active run's snapshot
+(`warnings`, shown on its Progress card) and in `recent_snapshot()` (shown
+on the unfinished job's card). While the job runs, the pool reports that
+worker as `left_out`, not narrating. A narration that stops with an error
+reports the command's own reason (`NARRATION_ERROR_LINE`) in the job's
+failure. Startup is the only failure a job narrates on through: a worker
+failing after it said `ready`, a missing or unreadable input, a failed
+checkpoint write, or a failed assembly fails the job with its error and keeps
+its resume data.
 
 Source and local voice assets are snapshotted before a record enters the
 consumer queue. Voice generation is exclusive and requires no preparing,
@@ -3161,7 +3227,7 @@ read aloud by **Read answers aloud**.
 | --- | --- |
 | `GET /` | Embedded HTML/CSS/JS page served with `Cache-Control: no-store` so a refresh cannot retain an obsolete player implementation. |
 | `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, and non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install). |
-| `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status`, `job_id`; never a host). `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
+| `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; never a host); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |

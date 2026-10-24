@@ -26,7 +26,12 @@ therefore trusted with the saved voice and the narration text. The model itself
 is never copied.
 
 SSH workers are not measured for free GPU memory, and one that runs out of
-memory fails the run. Leave a GPU unticked when another program fills it.
+memory while narrating fails the run. Leave a GPU unticked when another
+program fills it. A worker that cannot be staged, fails while loading the
+model (out of memory included), or is not ready within
+`--worker-ready-timeout` is left out of that book with a warning, and the
+other workers narrate it; see
+[Narration workers](configuration.md#narration-workers).
 
 ## Web server
 

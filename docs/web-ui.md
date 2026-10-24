@@ -338,6 +338,18 @@ current stage has made headway; there is none before.
 what is finished is kept. **Cancel** takes a waiting one out of the queue. A
 reload keeps following the running job without repeating its log.
 
+Narration checks the book's GPUs again as it starts, and each narration
+worker must load the model and say it is ready
+([Narration workers](configuration.md#narration-workers)). One that cannot,
+such as a GPU that failed or reports CUDA unavailable, is left out of that
+book: under the bar a red line reads, for example, "⚠ GPU 3 (GPU-1115ade0)
+was left out of this book: exited during startup with code 2: … CUDA is
+unavailable. Narrating on GPU 0 (GPU-7a85a208), GPU 1 (GPU-bee4b5d4).", the
+workers line no longer names it, and the book goes on with the others. The
+same warning stays on the card of a book that stopped or failed. When none of
+a book's workers can start, the book fails with that reason and
+**Continue from the last completed part** resumes it.
+
 When a book stopped or failed, both **Create** and the progress view show a
 card for the latest one, also after a reload: the stage it stopped or failed
 in, what was finished (for example `Reading the document: done · Preparing the
@@ -1086,7 +1098,11 @@ change it. The groups:
   its UUID, such as `GPU-7a85a208`, which stays when GPUs are added or
   hidden), an Apple GPU (MPS), or the CPU, each saying whether it is a
   narration worker and whether that worker is idle, narrating, held while a
-  voice is designed, or off, excluded in settings. On the server's own machine
+  voice is designed, off, excluded in settings, not found by the last device
+  check, or left out of the current book because it could not start. The
+  devices are those found by the last check, at startup or at a book's
+  narration; a narration worker's GPU it did not find follows them as
+  "(not found)". On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
   again (applies now). **Other machines** lists the nodes that narrate over
   SSH, each with its devices as `workers.yaml` names them (Hilde does not know

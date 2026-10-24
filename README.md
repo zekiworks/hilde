@@ -166,7 +166,8 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   same, but pacing and energy are sampled per chunk and can shift between
   sentences.
 - **SSH workers are not checked for free GPU memory.** One that runs out of
-  memory fails the run; local GPUs wait for room instead.
+  memory while narrating fails the run (one that cannot load the model is
+  left out of that book); local GPUs wait for room instead.
 - **No authentication.** The web server is meant for your own machine or a
   trusted network; see [Access and security](#access-and-security).
 - **Tested stack.** The GPU workflow is tested on Linux with Python 3.12 and

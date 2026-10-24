@@ -39,6 +39,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--voice-clone-model` | Base model directory, or a Hugging Face ID with `--allow-model-downloads`. |
 | `--voice-clone-server`, `--voice-clone-server-model` | A speech server for narration instead of the model; the server model defaults to `tts-1`. |
 | `--allow-model-downloads` | Disabled; permits Hugging Face model IDs and downloads. |
+| `--worker-ready-timeout SECONDS` | `600`. How long each narration worker of a book on more than one may take to load the model and say it is ready. One that fails or is not ready by then is left out of that book, with a warning, and the others narrate it; see [Narration workers](#narration-workers). |
 | `--render-voice-previews` | Renders comparable previews for older voices, then exits. See [Voices](web-ui.md#voices). |
 
 ### Manage from other devices
@@ -394,7 +395,9 @@ alone. The server creates and owns this fixed layout:
   [Voice tags](web-ui.md#voice-tags).
 - **workers.yaml**, present once a node is added or a local device turned off,
   lists the other machines that narrate over SSH and this machine's devices
-  that do not; see [Narration workers on other machines](ssh-workers.md).
+  that do not, its GPUs by UUID (`GPU-…`, as `nvidia-smi -L` shows them; a
+  `cuda:N` written by an older version becomes the UUID at the next start);
+  see [Narration workers on other machines](ssh-workers.md).
 
 On its first start, this version moves audiobooks kept in the earlier layout
 (`Audiobooks/<name>.mp3` with hidden `.readers` and `.versions` folders) into
@@ -644,10 +647,16 @@ restart. See [Narration workers on other machines](ssh-workers.md).
 The server probes PyTorch-visible CUDA and MPS devices in a short-lived child.
 It counts CUDA devices after initialization, so a GPU the runtime cannot open,
 such as one waiting for a reset, is skipped and the remaining GPUs stay in the
-pool instead of the server falling back to CPU. Local membership is fixed at
-startup: restart the server after changing `CUDA_VISIBLE_DEVICES` or editing
-`workers.yaml` by hand, or after GPUs are added, removed, or recovered. Voice
-design runs alone, on the
+pool instead of the server falling back to CPU. The pool's GPUs are those found
+at startup: restart the server after changing `CUDA_VISIBLE_DEVICES` or editing
+`workers.yaml` by hand, or after GPUs are added. Every book's narration, new or
+continued, checks this machine's GPUs again as it starts, by UUID: a GPU of the
+book that is not found then, such as one that failed since startup, is left
+out of that book with a warning naming it, and the book narrates on the
+others; **Settings** then shows the GPUs found. With none of its workers left,
+the book stops with an error and can be continued once a GPU works again.
+
+Voice design runs alone, on the
 GPU with the most free memory at that moment, so a GPU another program has
 filled is passed over; `nvidia-smi` measures this without touching any GPU.
 Without CUDA it uses MPS, then CPU.
@@ -661,6 +670,18 @@ its chunks to the other workers and waits the same way, so the book slows down
 instead of failing. If every GPU is full, the book waits until one has room;
 **Stop** ends it. The log names the waiting GPUs; their chips still show
 `running`, because the book holds them.
+
+Each worker must load the model and say it is ready within
+`--worker-ready-timeout` (600 seconds). One that exits, reports an error, or is
+not ready in time is left out of that book: the log says which and why (for
+example `Narration worker left out: Local GPU-…: exited during startup with
+code 2: … CUDA is unavailable`), the book's card shows the warning with the
+workers that narrate on, and the book goes on with them. A book none of whose
+workers starts stops with that error; **Continue from the last completed
+part** resumes it. Parts are given only to workers that are ready, and a
+worker failing after that still stops the book with its error. Finished parts
+stay when a book is continued with other workers: they depend on the text,
+the voice, the model, and the settings, not on which GPU or machine made them.
 
 ## Batch size
 

@@ -2305,15 +2305,15 @@ class JobQueueTests(unittest.TestCase):
             {"id": done["id"], "document": "done.txt", "voice": "Narrator",
              "book": "made--0123456789ab", "mode": "create", "status": "done",
              "stage": "alignment", "progress": {"done": 40, "total": 40, "unit": "sentence"},
-             "paused": None, "part_models": []},
+             "paused": None, "warnings": [], "part_models": []},
             {"id": stopped["id"], "document": "stopped.txt", "voice": "Narrator", "book": "",
              "mode": "create", "status": "stopped",
              "stage": "extraction", "progress": {"done": 3, "total": 3, "unit": "page"},
-             "paused": None, "part_models": []},
+             "paused": None, "warnings": [], "part_models": []},
             {"id": failed["id"], "document": "failed.txt", "voice": "Narrator", "book": "",
              "mode": "create", "status": "failed",
              "stage": "narration", "progress": {"done": 5, "total": 20, "unit": None},
-             "paused": None, "part_models": []},
+             "paused": None, "warnings": [], "part_models": []},
         ])
 
     def test_auto_job_claims_all_gpu_workers_before_next_job(self):
@@ -2589,11 +2589,13 @@ for line in sys.stdin:
 
         completed = set()
         with (
-            mock.patch.object(cli, "_narration_worker_specifications", return_value=[("Node", command, None, None)]),
+            mock.patch.object(cli, "_narration_worker_specifications",
+                              return_value=([("Node", command, None, None, None)], [])),
             mock.patch("sys.stdout", io.StringIO()),
         ):
             self.assertTrue(cli._narrate_distributed(
-                argparse.Namespace(batch_size=2), Parser, [HEADING, SENTENCE], root, checkpoints,
+                argparse.Namespace(batch_size=2, worker_ready_timeout=None), Parser, [HEADING, SENTENCE], root,
+                checkpoints,
                 completed, [1, 2], sf,
             ))
         requests = [json.loads(line) for line in record.read_text().splitlines()]
@@ -4172,7 +4174,7 @@ for line in sys.stdin:
                 sys.executable, "-u", str(root / "worker.py"),
                 cli.WORKER_PROTOCOL, device, str(record), oom_marker,
             ]
-            return (f"Local {device}", command, None, device)
+            return (f"Local {device}", command, None, device, None)
 
         class Memory:
             # Another program fills cuda:1 until cuda:0 has run out of memory.
@@ -4193,7 +4195,7 @@ for line in sys.stdin:
         def narrate():
             try:
                 outcome["value"] = cli._narrate_distributed(
-                    argparse.Namespace(batch_size=1), Parser, chunks, root, checkpoints,
+                    argparse.Namespace(batch_size=1, worker_ready_timeout=None), Parser, chunks, root, checkpoints,
                     completed, list(range(1, len(chunks) + 1)), sf,
                 )
             except BaseException as exc:
@@ -4201,7 +4203,7 @@ for line in sys.stdin:
 
         specifications = [worker("cuda:0", str(marker)), worker("cuda:1", "")]
         with (
-            mock.patch.object(cli, "_narration_worker_specifications", return_value=specifications),
+            mock.patch.object(cli, "_narration_worker_specifications", return_value=(specifications, [])),
             mock.patch.object(cli, "GpuMemory", Memory),
             mock.patch.object(cli, "GPU_RECHECK_SECONDS", 0.2),
             mock.patch("sys.stdout", io.StringIO()),
@@ -4221,6 +4223,523 @@ for line in sys.stdin:
         self.assertEqual(events[:2], ["start cuda:0", "oom cuda:0 [1]"])
         self.assertIn("start cuda:1", events)
         self.assertEqual(events.count("start cuda:0"), 2)
+
+
+class WorkerStartupFixtureTests(unittest.TestCase):
+    """Fixture tests for narration worker startup (24 Oct incident, brief
+    items 2 and 4). Workers are fake scripts speaking the worker protocol;
+    the machine's GPUs come from a fake torch package; narration is a fake
+    script. No model loads, no GPU is touched, nothing is really narrated."""
+
+    A = "aaaaaaaa-1111-2222-3333-444444444444"
+    B = "bbbbbbbb-1111-2222-3333-444444444444"
+    GONE = "dead0000-1111-2222-3333-444444444444"
+    CLONE = {"source": "local", "model": "/models/Base", "allow_downloads": False}
+    # One narration worker. `behaviour`: "ready" narrates each part as a clip
+    # whose samples are the part's number / 100, so the assembled book shows
+    # the order; "no-cuda" fails as the incident's worker did; "silent" never
+    # says it is ready; "crash-at-N" narrates, then exits when given part N.
+    WORKER = """\
+import base64, io, json, os, sys, time
+import numpy, soundfile
+protocol, name, record, behaviour = sys.argv[1:5]
+
+
+def note(line):
+    with open(record, "a", encoding="utf-8") as stream:
+        stream.write(line + "\\n")
+
+
+def emit(payload):
+    print(protocol + json.dumps(payload), flush=True)
+
+
+note(f"start {name} {os.getpid()}")
+if behaviour == "no-cuda":
+    print("audiobook_tts.py: error: --device requests CUDA, but CUDA is unavailable", file=sys.stderr, flush=True)
+    sys.exit(2)
+if behaviour == "silent":
+    time.sleep(600)
+    sys.exit(0)
+emit({"type": "ready"})
+crash = int(behaviour.rpartition("-")[2]) if behaviour.startswith("crash-at-") else 0
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["type"] == "stop":
+        break
+    indexes = request["indexes"]
+    if crash in indexes:
+        note(f"crash {name} {indexes}")
+        sys.exit(3)
+    time.sleep(0.3)
+    note(f"made {name} {indexes}")
+    waves = []
+    for index, text in zip(indexes, request["texts"]):
+        buffer = io.BytesIO()
+        clip = numpy.full(int(len(text) * 0.07 * 24000), index / 100, dtype="float32")
+        soundfile.write(buffer, clip, 24000, format="WAV", subtype="FLOAT")
+        waves.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    emit({"type": "result", "indexes": indexes, "waves": waves})
+"""
+    # This machine's GPUs as torch reports them, from HILDE_FAKE_GPUS.
+    TORCH = """\
+import json, os
+from types import SimpleNamespace
+
+_gpus = json.load(open(os.environ["HILDE_FAKE_GPUS"], encoding="utf-8"))
+
+
+def _properties(index):
+    gpu = _gpus[index]
+    return SimpleNamespace(name=gpu["name"], total_memory=gpu["memory"], uuid=gpu["uuid"])
+
+
+cuda = SimpleNamespace(
+    is_available=lambda: bool(_gpus),
+    init=lambda: None,
+    device_count=lambda: len(_gpus),
+    get_device_properties=_properties,
+)
+backends = SimpleNamespace()
+"""
+    # The narration command: records its arguments and GPU environment.
+    NARRATE = """\
+import json, os, sys
+arguments = sys.argv[1:]
+with open(os.environ["HILDE_FAKE_RECORD"], "a", encoding="utf-8") as stream:
+    stream.write(json.dumps({
+        "arguments": arguments,
+        "visible": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "order": os.environ.get("CUDA_DEVICE_ORDER"),
+    }) + "\\n")
+with open(arguments[arguments.index("--output") + 1], "wb") as stream:
+    stream.write(b"fixture")
+"""
+    CHUNKS = [f"Part {word} of the fixture book." for word in ("one", "two", "three", "four", "five", "six")]
+
+    class Failed(Exception):
+        pass
+
+    class Parser:
+        @staticmethod
+        def error(message):
+            raise WorkerStartupFixtureTests.Failed(message)
+
+    class NoMemory:
+        def __init__(self, devices):
+            pass
+
+        def free_mib(self):
+            return {}
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "worker.py").write_text(self.WORKER, encoding="utf-8")
+        (self.root / "narrate.py").write_text(self.NARRATE, encoding="utf-8")
+        (self.root / "fake" / "torch").mkdir(parents=True)
+        (self.root / "fake" / "torch" / "__init__.py").write_text(self.TORCH, encoding="utf-8")
+        self.record = self.root / "record.txt"
+        self.checkpoints = self.root / "checkpoints"
+        self.checkpoints.mkdir()
+        previous = web._DEVICE_OPTIONS
+        self.addCleanup(setattr, web, "_DEVICE_OPTIONS", previous)
+
+    # --- the narration command and its workers (audiobook_tts.py) ---
+
+    def spec(self, label, behaviour):
+        command = [sys.executable, "-u", str(self.root / "worker.py"), cli.WORKER_PROTOCOL,
+                   label, str(self.record), behaviour]
+        return (label, command, None, None, None)
+
+    def narrate(self, specifications, timeout=600.0, completed=None):
+        completed = set() if completed is None else completed
+        pending = [index for index in range(1, len(self.CHUNKS) + 1) if index not in completed]
+        outcome, log = {}, io.StringIO()
+
+        def run():
+            try:
+                outcome["value"] = cli._narrate_distributed(
+                    argparse.Namespace(batch_size=1, worker_ready_timeout=timeout), self.Parser,
+                    self.CHUNKS, self.root, self.checkpoints, completed, pending, sf,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        with (
+            mock.patch.object(cli, "_narration_worker_specifications", return_value=(specifications, [])),
+            mock.patch.object(cli, "GpuMemory", self.NoMemory),
+            mock.patch("sys.stdout", log),
+        ):
+            thread = threading.Thread(target=run, daemon=True)
+            thread.start()
+            thread.join(60)
+        self.assertFalse(thread.is_alive(), "narration never finished")
+        return outcome, completed, log.getvalue()
+
+    def events(self, kind):
+        return [line.split(" ", 2)[1:] for line in self.record.read_text(encoding="utf-8").splitlines()
+                if line.startswith(kind + " ")]
+
+    def assert_complete_and_ordered(self, checkpoints, chunks):
+        """Every part once, in order: the assembled book is each part's clip,
+        whose samples are its number / 100, one after the other."""
+        output = self.root / "assembled.wav"
+        with redirect_stdout(io.StringIO()):
+            cli.assemble_checkpoints(checkpoints, len(chunks), output, "WAV", "FLOAT", None, sf)
+        audio, _ = sf.read(output, dtype="float32")
+        expected = np.concatenate([
+            np.full(int(len(text) * 0.07 * 24000), index / 100, dtype="float32")
+            for index, text in enumerate(chunks, 1)
+        ])
+        np.testing.assert_allclose(audio, expected, atol=1e-6)
+
+    def test_a_a_worker_that_cannot_start_is_left_out_and_the_ready_one_makes_every_part(self):
+        outcome, completed, log = self.narrate(
+            [self.spec("Local cuda:3", "no-cuda"), self.spec("Local cuda:0", "ready")]
+        )
+
+        self.assertEqual(outcome, {"value": True})
+        self.assertEqual(completed, set(range(1, 7)))
+        self.assert_complete_and_ordered(self.checkpoints, self.CHUNKS)
+        self.assertIn(
+            "Narration worker left out: Local cuda:3: exited during startup with code 2: "
+            "audiobook_tts.py: error: --device requests CUDA, but CUDA is unavailable\n", log,
+        )
+        self.assertIn("Narration continues on: Local cuda:0\n", log)
+        # Parts go only to a worker that said it is ready.
+        self.assertEqual({name for name, _ in self.events("made")}, {"Local"})
+        self.assertTrue(all(rest.startswith("cuda:0 ") for _, rest in self.events("made")))
+
+    def test_b_no_worker_ready_fails_the_start_clearly_and_keeps_finished_parts(self):
+        buffer = io.BytesIO()
+        sf.write(buffer, np.full(int(len(self.CHUNKS[0]) * 0.07 * 24000), 0.01, dtype="float32"), 24000,
+                 format="WAV", subtype="FLOAT")
+        cli._save_worker_checkpoint(self.checkpoints, 1, buffer.getvalue())
+        before = cli._checkpoint_path(self.checkpoints, 1).read_bytes()
+
+        outcome, completed, log = self.narrate(
+            [self.spec("Local cuda:0", "no-cuda"), self.spec("Local cuda:1", "no-cuda")], completed={1},
+        )
+
+        self.assertIsInstance(outcome.get("error"), self.Failed)
+        message = str(outcome["error"])
+        self.assertTrue(message.startswith("Distributed narration failed: no narration worker could start"), message)
+        for label in ("Local cuda:0", "Local cuda:1"):
+            self.assertIn(f"{label}: exited during startup with code 2: audiobook_tts.py: error: "
+                          "--device requests CUDA, but CUDA is unavailable", message)
+        self.assertEqual(completed, {1})
+        self.assertEqual(cli._checkpoint_path(self.checkpoints, 1).read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in self.checkpoints.iterdir()), ["chunk-000001.wav"])
+
+    def test_c_a_worker_that_never_says_ready_is_stopped_and_left_out(self):
+        outcome, completed, log = self.narrate(
+            [self.spec("SSH spark cuda:0", "silent"), self.spec("Local cuda:0", "ready")], timeout=0.5,
+        )
+
+        self.assertEqual(outcome, {"value": True})
+        self.assertEqual(completed, set(range(1, 7)))
+        self.assert_complete_and_ordered(self.checkpoints, self.CHUNKS)
+        self.assertIn("Narration worker left out: SSH spark cuda:0: no ready signal within 0.5 s\n", log)
+        [silent] = [int(rest.split()[-1]) for name, rest in self.events("start") if name == "SSH"]
+        with self.assertRaises(ProcessLookupError):
+            os.kill(silent, 0)
+
+    def test_h_a_worker_failing_after_startup_still_fails_the_job_as_before(self):
+        outcome, completed, log = self.narrate([self.spec("Local cuda:0", "crash-at-3")])
+
+        self.assertIsInstance(outcome.get("error"), self.Failed)
+        self.assertEqual(str(outcome["error"]), "Distributed narration failed: Local cuda:0 exited with code 3")
+        self.assertEqual(completed, {1, 2})
+        self.assertNotIn("left out", log)
+
+    def test_e_each_local_worker_sees_only_its_own_gpu_by_uuid_as_cuda_0(self):
+        args = argparse.Namespace(
+            no_local_worker=False, device="cuda:0", worker_device=["cuda:1"], ssh_worker=[],
+            clone_model_path="/models/Base", dtype="auto", attn_implementation="sdpa", language="Auto",
+            seed=None, allow_downloads=False,
+        )
+        visible = f"GPU-{self.A},GPU-{self.B}"
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": visible, "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}):
+            specifications, _ = cli._narration_worker_specifications(args, Path("voices/Eir"))
+        self.assertEqual([spec[0] for spec in specifications], [f"Local GPU-{self.A}", f"Local GPU-{self.B}"])
+        for (label, command, _, _, environment), uuid in zip(specifications, (self.A, self.B), strict=True):
+            self.assertEqual(command[command.index("--device") + 1], "cuda:0")
+            self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], f"GPU-{uuid}")
+            self.assertEqual(environment["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")
+        # Without a mask, a worker gets its index under the same device order.
+        with mock.patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}):
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            specifications, _ = cli._narration_worker_specifications(args, Path("voices/Eir"))
+        self.assertEqual([spec[4]["CUDA_VISIBLE_DEVICES"] for spec in specifications], ["0", "1"])
+        self.assertTrue(all(spec[1][spec[1].index("--device") + 1] == "cuda:0" for spec in specifications))
+
+    # --- the narration identity: completed parts outlive a change of workers ---
+
+    def book(self, *extra, behaviour="ready", resume="resume", voice_text="Reference words for the fixture."):
+        """Run `narrate` with one fake worker; return (exit code, parts made)."""
+        (self.root / "book.txt").write_text(" ".join(self.CHUNKS), encoding="utf-8")
+        voice = self.root / "voice"
+        # Saved again only to change it: a float WAV's PEAK chunk holds the time.
+        transcript = voice / "transcript.txt"
+        if not transcript.is_file() or transcript.read_text(encoding="utf-8").strip() != voice_text:
+            shutil.rmtree(voice, ignore_errors=True)
+            save_voice(voice, np.linspace(-0.5, 0.5, 2400, dtype=np.float32), 24000, voice_text, "FLOAT")
+        self.record.unlink(missing_ok=True)
+        argv = [
+            "audiobook_tts.py", "narrate", "--input", str(self.root / "book.txt"),
+            "--output", str(self.root / "book.wav"), "--overwrite", "--voice-dir", str(voice),
+            "--clone-model-path", "/models/Base", "--attn-implementation", "sdpa",
+            "--resume-dir", str(self.root / resume), "--sentence-chunks", "--chunk-max-chars", "40",
+            "--batch-size", "1", "--device", "cuda:0", *extra,
+        ]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(cli, "_narration_worker_specifications",
+                              return_value=([self.spec("Local cuda:0", behaviour)], [])),
+            mock.patch.object(cli, "GpuMemory", self.NoMemory),
+            redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()),
+        ):
+            try:
+                cli.main()
+                code = 0
+            except SystemExit as exc:
+                code = exc.code
+        made = sorted(int(index) for _, rest in self.events("made")
+                      for index in rest.split("[")[1].rstrip("]").split(","))
+        return code, made
+
+    def test_resume_with_one_gpu_fewer_keeps_the_finished_parts(self):
+        three = ["--worker-device", "cuda:1", "--worker-device", "cuda:2"]
+        self.assertEqual(self.book(*three, behaviour="crash-at-4"), (2, [1, 2, 3]))
+
+        # cuda:2 is gone: the same book on two GPUs makes only parts 4-6.
+        self.assertEqual(self.book("--worker-device", "cuda:1"), (0, [4, 5, 6]))
+        audio, _ = sf.read(self.root / "book.wav", dtype="float32")
+        self.assertEqual(len(audio), sum(int(len(text) * 0.07 * 24000) for text in self.CHUNKS))
+        self.assert_complete_and_ordered(self.root / "resume", self.CHUNKS)
+
+    def test_resume_with_a_changed_voice_model_or_setting_starts_the_parts_again(self):
+        two = ["--worker-device", "cuda:1"]
+        for name, changed in (
+            ("seed", dict(extra=("--seed", "7"))),
+            ("dtype", dict(extra=("--dtype", "float32"))),
+            ("batch size", dict(extra=("--batch-size", "2"))),
+            ("model", dict(extra=("--clone-model-path", "/models/Other"))),
+            ("voice", dict(voice_text="Other reference words for the fixture.")),
+        ):
+            with self.subTest(changed=name):
+                resume = f"resume-{name.replace(' ', '-')}"
+                self.assertEqual(self.book(*two, behaviour="crash-at-4", resume=resume), (2, [1, 2, 3]))
+                code, made = self.book(*two, *changed.get("extra", ()), resume=resume,
+                                       **({"voice_text": changed["voice_text"]} if "voice_text" in changed else {}))
+                self.assertEqual((code, made), (0, [1, 2, 3, 4, 5, 6]))
+
+    def test_parts_from_before_the_upgrade_are_kept_when_the_workers_are_the_same(self):
+        """A manifest written with the workers in its identity, as before
+        this change, still matches; it is rewritten without them."""
+        two = ["--worker-device", "cuda:1"]
+        self.assertEqual(self.book(*two, behaviour="crash-at-4"), (2, [1, 2, 3]))
+        manifest = self.root / "resume" / "manifest.json"
+        identity = json.loads(manifest.read_text(encoding="utf-8"))
+        args = cli.build_parser().parse_args([
+            "narrate", "--input", "x", "--output", "x.wav", "--voice-dir", str(self.root / "voice"),
+            "--clone-model-path", "/models/Base", "--attn-implementation", "sdpa", "--batch-size", "1",
+            "--device", "cuda:0", *two,
+        ])
+        legacy, current = (cli._narration_voice_version(args, self.root / "voice", legacy=flag)
+                           for flag in (True, False))
+        self.assertEqual(identity["voice_version"], current)
+        manifest.write_text(json.dumps({**identity, "voice_version": legacy}), encoding="utf-8")
+
+        self.assertEqual(self.book(*two), (0, [4, 5, 6]))
+        self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["voice_version"], current)
+
+    # --- the server: devices checked again at every narration start ---
+
+    def gpus(self, *uuids):
+        """This machine's GPUs, in CUDA order, as the fake torch reports them."""
+        path = self.root / "gpus.json"
+        path.write_text(json.dumps([
+            {"uuid": uuid, "name": f"Fixture {uuid[:4]}", "memory": 24 << 30} for uuid in uuids
+        ]), encoding="utf-8")
+        return {"PYTHONPATH": str(self.root / "fake"), "HILDE_FAKE_GPUS": str(path),
+                "HILDE_FAKE_RECORD": str(self.record)}
+
+    @staticmethod
+    def choices(*uuids):
+        return [{"value": "cpu", "label": "CPU"}, *(
+            {"value": f"cuda:{index}", "label": f"CUDA {index} — Fixture {uuid[:4]}", "name": f"Fixture {uuid[:4]}",
+             "memory": 24 << 30, "uuid": uuid}
+            for index, uuid in enumerate(uuids)
+        )]
+
+    def audiobook_run(self, workers, jobs=None):
+        storage = web.SharedStorage(self.root / "library")
+        storage.ensure()
+        values = {
+            "clone": dict(self.CLONE), "encoding": "utf-8", "chunk_max_chars": "500", "mp3_level": "",
+            "voice_dir": str(self.root / "voice"), "batch_size": "2", "dtype": "auto", "attn": "sdpa",
+            "language": "Auto", "seed": "", "device": "cuda:0", "document_name": "book.txt", "narrator": "Eir",
+        }
+        run = web.AudiobookRun(values, storage, "input-version", "voice-version", "job-fixture")
+        run.jobs = jobs
+        run.assign_workers(workers)
+        return run
+
+    def narrations(self):
+        if not self.record.exists():
+            return []
+        return [json.loads(line) for line in self.record.read_text(encoding="utf-8").splitlines()]
+
+    @staticmethod
+    def devices_of(narration):
+        """Each --device and --worker-device of a narration, as the GPU its
+        number means under the narration's CUDA_VISIBLE_DEVICES."""
+        visible = (narration["visible"] or "").split(",")
+        arguments = narration["arguments"]
+        return sorted(
+            (flag, visible[int(value[5:])] if value.startswith("cuda:") and narration["visible"] else value)
+            for flag, value in zip(arguments, arguments[1:]) if flag in ("--device", "--worker-device")
+        )
+
+    def warnings(self, run):
+        return run.snapshot().get("warnings")
+
+    def start_narration(self, run, environment):
+        with mock.patch.object(web, "SCRIPT", self.root / "narrate.py"), \
+                mock.patch.dict(os.environ, environment), redirect_stdout(io.StringIO()):
+            return run._run_narration(self.root / "book.txt")
+
+    def test_e_a_chosen_gpu_reaches_narration_by_uuid_as_cuda_0(self):
+        web._DEVICE_OPTIONS = self.choices(self.A, self.B)
+        consumers = web.audiobook_consumers(self.CLONE, self.choices(self.A, self.B))
+        run = self.audiobook_run([consumers[1]["worker"]])
+
+        self.start_narration(run, self.gpus(self.A, self.B))
+
+        [narration] = self.narrations()
+        self.assertEqual(self.devices_of(narration), [("--device", f"GPU-{self.B}")])
+        self.assertEqual((narration["visible"], narration["order"]), (f"GPU-{self.B}", "PCI_BUS_ID"))
+
+    def test_f_continuing_checks_the_gpus_again(self):
+        # The server started with GPUs A and B; its display list still says so.
+        web._DEVICE_OPTIONS = self.choices(self.A, self.B)
+        consumers = web.audiobook_consumers(self.CLONE, self.choices(self.A, self.B))
+        workers = [consumer["worker"] for consumer in consumers]
+        jobs = web.JobQueue(consumers)
+        self.addCleanup(jobs.shutdown)
+
+        self.start_narration(self.audiobook_run(workers, jobs), self.gpus(self.A, self.B))
+        # A fell off the bus before Continue; B is CUDA's device 0 now.
+        resumed = self.audiobook_run(workers, jobs)
+        self.start_narration(resumed, self.gpus(self.B))
+
+        first, second = self.narrations()
+        self.assertEqual(self.devices_of(first), [("--device", f"GPU-{self.A}"), ("--worker-device", f"GPU-{self.B}")])
+        self.assertEqual(sorted(first["visible"].split(",")), [f"GPU-{self.A}", f"GPU-{self.B}"])
+        self.assertEqual(self.devices_of(second), [("--device", f"GPU-{self.B}")])
+        self.assertEqual(second["visible"], f"GPU-{self.B}")
+        [warning] = self.warnings(resumed)
+        self.assertIn(f"GPU 0 (GPU-{self.A[:8]})", warning)
+        self.assertIn("left out", warning)
+        self.assertIn(f"Narrating on GPU 0 (GPU-{self.B[:8]})", warning)
+        self.assertTrue(any(event == "log" and f"GPU-{self.A}" in data for event, data in resumed.history))
+        # Settings shows the devices found now: B as GPU 0, A missing.
+        self.assertEqual([choice.get("uuid") for choice in web.available_devices()], [None, self.B])
+        public = jobs.public_consumers_snapshot()
+        self.assertEqual([(item["label"], item["status"], item["device"]) for item in public],
+                         [("GPU 0", "missing", ""), ("GPU 0", "idle", "cuda:0")])
+        # Its box in Settings still turns it off, by its UUID.
+        self.assertEqual([(item["id"], item["missing"]) for item in jobs.local_snapshot()],
+                         [(f"GPU-{self.A}", True), (f"GPU-{self.B}", False)])
+
+    def test_d_a_stale_or_unknown_gpu_is_left_out_visibly_and_the_others_narrate(self):
+        web._DEVICE_OPTIONS = self.choices(self.GONE, self.B)
+        consumers = web.audiobook_consumers(self.CLONE, self.choices(self.GONE, self.B))
+        # A worker from a probe without UUIDs, numbered beyond the GPUs now.
+        beyond = web.audiobook_consumers(self.CLONE, [{"value": "cuda:7", "label": "CUDA 7"}])[0]["worker"]
+        run = self.audiobook_run([consumers[0]["worker"], beyond, consumers[1]["worker"]])
+
+        self.start_narration(run, self.gpus(self.B))
+
+        [narration] = self.narrations()
+        self.assertEqual(self.devices_of(narration), [("--device", f"GPU-{self.B}")])
+        self.assertEqual(narration["visible"], f"GPU-{self.B}")
+        warnings = self.warnings(run)
+        self.assertEqual(len(warnings), 2)
+        self.assertIn(f"GPU-{self.GONE[:8]}", warnings[0])
+        self.assertIn("GPU 7", warnings[1])
+        self.assertTrue(all("left out" in warning and f"Narrating on GPU 0 (GPU-{self.B[:8]})" in warning
+                            for warning in warnings))
+
+        # With none of its GPUs usable, narration does not start: a clear
+        # error, and the job's resume data stays.
+        self.record.unlink(missing_ok=True)
+        alone = self.audiobook_run([consumers[0]["worker"]])
+        with self.assertRaises(RuntimeError) as caught:
+            self.start_narration(alone, self.gpus(self.B))
+        self.assertIn("No narration worker can start", str(caught.exception))
+        self.assertIn(f"GPU-{self.GONE[:8]}", str(caught.exception))
+        self.assertEqual(self.narrations(), [])
+
+    def test_a_a_worker_left_out_at_startup_is_a_visible_warning_of_the_job(self):
+        web._DEVICE_OPTIONS = self.choices(self.A, self.B)
+        consumers = web.audiobook_consumers(self.CLONE, self.choices(self.A, self.B))
+        jobs = web.JobQueue(consumers)
+        self.addCleanup(jobs.shutdown)
+        run = self.audiobook_run([consumer["worker"] for consumer in consumers], jobs)
+        # The job holds both GPUs, as the queue's dispatch leaves it.
+        record = {"id": "job-fixture", "run": run}
+        with jobs.lock:
+            jobs.active.update({consumer["id"]: record for consumer in consumers})
+        self.addCleanup(jobs.active.clear)
+
+        with redirect_stdout(io.StringIO()):
+            run.inspect(f"Narration worker left out: Local GPU-{self.A}: exited during startup with code 2: "
+                        "audiobook_tts.py: error: --device requests CUDA, but CUDA is unavailable")
+
+        [warning] = self.warnings(run)
+        self.assertIn(f"GPU 0 (GPU-{self.A[:8]})", warning)
+        self.assertIn("CUDA is unavailable", warning)
+        self.assertIn(f"Narrating on GPU 1 (GPU-{self.B[:8]})", warning)
+        [active] = jobs.active_snapshots()
+        self.assertEqual(active["warnings"], [warning])
+        self.assertEqual([item["status"] for item in jobs.public_consumers_snapshot()], ["left_out", "running"])
+        # The job's history keeps the warning; the server log has it too.
+        self.assertTrue(any(event == "log" and "left out" in data for event, data in run.history))
+
+    def test_i_a_gpu_turned_off_by_number_is_renamed_by_uuid_when_the_server_starts(self):
+        storage = self.root / "storage"
+        storage.mkdir()
+        (storage / "workers.yaml").write_text("local_off: [cuda:1]\nnodes: []\n", encoding="utf-8")
+        home = self.root / "home"
+        home.mkdir()
+        environment = {**os.environ, **self.gpus(self.A, self.B), "HOME": str(home)}
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = subprocess.Popen(
+            [sys.executable, "-u", str(Path(web.__file__)), "--storage-root", str(storage), "--port", str(port)],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        # A server that never says it renamed the GPU is stopped after a minute.
+        timer = threading.Timer(60, server.kill)
+        timer.start()
+        try:
+            lines = []
+            for line in server.stdout:
+                lines.append(line)
+                if "named by UUID" in line or "Serving" in line:
+                    break
+        finally:
+            timer.cancel()
+            server.terminate()
+            server.wait(10)
+            server.stdout.close()
+        self.assertTrue(any(f"GPU-{self.B}" in line and "named by UUID" in line for line in lines), lines)
+        self.assertEqual(web.read_workers(storage / "workers.yaml"), ([], [f"GPU-{self.B}"]))
 
 
 class SpeechEndpointTests(unittest.TestCase):
@@ -11772,12 +12291,25 @@ class WorkerNodeTests(unittest.TestCase):
         cli.check_distributed_mode(args, parser)
         with mock.patch.object(cli.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
                 mock.patch.object(cli, "_run_transport"):
-            specifications = cli._narration_worker_specifications(args, Path("voices/Eir"))
+            specifications, left_out = cli._narration_worker_specifications(args, Path("voices/Eir"))
         self.assertEqual(
             [label for label, *_ in specifications],
             ["SSH narrator@10.0.0.5 cuda:1", "SSH narrator@10.0.0.5 cuda:3"],
         )
-        self.assertEqual(cli._worker_topology(args)["local_devices"], [])
+        self.assertEqual(left_out, [])
+        self.assertEqual(cli._local_worker_devices(args), [])
+        # A node that cannot be staged is left out like a worker failing at
+        # startup (fixture: the transport and its cleanup are mocked; no SSH runs).
+        failing = mock.Mock(side_effect=[RuntimeError("creating workspace on narrator@10.0.0.5 timed out"),
+                                         None, None])
+        with mock.patch.object(cli.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                mock.patch.object(cli, "_run_transport", failing), \
+                mock.patch.object(cli.subprocess, "run") as cleanup:
+            specifications, left_out = cli._narration_worker_specifications(args, Path("voices/Eir"))
+        self.assertEqual(cleanup.call_count, 1)
+        self.assertEqual([label for label, *_ in specifications], ["SSH narrator@10.0.0.5 cuda:3"])
+        self.assertEqual(left_out, [("SSH narrator@10.0.0.5 cuda:1",
+                                     "creating workspace on narrator@10.0.0.5 timed out")])
 
         base = command[3:command.index("--no-local-worker")]
         for extra in (["--no-local-worker"], ["--no-local-worker", "--worker-device", "cuda:1",
