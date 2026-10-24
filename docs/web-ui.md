@@ -6,10 +6,11 @@ Open the address the server prints when it starts, for example
 ## Header and navigation
 
 The app is called **Hilde Reader**, and so is its browser tab. The header shows
-its emblem, a copper leaf, beside the name "Hilde Reader", and under the name
+its mark, the bare copper leaf, beside the name "Hilde Reader", and under the name
 "Listen to your documents. Follow the text. Ask to understand." (smaller on a
-phone). The same leaf is the tab's icon and, when you add the page to a phone's
-home screen, the icon there, labelled "Hilde". At the header's top right, on
+phone). The tab's icon and, when you add the page to a phone's
+home screen, the icon there (labelled "Hilde") are the same leaf on its navy tile.
+At the header's top right, on
 every page, is **Ask Hilde** (see [Ask Hilde on every page](#ask-hilde-on-every-page)).
 Below the header are the tabs: **Create**,
 **Voices**, and **Listen**, then **Progress** while there is a job to follow.
@@ -65,19 +66,36 @@ audiobook** or **Create another book**), steps 2 and 3 are gray again, though
 the voice you used last is still chosen in step 2, so one **Continue** there
 confirms it.
 
-**Change**, or a click on a finished step's title, opens that step again;
-nothing in the other steps is cleared. **Continue** in a reopened step goes
+A finished step's whole row is one button, with its **Change** label inside
+it: a click or tap anywhere on the row, or Enter or Space when the row has the
+keyboard focus (one Tab stop per row), opens that step again. Under the pointer
+and with the keyboard focus the row looks the same: a light blue border and
+its title underlined. Nothing in the other steps is cleared. **Continue** in a reopened step goes
 straight back to the furthest step you reached, with every choice kept: after
 **Change** next to the document in step 3, picking another document and
 pressing **Continue** returns to step 3 with the voice and text settings you
 chose.
 
-The first step offers three ways to choose a document, as three cards side by
-side (stacked on a phone). A radio circle in each card's header says which one
+Steps 2 and 3 have **← Back** at the left of their buttons (**Continue** or
+**Create audiobook** stays at the right): it opens the previous numbered step,
+again keeping every choice. The browser's Back and Forward (and a phone's back
+gesture) follow the steps in the order you visited them: each **Continue** and
+each reopened row is one step in the browser's history (the address shows
+`#create/document`, `#create/voice` or `#create/text`), and Back from the first
+step leaves Create as usual. A reload keeps the step you were on when its
+document and voice are still there; otherwise it opens step 1. Once Hilde has
+started the audiobook, the address becomes the job's page (`#job/…`, the
+progress view); going back to that book's steps afterwards opens the job (or
+the finished book) instead of its form, so the same book is never sent twice.
+Two taps on **Create audiobook**, or the same form sent from two tabs, make one
+job.
+
+The first step offers four ways to choose a document, as four cards, two by
+two (stacked on a phone). A radio circle in each card's header says which one
 is used: exactly one is chosen, with a filled dot and a blue border. The other
-two are dimmed, with gray text and their fields switched off, but they keep
+three are dimmed, with gray text and their fields switched off, but they keep
 what you entered. Click anywhere on a dimmed card to choose it; its first field
-gets the focus. With the keyboard, the arrow keys move between the three
+gets the focus. With the keyboard, the arrow keys move between the four
 choices. The first time, **Upload a file** is chosen; after that, this browser
 remembers the card you used last.
 
@@ -116,6 +134,25 @@ remembers the card you used last.
   (a phone or tablet, which can't drop files) the card says "A file from
   your device" and its action is a **Choose a file** button, with "PDF, TXT
   or Markdown" under it.
+- **Paste text** ("Text from a web page, an email or your notes"): a large
+  box for the text and **Title (optional)**. **Continue** saves the text as a
+  document, through the same route as an uploaded file: a `.txt`, or a `.md`
+  when it is clearly Markdown (a heading, a code fence or a table, or two of
+  links, bold, quotes, lists and inline code), named after the title or,
+  without one, the text's first line ("Saved as …" in the card). The same text
+  pasted again keeps the document it was saved as; another text under a name
+  you already have gets "Name 2.txt". On a phone, use the phone's own Paste in
+  the box. The upload's 64 MiB limit applies, and a pasted text that is a
+  book you already have shows "You already have this one", as an upload does.
+
+**Cmd+V** (Mac) or **Ctrl+V** on the first step, while no text field has the
+focus, takes what you copied: a copied file (PDF, TXT or Markdown) goes to
+**Upload a file**, as if you had dropped it; a single web link (such as an
+arXiv page) fills **From a URL**; any other text fills **Paste text**. One
+line says what was pasted: "Pasted paper.pdf", "Pasted a link" or "Pasted
+12,400 characters". An empty paste does nothing; a file of another type gets
+the same message as a wrong upload. Whether a browser hands over a file
+copied in Finder or Explorer is up to the browser.
 
 **Continue** uses only the chosen card, whatever the others hold: no link is
 downloaded unless **From a URL** is chosen. Beside **Continue**, the step says
@@ -461,7 +498,14 @@ With the keyboard, **Tab** moves from card to card (and to each card's **⋯**);
 
 A click anywhere on a card opens the book, paused at the start of the sentence
 where you stopped, with the text scrolled to it (the book playing from the
-Library opens where it is and keeps playing): its header shows the title and
+Library opens where it is and keeps playing). Going back to the Library and
+opening the same book again straight away, without reloading the page, finds
+it exactly as you left it: the audio at the very moment it was paused by
+**Library** (not the start of that sentence), the text scrolled just as it
+was, and **Back to reading position** still showing if you had scrolled away;
+after a reload, another book opened in between, or the book played in another
+tab meanwhile, the start-of-sentence rule applies. The book's
+header shows the title and
 one line with the voice, the length, and the source file, with a **Library**
 button at its top right (on a phone too; blue text and books icon in a thin
 blue outline, like **Change** on Create) that goes back to the list in one
@@ -480,10 +524,15 @@ is Ask Hilde's own colour) with Hilde's sparkle and the words **Ask Hilde**. On
 a computer both rows sit in one centred column at most 560 px wide; on a phone
 they run the full width, 16 px from the screen's edges, with a larger
 play/pause. The bar keeps clear of the phone's home indicator. The bar never
-covers the text: the page leaves room for it below the last paragraph. The
-text runs in a comfortable reading column; on a wide screen the panel for the
+covers the text: the page leaves room for it below the last paragraph, and a
+control you reach with **Tab** lands between the bars at the top and the player
+(a figure taller than that space shows its top). The page itself scrolls, never
+a box inside it; on a computer its scroll bar is thin and grey, like the side
+panel's, yet wide enough to grab and drag, while a phone keeps
+its own. The text runs in a comfortable reading column; on a wide screen the panel for the
 chat, a figure, or a source page opens beside it, and the player bar then
-stays under the text. The panel starts just under the lowest bar at the top of
+stays under the text; the page's scroll bar stays at the window's right edge,
+beyond the panel. The panel starts just under the lowest bar at the top of
 the window: the tab row while you can see it, the slim paper bar (below) once
 it shows, otherwise the top of the window. It never covers the header, the
 tabs, **Settings**, or the paper bar, and its top follows them as you scroll.
@@ -572,9 +621,11 @@ Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a
 page, going to another tab and back. **Follow along** turns the page when the
 sentence being read leaves the screen. If you scroll the word being read out
-of sight yourself, it stops following and a small **↑ Back to reading
-position** pill appears just above the player bar (↓ when the word is below);
-it hides while the word is on screen, and while you have text selected in the
+of sight yourself, by any means (the wheel, a touch and the glide after it, the
+keys, or dragging the scroll bar), it stops following and never pulls the page
+back; while you are scrolling it waits too. A small **↓ Back to reading
+position** pill (one label, wherever the word is) appears just above the player
+bar; it hides while the word is on screen, and while you have text selected in the
 book (on a phone, the selection's **Ask Hilde** takes its place).
 Clicking it brings the word back on screen and turns **Follow along**
 on again. The pill appears too, once the word is out of sight, after you open

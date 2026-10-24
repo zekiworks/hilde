@@ -5,9 +5,9 @@
 
 ## What Hilde Reader does
 
-Hilde Reader turns a document, such as a research paper, into an audiobook. Before it reads, a language model can rewrite the text for listening: it removes page headers and reference marks, and describes figures, tables and equations in words. Then a voice reads it aloud. While you listen, the word being read is marked in the text. You can ask Hilde about any part of the book.
+Hilde Reader turns a document, such as a research paper, into an audiobook. Before a voice reads it aloud, a language model can rewrite the text for listening: it removes page headers and reference marks, and describes figures, tables and equations in words. You can ask Hilde about any part of the book.
 
-The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen** (your **Library** and the open book), **Progress** (while a book is being made) and **Settings** (the gear at the right; technical options sit under **Advanced**).
+The tabs are **Create** (make an audiobook), **Voices**, **Listen** (your **Library** and the open book), **Progress** (while a book is being made) and **Settings** (the gear at the right; technical options sit under **Advanced**).
 
 <!-- more: README.md › What it does -->
 <!-- checked: docs/web-ui.md "Header and navigation", "Create an audiobook" steps 1-4; README.md "What it does" -->
@@ -15,25 +15,27 @@ The tabs are **Create** (make an audiobook), **Voices** (your voices), **Listen*
 ## Adding a document
 
 1. Open **Create**.
-2. In **Add the source document**, pick one of three cards: **Saved document** (one you added before), **From a URL** (a link to a PDF, TXT or Markdown file, or an arXiv page), or **Upload a file** (drop a file or **browse**; on a phone or tablet, **Choose a file**).
+2. In **Add the source document**, pick one of four cards: **Saved document** (one you added before), **From a URL** (a link to a PDF, TXT or Markdown file, or an arXiv page), **Upload a file** (drop a file or **browse**; on a phone or tablet, **Choose a file**), or **Paste text** (an optional title, else its first line). Here **Cmd+V** or **Ctrl+V** outside a text field puts a copied file, link or text into the matching card.
 3. Press **Continue**, then choose a voice.
 4. In **How Hilde prepares the text**, choose the model and the options, such as **Adapt the text for listening**. The **Summary** shows, with a **Local** or **Cloud** badge, where your text goes.
 5. Press **Create audiobook**.
 
-You can queue several books; they are made in order. **Progress** shows each stage. **Stop** keeps what is finished, and starting the same book again continues from there. When it is done, **Start listening** opens it.
+You can queue several books; they are made in order, each stage shown in **Progress**. **Stop** keeps what is finished; starting the book again continues from there. Once done, **Start listening** opens it.
 
-If you add a document you already have, Hilde says **You already have this one** and offers **Open**, **Overwrite** and **Change voice**.
+If you add or paste a document you already have, Hilde says **You already have this one** and offers **Open**, **Overwrite** and **Change voice**.
+
+To go back, click or tap a step's row or press **← Back**; your choices are kept. The browser's Back and Forward move through the steps you visited; once a book has started, they open its progress, so it is never made twice.
 
 <!-- more: docs/web-ui.md › Create an audiobook -->
-<!-- checked: docs/web-ui.md "Create an audiobook" (three cards, Continue, Summary, You already have this one, queue), "Following an audiobook being made" (Stop, Continue from the last completed part) -->
+<!-- checked: docs/web-ui.md "Create an audiobook" (four cards, Paste text, Cmd+V, finished rows, Back, browser history, Continue, Summary, You already have this one, queue), "Following an audiobook being made" (Stop, Continue from the last completed part) -->
 
 ## Choosing and changing a voice
 
-**Voices** lists your saved voices. Press the green play button to hear a voice. **Select** makes it the voice Create starts with. Click or tap a voice's description to read all of it; on a phone it opens under the name, one at a time.
+**Voices** lists your saved voices. Press the green play button to hear a voice. **Select** makes it the voice Create starts with. Click or tap a voice's description to read all of it.
 
-To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitched*, add details in your own words if you like, and give it a name. **Generate preview** makes a sample. **Save voice** turns on once you have listened to the preview. New voices can be made only while no audiobook is being made.
+To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitched*, add details in your own words if you like, and name it. **Generate preview** makes a sample. **Save voice** turns on once you have listened to the preview. New voices can be made only while no audiobook is being made.
 
-To hear a finished book in another voice, open it in **Listen**, then **⋯** › **Change voice…**. The text stays the same; the new voice is added beside the others, and nothing is replaced. If a book has several voices, pick one in the line under its title.
+To hear a finished book in another voice, open it in **Listen**, then **⋯** › **Change voice…**. The text stays the same; the new voice is added beside the others. If a book has several voices, pick one in the line under its title.
 
 <!-- more: docs/web-ui.md › Voices -->
 <!-- checked: docs/web-ui.md "Voices", "Making a new voice", Listen "⋯ holds … Change voice…", "A book read by more than one voice shows a voice picker" -->
@@ -47,22 +49,22 @@ Tags are short words that describe a voice, in groups: voice, pitch, texture, pa
 
 ## Playback and speed
 
-**Listen** opens the **Library**. Books you are in the middle of are under **Continue listening**; the rest under **All books**. **Search titles** filters by title. The round play button on a card plays the book without opening it; a click on the card opens it.
+**Listen** opens the **Library**. Books you are in the middle of are under **Continue listening**, the rest under **All books**; **Search titles** filters them. The round play button on a card plays the book without opening it; a click on the card opens it.
 
-The player bar sits at the bottom: play/pause, the seek bar, and the speed. Click the speed (for example **1.0×**) to choose from 0.75× to 2×. Tap a word to play from it; tap the sentence being read to pause.
+The player bar sits at the bottom: play/pause, the seek bar, and the speed. Click the speed (**1.0×**) to choose 0.75× to 2×. Tap a word to play from it; tap the sentence being read to pause.
 
-Your place and speed are remembered by this browser only. A book continues from the start of the sentence where you stopped.
+Your place and speed stay in this browser only. A book continues from the start of the sentence where you stopped; straight back from the **Library** (no reload, no other book), it is exactly where you left it.
 
-Keyboard: Space or K plays or pauses, J goes back and L forward 10 seconds, ← and → 5 seconds, < and > change the speed, ? lists all shortcuts.
+Keyboard: Space or K plays or pauses, J and L skip 10 seconds, ← and → 5, < and > change the speed, ? lists all shortcuts.
 
 **⋯** in the book also offers **Download MP3** and **Download source**.
 
 <!-- more: docs/web-ui.md › Listen -->
-<!-- checked: docs/web-ui.md "Listen" (Library groups, play button, player bar, speed 0.75×–2×, tap a word, browser-only place, shortcuts incl. < > 0.25×–2×, ⋯ menu) -->
+<!-- checked: docs/web-ui.md "Listen" (Library groups, play button, player bar, speed 0.75×–2×, tap a word, browser-only place, Library and back exactly as left, shortcuts incl. < > 0.25×–2×, ⋯ menu) -->
 
 ## Follow-along highlighting
 
-While a book plays, the paragraph being read has a thin blue line at its left, the sentence a blue tint, and the word a blue underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops; press **↑ Back to reading position** (or ↓) to return.
+While a book plays, the paragraph being read has a thin blue line at its left, the sentence a blue tint, and the word a blue underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops and never pulls the page back; press **↓ Back to reading position** to return.
 
 **Narration text** shows what Hilde reads aloud. **Source text** shows the document's own words, with the page each passage starts on and a label: **Original**, **Unchanged** or **Not narrated**. Descriptions the model wrote of figures and tables are labelled **Hilde's description**. Books made without adapting the text have no **Source text**.
 
@@ -71,13 +73,13 @@ While a book plays, the paragraph being read has a thin blue line at its left, t
 
 ## Ask Hilde
 
-**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's **Ask Hilde**. To ask about a passage, select it, then press **Ask about this** (on a phone, the teal **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
+**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's. To ask about a passage, select it, then press **Ask about this** (on a phone, the teal **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
 
 What you asked about shows as a card above the question box. **Context details** lists exactly what goes with your question. **Word | Sentence | Paragraph** widens the selection. Press **Explain this part**, or type your own question.
 
-Hilde looks up the paragraphs it needs and cites them, such as ¶12; click one to jump there. Ask follow-ups, such as "give an example". Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
+Hilde looks up the paragraphs it needs and cites them, such as ¶12; click one to jump there. Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
 
-On other pages it answers questions about Hilde Reader, apart from book conversations, with nothing of a book. It uses this help, or else the developer docs or the code, saying so and linking the place; otherwise it says it isn't sure. It only explains, never changes settings.
+On other pages it answers questions about Hilde Reader from this help, else the developer docs or the code (saying so, with a link), or says it isn't sure. It only explains, never changes settings.
 
 Pick the model in the panel's header; this browser keeps it, apart from the book's model. Its badge says **Local** or **Cloud**, and a gray label under each answer names its model. **🔈 Read aloud** reads an answer aloud. **⋯** › **New conversation** starts over: the book's, or the help questions alone.
 
@@ -98,7 +100,7 @@ The narration can be wrong; when it differs from the document, Hilde says so and
 
 **When you ask a Cloud model**, the provider receives, with each question: Hilde's instructions and the list of help sections; the book's title and abstract (or its first few hundred words; none on other pages); your question and the card you attached (your selection, its sentence, the paragraph's narration and the paper's text, a figure's caption and description, and its picture if the model reads images); earlier questions, and earlier answers cut to their first and last sentence; and the paragraphs, help sections, developer docs, code and web results Hilde looks up while answering. The whole book is not sent. Only the provider of the model in the header receives it.
 
-**Web search**, if set up, sends the search words Hilde chooses to the server's search service (SearXNG), which passes them to public search engines such as Google and Bing. Pages Hilde reads are fetched by the Hilde server; their text goes to the model.
+**Web search**, if set up, sends the search words Hilde chooses to the server's search service (SearXNG), which passes them to public search engines. Pages Hilde reads are fetched by the Hilde server; their text goes to the model.
 
 Use a Local model for private documents.
 
@@ -114,15 +116,15 @@ Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` 
 
 ## Common problems and fixes
 
-- **"Choose a document first"**: the card you chose is empty. Fill it in, or pick another card.
-- **Create audiobook stays gray**: the text beside it names the option and why, with one-click fixes such as **Use the text model** or **Turn off this option**.
+- **"Choose a document first"**: the chosen card is empty: fill it in or pick another.
+- **Create audiobook stays gray**: the text beside it names the reason, with one-click fixes such as **Use the text model**.
 - **"⚠ … is unreachable"**: that model's server does not answer. Click one of the models offered below it. Hilde never switches models by itself.
 - **The chat shows a red box**: you are not signed in, the model's server is not running, or the connection failed. Follow the hint, or use **Providers…**.
 - **Claude Code models can't chat**: choose another model for Ask Hilde.
 - **The chat asks you to recreate the book**: the book was made before Hilde wrote paragraph summaries. Use **⋯** › **Recreate with the latest Hilde…**. This writes the text again; other voices must be made again.
 - **A book stopped or failed**: on **Create** or **Progress**, press **Continue from the last completed part**.
 - **Paused: a model became unreachable**: press **Retry**, or **Continue with another model…**.
-- **No sound**: check the browser's volume and the computer's output device.
+- **No sound**: check the volume and the output device.
 - **Settings are read-only**: providers and machines can be changed only from a browser on the Hilde server.
 
 <!-- more: docs/web-ui.md › Following an audiobook being made -->

@@ -174,8 +174,10 @@ Hilde's own code is released under the [MIT License](LICENSE); some dependencies
   PyTorch 2.10 + CUDA 13.0; CPU inference has also been exercised. Other
   platforms may need adjustments.
 - **Inputs.** PDF, TXT or Markdown files (`.pdf`, `.txt`/`.text`,
-  `.md`/`.markdown`) up to 64 MiB. HTML pages and EPUB files are not
-  supported; a file of another type is refused with a message naming these.
+  `.md`/`.markdown`) up to 64 MiB, uploaded, downloaded from a link, or
+  pasted as text (saved as a `.txt`, or `.md` when it is Markdown). HTML pages
+  and EPUB files are not supported; a file of another type is refused with a
+  message naming these.
 
 ## Installation
 

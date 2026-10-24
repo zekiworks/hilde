@@ -8417,6 +8417,242 @@ class DocumentUploadTests(unittest.TestCase):
             self.assertIn(types["text"], (root / doc).read_text(encoding="utf-8"), doc)
 
 
+class CreateDraftAndPasteTests(unittest.TestCase):
+    """Create's draft IDs and duplicate guard (one job per draft), and Paste text's documents."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.storage = web.SharedStorage(self.root / "library")
+        self.storage.ensure()
+
+    def test_a_draft_id_is_kept_only_when_valid(self):
+        self.assertEqual(normalize({"audiobook": {"draft": "0123456789abcdef01234567"}})["audiobook"]["draft"],
+                         "0123456789abcdef01234567")
+        for bad in ("", "short", "has space in it", "../../etc/passwd", "x" * 65, 12345678, None):
+            self.assertEqual(normalize({"audiobook": {"draft": bad}})["audiobook"]["draft"], "", bad)
+        self.assertEqual(normalize({})["audiobook"]["draft"], "")
+
+    def test_paste_text_is_a_source_card_whose_document_counts_once_saved(self):
+        filled = {"document": "saved.pdf", "upload": "uploaded.pdf", "paste_document": "Pasted notes.txt"}
+        pasted = normalize({"audiobook": {**filled, "source": "paste"}})["audiobook"]
+        self.assertEqual((pasted["source"], web.chosen_document(pasted), web.pending_url(pasted)),
+                         ("paste", "Pasted notes.txt", ""))
+        self.assertEqual(web.chosen_document(normalize({"audiobook": {"source": "paste"}})["audiobook"]), "")
+        self.assertEqual(web.DOCUMENT_SOURCES, ("saved", "url", "upload", "paste"))
+        # The pasted text itself never reaches the state cookie, only the name it was saved as.
+        self.assertNotIn("paste_text", normalize({"audiobook": {"paste_text": "words"}})["audiobook"])
+        # The page gets the upload limit, so a pasted text has the same one.
+        self.assertEqual(web.DOCUMENT_TYPES["limit"], web.BOOK_UPLOAD_LIMIT)
+
+    def test_the_guard_starts_one_job_per_draft(self):
+        guard = web.DraftGuard()
+        self.assertIsNone(guard.claim("draft-one-0001"))
+        guard.settle("draft-one-0001", "job-a")
+        # A repeat gets the draft's job; another draft starts its own.
+        self.assertEqual(guard.claim("draft-one-0001"), "job-a")
+        self.assertIsNone(guard.claim("draft-two-0002"))
+        # A start that came to no job (refused, or a question first) leaves the draft free.
+        guard.settle("draft-two-0002", None)
+        self.assertIsNone(guard.claim("draft-two-0002"))
+        guard.settle("draft-two-0002", "job-b")
+        self.assertEqual(guard.job_for("draft-two-0002"), "job-b")
+
+    def test_a_second_start_of_a_draft_waits_for_the_first_and_gets_its_job(self):
+        guard = web.DraftGuard()
+        self.assertIsNone(guard.claim("draft-same-01"))
+        answers = []
+        second = threading.Thread(target=lambda: answers.append(guard.claim("draft-same-01")))
+        second.start()
+        time.sleep(0.2)
+        # Still waiting: the first start has not settled.
+        self.assertTrue(second.is_alive())
+        self.assertEqual(answers, [])
+        guard.settle("draft-same-01", "job-first")
+        second.join(5)
+        self.assertEqual(answers, ["job-first"])
+        # When the first came to nothing, the waiting one holds the start itself.
+        self.assertIsNone(guard.claim("draft-same-02"))
+        later = []
+        waiting = threading.Thread(target=lambda: later.append(guard.claim("draft-same-02")))
+        waiting.start()
+        time.sleep(0.1)
+        guard.settle("draft-same-02", None)
+        waiting.join(5)
+        self.assertEqual(later, [None])
+        with mock.patch.object(web.DraftGuard, "WAIT_SECONDS", 0.1), self.assertRaises(TimeoutError):
+            guard.claim("draft-same-02")
+
+    def test_the_guard_survives_a_restart_and_keeps_the_newest_drafts(self):
+        path = self.storage.in_progress / web.CREATE_DRAFTS_FILE
+        guard = web.DraftGuard(path)
+        with mock.patch.object(web.DraftGuard, "LIMIT", 3):
+            for number in range(5):
+                self.assertIsNone(guard.claim(f"draft-keep-{number:02d}"))
+                guard.settle(f"draft-keep-{number:02d}", f"job-{number}")
+        again = web.DraftGuard(path)
+        self.assertEqual(again.claim("draft-keep-04"), "job-4")
+        self.assertEqual(again.claim("draft-keep-02"), "job-2")
+        self.assertIsNone(again.claim("draft-keep-00"))
+        # A damaged file starts empty instead of failing.
+        path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(web.DraftGuard(path).claim("draft-keep-04"))
+        path.write_text('{"drafts": [["no", "job"], ["draft-fine-01", 7], ["draft-fine-02", "job-x"]]}', encoding="utf-8")
+        self.assertEqual(web.DraftGuard(path).jobs, {"draft-fine-02": "job-x"})
+
+    def serve(self, models):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.jobs = web.JobQueue()
+        self.addCleanup(server.jobs.shutdown)
+        server.tts_models = models
+        server.storage = self.storage
+        server.verbose = False
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            server.shutdown()
+            thread.join()
+            server.server_close()
+        self.addCleanup(stop)
+        return server
+
+    def post(self, server, path, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read() or b"{}")
+
+    def library_with_voice(self):
+        for name in ("first.txt", "second.txt"):
+            (self.storage.documents / name).write_text(f"One short paper called {name}.", encoding="utf-8")
+        save_voice(self.storage.voices / "Narrator", np.linspace(-0.5, 0.5, 1200, dtype=np.float32), 24000,
+                   "Reference passage.", "FLOAT")
+        model = self.root / "clone-model"
+        model.mkdir()
+        return {"design": {"source": "missing"},
+                "clone": {"source": "local", "model": str(model), "allow_downloads": False}}
+
+    def test_the_server_starts_at_most_one_job_per_draft(self):
+        models = self.library_with_voice()
+        first = normalize({"tab": "audiobook", "audiobook": {"document": "first.txt", "source": "saved",
+                                                             "voice": "Narrator", "adapt": False}})
+        second = normalize({"tab": "audiobook", "audiobook": {"document": "second.txt", "source": "saved",
+                                                              "voice": "Narrator", "adapt": False}})
+        real_prepare = web.AudiobookRun.prepare
+
+        def slow_prepare(run):
+            time.sleep(0.3)
+            return real_prepare(run)
+
+        with mock.patch.object(web.AudiobookRun, "prepare", slow_prepare), \
+                mock.patch.object(web.AudiobookRun, "start", lambda run: None):
+            server = self.serve(models)
+            answers = []
+            together = threading.Barrier(2)
+
+            def send(state):
+                together.wait()
+                answers.append(self.post(server, "/api/run", {"state": state, "draft": "draft-twice-0001"}))
+
+            # Two starts of one draft at once (a double tap, two tabs), even with different forms: one job.
+            sends = [threading.Thread(target=send, args=(state,)) for state in (first, second)]
+            for item in sends:
+                item.start()
+            for item in sends:
+                item.join(10)
+            self.assertTrue(all(status in (200, 202) for status, _ in answers), answers)
+            ids = {answer["job"]["id"] for _, answer in answers}
+            self.assertEqual(len(ids), 1)
+            self.assertEqual([job["id"] for job in server.jobs.snapshot()], list(ids))
+            repeat = [answer for _, answer in answers if answer.get("draft_repeat")]
+            self.assertEqual(len(repeat), 1)
+            self.assertTrue(repeat[0]["duplicate"])
+            self.assertFalse(repeat[0]["started"])
+            # After the job has ended (stopped here), a repeat still gets it and starts nothing.
+            [job_id] = ids
+            server.jobs.records[job_id]["run"].close(130)
+            for _ in range(50):
+                if not server.jobs.snapshot():
+                    break
+                time.sleep(0.05)
+            status, again = self.post(server, "/api/run", {"state": second, "draft": "draft-twice-0001"})
+            self.assertEqual((status, again["job"]["id"], again["draft_repeat"]), (200, job_id, True))
+            self.assertEqual(server.jobs.snapshot(), [])
+            # Another draft starts its own job; a start without a draft (Listen, Voices) is not guarded.
+            other_state = second if again["job"]["document"] == "first.txt" else first
+            status, other = self.post(server, "/api/run", {"state": other_state, "draft": "draft-other-0002"})
+            self.assertIn(status, (200, 202))
+            self.assertNotEqual(other["job"]["id"], job_id)
+            self.assertNotIn("draft_repeat", other)
+            self.assertEqual(server.drafts.job_for("draft-other-0002"), other["job"]["id"])
+
+    def test_a_refused_start_leaves_its_draft_free(self):
+        models = self.library_with_voice()
+        empty = normalize({"tab": "audiobook", "audiobook": {"source": "saved", "voice": "Narrator", "adapt": False}})
+        chosen = normalize({"tab": "audiobook", "audiobook": {"document": "first.txt", "source": "saved",
+                                                              "voice": "Narrator", "adapt": False}})
+        with mock.patch.object(web.AudiobookRun, "start", lambda run: None):
+            server = self.serve(models)
+            status, refused = self.post(server, "/api/run", {"state": empty, "draft": "draft-free-0001"})
+            self.assertEqual(status, 400)
+            self.assertIsNone(server.drafts.job_for("draft-free-0001"))
+            status, started = self.post(server, "/api/run", {"state": chosen, "draft": "draft-free-0001"})
+            self.assertIn(status, (200, 202))
+            self.assertEqual(server.drafts.job_for("draft-free-0001"), started["job"]["id"])
+            # An invalid draft ID is no draft: nothing is recorded under it.
+            self.post(server, "/api/run", {"state": chosen, "draft": "../bad"})
+            self.assertNotIn("../bad", server.drafts.jobs)
+
+    def test_a_pasted_text_keeps_the_name_of_the_same_bytes_or_gets_a_free_one(self):
+        documents = self.storage.documents
+        (documents / "Notes.txt").write_text("Older notes.", encoding="utf-8")
+        (documents / "Notes 2.txt").write_text("Other notes.", encoding="utf-8")
+        (documents / "paper.pdf").write_bytes(b"%PDF same size!")
+        upload = self.root / "upload"
+        upload.write_text("Older notes.", encoding="utf-8")
+        self.assertEqual(web.pasted_document_name(documents, upload, "Anything.txt"), ("Notes.txt", True))
+        upload.write_text("Newer notes.", encoding="utf-8")
+        self.assertEqual(web.pasted_document_name(documents, upload, "Notes.txt"), ("Notes 3.txt", False))
+        self.assertEqual(web.pasted_document_name(documents, upload, "Fresh.md"), ("Fresh.md", False))
+
+    def test_the_upload_route_saves_a_paste_without_duplicates(self):
+        server = self.serve(web.unconfigured_tts_models())
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        self.addCleanup(connection.close)
+
+        def upload(name, body, paste=True):
+            connection.request("POST", f"/api/documents/upload?name={urllib.parse.quote(name)}"
+                               f"{'&paste=1' if paste else ''}", body=body,
+                               headers={"Content-Type": "application/octet-stream"})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+
+        status, first = upload("Why we read aloud.txt", "Why we read aloud\n\nA paragraph.".encode())
+        self.assertEqual((status, first["name"]), (201, "Why we read aloud.txt"))
+        # The same text again: the same document, nothing added.
+        status, again = upload("Why we read aloud.txt", "Why we read aloud\n\nA paragraph.".encode())
+        self.assertEqual((status, again["name"]), (201, "Why we read aloud.txt"))
+        # Another text under a taken name: a free name, the first kept.
+        status, other = upload("Why we read aloud.txt", "Why we read aloud\n\nAnother paragraph.".encode())
+        self.assertEqual(other["name"], "Why we read aloud 2.txt")
+        self.assertEqual(sorted(path.name for path in self.storage.documents.iterdir()),
+                         ["Why we read aloud 2.txt", "Why we read aloud.txt"])
+        # Markdown goes as .md; a type Hilde can't read is refused as an upload is.
+        self.assertEqual(upload("Notes.md", b"# Notes\n")[1]["name"], "Notes.md")
+        status, refused = upload("Notes.docx", b"words")
+        self.assertEqual((status, refused["error"]), (400, web.DOCUMENT_TYPES["problem"]))
+        # A plain upload still replaces the file of its name.
+        upload("Notes.md", b"# Replaced\n", paste=False)
+        self.assertEqual((self.storage.documents / "Notes.md").read_bytes(), b"# Replaced\n")
+
+
 class ReaderAudioIndexTests(unittest.TestCase):
     def test_reader_mp4_indexes_every_mp3_frame_on_the_decoded_timeline(self):
         temporary = tempfile.TemporaryDirectory()

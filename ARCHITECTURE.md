@@ -22,7 +22,8 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `audiobook_tts.py` | CLI parsing, validation, voice persistence, chunking, local/SSH worker orchestration, OpenAI-compatible narration, batching with out-of-memory retries, and durable narration checkpoints. |
 | `audiobook_tts_web.py` | Shared storage, single-page UI, document preparation, narration-worker scheduling, CPU forced word alignment, the text-adaptation model clients with ChatGPT sign-in, the user's own Claude Code, and the Anthropic, OpenAI, Google Gemini, and DeepSeek API keys, workflow orchestration, SSE progress, exactly indexed reader audio, serving and download. |
 | `example_run.sh` | Example web-server launch: local Qwen3-TTS models, the default `~/.hilde/library` library, port 8800 on this machine only, and every GPU CUDA can open. Set its interpreter and model paths for your machine; extra arguments pass through, such as `--host 0.0.0.0` for other devices. |
-| `assets/reader-emblem.svg` | Hilde Reader's emblem, the copper leaf on a navy rounded square: the page header's mark (`/reader-emblem.svg`). |
+| `assets/reader-emblem.svg` | Hilde Reader's emblem, the copper leaf on a navy rounded square (`/reader-emblem.svg`); the favicons, Apple touch icon and manifest icons are the same tile. |
+| `assets/reader-leaf.svg` | The bare copper leaf (the emblem's path, no tile, its own gradient id `reader-leaf-copper`, viewBox `22 17.5 56 65` cropped to the leaf): the page header's mark (`/reader-leaf.svg`). |
 | `assets/favicon-16.png`, `assets/favicon-32.png`, `assets/apple-touch-icon-180.png`, `assets/icon-192.png`, `assets/icon-512.png` | The copper leaf as icons, each served at its own name (`APP_ICONS`): the browser favicon (16, 32), the Apple touch icon (180), and the web app manifest's icons (192, 512). Used exactly as given; `icon-512.png` is 512 × 513 px as delivered. |
 | `assets/hilde-dark.png` | The old Hilde logo, kept byte-identical and no longer shown or served. |
 | `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
@@ -255,7 +256,8 @@ sentence on top of the 4 GiB model. The web app therefore defaults to 2.
 │   │   ├── making.json
 │   │   ├── chat.json
 │   │   └── files/<name>.md
-│   └── voice-drafts/
+│   ├── voice-drafts/
+│   └── create-drafts.json
 ├── voice-tags.json
 └── workers.yaml
 ```
@@ -508,6 +510,7 @@ needs the text written again. The browser asks and retries with
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, New voice's `tags` (`stored_voice_tags()`: the valid ones, once each, at most 12, in vocabulary order) and `details` (More details), reference WAV subtype. `values_of()` composes `instruct` from them (`compose_voice_instruct()`), and `derived()` returns it as `voice_instruct`;
 - `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
+- `audiobook` also keeps `draft`, this browser's Create draft (`draft_id()`: a string of 8 to 64 letters, digits, `-`, `_`, else empty; the page makes one with `newDraftId()`, and a new one after each confirmed start), and for the fourth source card `paste` its `paste_document`, the Documents name **Continue** saved a pasted text as (`chosen_document()` uses it; the text itself never enters the cookie).
 - `player`: the book open on Listen (or a book being made, `making-<job id>`, which opens without audio; see [Books being made](#books-being-made)), the voice playing, so a refresh reopens them, `in_library`, whether that book plays from the Library (loaded, with the Library shown and of the book's view only the player bar; true only when stored as `true`), `chat_model`, the model chosen for Ask Hilde (this browser's, apart from the book's model), and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
@@ -1103,7 +1106,7 @@ The browser app is **Hilde Reader**: the tab title, the header, and the web
 app manifest (`GET /manifest.webmanifest`, `APP_MANIFEST`: name "Hilde
 Reader", short name "Hilde", the 192 and 512 icons, `--bg` as its theme and
 background colour, opening in the browser as before). The header holds the
-emblem (`assets/reader-emblem.svg`, 40 px), the name ("Hilde" semibold in
+mark (`assets/reader-leaf.svg`, the bare leaf, 36 px tall, 32 px on a phone, centred on the name and tagline; the tile stays the app icon's), the name ("Hilde" semibold in
 `--text`, then " Reader" regular in #c9ccd2, one line, 24 px on every width),
 and the tagline "Listen to your documents. Follow the text. Ask to
 understand." (shown on phones too, smaller). Ask Hilde and the voice Hilde
@@ -1213,7 +1216,7 @@ more view is not in the tablist:
 - The **progress view** (`#page-progress`, tab `progress` in state, the
   `tabpanel` of `#tab-progress`) opens from the **Progress** tab, from
   **View progress** on Create (`viewJob()`, `openProgress()`), and by itself
-  when this browser starts a job that runs at once (`showStartedJob()`). The
+  when this browser starts a job, running or queued (`showStartedJob()`; the job's page, `#job/<id>`). The
   tab, labelled "Progress" with no counts, shows while `progressAvailable()`:
   a job of this server is preparing, queued, or running (`/api/jobs`'s
   `queue`), this browser follows an audiobook run, or the latest problem
@@ -1242,9 +1245,17 @@ Each page:
   Open (`.is-active`): a 2 px border and a solid circle in
   `--step`, a white bold title. Finished (`.is-done`, `renderCreate()`):
   `STEP_CHECK_ICON` in a `--step-done` ring with a 12% fill, the title in
-  `--step-done` (a click on it calls `setStep()`), then `.step-summary`
+  `--step-done`, then `.step-summary`
   (`setSummary()`: the value cut with "…", a gray "· type"), then its
-  `button.change` about 12 px after it (under it on a phone). Not reached
+  `.change` label (a `<span>`, not a button) about 12 px after it (under it on a phone). The finished
+  step's whole `.step-head[data-step]` is one button (`renderCreate()` sets `role="button"`,
+  `tabindex="0"` and takes the title's `tabindex`; one Tab stop, named by its content, Change
+  included): it takes the row's padding (`.step.is-done` has none), a click anywhere, Enter (key down)
+  or Space (key up) calls `setStep()`; under the pointer and with `:focus-visible` it looks the same
+  (the row's border `--accent-light`, the title underlined, Change as hovered). Steps 2 and 3 have
+  `button.back` (**← Back**, `#voice-back`, `#create-back`) at the actions row's left, never filled,
+  **Continue** / **Create audiobook** at the right (`.create-actions` orders the run reason before
+  the button): `backStep()` opens the previous numbered step. Not reached
   (`.is-upcoming`): a `--step-off` outline circle, `--off` title; so is step 3
   when step 1 or 2 is reopened from it (it holds no value of its own).
   The visually hidden `.step-state` reads "(current step)", "(completed)" or
@@ -1254,7 +1265,7 @@ Each page:
   `--accent-light`, 3.5:1), no fill; Listen's **Library** shares its colours,
   border and fill (see below). Step 3 is never finished: a
   queued book starts the next one.
-  1. **Add the source document**: three `.source-card`s side by side
+  1. **Add the source document**: four `.source-card`s, two by two
      (stacked up to 640 px), always shown, in
      one radio group (`.sources`, `role="radiogroup"` "Source document"; a
      native radio `.source-radio` in each header, named by the card's title,
@@ -1344,6 +1355,49 @@ Each page:
      `clearBookChoice()` empties every card (the chosen card stays) once
      **Create audiobook** has queued a book, and when **Create another
      book** or **Start listening** begins the next one.
+     **Paste text** (`data-source="paste"`): `#paste-text` (16 px type) and
+     `#paste-title`; the text stays in the page (`sessionStorage`
+     `hilde.paste`, so a reload of the tab keeps it), never in the cookie.
+     **Continue** saves it first (`materializePaste()`, while `pendingPaste()`):
+     a `File` named by `pastedName()` (the title, else the first line, a
+     heading without `#`, ≤ 80 characters) with `.md` when
+     `looksLikeMarkdown()` (a heading, fence or table, or two of links, bold,
+     quotes, lists, inline code) else `.txt`, sent to
+     `POST /api/documents/upload?…&paste=1` (`sendDocument()`), so the upload's
+     type check and limit (`DOCUMENT_TYPES.limit`, `BOOK_UPLOAD_LIMIT`)
+     apply; the answer's name becomes `audiobook.paste_document` (emptied when
+     the text or title changes). A saved paste that `facts.existing_book`
+     names stops on step 1 with **You already have this one**, as an upload.
+     `pasteOnStep()` (the document's `paste` event) acts on step 1 only when no
+     text field (`TEXT_FIELD`) has the focus and no dialog is open: a file in
+     `clipboardData` goes to `uploadDocument()` as a drop; one `http(s)` link
+     fills **From a URL**; other non-blank text fills **Paste text** (over the
+     limit: the upload's size message, the box untouched); `#paste-note` says
+     "Pasted <file>", "Pasted a link" or "Pasted N characters". A blank paste
+     does nothing.
+
+     **History** (`setStep()`, `backStep()`, `showEntry()`,
+     `startCreateHistory()`): an entry is `{hilde: "create", step, draft,
+     prev}` at `#create/document|voice|text`, or `{hilde: "job", job, draft}`
+     at `#job/<id>`. `setStep()` (Continue, a finished row, Create another
+     book) pushes one when the shown step, draft or tab no longer matches the
+     current entry (naming an unnamed entry first); `popstate` shows the
+     entry with `setStep(…, {record: false})` and at most replaces it, never
+     pushes. `backStep()` calls `history.back()` when `prev` is the previous
+     step of this draft, else replaces the entry: no loops. Startup gives the
+     cookie's draft (`audiobook.draft`, a new `newDraftId()` when missing or
+     submitted), then the entry's (or the hash's) step only if its draft is
+     the saved one and `bookReady()`/`voiceReady()` allow it, else step 1, and
+     names a Create page's first entry. Once `/api/run` answers with a job,
+     `startAudiobook()` records the draft (`noteSubmitted()`, localStorage
+     `hilde.submittedDrafts`), starts a new draft (`clearBookChoice()`),
+     replaces the step-3 entry with the job's, and shows it
+     (`showStartedJob()`: Progress while preparing, queued or running; a
+     draft repeat whose job ended: `showJob()`, its book in Listen or the
+     progress view). Any entry of a submitted draft becomes its job's entry
+     (`openJobEntry()`), so no entry reopens a form that could send it again.
+     Every Create start sends `draft` in the body; the server's `DraftGuard`
+     (below) starts at most one job per draft.
   2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
      state Voices' **Select** sets) and a card previewing the chosen voice. A
      narration speech server takes a server voice ID instead.
@@ -1901,7 +1955,7 @@ the opener as the element to give the focus back to.
 
 ### Browser storage
 
-Besides the cookie state above, the page keeps four `localStorage` keys, all
+Besides the cookie state above, the page keeps five `localStorage` keys, all
 through `stored()`/`store()` (JSON under the `hilde.` prefix), never sent to
 the server:
 
@@ -1913,11 +1967,15 @@ the server:
 - `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
   Settings → Reading (`setHighlightStyle()`, applied at startup as
   `<html data-highlight>`; anything else is A).
+- `hilde.submittedDrafts`: `[[draft, job id], …]`, newest first, at most 50:
+  Create drafts whose start the server confirmed (`noteSubmitted()`), so their
+  history entries open the job.
 
-One `sessionStorage` key (raw, not JSON), so it lasts for this browser tab
-only: `hilde.tagReviewLater` is `"1"` once **Later** hid the Voices banner of
+Two `sessionStorage` keys, so they last for this browser tab
+only: `hilde.tagReviewLater` (raw, not JSON) is `"1"` once **Later** hid the Voices banner of
 suggested tags (`laterTagReview()`); a reload keeps the banner hidden, a new
-tab shows it again.
+tab shows it again. `hilde.paste` is Paste text's `{text, title}` (JSON; left
+out when it does not fit), emptied by `clearBookChoice()`.
 
 Phones (up to 640 px) keep the tagline, smaller, and turn the tables, step
 heads, and summary into stacked rows; grid and flex children may shrink
@@ -2161,7 +2219,16 @@ row, `#status` and `#server-down` stay in the centred 960 px column of every
 other page (`main.reading > :is(.app-header, .tabs, #status, #server-down)`,
 920 px inside main's sides), and every page keeps the scroll bar's room
 (`html { scrollbar-gutter:stable }`), so nothing above the workspace moves
-when the tab changes, a book opens, or a page starts scrolling. On a screen
+when the tab changes, a book opens, or a page starts scrolling. On a desktop
+(`(hover:hover) and (pointer:fine)`) the page's scroll bar and every scroll box
+in the side panel are thin and grey with the standard properties
+(`scrollbar-width: thin; scrollbar-color: #707070 transparent`: 10 px in
+Chromium, measured on Linux, wide enough to drag); not `::-webkit-scrollbar`,
+which turns Safari's overlay bar into a classic one whose width WebKit leaves
+out of the media queries' width (in Playwright's WebKit the layout then flipped
+between side panel and sheet from 900 to 911 px with the panel open). A phone
+keeps its own; with the panel open the page's bar is at the window's right
+edge, beyond the panel. On a screen
 900 px or wider the side panel's top is the bottom of the lowest bar pinned at
 the top (`--panel-top`, `fitPinned()`): the tab row while it shows, else the
 slim paper bar, else the window's top; it never covers the header, the tabs,
@@ -2192,8 +2259,12 @@ and the tab order. Focus never goes with it: on the card's Library as the bar
 shows, it moves to the bar's; on the bar's Library or title as it hides, to
 the card's Library or title. `#reader-content` and everything in it have a
 `scroll-margin-top` of the bar's height plus the pinned controls'
-(`--listen-bar-h`, a `ResizeObserver`; 0 on a phone), so `scrollIntoView` and
-focus land the text below them. (Not `scroll-padding-top` on the page: it
+(`--listen-bar-h`, a `ResizeObserver`; 0 on a phone) and a
+`scroll-margin-bottom` of the player's height plus 8 px, so `scrollIntoView` and
+focus land the text between them; keyboard focus in the text
+(`:focus-visible`, `revealFocused()` after the browser's own scroll, and again
+when a lazy figure inside has loaded and grown) puts the control wholly between
+them, or its top just under the bars when it is taller than that space. (Not `scroll-padding-top` on the page: it
 changes Chromium's scroll anchoring, and the Narration | Source switch then
 no longer keeps the sentence in place. The bar's slot also has
 `overflow-anchor: none`.) Updates without layout thrash: an `IntersectionObserver` on the
@@ -2203,6 +2274,17 @@ row's rect) and writes after (the bar's class; `--panel-top` on the panel
 alone, only when changed); a passive scroll listener schedules it, at most once
 a frame (`queuePinned()`, `requestAnimationFrame`), only while the tab row
 shows with the panel open; `render()`, `renderPanel()` and a resize run it too.
+
+The page's own scrolls toward a place (the title's back to the top,
+`placeListening()` for Follow along, Back to reading position and a restored
+place) go through `glide(distance, behavior)`, `distance()` being how far the
+place still is. WebKit stops a smooth scroll for good when the page's height
+changes under it, which a lazy figure loading on the way does: on a 117-minute
+paper in Playwright's WebKit the title's back-to-the-top stopped 7,600 to 13,500
+px down (617fbba). So a smooth scroll longer than two screens first jumps to a
+screen short of the place, and once the page has been still for five frames
+the rest, if any, is scrolled at once; a wheel, touch, key or press on the
+scroll bar meanwhile (`userScrollAt`) ends it.
 
 Newly generated audio has
 exact integer-sample cues for every sentence and force-aligned word. The first
@@ -2370,7 +2452,16 @@ screen the controls under it) and the docked player (`readingViewport()`,
 (`placeListening()`, which counts the bar and the controls as pinned): the
 text turns like pages instead of sliding at every sentence, so a figure stays
 in view while its description is read; with Follow along off the page never
-scrolls by itself.
+scrolls by itself. It moves the page only from a view that showed the
+sentence just read, or for a seek, and never while the listener scrolls: at a
+sentence change (`updateReaderHighlight()`) the audio either ran on (forward,
+under 3 s of audio since the last update, `highlightTime`; told by the times,
+since browsers report a seek's end and its `seeking` event in no fixed order)
+or was moved; a sentence that ran on while the one before it was out of sight,
+or within 1.2 s of the listener's own scroll (`userScrollAt`) or with the
+scroll bar held (`scrollBarHeld`), is never followed, and once it is out of
+sight `detached` is set. However the listener scrolled, the page is not pulled
+back.
 A layout change (`keepPlace()`: the panel opening, closing, or resizing)
 and the Narration/Source switch keep the narrated sentence, or when it is
 off screen the first paragraph shown, at the same height on screen; leaving
@@ -2378,13 +2469,16 @@ Listen for another tab and coming back does the same (`listenPlace`). None
 touches the audio. A scroll the listener makes is told from the page's own
 (`userScrolled()`): it follows a wheel, touch, key (Page Up/Down, ↑/↓), or a
 press on the scroll bar within the last 1.2 s (`userScrollAt`, never set
-before the first), outside the time the page's own scroll takes
-(`expectScrollUntil`, set by `scrollPageBy()` and `paperBarToTop()`: 400 ms,
-1.5 s when smooth). One that takes the word being read (`readingMark()`: the
+before the first), or comes while the scroll bar is held (`scrollBarHeld`,
+from its `pointerdown` on the root to the `pointerup`), outside the time the
+page's own scroll takes (`expectScrollUntil`, set by `scrollPageBy()`: 400 ms,
+1.5 s when smooth); each such scroll renews `userScrollAt`, so a scroll that
+goes on without input (a phone's fling coasting after the finger lifts, a slow
+drag of the scroll bar) stays the listener's. One that takes the word being read (`readingMark()`: the
 active `.reader-word`, else `listeningElement()`) off screen sets `detached`,
 one that brings it back clears it. While `detached`, auto-scroll waits, and
-the pill **↑/↓ Back to reading position** (`#back-to-listening`,
-`renderBackToListening()`; the arrow points to the word) shows in
+the pill **↓ Back to reading position** (`#back-to-listening`,
+`renderBackToListening()`; one label wherever the word is) shows in
 `#dock-slot`, the one spot just above the player bar (fixed, 8 px above
 `--dock-h`, centred over the text like the bar's controls), whenever the word
 is out of sight; it hides while the word is on screen (checked on every
@@ -2536,7 +2630,27 @@ begun by then) with the same voice, so it resumes in context (else the start
 of the saved passage), paused, and brings that sentence on screen; a finished
 book, or **Start over**, starts at 0. A book playing from the Library has no
 text on screen and never scrolls the page (`placeListening()` acts only on
-`main.reading`).
+`main.reading`). Library and back in the same page is exact instead (24 Oct,
+both rules kept): `closeBook()` remembers the book it leaves from its text
+(`leftPlace`, one book, in memory only: the voice, `currentTime`, the text
+view, the index of the first paragraph shown in `readerTexts()` and its top on
+screen, `detached`, and the place `clearReader()` just saved). The next
+`restoreBookPlace()`, whatever book it opens, uses it up; only when it opens
+that same book (no other book opened in between), with the same voice and that
+saved place unchanged (no reload, no other tab's save, not finished, not
+**Start over**), does it set that very time, not the sentence's start, and,
+with the text on screen, scroll the same paragraph to the same height
+(`holdPlace()`, which keeps it there for 2 s as the lazy pictures in and above
+it load: loaded when the place was left, they can grow only now, and WebKit
+does not keep the text in place for them; a scroll by the listener or the
+page's own `glide()` elsewhere ends it) and restore `detached` (the pill shows
+again if the listener had scrolled away). **Library** closes the side panel,
+so a wide screen comes back with a wider column: the same paragraph at the
+same height, reflowed. Played from the Library's play button instead, it
+starts at that time with no text to place.
+The sentence-start rule is for coming back after a while (a reload, another
+tab, another book in between); an immediate return should look as if nothing
+happened.
 One sound plays at a time (`oneSoundAtATime()`): the book, the voice preview
 player (previews and drafts), and the answer voice each pause the others
 when they start; an answer read aloud keeps its place when paused this way.
@@ -3238,11 +3352,12 @@ read aloud by **Read answers aloud**.
 | `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, and non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install). |
 | `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; never a host); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
-| `POST /api/documents/upload?name=...` | Stream up to 64 MiB into shared Documents using atomic replacement. |
+| `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Paste text, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
 | `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice's entry in `voice-tags.json` goes too. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice; a book being made (`making-<job id>`) is its job, stopped, and its stage with the text prepared so far and its conversation (`delete_making()`, see [Books being made](#books-being-made)), HTTP 409 while the job is still stopping. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were; its entry in `voice-tags.json`, if any, moves to the new name. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
 | `POST /api/run` | Start or enqueue a job, deduplicating active ones. On Voices it designs a draft (**Generate preview**) into `in_progress/voice-drafts/`, never into a saved voice; that requires an empty queue. On Create it makes a book from the chosen document, or a new voice of the book already made from the same content. With JSON `book`, `mode` (`voice` or `recreate`), and `voice`, it makes a new voice of that book from its text or remakes it from its source. A book without text of its own refuses a new voice with HTTP 409; a missing source refuses a remake. |
+| `POST /api/run` with JSON `draft` | Create's duplicate guard (`DraftGuard`, `server.drafts`, kept in `<root>/in_progress/create-drafts.json` as `[[draft, job id], …]`, the newest 500): every Create start carries its draft's ID (`draft_id()`; Listen and Voices send none and are not guarded). `claim()` holds the draft while the start runs; a second request for it waits, then gets the job the first came to; `settle()` records the job (`reply_job()` sets `started_job`, a new or an existing active job alike), or frees the draft when none came (a refusal, a confirmation question). A repeat answers `repeat_draft()`: HTTP 200, `duplicate` and `draft_repeat` true, `started` false, the job as `JobQueue.lookup()` keeps it (active or finished, a finished book's id in `book`), else `{id, status: "unknown"}`, plus `runs`, `queue`, `recent`, `consumers`; nothing starts. |
 | `POST /api/stop`, `POST /api/jobs/cancel` | Stop all active work or cancel one active/waiting audiobook by job ID. |
 | `GET /api/events?job=<id>` | Resumable SSE history and live events for the active or retained job. |
 | `GET /api/voices` | `voices`: saved voices sorted by name, with whitespace-collapsed prompts (`description.txt`), `tags` (the confirmed ones, else empty), `suggested` (the suggestions waiting for Review tags: see [Voice tags](#voice-tags)), `matches` (for each confirmed or waiting tag the description matched, its `[start, end]` spans in the collapsed description, `voice_tag_matches()`), `confirmed`, `details` (More details of a voice made from tags), whether the preview reads the fixed passage, a preview version that changes when the clip is replaced, and `modified`: the newest modification time, in Unix seconds, of the sample, transcript, and prompt (`voice_modified()`), so a preview rendered later or a tag change is not a change. `vocabulary`: `groups` (each `name` and `tags`, Hilde's) and `yours`, the user's own tags. |

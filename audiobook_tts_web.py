@@ -98,10 +98,11 @@ ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "audiobook_tts.py"
 BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 # Hilde Reader's copper leaf, each file served at its own name: the header's
-# emblem, the favicons (16, 32), the Apple touch icon (180), and the web app
-# manifest's icons (192, 512).
+# bare leaf (no tile), the emblem (the leaf on its navy tile), the favicons
+# (16, 32), the Apple touch icon (180), and the web app manifest's icons (192,
+# 512), which all keep the tile.
 APP_ICONS = {f"/{name}": ROOT / "assets" / name for name in (
-    "reader-emblem.svg", "favicon-16.png", "favicon-32.png",
+    "reader-leaf.svg", "reader-emblem.svg", "favicon-16.png", "favicon-32.png",
     "apple-touch-icon-180.png", "icon-192.png", "icon-512.png",
 )}
 # /manifest.webmanifest: the name and icon a phone's home screen shows. Its
@@ -141,6 +142,8 @@ BOOK_SCHEMA = 1
 EXTRACTION_SCHEMA = 17
 STOCK_VOICES_PATH = ROOT / "voices"
 BOOK_UPLOAD_LIMIT = 64 * 1024 * 1024
+# Under <root>/in_progress/: each Create draft's job (DraftGuard).
+CREATE_DRAFTS_FILE = "create-drafts.json"
 # Listen keeps this many unsaved voice drafts before removing the oldest.
 VOICE_DRAFT_LIMIT = 10
 # Where the library was kept before it moved to ~/.hilde/library: inside the
@@ -190,6 +193,8 @@ DOCUMENT_TYPES = {
     "suffixes": {".pdf": "PDF", ".txt": "Text", ".text": "Text", ".md": "Markdown", ".markdown": "Markdown"},
     "media": ["application/pdf", "text/plain", "text/markdown"],
     "problem": f"Hilde reads {_DOCUMENT_TYPES_TEXT} files: choose one ending in .pdf, .txt or .md.",
+    # The most an upload (or a pasted text, which goes as one) may hold, in bytes.
+    "limit": BOOK_UPLOAD_LIMIT,
 }
 PAPER_SUFFIXES = frozenset(DOCUMENT_TYPES["suffixes"])
 OLLAMA_DEFAULT_SERVER = "http://127.0.0.1:11434"
@@ -2164,6 +2169,33 @@ def resolve_asset(directory, name):
     if not clean or clean != str(name).strip():
         raise ValueError("Select a valid asset.")
     return Path(directory) / clean
+
+
+# One pasted text named and placed at a time (Handler.upload_document()).
+_PASTE_LOCK = threading.Lock()
+
+
+def pasted_document_name(documents, temporary, name):
+    """Where Create's pasted text (the uploaded file `temporary`) goes in
+    Documents: (the name of a document with the same bytes, True), so the same
+    text pasted again adds no copy; else (`name`, or "<stem> 2<suffix>",
+    "<stem> 3<suffix>"… when that name is taken, False)."""
+    documents, temporary = Path(documents), Path(temporary)
+    size = temporary.stat().st_size
+    data = None
+    for existing in sorted(documents.iterdir()):
+        if existing.name.startswith(".") or not existing.is_file() or existing.stat().st_size != size:
+            continue
+        if data is None:
+            data = temporary.read_bytes()
+        if existing.read_bytes() == data:
+            return existing.name, True
+    stem, suffix = Path(name).stem, Path(name).suffix
+    candidate, number = name, 2
+    while (documents / candidate).exists():
+        candidate, number = f"{stem} {number}{suffix}", number + 1
+    return candidate, False
+
 
 
 _GIT_COMMIT = []
@@ -11907,13 +11939,18 @@ def normalize(state):
         },
         "audiobook": {
             "step": step,
+            # This browser's Create draft (draft_id()): every Create start
+            # carries it, and the server starts one job per draft (DraftGuard).
+            "draft": draft_id(audiobook.get("draft")),
             "server_voice": stored_text(audiobook, "server_voice"),
             "voice": stored_text(audiobook, "voice"),
             # Each source card keeps its own value; only `source`'s is used
             # (chosen_document()): the Saved document dropdown, the file
             # uploaded under Upload, and the link with its Save as name, the
             # Documents name Continue downloaded it to (`url_document`), and,
-            # for an arXiv link, the paper's title (`url_title`), shown for it.
+            # for an arXiv link, the paper's title (`url_title`), shown for it;
+            # the Documents name Continue saved a pasted text as
+            # (`paste_document`; the text itself stays in the page).
             "source": source,
             "document": stored_text(audiobook, "document"),
             "upload": stored_text(audiobook, "upload"),
@@ -11921,6 +11958,7 @@ def normalize(state):
             "download_name": stored_text(audiobook, "download_name"),
             "url_document": stored_text(audiobook, "url_document"),
             "url_title": stored_text(audiobook, "url_title"),
+            "paste_document": stored_text(audiobook, "paste_document"),
             "adapt": audiobook.get("adapt") is not False,
             "model": stored_text(audiobook, "model"),
             # Error correction of descriptions: off unless ticked, since a
@@ -11974,14 +12012,23 @@ def _optional_asset(directory, name):
 
 
 # Create step 1's source cards, in the page's order.
-DOCUMENT_SOURCES = ("saved", "url", "upload")
+DOCUMENT_SOURCES = ("saved", "url", "upload", "paste")
 
 
 def chosen_document(audiobook):
     """The Documents name of the chosen source card only; a link counts once
-    Continue downloaded it."""
-    field = {"saved": "document", "url": "url_document", "upload": "upload"}
+    Continue downloaded it, a pasted text once Continue saved it."""
+    field = {"saved": "document", "url": "url_document", "upload": "upload", "paste": "paste_document"}
     return audiobook[field[audiobook["source"]]].strip()
+
+
+# A Create draft's ID, made by the page: letters, digits, "-" and "_".
+DRAFT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,64}")
+
+
+def draft_id(value):
+    """A valid draft ID, else ""."""
+    return value if isinstance(value, str) and DRAFT_ID_PATTERN.fullmatch(value) else ""
 
 
 def pending_url(audiobook):
@@ -15866,6 +15913,68 @@ class Run:
             self.process.terminate()
 
 
+class DraftGuard:
+    """Create's duplicate guard: every job start from Create carries its
+    draft's ID (`draft_id()`), and at most one job starts per draft ID.
+
+    `claim(draft)` returns the job ID already started for the draft, or None
+    once this caller holds the draft's start; a second caller for the same
+    draft waits until that start settles, then gets its job (or holds the
+    start itself if no job came of it, as after a refusal or a question).
+    `settle(draft, job_id)` ends a held start, recording its job when there is
+    one. Records are kept, newest last, up to LIMIT, in `path` when given
+    (`<root>/in_progress/create-drafts.json`), so a repeat after a restart
+    still finds its job."""
+
+    LIMIT = 500
+    WAIT_SECONDS = 120
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path else None
+        self.condition = threading.Condition()
+        self.pending = set()
+        stored = read_json_file(self.path) if self.path else None
+        drafts = stored.get("drafts") if isinstance(stored, dict) else None
+        # [[draft, job id], ...], oldest first.
+        self.jobs = {
+            pair[0]: pair[1] for pair in (drafts if isinstance(drafts, list) else ())
+            if isinstance(pair, list) and len(pair) == 2 and draft_id(pair[0])
+            and isinstance(pair[1], str) and pair[1]
+        }
+
+    def job_for(self, draft):
+        with self.condition:
+            return self.jobs.get(draft)
+
+    def claim(self, draft):
+        deadline = time.monotonic() + self.WAIT_SECONDS
+        with self.condition:
+            while draft in self.pending:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("The same start is still on its way; try again in a moment.")
+                self.condition.wait(left)
+            if draft in self.jobs:
+                return self.jobs[draft]
+            self.pending.add(draft)
+            return None
+
+    def settle(self, draft, job_id=None):
+        with self.condition:
+            self.pending.discard(draft)
+            if job_id:
+                self.jobs.pop(draft, None)
+                self.jobs[draft] = job_id
+                while len(self.jobs) > self.LIMIT:
+                    self.jobs.pop(next(iter(self.jobs)))
+                if self.path:
+                    try:
+                        write_json_atomic(self.path, {"schema": 1, "drafts": [[d, j] for d, j in self.jobs.items()]})
+                    except OSError as exc:
+                        print(f"Create drafts: {self.path} could not be written: {exc}", flush=True)
+            self.condition.notify_all()
+
+
 class JobQueue:
     """Allocate compatible worker groups to queued audiobook jobs."""
 
@@ -16189,6 +16298,19 @@ class JobQueue:
     def describe(self, record):
         with self.lock:
             return self._public(record, self._position_locked(record))
+
+    def lookup(self, job_id):
+        """A job this process still keeps, active or finished, as browsers see
+        it (a finished new book with the id it was published as), or None."""
+        with self.lock:
+            record = self.records.get(job_id)
+            if record is None or record.get("kind") != "audiobook":
+                return None
+            result = self._public(record, self._position_locked(record))
+            run = record.get("run")
+            if record["status"] == "done" and run is not None and (run.result or {}).get("book"):
+                result["book"] = run.result["book"]
+            return result
 
     def existing(self, job_id):
         with self.lock:
@@ -19388,7 +19510,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         if route == "/api/documents/upload":
             return self.upload_document(
-                query.get("name", ["document.txt"])[0]
+                query.get("name", ["document.txt"])[0],
+                paste=query.get("paste", [""])[0] == "1",
             )
         body = self.payload()
         if route == "/api/documents/download":
@@ -19538,11 +19661,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc)
                 )
-            return self.run(
+            run = lambda: self.run(  # noqa: E731
                 state, bool(body.get("confirmed")), headers,
                 book=str(body.get("book") or ""), mode=str(body.get("mode") or ""),
                 voice=str(body.get("voice") or ""),
             )
+            # Create sends its draft's ID with every start: one job per draft
+            # (DraftGuard); a repeat gets the draft's job back, nothing starts.
+            draft = draft_id(body.get("draft"))
+            if not draft:
+                return run()
+            guard = self.server.__dict__.setdefault("drafts", DraftGuard())
+            try:
+                started = guard.claim(draft)
+            except TimeoutError as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
+            if started:
+                return self.repeat_draft(started, headers)
+            self.started_job = None
+            try:
+                return run()
+            finally:
+                guard.settle(draft, self.started_job)
         if route == "/api/stop":
             count = self.server.jobs.stop_all()
             return self.reply(
@@ -19719,7 +19859,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.OK, self.workers_payload())
 
 
-    def upload_document(self, name):
+    def upload_document(self, name, paste=False):
+        """Save a document into Documents under `name`, replacing a file of
+        that name. `paste` (Create's Paste text, sent as a .txt or .md file):
+        a document with the same bytes keeps its name and nothing is written,
+        and a name already taken gets " 2", " 3"… (pasted_document_name())."""
         def refuse(code, message, unread=None):
             # A refused upload's body would be taken for the start of the next
             # request on this connection: it is read and dropped when its
@@ -19772,8 +19916,16 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     output.write(chunk)
                     remaining -= len(chunk)
-            target = self.server.storage.documents / safe_name
-            temporary.replace(target)
+            if paste:
+                with _PASTE_LOCK:
+                    safe_name, same = pasted_document_name(self.server.storage.documents, temporary, safe_name)
+                    if same:
+                        temporary.unlink()
+                    else:
+                        temporary.replace(self.server.storage.documents / safe_name)
+            else:
+                target = self.server.storage.documents / safe_name
+                temporary.replace(target)
         except OSError as exc:
             if descriptor is not None:
                 os.close(descriptor)
@@ -20397,6 +20549,8 @@ class Handler(BaseHTTPRequestHandler):
         label = f"{title or Path(values['document_name']).stem} · {values['narrator']}"
 
         def reply_job(job, duplicate=False):
+            # The job a Create draft's start came to (DraftGuard.settle()).
+            self.started_job = job["id"]
             queued = job["status"] != "running"
             return self.reply(
                 HTTPStatus.ACCEPTED if queued else HTTPStatus.OK,
@@ -20453,6 +20607,28 @@ class Handler(BaseHTTPRequestHandler):
             )
         job = self.server.jobs.commit(record, run)
         return reply_job(job)
+
+    def repeat_draft(self, job_id, state_headers):
+        """A Create start whose draft already started a job: that job, as
+        this process keeps it (active or finished), else only its id with
+        status "unknown"; nothing starts."""
+        job = self.server.jobs.lookup(job_id) or {"id": job_id, "kind": "audiobook", "status": "unknown"}
+        return self.reply(
+            HTTPStatus.OK,
+            {
+                "started": False,
+                "queued": job["status"] in ("preparing", "queued"),
+                "duplicate": True,
+                "draft_repeat": True,
+                "kind": "audiobook",
+                "job": job,
+                "runs": self.server.jobs.active_snapshots(),
+                "queue": self.server.jobs.snapshot(),
+                "recent": self.server.jobs.recent_snapshot(),
+                "consumers": self.server.jobs.public_consumers_snapshot(),
+            },
+            extra=state_headers,
+        )
 
     def events(self, job_id=""):
         run = self.server.jobs.run_for(job_id)
@@ -20670,8 +20846,9 @@ a { color:var(--accent-light); }
 /* While the server does not answer, what needs it is inert (setServerDown()). */
 body.server-down [inert] { opacity:.5; }
 .app-header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
-/* The emblem: the copper leaf on its own navy rounded square (the SVG). */
-.brand-logo { width:40px; height:40px; flex:0 0 auto; }
+/* The mark: the bare copper leaf (reader-leaf.svg, its viewBox cropped to the leaf, no navy tile; the tile stays
+   the app icon's and the favicons'), 36 px tall (32 px on a phone), centred on the name and tagline. */
+.brand-logo { width:auto; height:36px; flex:0 0 auto; }
 .brand { flex:1 1 200px; min-width:0; }
 /* "Hilde" white semibold, then " Reader" regular in a light gray, one line. */
 .brand-name { font-size:24px; font-weight:600; white-space:nowrap; }
@@ -20852,9 +21029,18 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .step-marker svg { width:14px; height:14px; }
 .step-title { flex:0 0 auto; max-width:100%; font-size:17px; font-weight:650; color:var(--text); }
 .step.is-upcoming .step-title { color:var(--off); }
-/* A finished step's title reopens it, as its Change does. */
-.step.is-done .step-title { color:var(--step-done); cursor:pointer; }
-.step.is-done .step-title:hover { text-decoration:underline; text-underline-offset:3px; }
+/* A finished step's head is one button over the whole row (the head takes the row's padding): a click or tap
+   anywhere on it, Enter or Space reopen the step, as its Change label says. Under the pointer and with keyboard
+   focus it looks the same: the row's border light blue (--accent-light), the title underlined, Change as hovered. */
+.step.is-done { padding:0; }
+.step.is-done > .step-head { padding:14px 19px; border-radius:var(--radius); cursor:pointer; }
+.step.is-done > .step-head:focus-visible { outline:none; }
+.step.is-done .step-title { color:var(--step-done); }
+.step.is-done:hover, .step.is-done:has(> .step-head:focus-visible) { border-color:var(--accent-light); }
+.step.is-done:hover .step-title, .step.is-done > .step-head:focus-visible .step-title {
+  text-decoration:underline; text-underline-offset:3px; }
+.step.is-done:hover .change, .step.is-done > .step-head:focus-visible .change {
+  background:var(--accent-soft); border-color:var(--accent-light); }
 /* What was chosen, cut with "…" on one line; the type after it, gray. */
 .step-summary { display:flex; align-items:baseline; flex:0 1 auto; min-width:0; color:var(--text); white-space:nowrap; }
 .step-summary:empty { display:none; }
@@ -20864,31 +21050,39 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
    secondary action beside a page's main job (button.secondary: Voices' New voice; one filled button at most per
    screen, for its main job): --accent-light text and icon, a thin blue border (65% --accent-light, 3.5:1 on the
    ground; the text 6.6:1), no fill. Change: a pencil and the word, small, right after what it changes. */
-button.change, button.picker-change, button.library-button, button.secondary {
+.change, button.picker-change, button.library-button, button.secondary {
   background:transparent; border:1px solid color-mix(in srgb, var(--accent-light) 65%, transparent);
   border-radius:8px; box-shadow:none; color:var(--accent-light); }
-button.change, button.picker-change {
+.change, button.picker-change {
   display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; min-height:28px; padding:3px 11px;
   font-size:13px; font-weight:500; line-height:1.2; }
-button.change:hover:not(:disabled), button.picker-change:hover:not(:disabled),
+button.picker-change:hover:not(:disabled),
 button.library-button:hover:not(:disabled), button.secondary:hover:not(:disabled) {
   background:var(--accent-soft); border-color:var(--accent-light); }
-button.change svg, button.picker-change svg { flex:0 0 auto; width:13px; height:13px; }
+.change svg, button.picker-change svg { flex:0 0 auto; width:13px; height:13px; }
 .step-body { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; margin-top:16px; }
 .step:not(.is-active) .step-body { display:none; }
 /* Continue on the right, what is chosen (or what is missing) before it. */
 .step-actions { flex-wrap:nowrap; justify-content:flex-end; }
+/* ← Back on steps 2 and 3 at the actions row's left (a plain button, never filled); Continue, or Create
+   audiobook with its reason when blocked, at the right. */
+button.back { display:inline-flex; align-items:center; gap:6px; }
+button.back svg { flex:0 0 auto; width:15px; height:15px; }
+.step-actions > button.back { margin-right:auto; }
+.create-actions > button.back { order:0; margin-right:auto; }
+.create-actions > .run-blocked { order:1; }
+.create-actions > #run { order:2; }
 .step-hint { flex:0 1 auto; min-width:0; overflow:hidden; color:var(--off); font-size:14px;
              text-overflow:ellipsis; white-space:nowrap; }
 .step-hint.problem { color:var(--bad); }
 .step-actions > button { flex:0 0 auto; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-/* Step 1: three ways to bring a document, side by side, one radio group. The
-   chosen card: a filled dot and a blue border. The others: an empty circle,
-   gray --off text (not opacity alone), disabled controls that keep their
-   values; a click anywhere on one reaches the card (its contents take no
-   pointer) and chooses it. */
-.sources { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; }
+/* Step 1: four ways to bring a document, two by two on a wide screen, one
+   radio group. The chosen card: a filled dot and a blue border. The others:
+   an empty circle, gray --off text (not opacity alone), disabled controls
+   that keep their values; a click anywhere on one reaches the card (its
+   contents take no pointer) and chooses it. */
+.sources { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
 .source-card { display:flex; flex-direction:column; min-width:0; min-height:158px; padding:14px 16px 16px;
                background:var(--step-card); border:2px solid var(--step-line); border-radius:12px; }
 .source-card.is-on { border-color:var(--accent); }
@@ -20898,8 +21092,11 @@ details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:
 .source-card.is-off .source-title, .source-card.is-off .source-sub, .source-card.is-off .field > label,
 .source-card.is-off .note, .source-card.is-off .upload-name, .source-card.is-off .dropzone,
 .source-card.is-off .dropzone-types { color:var(--off); }
-.source-card.is-off :is(input, select, button):disabled { opacity:1; color:var(--off); }
-.source-card.is-off input::placeholder { color:var(--off); }
+.source-card.is-off :is(input, select, button, textarea):disabled { opacity:1; color:var(--off); }
+.source-card.is-off :is(input, textarea)::placeholder { color:var(--off); }
+/* Paste text: a large box (16 px type, so a phone does not zoom into it), then Title (optional). */
+.paste-text { min-height:132px; font-size:16px; line-height:1.45; }
+.paste-note { margin:0; }
 .source-head { display:flex; align-items:center; gap:10px; min-width:0; }
 .source-title { flex:1 1 auto; min-width:0; margin:0; font-size:16px; font-weight:650; }
 .source-title label { cursor:pointer; }
@@ -21542,6 +21739,14 @@ main.reading > :is(.app-header, .tabs, #status, #server-down) { max-width:920px;
 /* Every page keeps the scroll bar's room, so the column never shifts as a
    page starts or stops scrolling (Create, Voices, a book). */
 html { scrollbar-gutter:stable; }
+/* The desktop scroll bars, the page's and the side panel's alike: thin and grey (a #707070 thumb, 3:1 on the
+   ground and on the panel, on a clear track); thin is 10px in Chromium (measured on Linux), wide enough to grab and
+   drag. Standard properties, not ::-webkit-scrollbar: that turns Safari's overlay bar into a classic one whose width
+   WebKit leaves out of the media queries' width (tested: with the panel open the layout flipped between side panel
+   and sheet from 900 to 911px). A phone (no hover, a coarse pointer) keeps its own. */
+@media (hover:hover) and (pointer:fine) {
+  html, .side-panel * { scrollbar-width:thin; scrollbar-color:#707070 transparent; }
+}
 :root { --panel-w:440px; }
 .reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
 .reading-column > :not(.reader-panel) { font-size:15px; }
@@ -21559,11 +21764,13 @@ html { scrollbar-gutter:stable; }
    the text and never moves it; its ground and bottom line run the window's width (a border image's outset, which
    adds no scrolling). Hidden (no .shown, fitPinned()), it is out of sight, of the pointer and of the keyboard. */
 :root { --paper-bar-h:48px; }
-/* scrollIntoView and focus land the text below the bar and, on a wide screen, the controls pinned under it. On the
-   text itself (scroll-margin), not the page (scroll-padding would change the browser's scroll anchoring, which keeps
-   the text in place through a Narration | Source text switch). */
+/* scrollIntoView and focus land the text below the bar and, on a wide screen, the controls pinned under it, and
+   above the player docked at the bottom (and the pill just above it). On the text itself (scroll-margin), not the page
+   (scroll-padding would change the browser's scroll anchoring, which keeps the text in place through a Narration |
+   Source text switch). */
 #reader-content, #reader-content * {
-  scroll-margin-top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h) + var(--listen-bar-h, 0px)); }
+  scroll-margin-top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h) + var(--listen-bar-h, 0px));
+  scroll-margin-bottom:calc(var(--dock-h, 0px) + 8px); }
 /* overflow-anchor: never the browser's scroll anchor, which must be text that moves with the page (a sticky box
    does not), so a layout change (Narration | Source text) keeps the text in place as before. */
 .paper-bar { position:sticky; top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h)); z-index:6; height:0;
@@ -22090,10 +22297,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 @media (max-width:640px) {
   main { padding:14px 14px 4px; }
   .brand-tagline { font-size:12px; line-height:1.3; }
+  .brand-logo { height:32px; }
   .tabs { gap:6px; margin-top:12px; padding:0 2px; }
   .page { padding-top:18px; }
   .card, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
   .step { padding:14px 15px; }
+  .step.is-done { padding:0; }
+  .step.is-done > .step-head { padding:14px 15px; }
   .step.is-active { padding:16px 14px 16px; }
   .sources { grid-template-columns:minmax(0,1fr); gap:12px; }
   .source-card { min-height:0; }
@@ -22113,10 +22323,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   /* On a phone the name and its type are cut together, as one line. */
   .step-summary { grid-column:2; display:block; overflow:hidden; text-overflow:ellipsis; }
   .summary-name { display:inline; }
-  .step-head > button.change { grid-column:2; justify-self:start; margin-top:8px; }
-  /* Change looks small and takes a 44 px tall touch. */
-  button.change { position:relative; min-height:32px; }
-  button.change::after { content:""; position:absolute; inset:-6px -2px; }
+  .step-head > .change { grid-column:2; justify-self:start; margin-top:8px; min-height:32px; }
   /* Table rows become compact list items; cells keep their order. */
   .data-table thead { display:none; }
   .data-table tr { display:grid; gap:4px 12px; padding:12px 4px;
@@ -22225,7 +22432,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <body>
 <main>
   <header class="app-header">
-    <img class="brand-logo" src="/reader-emblem.svg" width="40" height="40" alt="">
+    <img class="brand-logo" src="/reader-leaf.svg" width="31" height="36" alt="">
     <div class="brand">
       <h1 class="brand-name">Hilde<span> Reader</span></h1>
       <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
@@ -22434,16 +22641,18 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <button id="airdrop" class="hidden" type="button" onclick="sendAirdrop()">AirDrop…</button>
       </div>
     </section>
+    <!-- A finished step's head is one button (role="button", one Tab stop, set by renderCreate()): its title,
+         what was chosen, and its visible Change label, which is part of the button, not a button of its own. -->
     <ol id="create-steps" class="steps">
       <li id="step-book" class="step">
-        <div class="step-head">
+        <div class="step-head" data-step="book">
           <span class="step-marker" aria-hidden="true">1</span>
           <h3 class="step-title" tabindex="-1">Add the source document</h3>
           <span class="visually-hidden step-state"></span>
           <span id="book-summary" class="step-summary"></span>
-          <button id="book-change" class="change" type="button" aria-label="Change source document"
-            onclick="setStep('book')"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</button>
+          <span id="book-change" class="change"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path
+            d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</span>
         </div>
         <div class="step-body">
           <!-- One radio group: the chosen card is the only source Continue uses;
@@ -22496,7 +22705,24 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 class="touch-only">Choose a file</span></button><span class="dropzone-types doc-types"></span></div>
               <p id="upload-name" class="upload-name hidden"></p>
             </section>
+            <!-- Paste text: the phone's own Paste works in the box; Continue saves it as a .txt (a .md when it is
+                 clearly Markdown) through the upload route, named by the title or, without one, the first line. -->
+            <section class="source-card" data-source="paste" aria-labelledby="source-paste-title">
+              <div class="source-head">
+                <input id="source-pick-paste" class="source-radio" type="radio" name="source" value="paste">
+                <h4 class="source-title"><label id="source-paste-title" for="source-pick-paste">Paste text</label></h4>
+              </div>
+              <p id="source-paste-sub" class="source-sub">Text from a web page, an email or your notes</p>
+              <textarea id="paste-text" class="paste-text" rows="5" aria-labelledby="source-paste-title"
+                aria-describedby="source-paste-sub" placeholder="Paste the text here"></textarea>
+              <div class="field">
+                <label for="paste-title">Title (optional)</label>
+                <input id="paste-title" type="text" autocomplete="off" placeholder="Without one, the first line">
+              </div>
+              <p id="paste-name" class="upload-name hidden"></p>
+            </section>
           </div>
+          <p id="paste-note" class="note paste-note hidden" role="status"></p>
           <p id="book-problem" class="problem hidden" role="alert"></p>
           <div id="existing-book" class="notice hidden" role="status">
             <p><strong>You already have this one:</strong>
@@ -22517,14 +22743,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
       </li>
       <li id="step-voice" class="step">
-        <div class="step-head">
+        <div class="step-head" data-step="voice">
           <span class="step-marker" aria-hidden="true">2</span>
           <h3 class="step-title" tabindex="-1">Choose a voice</h3>
           <span class="visually-hidden step-state"></span>
           <span id="voice-summary" class="step-summary"></span>
-          <button id="voice-change" class="change" type="button" aria-label="Change voice"
-            onclick="setStep('voice')"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
-            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</button>
+          <span id="voice-change" class="change"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path
+            d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</span>
         </div>
         <div class="step-body">
           <div class="field" id="shared-voice-row">
@@ -22538,6 +22764,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
           <div id="selected-voice" class="voice-card hidden"></div>
           <div class="actions step-actions">
+            <button id="voice-back" class="back" type="button" onclick="backStep()"><svg viewBox="0 0 16 16"
+              aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+              stroke-linejoin="round"><path d="M13 8H3M7 4L3 8l4 4"/></svg>Back</button>
             <button id="voice-continue" class="primary" type="button"
               onclick="continueFromVoice()">Continue</button>
           </div>
@@ -22617,7 +22846,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <dl id="create-summary" class="summary"></dl>
           </section>
           <p id="create-problem" class="problem hidden"></p>
-          <div class="actions">
+          <div class="actions create-actions">
+            <button id="create-back" class="back" type="button" onclick="backStep()"><svg viewBox="0 0 16 16"
+              aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+              stroke-linejoin="round"><path d="M13 8H3M7 4L3 8l4 4"/></svg>Back</button>
             <button id="run" class="primary" type="button"
               onclick="startAudiobook()">Create audiobook</button>
             <span id="run-blocked" class="run-blocked hidden" role="status">
@@ -23740,12 +23972,13 @@ async function replaceDocumentOk(names) {
 }
 // Step 1's source cards (state.audiobook.source, remembered in this browser's
 // state cookie): only the chosen card's value is used, the others keep theirs.
-const SOURCE_LABELS = { saved:"Saved document", url:"URL", upload:"Upload" };
-const SOURCE_FIRST = { saved:"document", url:"source-url", upload:"document-upload" };
+const SOURCE_LABELS = { saved:"Saved document", url:"URL", upload:"Upload", paste:"Paste text" };
+const SOURCE_FIRST = { saved:"document", url:"source-url", upload:"document-upload", paste:"paste-text" };
 let uploading = false;
 function chosenDocument() {
   const book = state.audiobook;
-  return ({ saved:book.document, url:book.url_document, upload:book.upload }[book.source] || "").trim();
+  return ({ saved:book.document, url:book.url_document, upload:book.upload, paste:book.paste_document }[book.source]
+    || "").trim();
 }
 // The paper's title an arXiv link's download gave, shown for its document.
 function chosenTitle() {
@@ -23757,10 +23990,66 @@ function pendingUrl() {
   const book = state.audiobook;
   return book.source === "url" && !chosenDocument() ? book.source_url.trim() : "";
 }
+// Paste text: the text stays in the page (and this tab's sessionStorage, so a
+// reload keeps it), never in the state cookie; Continue saves it into
+// Documents (materializePaste()) and the card then holds that document's name.
+function pendingPaste() {
+  const text = $("paste-text").value;
+  return state.audiobook.source === "paste" && !chosenDocument() && text.trim() ? text : "";
+}
+// Text that is clearly Markdown goes as .md: a heading, a code fence or a
+// table, or two of links, bold, quotes, lists and inline code.
+function looksLikeMarkdown(text) {
+  if (/^ {0,3}#{1,6}[ \t]+\S/m.test(text) || /^ {0,3}(```|~~~)/m.test(text)
+      || /^[ \t]*\|?[ \t:]*-{3,}[ \t:]*\|[ \t|:-]*$/m.test(text)) return true;
+  const signs = [/\[[^\]\n]+\]\([^)\s]+\)/, /(\*\*|__)[^*_\n]+\1/, /^ {0,3}>[ \t]/m, /`[^`\n]+`/,
+                 /^ {0,3}([-*+]|\d+[.)])[ \t]+\S.*\n {0,3}([-*+]|\d+[.)])[ \t]+\S/m];
+  return signs.filter((sign) => sign.test(text)).length >= 2;
+}
+// The pasted text's file name: its title, else its first line (a heading
+// without its #), cleaned to a plain name of at most 80 characters.
+function pastedName(text, title) {
+  const first = title.trim() || (text.split("\n").find((line) => line.trim()) || "");
+  let name = first.replace(/^ {0,3}#{1,6}[ \t]+/, "").replace(/\*\*|__|`/g, "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().replace(/^[. ]+|[. ]+$/g, "");
+  if (name.length > 80) name = name.slice(0, 80).replace(/\s+\S*$/, "") || name.slice(0, 80);
+  return `${name || "Pasted text"}${looksLikeMarkdown(text) ? ".md" : ".txt"}`;
+}
+// The one line saying what a Cmd+V / Ctrl+V on step 1 brought.
+function notePaste(text) {
+  $("paste-note").textContent = text;
+  $("paste-note").classList.toggle("hidden", !text);
+}
+let pasteStoreTimer = 0;
+// The box's text in characters (a surrogate pair is one), counted once per change.
+let pasteChars = 0;
+function characters(text) {
+  return text.length - (text.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g) || []).length;
+}
+function pasteChanged() {
+  pasteChars = characters($("paste-text").value);
+  state.audiobook.paste_document = "";
+  bookProblemText = ""; bookEmptyContinue = false;
+  clearTimeout(pasteStoreTimer);
+  pasteStoreTimer = setTimeout(() => {
+    try {
+      sessionStorage.setItem("hilde.paste", JSON.stringify({ text:$("paste-text").value, title:$("paste-title").value }));
+    } catch (_) { try { sessionStorage.removeItem("hilde.paste"); } catch (_) {} }
+  }, 300);
+  render(); queueSync();
+}
+function restorePaste() {
+  let kept = null;
+  try { kept = JSON.parse(sessionStorage.getItem("hilde.paste")); } catch (_) {}
+  if (!kept || $("paste-text").value) return;
+  $("paste-text").value = String(kept.text || ""); $("paste-title").value = String(kept.title || "");
+  pasteChars = characters($("paste-text").value);
+}
 function selectSource(source, focusField) {
   if (state.audiobook.source !== source) {
     state.audiobook.source = source;
     bookProblemText = ""; bookEmptyContinue = false; overwriting = "";
+    notePaste("");
     if (source !== "saved") closeDocumentList(false);
     render(); queueSync();
   }
@@ -23775,6 +24064,7 @@ function renderSources() {
     card.querySelector(".source-radio").checked = on;
   }
   const saved = book.source === "saved", url = book.source === "url", upload = book.source === "upload";
+  const paste = book.source === "paste";
   $("document").disabled = !saved;
   // The trash after the field shows once a saved document is chosen in it.
   const savedOne = (assets.documents || []).includes(book.document);
@@ -23782,44 +24072,55 @@ function renderSources() {
   $("document-delete").disabled = !saved || submitting || !savedOne;
   $("source-url").disabled = $("download-name").disabled = !url || submitting;
   $("document-upload").disabled = !upload || uploading;
+  $("paste-text").disabled = $("paste-title").disabled = !paste || submitting;
   $("upload-name").textContent = book.upload ? `Uploaded: ${book.upload}` : "";
   $("upload-name").classList.toggle("hidden", !book.upload);
+  $("paste-name").textContent = book.paste_document ? `Saved as ${book.paste_document}` : "";
+  $("paste-name").classList.toggle("hidden", !book.paste_document);
 }
 function chooseDocument() { $("document-file").click(); }
-// A file chosen or dropped anywhere on the step makes Upload the source; one
-// of another type (the picker's All files, a drop) is refused here, in the
-// server's words, without sending it.
+// A file chosen, dropped or pasted on the step makes Upload the source; one of
+// another type (the picker's All files, a drop, a paste) is refused here, in
+// the server's words, without sending it. True once it is in Documents.
 async function uploadDocument(file) {
-  if (!file || uploading) return;
+  if (!file || uploading) return false;
   selectSource("upload", false);
   setBookProblem("");
   if (!documentType(file.name)) {
     $("document-file").value = "";
     setBookProblem(DOCUMENT_TYPES.problem);
-    return;
+    return false;
   }
-  if (!(await replaceDocumentOk([file.name]))) return;
+  if (!(await replaceDocumentOk([file.name]))) return false;
   uploading = true; render();
   setStatus(`Uploading ${file.name}…`);
   try {
-    const response = await fetch(
-      "/api/documents/upload?name=" + encodeURIComponent(file.name),
-      { method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:file }
-    );
-    const answer = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(answer.error || "The file couldn't be uploaded.");
-    assets = answer.assets || assets;
+    const answer = await sendDocument(file, false);
     state.audiobook.upload = answer.name;
-    populateAssets();
     setStatus(`Added ${answer.name}.`);
     await sync();
+    return true;
   } catch (error) {
     setStatus("");
     setBookProblem(documentProblem(error.message));
+    return false;
   } finally {
     $("document-file").value = "";
     uploading = false; render();
   }
+}
+// POST /api/documents/upload; `paste` names a pasted text, which the server
+// keeps under the name of a document with the same bytes, else a free name.
+async function sendDocument(file, paste) {
+  const response = await fetch(
+    `/api/documents/upload?name=${encodeURIComponent(file.name)}${paste ? "&paste=1" : ""}`,
+    { method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:file }
+  );
+  const answer = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(answer.error || "The file couldn't be uploaded.");
+  assets = answer.assets || assets;
+  populateAssets();
+  return answer;
 }
 
 async function materializeUrl() {
@@ -23850,6 +24151,75 @@ async function materializeUrl() {
       : documentProblem(error.message));
     return false;
   }
+}
+// Paste text on Continue: the text as a .txt (.md when clearly Markdown)
+// file, through the upload route, with the upload's size limit.
+async function materializePaste() {
+  const text = pendingPaste();
+  if (!text) return true;
+  setBookProblem("");
+  const file = new File([text], pastedName(text, $("paste-title").value), { type:"text/plain" });
+  if (file.size > DOCUMENT_TYPES.limit) { setBookProblem(TOO_LARGE); return false; }
+  setStatus("Saving the pasted text…");
+  try {
+    const answer = await sendDocument(file, true);
+    state.audiobook.paste_document = answer.name;
+    setStatus(`Added ${answer.name}.`);
+    await sync();
+    return true;
+  } catch (error) {
+    setStatus("");
+    setBookProblem(error instanceof TypeError
+      ? "Hilde's server couldn't be reached to save the text. Check the connection and try again."
+      : documentProblem(error.message));
+    return false;
+  }
+}
+// Cmd+V / Ctrl+V on step 1 with no text field focused (the phone uses its own
+// Paste in the box): a copied file goes to Upload a file as a drop would, one
+// web link to From a URL, any other text into Paste text; one line says what
+// was pasted. An empty paste does nothing.
+const TEXT_FIELD = "textarea, [contenteditable]:not([contenteditable=false]), "
+  + "input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=file]):not([type=range])";
+const TOO_LARGE = documentProblem("upload exceeds the 64 MiB limit");
+function pasteOnStep(event) {
+  if (!state || state.tab !== "audiobook" || settingsOpen || resultShown || currentStep() !== "book") return;
+  if (document.querySelector("dialog[open]")) return;
+  const active = document.activeElement;
+  if (active && active !== document.body && active.closest(TEXT_FIELD)) return;
+  const data = event.clipboardData;
+  if (!data) return;
+  const item = [...(data.items || [])].find((entry) => entry.kind === "file");
+  const file = (data.files && data.files[0]) || (item ? item.getAsFile() : null);
+  if (file) {
+    event.preventDefault();
+    // Upload a file takes it now (uploadDocument() chooses the card first);
+    // a type Hilde reads is said at once, and unsaid if the upload fails.
+    const note = `Pasted ${file.name}`;
+    notePaste("");
+    uploadDocument(file).then((added) => { if (!added && $("paste-note").textContent === note) notePaste(""); });
+    if (documentType(file.name)) notePaste(note);
+    return;
+  }
+  const text = data.getData("text/plain") || "";
+  if (!text.trim()) return;
+  event.preventDefault();
+  const link = text.trim();
+  if (/^https?:\/\/\S+$/i.test(link)) {
+    selectSource("url", false);
+    $("source-url").value = link;
+    state.audiobook.source_url = link;
+    state.audiobook.url_document = state.audiobook.url_title = "";
+    bookProblemText = "";
+    render(); queueSync();
+    notePaste("Pasted a link");
+    return;
+  }
+  selectSource("paste", false);
+  if (new Blob([text]).size > DOCUMENT_TYPES.limit) { setBookProblem(TOO_LARGE); return; }
+  $("paste-text").value = text;
+  pasteChanged();
+  notePaste(`Pasted ${pasteChars.toLocaleString()} characters`);
 }
 
 function setStatus(text, bad) {
@@ -24668,6 +25038,10 @@ function listeningElement() {
   if (textView === "source") return sourceElement(passageOfBlock(activeReaderBlock));
   return (readerBlocks[activeReaderBlock] || []).find(shown) || null;
 }
+// The text's paragraphs as shown (Narration or Source text), in reading order.
+function readerTexts() {
+  return [...$("reader-content").querySelectorAll(".reader-paragraph, .reader-original")].filter(shown);
+}
 // The text at the top of the reading view, when the narrated sentence is not on screen.
 function firstVisibleText() {
   const view = readingViewport();
@@ -24703,17 +25077,46 @@ function keepPlace(change) {
 function motion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }
+// The page's own scroll to a place, distance() being how far it still is.
+// WebKit (Safari) stops a smooth scroll for good when the page's height
+// changes under it, as a lazy figure on the way loads, and left it short
+// (back to the top from deep in a paper stopped thousands of pixels down).
+// So a smooth scroll longer than two screens first jumps to a screen short of
+// the place, and once the page has been still for five frames the rest, if
+// any, is scrolled at once. A wheel, touch, key or press on the scroll bar
+// meanwhile (userScrollAt) is the listener's and ends it.
+let glideToken = 0;
+function glide(distance, behavior = "auto") {
+  const token = ++glideToken, started = performance.now();
+  let delta = distance();
+  if (behavior === "smooth" && Math.abs(delta) > 2 * window.innerHeight) {
+    scrollPageBy(delta - Math.sign(delta) * window.innerHeight);
+    delta = distance();
+  }
+  scrollPageBy(delta, behavior);
+  if (behavior !== "smooth" || Math.abs(delta) < 1) return;
+  let last = window.scrollY, still = 0;
+  const settle = () => {
+    if (token !== glideToken || userScrollAt > started) return;
+    if (window.scrollY !== last) { last = window.scrollY; still = 0; }
+    else if (++still >= 5) { scrollPageBy(distance()); return; }
+    requestAnimationFrame(settle);
+  };
+  requestAnimationFrame(settle);
+}
 // Bring an element a quarter of the way down the reading view. A book
 // playing from the Library has no text on screen, and the Library never
 // scrolls for it.
 function placeListening(element, behavior) {
   if (!element || !document.querySelector("main").classList.contains("reading")) return;
-  const box = element.getBoundingClientRect();
-  // Once the text scrolls, the paper bar is pinned to the top, and on a wide
-  // screen the controls under it.
-  const top = paperBarEdge + (narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height);
-  const bottom = dockTop();
-  scrollPageBy(box.top - top - (bottom - top) / 4, behavior);
+  glide(() => {
+    if (!element.isConnected) return 0;
+    // Once the text scrolls, the paper bar is pinned to the top, and on a wide
+    // screen the controls under it.
+    const top = paperBarEdge + (narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height);
+    const bottom = dockTop();
+    return element.getBoundingClientRect().top - top - (bottom - top) / 4;
+  }, behavior);
 }
 function followListening(element) {
   // Scroll only once the playing sentence leaves the visible text, then
@@ -24747,15 +25150,13 @@ function readerHasSelection() {
   return !!selection && !selection.isCollapsed && !!String(selection).trim()
     && !!selection.anchorNode && $("book-view").querySelector(".reading-column").contains(selection.anchorNode);
 }
+// One button, one label: "↓ Back to reading position" (static in the HTML)
+// whether the word is above or below.
 function renderBackToListening() {
   const button = $("back-to-listening");
   const free = !readerHasSelection() && $("dock-ask").classList.contains("hidden");
   const element = detached && readerAudio && free ? readingMark() : null;
-  const away = !!element && !onScreen(element);
-  button.classList.toggle("hidden", !away);
-  if (!away) return;
-  const above = element.getBoundingClientRect().bottom < readingViewport().top;
-  button.textContent = `${above ? "↑" : "↓"} Back to reading position`;
+  button.classList.toggle("hidden", !element || onScreen(element));
 }
 // The pill: to the word being read, and auto-scroll on again (Follow along
 // with it).
@@ -24765,17 +25166,21 @@ function backToListening() {
   placeListening(readingMark(), motion());
 }
 // A scroll the listener made, told from the page's own: a wheel, touch, key,
-// or the scroll bar within the last 1.2 s (userScrollAt), outside the time
-// the page's own scroll takes (expectScrollUntil, scrollPageBy() and
-// paperBarToTop()). It detaches when it takes the word being read off screen
-// and attaches again when it brings it back; any other scroll only shows or
-// hides the pill.
+// or the scroll bar within the last 1.2 s (userScrollAt), or while the scroll
+// bar is held (scrollBarHeld), outside the time the page's own scroll takes
+// (expectScrollUntil, scrollPageBy()). Each such scroll keeps the window open,
+// so a scroll that goes on without input (a phone's fling coasting after the
+// finger lifts, a slow drag of the scroll bar) stays the listener's. It
+// detaches when it takes the word being read off screen and attaches again
+// when it brings it back; any other scroll only shows or hides the pill.
+let scrollBarHeld = false;
 function userScrolled() {
   if (!readerAudio || state.tab !== "player") return;
   // Layout changes scroll too (images loading, scroll anchoring); only a
   // scroll right after the listener's own wheel, touch, or key counts.
   const now = performance.now();
-  if (now >= expectScrollUntil && now - userScrollAt <= 1200) {
+  if (now >= expectScrollUntil && (now - userScrollAt <= 1200 || scrollBarHeld)) {
+    userScrollAt = now;
     const element = readingMark();
     if (element) setDetached(!onScreen(element));
   } else if (detached) renderBackToListening();
@@ -24836,13 +25241,19 @@ function observePaperBar() {
 function paperBarToTop() {
   const element = readerAudio ? readingMark() : null;
   if (element) setDetached(element.getBoundingClientRect().bottom + window.scrollY > dockTop());
-  expectScrollUntil = performance.now() + 1500;
-  window.scrollTo({ top:0, behavior:motion() });
+  glide(() => -window.scrollY, motion());
 }
 
+// The audio's time at the last update: from there to now it either ran on
+// (forward, under 3 s of audio) or was moved (a seek: anything else). Told by
+// the times themselves, since browsers report the end of a seek and its
+// "seeking" event in no fixed order.
+let highlightTime = 0;
 function updateReaderHighlight() {
   if (!readerAudio || !readerSampleRate || readerDownload?.restoring) return;
-  const sample = Math.round(readerAudio.currentTime * readerSampleRate);
+  const time = readerAudio.currentTime, ranOn = time >= highlightTime && time - highlightTime < 3;
+  highlightTime = time;
+  const sample = Math.round(time * readerSampleRate);
   const candidateWordCue = readerWordCueAt(sample);
   const sentenceCue = readerCueAt(sample);
   const nextBlock = sentenceCue
@@ -24851,6 +25262,15 @@ function updateReaderHighlight() {
     ? candidateWordCue : null;
   const blockChanged = nextBlock !== activeReaderBlock;
   if (blockChanged) {
+    // Follow along moves the page only from a view that showed the sentence
+    // just read, or for a seek (the listener chose the new place), and never
+    // while the listener is scrolling (userScrollAt, scrollBarHeld): the page
+    // is not pulled back, however they scrolled; once the sentence read is out
+    // of sight, auto-scroll waits and the pill shows.
+    const following = $("reader-follow").checked && !readerAudio.paused && !detached;
+    const before = following && ranOn && performance.now() >= expectScrollUntil ? listeningElement() : null;
+    const scrolling = scrollBarHeld || performance.now() - userScrollAt <= 1200;
+    const watched = (!before || onScreen(before)) && !scrolling;
     const previous = readerBlocks[activeReaderBlock] || [];
     for (const part of previous) part.classList.remove("active");
     previous[0]?.closest(".reader-paragraph").classList.remove("active");
@@ -24868,8 +25288,10 @@ function updateReaderHighlight() {
       if (panelOpen) renderChatHeader();
     }
     const element = listeningElement();
-    if (element && $("reader-follow").checked && !readerAudio.paused && !detached)
-      followListening(element);
+    if (element && following) {
+      if (watched) followListening(element);
+      else if (!onScreen(element)) setDetached(true);
+    }
     // A sentence start is a natural pause, so switching sources there is not heard.
     if (readerDownload?.url && !readerDownload.swapped) playDownloadedBook();
   }
@@ -25091,10 +25513,21 @@ function sentenceStartAt(cues, rate, time) {
 // Reopening a book, or reloading, finds it paused where it was: the start of
 // the sentence it stopped in with the same voice, else the start of the same
 // passage. A finished book, or Start over, begins again from the beginning.
+// Library and back (leftPlace, closeBook()): opened again straight after it
+// was left from its text, in the same page (no reload, no other book opened
+// in between), with the same voice and no place saved since (another tab),
+// it is exactly as it was left: the same time (not the sentence's start), the
+// same text at the same height on screen, and the pill if the listener had
+// scrolled away. Any other reopen keeps the sentence-start rule.
 function restoreBookPlace(place, voice, fromStart = false) {
-  const audio = readerAudio;
+  const audio = readerAudio, book = state.player.book;
+  const left = leftPlace && leftPlace.book === book ? leftPlace : null;
+  leftPlace = null;
+  const back = left && !fromStart && place.finished !== true && left.voice === voice && left.saved === place.time
+    ? left : null;
   let time = null;
   if (fromStart || place.finished === true) time = 0;
+  else if (back) time = back.time;
   else if (place.voice === voice && Number.isFinite(place.time))
     time = sentenceStartAt(readerCues, readerSampleRate, place.time);
   else if (place.passage && readerPayload) {
@@ -25108,7 +25541,28 @@ function restoreBookPlace(place, voice, fromStart = false) {
   restoredTime = audio.currentTime;
   updateReaderHighlight();
   renderPlayer();
-  if (time > 0) placeListening(listeningElement(), "auto");
+  const element = back && back.view === textView && document.querySelector("main").classList.contains("reading")
+    ? readerTexts()[back.index] : null;
+  if (element) {
+    holdPlace(element, back.top);
+    setDetached(back.detached);
+  } else if (time > 0) placeListening(listeningElement(), "auto");
+}
+// An element put back at a height on screen, and kept there while the
+// pictures around it load for 2 s: a lazy figure in it or above it, loaded
+// when the place was left, can grow only now and push the text (once by 305
+// px in a test before this), and WebKit does not keep the text in place for
+// it. A scroll by the listener ends it, and so does the page's own move to
+// another place (glide(): a seek, an answer's ¶ link, Back to reading position).
+function holdPlace(element, top) {
+  const started = performance.now(), token = glideToken, content = $("reader-content");
+  const align = () => {
+    if (userScrollAt <= started && token === glideToken && element.isConnected)
+      scrollPageBy(element.getBoundingClientRect().top - top);
+  };
+  align();
+  content.addEventListener("load", align, true);
+  setTimeout(() => content.removeEventListener("load", align, true), 2000);
 }
 function bindReaderAudio(audio) {
   audio.addEventListener("timeupdate", () => {
@@ -25496,9 +25950,21 @@ async function startBookJob(mode, voice) {
 }
 
 // Back to the Library, the book's place saved (clearReader()); also a book
-// playing from the Library, as it is deleted.
+// playing from the Library, as it is deleted. A book left from its text is
+// remembered for this page until the next book opens (leftPlace: the book,
+// its voice, the exact time, the text view, the first paragraph shown and its
+// height on screen, whether the listener had scrolled away, and the place
+// saved as it closed), so opening it again straight away finds it as it was
+// (restoreBookPlace()).
+let leftPlace = null;
 function closeBook(focus = true) {
+  const book = state.player.book;
+  const text = readerAudio && readerRestored && !readerDownload?.restoring
+    && document.querySelector("main").classList.contains("reading") ? firstVisibleText() : null;
+  const left = text && { book, voice:state.player.voice, time:readerAudio.currentTime, view:textView,
+                         index:readerTexts().indexOf(text), top:text.getBoundingClientRect().top, detached };
   clearReader();
+  leftPlace = left ? { ...left, saved:bookPlace(book).time } : null;
   state.player.book = ""; state.player.voice = ""; state.player.in_library = false;
   resetChatFor("");
   render(); queueSync();
@@ -28283,33 +28749,176 @@ function currentStep() {
   if (step === "create" && !voiceReady()) return "voice";
   return step;
 }
-function setStep(step) {
+// Continue and an explicit reopen (a finished row, Create another book) push
+// one history entry when the shown step changes; `record` false (Back and
+// Forward, a reload) shows a step and adds none.
+function setStep(step, { record = true } = {}) {
+  // The entry being left says what it showed, if nothing named it yet.
+  if (record && !hildeEntry() && state.tab === "audiobook") replaceCreateEntry();
   state.audiobook.step = step;
   render(); queueSync();
+  if (record) pushCreateEntry();
   focusStep();
 }
 function focusStep() {
   const node = $(`step-${currentStep()}`);
   const target = [...node.querySelectorAll(
-    "select, input:not([type=file]):not([type=checkbox]):not([type=radio]), button.primary"
+    "select, textarea, input:not([type=file]):not([type=checkbox]):not([type=radio]), button.primary"
   )].find((control) => shown(control) && !control.disabled);
   (target || node.querySelector(".step-title")).focus();
+}
+// ← Back on steps 2 and 3: the previous numbered step. When the entry before
+// this one is that step of this draft, the browser goes back to it (so
+// browser Back then leaves as it came); otherwise this entry becomes that
+// step, never a new entry, so Back and browser Back cannot loop.
+const STEP_ORDER = ["book", "voice", "create"];
+function backStep() {
+  const at = STEP_ORDER.indexOf(currentStep());
+  if (at <= 0 || submitting) return;
+  collect();
+  const target = STEP_ORDER[at - 1], here = hildeEntry(), prev = here && here.prev;
+  if (prev && prev.hilde === "create" && prev.step === target && prev.draft === state.audiobook.draft) {
+    history.back();
+    return;
+  }
+  state.audiobook.step = target;
+  render(); queueSync();
+  replaceCreateEntry();
+  focusStep();
+}
+
+// --- Create in the browser's history -----------------------------------------
+// An entry is {hilde: "create", step, draft, prev} (prev: the entry before it,
+// as {hilde, step, draft, job}) at #create/document, #create/voice or
+// #create/text, or {hilde: "job", job, draft} at #job/<id>, the job's page,
+// which replaces the step-3 entry once the server confirms the job. A
+// submitted draft is recorded (localStorage hilde.submittedDrafts), so every
+// older entry of it opens its job or result, never a form that could send the
+// same start again; the server refuses a second job per draft anyway.
+const STEP_HASH = { book:"#create/document", voice:"#create/voice", create:"#create/text" };
+const HASH_STEP = { document:"book", voice:"voice", text:"create" };
+function hildeEntry() {
+  const entry = history.state;
+  return entry && typeof entry === "object" && entry.hilde ? entry : null;
+}
+function entryLink(entry) {
+  return { hilde:entry.hilde, step:entry.step || "", draft:entry.draft || "", job:entry.job || "" };
+}
+function showsEntry(entry) {
+  return !!entry && entry.hilde === "create" && state.tab === "audiobook" && !settingsOpen
+    && entry.step === currentStep() && entry.draft === state.audiobook.draft;
+}
+function replaceCreateEntry() {
+  const here = hildeEntry();
+  const entry = { hilde:"create", step:currentStep(), draft:state.audiobook.draft,
+                  prev:here && here.hilde === "create" ? here.prev || null : null };
+  history.replaceState(entry, "", STEP_HASH[entry.step]);
+}
+function pushCreateEntry() {
+  const here = hildeEntry();
+  if (showsEntry(here)) return;
+  const entry = { hilde:"create", step:currentStep(), draft:state.audiobook.draft, prev:here ? entryLink(here) : null };
+  history.pushState(entry, "", STEP_HASH[entry.step]);
+}
+function newDraftId() {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function submittedJob(draft) {
+  const record = stored("submittedDrafts");
+  const found = draft && Array.isArray(record) ? record.find((pair) => Array.isArray(pair) && pair[0] === draft) : null;
+  return found ? String(found[1] || "") : "";
+}
+function noteSubmitted(draft, job) {
+  if (!draft || !job) return;
+  const record = (Array.isArray(stored("submittedDrafts")) ? stored("submittedDrafts") : [])
+    .filter((pair) => Array.isArray(pair) && pair[0] !== draft);
+  store("submittedDrafts", [[draft, job], ...record].slice(0, 50));
+}
+// The job's page: the progress view while it is preparing, queued or
+// running; a finished book in Listen; otherwise the progress view with how it
+// ended (or the Library when nothing is left to show). The entry names the job
+// from now on.
+async function openJobEntry(job, draft) {
+  history.replaceState({ hilde:"job", job, draft:draft || "" }, "", `#job/${job}`);
+  try {
+    const current = await jsonRequest("/api/jobs");
+    jobs = current.queue || jobs; runs = current.runs || runs;
+    recent = current.recent || recent; consumers = current.consumers || consumers;
+  } catch (_) {}
+  showJob(job);
+}
+function showJob(job) {
+  if (jobs.some((item) => item.id === job)) { viewJob(job); return; }
+  const ended = recent.find((item) => item.id === job);
+  if (ended && ended.status === "done" && ended.book) { openAudiobook(ended.book, true, ended.voice); return; }
+  if (progressAvailable()) openProgress(); else setTab("player");
+}
+// Back, Forward, a phone's back gesture: show the entry; add none.
+function showEntry(entry) {
+  if (entry.hilde === "job") { openJobEntry(entry.job, entry.draft); return; }
+  if (entry.hilde !== "create") return;
+  const job = submittedJob(entry.draft);
+  if (job) { openJobEntry(job, entry.draft); return; }
+  closePopup();
+  if (settingsOpen) setSettings(false, false);
+  if (state.tab !== "audiobook") setTab("audiobook");
+  // An older draft's entry, never submitted: its form is gone, so step 1.
+  setStep(entry.draft === state.audiobook.draft ? entry.step : "book", { record:false });
+  if (!showsEntry(entry)) replaceCreateEntry();
+}
+window.addEventListener("popstate", (event) => {
+  const entry = event.state && typeof event.state === "object" && event.state.hilde ? event.state : null;
+  if (entry && state) showEntry(entry);
+});
+// At startup: this browser's draft (a new one once it was submitted, as by
+// another tab), then the entry's requested step, only with its saved draft
+// and every step before it complete; otherwise step 1. A job's entry opens
+// the job. A page opened on Create names its first entry.
+function startCreateHistory() {
+  if (!state.audiobook.draft || submittedJob(state.audiobook.draft)) {
+    if (state.audiobook.draft) { clearBookChoice(); state.audiobook.step = "book"; }
+    else state.audiobook.draft = newDraftId();
+    queueSync();
+  }
+  restorePaste();
+  const hash = /^#(create|job)\/([A-Za-z0-9_-]+)$/.exec(location.hash);
+  const entry = hildeEntry() || (hash && hash[1] === "job" ? { hilde:"job", job:hash[2], draft:"" }
+    : hash && HASH_STEP[hash[2]] ? { hilde:"create", step:HASH_STEP[hash[2]], draft:"" } : null);
+  if (entry && entry.hilde === "job") {
+    if (state.tab === "audiobook" || state.tab === "progress") openJobEntry(entry.job, entry.draft);
+    return;
+  }
+  if (entry && entry.hilde === "create" && state.tab === "audiobook") {
+    const job = submittedJob(entry.draft);
+    if (job) { openJobEntry(job, entry.draft); return; }
+    const step = entry.step;
+    const reachable = step === "book" || (bookReady() && (step === "voice" || voiceReady()));
+    state.audiobook.step = reachable && (!entry.draft || entry.draft === state.audiobook.draft) ? step : "book";
+    render(); queueSync();
+  }
+  if (state.tab === "audiobook") replaceCreateEntry();
 }
 // Continue uses only the chosen card. Nothing in it: "Choose a document
 // first" beside Continue. A step reopened from step 3 goes back there, its
 // choices kept; Overwrite and Change voice (`ahead` false) go through step 2.
+// A link is downloaded and a pasted text saved first; a pasted text that is a
+// book you already have stops on step 1 with that notice, as an upload does.
 async function continueFromBook(ahead = true) {
   if (submitting) return;
   collect();
-  if (!chosenDocument() && !pendingUrl()) {
+  if (!chosenDocument() && !pendingUrl() && !pendingPaste()) {
     bookEmptyContinue = true; render();
     return;
   }
-  if (pendingUrl()) {
+  if (pendingUrl() || pendingPaste()) {
+    const pasted = !!pendingPaste();
     submitting = true; render();
-    const downloaded = await materializeUrl();
+    const added = pasted ? await materializePaste() : await materializeUrl();
     submitting = false; render();
-    if (!downloaded) return;
+    if (!added) return;
+    if (pasted && facts.existing_book) return;
   }
   // A type Hilde doesn't read stops here; step 1 says so (renderCreate()).
   if (!bookReady() || !documentType(chosenDocument())) return;
@@ -28331,13 +28940,16 @@ function continueFromVoice() {
   if (voiceReady()) setStep("create");
 }
 // A finished book's document is not the next book's: once a book is made, the
-// first step starts empty, with no document chosen and no link typed; the
-// chosen source card stays.
+// first step starts empty, with no document chosen, no link typed and no text
+// pasted, as a new draft; the chosen source card stays.
 function clearBookChoice() {
-  Object.assign(state.audiobook,
-    { document:"", upload:"", url_document:"", url_title:"", source_url:"", download_name:"" });
+  Object.assign(state.audiobook, { document:"", upload:"", url_document:"", url_title:"", source_url:"",
+                                   download_name:"", paste_document:"", draft:newDraftId() });
   overwriting = ""; reachedCreate = false;
   $("source-url").value = ""; $("download-name").value = "";
+  $("paste-text").value = ""; $("paste-title").value = ""; pasteChars = 0;
+  try { sessionStorage.removeItem("hilde.paste"); } catch (_) {}
+  notePaste("");
   populateAssets();
 }
 // From Progress: back to Create, with the first step empty for the next book.
@@ -28595,7 +29207,16 @@ function renderCreate() {
     else if (!complete && marker.textContent !== String(index + 1)) marker.textContent = String(index + 1);
     node.querySelector(".step-state").textContent =
       active ? "(current step)" : complete ? "(completed)" : "(not reached yet)";
+    // A finished step's head is one button with one Tab stop (its title is
+    // then no focus target of its own); otherwise a plain head.
+    const head = node.querySelector(".step-head"), heading = node.querySelector(".step-title");
+    if (complete) {
+      head.setAttribute("role", "button"); head.tabIndex = 0; heading.removeAttribute("tabindex");
+    } else {
+      head.removeAttribute("role"); head.removeAttribute("tabindex"); heading.tabIndex = -1;
+    }
   });
+  $("voice-back").disabled = $("create-back").disabled = submitting;
   renderSources();
   const documentName = chosenDocument(), title = chosenTitle();
   const type = documentType(documentName);
@@ -28608,9 +29229,11 @@ function renderCreate() {
   // paper's title once downloaded, else its document and type), or that
   // nothing is chosen yet.
   const source = state.audiobook.source, link = state.audiobook.source_url.trim();
+  const pasted = pendingPaste();
   const chosenText = source === "url" ? (title && done.book ? `Chosen (URL): ${chosen}` : link ? `Chosen (URL): ${link}` : "")
-    : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}` : "";
-  const empty = bookEmptyContinue && !documentName && !pendingUrl();
+    : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}`
+    : pasted ? `Chosen (Paste text): ${pasteChars.toLocaleString()} characters` : "";
+  const empty = bookEmptyContinue && !documentName && !pendingUrl() && !pasted;
   $("book-chosen").textContent = empty ? "Choose a document first" : chosenText || "No document chosen yet";
   $("book-chosen").classList.toggle("problem", empty);
   $("book-chosen").title = chosenText;
@@ -30279,43 +30902,56 @@ async function startAudiobook() {
         state.audiobook.figure_model = figure.model.selector;
     }
     const voice = facts.clone_server ? state.audiobook.server_voice.trim() : state.audiobook.voice;
-    const answer = await requestRun(false, overwrite ? { book: existing.id, mode: "recreate", voice } : undefined);
+    // Every start from Create carries its draft's ID: the server starts one
+    // job per draft and answers a repeat (a double tap, another tab) with it.
+    const draft = state.audiobook.draft;
+    const answer = await requestRun(false, { draft, ...(overwrite ? { book: existing.id, mode: "recreate", voice } : {}) });
     if (!answer) return;
-    // The form is free for the next book as soon as this one is queued.
+    // The form is free for the next book as soon as this one is queued, as a
+    // new draft; this one is recorded as submitted, and its step-3 entry
+    // becomes the job's page.
     resultShown = false;
+    if (answer.job) noteSubmitted(draft, answer.job.id);
     clearBookChoice();
     state.audiobook.step = "book";
     queueSync();
+    if (answer.job) history.replaceState({ hilde:"job", job:answer.job.id, draft }, "", `#job/${answer.job.id}`);
     started = showStartedJob(answer);
   } finally {
     runChoice = null;
     submitting = false; render();
     // Disabling the button dropped focus; return it to the view now shown.
-    if (started) $("progress-title").focus();
-    else focusStep();
+    if (started) (shown($("progress-title")) ? $("progress-title") : $("progress-heading")).focus();
+    else if (state.tab === "audiobook") focusStep();
   }
 }
 
-// Follow a job that started on the Progress tab, or say when it will start.
+// The job a start answered with: followed on the Progress tab while it runs,
+// shown there in the queue while it waits (with when it will start), and,
+// for a repeat of a draft whose job has ended, its book or how it ended
+// (showJob()). True when the Progress tab shows it.
 function showStartedJob(answer) {
   jobs = answer.queue || jobs; runs = answer.runs || runs;
-  consumers = answer.consumers || consumers;
+  consumers = answer.consumers || consumers; recent = answer.recent || recent;
   const job = answer.job;
-  const active = job
-    ? runs.find((item) => item.active && item.job_id === job.id) : null;
+  if (!job) return false;
+  const active = runs.find((item) => item.active && item.job_id === job.id);
   if (active) {
     followActive(active, false);
     setTab("progress");
     render();
     return true;
   }
-  if (job) {
+  if (jobs.some((item) => item.id === job.id)) {
     waitingJobId = job.id;
     setStatus(answer.duplicate
       ? `${job.output_name} is already waiting to be created.`
       : `${job.output_name} will start when the audiobook ahead of it finishes.`);
+    openProgress();
+    return true;
   }
-  return false;
+  showJob(job.id);
+  return state.tab === "progress";
 }
 
 async function listenVoice() {
@@ -31449,11 +32085,24 @@ documentField.addEventListener("keydown", (event) => {
     : at < 0 ? 0 : (at + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
   focusDocumentRow(rows[next]);
 });
-// A finished step's title reopens it, as its Change does; nothing else is cleared.
-for (const name of ["book", "voice", "create"])
-  $(`step-${name}`).querySelector(".step-title").addEventListener("click", () => {
-    if ($(`step-${name}`).classList.contains("is-done")) setStep(name);
+// A finished step's row is one button: a click or tap anywhere on it, Enter
+// (on key down) or Space (on key up), as a native button, reopens the step;
+// nothing is cleared. A step not finished does nothing.
+for (const head of document.querySelectorAll("#create-steps .step-head[data-step]")) {
+  const done = () => head.closest(".step").classList.contains("is-done");
+  head.addEventListener("click", () => { if (done()) setStep(head.dataset.step); });
+  head.addEventListener("keydown", (event) => {
+    if (event.target !== head || !done() || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key === "Enter") { event.preventDefault(); setStep(head.dataset.step); }
+    else if (event.key === " ") event.preventDefault();
   });
+  head.addEventListener("keyup", (event) => {
+    if (event.target === head && event.key === " " && done()) setStep(head.dataset.step);
+  });
+}
+// Paste text: a changed text or title is saved again on Continue.
+for (const id of ["paste-text", "paste-title"]) $(id).addEventListener("input", pasteChanged);
+document.addEventListener("paste", pasteOnStep);
 for (const [id] of FIELDS) {
   const node = $(id);
   node.addEventListener(node.tagName === "SELECT" ? "change" : "input", () => {
@@ -31659,6 +32308,28 @@ $("reader-content").addEventListener("mousedown", pressReaderTextAgain);
 $("reader-content").addEventListener("pointermove", trackReaderPress, { passive:true });
 $("reader-content").addEventListener("pointercancel", cancelReaderPress);
 $("reader-content").addEventListener("pointerup", tapReaderText);
+// Keyboard focus in the text shows the control whole between what is pinned
+// at the top and the player (8px above it, as scroll-margin asks), or, taller
+// than that space, its top: again once its lazy picture has loaded, since a
+// figure grows from its caption to its full height after the browser's own
+// scroll (it was left half under the player), and no browser scrolls for a
+// control that already fills the screen.
+function revealFocused(target) {
+  if (document.activeElement !== target) return;
+  fitPinned();
+  const box = target.getBoundingClientRect(), view = readingViewport(), bottom = view.bottom - 8;
+  if (box.top < view.top || box.height > bottom - view.top) scrollPageBy(box.top - view.top);
+  else if (box.bottom > bottom) scrollPageBy(box.bottom - bottom);
+}
+$("reader-content").addEventListener("focusin", (event) => {
+  const target = event.target;
+  if (!target.matches(":focus-visible")) return;
+  requestAnimationFrame(() => revealFocused(target));
+  for (const image of target.querySelectorAll("img")) {
+    if (!image.complete)
+      image.addEventListener("load", () => requestAnimationFrame(() => revealFocused(target)), { once:true });
+  }
+});
 $("ask-hilde").addEventListener("pointerdown", () => { askSelection = readerSelection() || dockPicked; });
 $("ask-hilde").addEventListener("click", () => { panelOpener = $("ask-hilde"); askHilde(); });
 // The header's Ask Hilde takes a selection in the book as the player bar's does, in book mode only.
@@ -31732,12 +32403,13 @@ document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   lastPointerType = event.pointerType;
   if (!event.target.closest("#selection-ask")) hideSelectionAsk();
-  // The page's own scroll bar.
-  if (event.target === document.documentElement) userScrollAt = performance.now();
+  // The page's own scroll bar: held until the press ends.
+  scrollBarHeld = event.target === document.documentElement;
+  if (scrollBarHeld) userScrollAt = performance.now();
 }, true);
 for (const type of ["pointerup", "pointercancel"])
   document.addEventListener(type, () => {
-    pointerHeld = false;
+    pointerHeld = false; scrollBarHeld = false;
     queueSelectionAsk();
     if (dockPressed) {
       dockPressed = false;
@@ -31857,6 +32529,7 @@ function renderConnection(where = location, secure = window.isSecureContext) {
 }
 async function startPage() {
   load(await jsonRequest("/api/state"));
+  startCreateHistory();
   if (!caps.airdrop) $("airdrop").title = "AirDrop requires a macOS server";
   renderConnection();
   setStatus("");
@@ -32298,6 +32971,8 @@ def main():
     )
     server.tts_models = tts_models
     server.storage = storage
+    # Create's duplicate guard: one job per draft, kept across restarts.
+    server.drafts = DraftGuard(storage.in_progress / CREATE_DRAFTS_FILE)
     server.verbose = args.verbose
     server.manage_from_network = args.manage_from_network
     # The commit Ask Hilde links to is the checkout's own, as it is now; the
