@@ -28156,7 +28156,7 @@ function progressDetail(info) {
   const of = `${count(info.done)} of ${count(info.total)}`;
   switch (info.unit) {
     case "page": return `Reading page ${of}`;
-    case "paragraph": return `Preparing the text for listening: paragraph ${of}`;
+    case "paragraph": return `Preparing the text for listening: ${of} paragraphs done`;
     case "join": return `Joining the parts into one recording: ${of}`;
     case "sentence": return `Aligning text and audio: sentence ${of}`;
   }
@@ -28170,7 +28170,10 @@ function newHistory() {
 }
 // One event of a job (/api/events) into its history. Counts come only from
 // the server's progress and activity events; "Using the text prepared
-// earlier" counts nothing.
+// earlier" counts nothing. Preparing the text counts paragraphs finished:
+// batches run side by side and finish out of order, so an activity event
+// counts every finished paragraph while a progress event counts only those
+// written in order; the larger stands, so the count never goes back.
 function recordEvent(history, type, data) {
   if (type === "log") {
     history.log = history.log.concat(String(data).split("\n").map((line) => line.trim()).filter(Boolean))
@@ -28186,7 +28189,6 @@ function recordEvent(history, type, data) {
     stage = stageFor(data.phase, data.unit);
     count = data.unit === "document" ? { unit:"reused" }
       : { unit:data.unit || "part", done:Number(data.done), total:Number(data.total) };
-    if (data.unit !== "document") history.latest = { ...count, phase:data.phase };
   } else if (type === "activity") {
     stage = "prepare";
     count = { unit:"paragraph", done:Number(data.completed), total:Number(data.total) };
@@ -28194,7 +28196,12 @@ function recordEvent(history, type, data) {
   if (!stage) return;
   if (!(type === "phase" && stage === "read")) history.seen.add(stage);
   history.current = stage;
-  if (count) (history.counts[stage] ||= {})[count.unit] = count;
+  if (!count) return;
+  const before = (history.counts[stage] || {})[count.unit];
+  if (count.unit === "paragraph" && before && before.total === count.total)
+    count.done = Math.max(count.done, before.done);
+  (history.counts[stage] ||= {})[count.unit] = count;
+  if (count.unit !== "reused") history.latest = { ...count, phase:data.phase || "extraction" };
 }
 function countText(counts) {
   if (!counts) return "";
@@ -28333,7 +28340,10 @@ function sendOutBadges(kind) {
 let bookProblemText = "";
 // Continue was pressed with the chosen card empty; said until a document is chosen.
 let bookEmptyContinue = false;
-// Step 3 was open for this book: Continue in a reopened step 1 goes back there.
+// Step 3 was open for this book: Continue in a reopened step 1 goes back
+// there, and step 2 shows done (passed for this book). A new book
+// (clearBookChoice()) starts with steps 2 and 3 upcoming, the last voice
+// still chosen inside step 2.
 let reachedCreate = false;
 // A finished step's value, cut with "…", and its type in gray after it;
 // `tip` (its tooltip) defaults to the value.
@@ -28353,7 +28363,7 @@ function setSummary(node, value, type, tip = value) {
 function renderCreate() {
   const step = currentStep();
   if (step === "create") reachedCreate = true;
-  const done = { book:bookReady(), voice:voiceReady(), create:false };
+  const done = { book:bookReady(), voice:voiceReady() && reachedCreate, create:false };
   ["book", "voice", "create"].forEach((name, index) => {
     const node = $(`step-${name}`);
     const active = name === step, complete = !active && done[name];
@@ -28435,7 +28445,7 @@ function renderCreate() {
   $("figure-shared-reason").classList.toggle("hidden", !figureWhy);
   renderPickers();
   $("run").textContent = voiceOnly ? "Add this voice" : overwrite ? "Overwrite audiobook" : "Create audiobook";
-  $("voice-continue").disabled = !done.voice;
+  $("voice-continue").disabled = !voiceReady();
   $("clone-voice-row").classList.toggle("hidden", !facts.clone_server);
   $("shared-voice-row").classList.toggle("hidden", !!facts.clone_server);
   // Facts belong to the tab of the last sync; hold Create until its own arrive.
@@ -30171,9 +30181,11 @@ function watch(jobId="") {
     const stage = runHistory.current;
     recordEvent(runHistory, "progress", info);
     if (runHistory.current !== stage) beginEta();
+    // The count as recorded: for paragraphs, those finished, never fewer than before.
+    const count = info.unit === "document" ? info : { ...info, ...runHistory.latest };
     if (info.unit !== "document")
-      updateEta(info.done, info.total, info.phase_elapsed, info.phase_stream_elapsed, info.unit);
-    runHistory.detail = progressDetail(info);
+      updateEta(count.done, count.total, info.phase_elapsed, info.phase_stream_elapsed, info.unit);
+    runHistory.detail = progressDetail(count);
     renderProgress();
     if (runHistory.current !== stage) renderQueue();
   });
@@ -30181,7 +30193,7 @@ function watch(jobId="") {
     const info = JSON.parse(event.data);
     if (!runHistory) return;
     recordEvent(runHistory, "activity", info);
-    runHistory.detail = progressDetail({ unit:"paragraph", done:info.completed, total:info.total });
+    runHistory.detail = progressDetail(runHistory.latest);
     renderProgress();
   });
   source.addEventListener("done", async (event) => {
