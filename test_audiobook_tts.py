@@ -8093,6 +8093,31 @@ class PaperResponseTests(unittest.TestCase):
             ["storm events", "silt"],
         )
 
+    def test_parser_closes_a_summary_the_model_ended_with_tags(self):
+        # DeepSeek V4 Flash, 24 Oct: 37 of 250 answers closed SUMMARY with
+        # </TAGS> (no </SUMMARY>, no <TAGS>); one paragraph did so on all six tries.
+        self.assertEqual(
+            parse_paper_response(
+                "<NARRATION> Spoken paragraph. </NARRATION> <SUMMARY> Short context. "
+                "</TAGS> failure modes, retention decision"
+            ),
+            ("Spoken paragraph.", "Short context.", ["failure modes", "retention decision"]),
+        )
+        # TAGS opened without closing SUMMARY first.
+        self.assertEqual(
+            parse_paper_response(
+                "<NARRATION>Spoken.</NARRATION><SUMMARY>Context.<TAGS>silt, storms</TAGS>"
+            ),
+            ("Spoken.", "Context.", ["silt", "storms"]),
+        )
+        # A summary that never ends, or a doubled answer, is still refused.
+        for response in (
+            "<NARRATION>Spoken.</NARRATION><SUMMARY>Context that stops",
+            "<NARRATION>A.</NARRATION><SUMMARY>B.</TAGS> x <NARRATION>C.</NARRATION><SUMMARY>D.</TAGS> y",
+        ):
+            with self.assertRaises(ValueError):
+                parse_paper_response(response)
+
     def test_paper_run_retries_a_malformed_response_without_losing_progress(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

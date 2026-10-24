@@ -11163,6 +11163,27 @@ def parse_paper_tags(text):
     return tags[:PAPER_MAX_TAGS]
 
 
+def _close_unclosed_summary(text):
+    """A SUMMARY the model ended with </TAGS> (no </SUMMARY>, no <TAGS>), or
+    with <TAGS> but no </SUMMARY>, closed where it ended: the summary's text
+    is whole either way. DeepSeek V4 Flash wrote the first in 37 of 250 answers
+    to one paper on 24 Oct, the same paragraph on all six tries."""
+    if re.search(r"</SUMMARY>", text, re.IGNORECASE):
+        return text
+    # Only a single answer: a doubled one stays refused, as before.
+    if len(re.findall(r"<NARRATION>", text, re.IGNORECASE)) != 1 or len(re.findall(r"<SUMMARY>", text, re.IGNORECASE)) != 1:
+        return text
+    opening = re.search(r"<SUMMARY>", text, re.IGNORECASE)
+    head, rest = text[:opening.end()], text[opening.end():]
+    tags = re.search(r"<TAGS>", rest, re.IGNORECASE)
+    if tags is not None:
+        return head + rest[:tags.start()] + "</SUMMARY>" + rest[tags.start():]
+    closing = re.search(r"</TAGS>", rest, re.IGNORECASE)
+    if closing is not None:
+        return head + rest[:closing.start()] + "</SUMMARY><TAGS>" + rest[closing.end():]
+    return text
+
+
 def parse_paper_response(response):
     """A batch's narration, summary, and tags. TAGS may be missing: a model
     that leaves it out still adapted the batch, so it is not asked again."""
@@ -11171,7 +11192,7 @@ def parse_paper_response(response):
         first_break = text.find("\n")
         if first_break >= 0:
             text = text[first_break + 1:-3].strip()
-    matches = list(PAPER_RESPONSE_PATTERN.finditer(text))
+    matches = list(PAPER_RESPONSE_PATTERN.finditer(_close_unclosed_summary(text)))
     problem = (
         "model response must contain one NARRATION element followed by one "
         "nonempty SUMMARY element"
