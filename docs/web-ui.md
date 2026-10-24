@@ -848,6 +848,50 @@ If the player remains silent, check the browser and selected output device. A
 Linux sound server exposing only **Dummy Output** has no real playback sink;
 that does not establish that the generated file is silent.
 
+### Highlights and notes (when enabled)
+
+Highlights and notes are off unless the server is started with
+`--enable-notes`; everything above describes Listen with them off. When they
+are on:
+
+- A single click (a tap) on a word still plays from that word, but waits
+  about a quarter of a second first, so a double-click can select a word
+  instead without moving the audio. If the second click of a double-click
+  comes after the book has already moved (a slow double-click), the audio is
+  put back where it was, playing or paused as before. This timing is a trial:
+  how fast a double-click must be depends on your system's settings.
+- Selected text gets **Highlight · Add note · Ask Hilde · Copy**: on a computer
+  in a small menu next to the selection, on a phone in a bar just above the
+  player (your phone's own Copy menu stays next to the selection). While text
+  is selected on a phone, only that bar's **Ask Hilde** shows; Play/Pause, the
+  seek bar and the speed stay.
+- **Highlight** marks the passage with a soft yellow fill. The blue marks of
+  the paragraph, sentence and word being read show over it as usual.
+- **Add note** opens a small editor under the selection (**Cancel**, **Save
+  note**); no highlight is needed. A grey note icon then follows the passage.
+- Under Hilde's answer to a question about selected text, **Save to notes**
+  keeps one card: the passage and where it is (its section, Narration or
+  Source text), your question, Hilde's answer and the model that wrote it, and
+  an optional comment of yours. A teal sparkle follows the passage. Opening it
+  later never asks the model again; asking alone keeps nothing.
+- **Notes** in the slim paper bar (an icon and the count on a phone) and the
+  **Notes** tab beside **Ask Hilde** in the side panel list every highlight,
+  note and saved answer of the book in reading order, with their count.
+  Clicking an icon in the text opens its card. **Show in text** scrolls to
+  the passage and outlines it briefly; it never moves the audio. On a phone
+  the Notes sheet (like the Ask Hilde sheet) ends above the player, so Pause
+  stays in reach; **Show in text** shrinks it to a small bar, and **Back to
+  note** opens it again at the same card.
+- Notes are kept on the Hilde server, one file per book outside the book's
+  folder, so every device sees the same notes and recreating a book keeps
+  them; nothing is kept in the browser. **Saved** shows only once the server
+  has confirmed a save; a failed save keeps your text with **Retry**. A note
+  changed on another device meanwhile asks which version to keep.
+- When the book opens, each note finds its passage again. If the passage is
+  gone (after a Recreate) or appears more than once, the note stays, marked
+  **Place not confirmed**: press **Choose its place…**, select the passage in
+  the text, then **Use this place**.
+
 ### A book being made
 
 A new book can be read and asked about as soon as its document has been

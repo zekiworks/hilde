@@ -20821,6 +20821,9 @@ PAGE = r"""<!doctype html>
            yellow (hue 55°, not amber) marks the open step only, never a
            warning. */
         --step-open:#ddd040;
+        /* Notes (Listen Part 2, only with the server's notes_enabled): a highlight is a soft fill of this yellow, 22%
+           over the ground, never an underline (the word being read owns the blue underline). */
+        --mark:#ddd040;
         --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
         --popover:#1d1f23; --popover-line:#3a3d44; }
 * { box-sizing:border-box; }
@@ -22206,6 +22209,149 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .selection-ask { position:fixed; z-index:40; padding:6px 16px; white-space:nowrap;
                  box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55),
                    0 10px 30px rgba(0,0,0,.5); }
+/* Notes (Listen Part 2): only with the server's notes_enabled (html.notes-on); nothing here shows otherwise. A highlight
+   is a CSS highlight (no element in the text), so the sentence tint, the word's blue underline and the paragraph bar
+   all show over it as before. */
+::highlight(notes-mark) { background-color:color-mix(in srgb, var(--mark) 22%, transparent); }
+/* In the sentence being read the fill is the same yellow it shows on the ground (22% over --bg, opaque), so the
+   sentence's blue tint shows around it, not mixed into it (hilde-listen-reading-a-highlight.png). */
+.reader-sentence.active::highlight(notes-mark), .reader-sentence.active *::highlight(notes-mark) {
+  background-color:color-mix(in srgb, var(--mark) 22%, var(--bg)); }
+/* The passage an open Add note editor is about: the selection's gray. */
+::highlight(notes-pending) { background-color:#5c5c5c; color:var(--text); }
+.notes-button svg, .selection-actions svg:not(.ask-icon), .dock-select svg:not(.ask-icon), .note-marker svg,
+.notes-icon, button.chat-save svg:not(.ask-icon), .notes-mini-label svg:not(.ask-icon) { flex:none; width:15px; height:15px;
+  fill:none; stroke:currentColor; stroke-width:1.4;
+  stroke-linejoin:round; stroke-linecap:round; }
+.notes-button { display:inline-flex; align-items:center; gap:8px; padding:6px 11px; }
+.notes-count { display:inline-block; min-width:20px; padding:0 6px; border-radius:999px; background:var(--hover);
+               color:var(--text); font-size:12px; font-weight:600; line-height:20px; text-align:center; }
+.paper-bar .notes-button { flex:none; margin-left:auto; }
+.paper-bar .notes-button:not(.hidden) + .library-button { margin-left:0; }
+html.notes-on .book-top { grid-template-columns:minmax(0,1fr) auto auto; }
+.book-top > .notes-button { grid-column:2; grid-row:1; align-self:start; }
+html.notes-on .book-top > .library-button { grid-column:3; }
+@media (max-width:599.98px) {
+  .notes-button { position:relative; padding:6px 10px; }
+  .notes-button-label { display:none; }
+  .notes-button .notes-count { position:absolute; top:-2px; right:-7px; min-width:17px; padding:0 4px;
+                               border:1px solid var(--line); background:var(--raised); font-size:11px; line-height:15px; }
+}
+/* A mark's marker after its passage: a grey note icon for the listener's note, a teal sparkle for a saved answer.
+   Small in the line; its touch target is larger (::after). */
+.note-marker { position:relative; display:inline-flex; align-items:center; justify-content:center; width:22px;
+               height:20px; min-height:0 !important; margin:0 3px 0 4px; padding:0; border:1px solid var(--line);
+               border-radius:5px; background:var(--raised); color:var(--dim); box-shadow:none; vertical-align:-3px;
+               cursor:pointer; user-select:none; -webkit-user-select:none; }
+.note-marker::after { content:""; position:absolute; inset:-10px -6px; }
+.note-marker svg { width:12px; height:12px; }
+.note-marker.answer { border-color:color-mix(in srgb, var(--ask) 55%, var(--line)); color:var(--ask);
+                      background:color-mix(in srgb, var(--ask) 14%, var(--surface)); }
+.note-marker.answer svg { stroke-width:1.3; }
+button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:var(--hover); }
+/* A mouse selection's actions: Highlight · Add note · Ask Hilde | Copy, beside the selection (its own id: the 18 Oct
+   Ask/Copy menu it replaces was #selection-menu, which stays retired). */
+.selection-actions { position:fixed; z-index:40; display:flex; align-items:center; gap:2px; padding:4px;
+                     border:1px solid var(--line); border-radius:10px; background:var(--raised); white-space:nowrap;
+                     box-shadow:0 10px 30px rgba(0,0,0,.5); }
+.selection-actions button { display:inline-flex; align-items:center; gap:8px; min-height:34px; padding:4px 12px;
+                            border:0; border-radius:7px; background:none; box-shadow:none; color:var(--text);
+                            font-size:15px; }
+.selection-actions button:hover:not(:disabled), .selection-actions button:focus-visible { background:var(--hover); }
+.selection-actions .sel-highlight svg { color:var(--mark); }
+.selection-actions .sel-ask { color:var(--ask); }
+.selection-actions .sel-sep { width:1px; align-self:stretch; margin:6px 2px; background:var(--line); }
+/* A touch selection's actions above the player: Highlight · Note · Ask Hilde (teal, as the one it replaces). */
+html.notes-on .dock-slot { flex-direction:column; align-items:center; gap:8px; }
+.dock-select { display:flex; align-items:center; gap:2px; padding:4px; border:1px solid var(--line);
+               border-radius:999px; background:var(--raised); box-shadow:0 6px 20px rgba(0,0,0,.5); }
+.dock-select button { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0 16px; border:0;
+                      border-radius:999px; background:none; box-shadow:none; color:var(--text); font-size:15px; }
+.dock-select #dock-highlight svg { color:var(--mark); }
+.dock-select .dock-select-ask, .dock-select .dock-select-ask:hover:not(:disabled) { background:var(--ask);
+  color:#0e1a18; font-weight:650; }
+/* One Ask Hilde while text is selected on a phone: the bar's. Play/Pause, the seek bar and speed stay. */
+html.notes-selecting #ask-hilde, html.notes-selecting #header-ask { visibility:hidden; }
+/* The shrunk Notes sheet (Back to note), or choosing a note's place: a small bar just above the player. */
+.notes-mini { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
+              width:min(560px, 100%); min-height:52px; padding:12px 10px 8px 16px; border:1px solid var(--line);
+              border-radius:14px; background:var(--surface); box-shadow:0 -4px 24px rgba(0,0,0,.45); font-size:14px; }
+.notes-mini-grabber { position:absolute; top:5px; left:calc(50% - 18px); width:36px; height:4px; border-radius:2px;
+                      background:#5a5a5a; }
+.notes-mini-label { display:inline-flex; flex:1; align-items:center; gap:8px; min-width:0; overflow:hidden;
+                    white-space:nowrap; text-overflow:ellipsis; }
+.notes-mini-label.answer { color:var(--ask); }
+.notes-mini-label.problem { color:var(--bad); white-space:normal; }
+.notes-mini button { min-height:34px; padding:4px 12px; }
+/* Notes in the side panel. */
+.panel-tabs #panel-tab-notes .notes-count { margin-left:-2px; }
+.notes-summary { margin:0 0 12px; color:var(--dim); font-size:13px; }
+.notes-summary.problem { color:var(--bad); }
+.notes-list { display:grid; gap:12px; }
+.notes-empty { color:var(--dim); font-size:14px; }
+.note-card { display:grid; gap:6px; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
+             background:var(--bg); font-size:14px; line-height:1.45; }
+.note-card.current { border-color:var(--accent-light); }
+.note-card:focus { outline:none; }
+.note-card:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
+.note-quote { margin:0; padding:0 0 0 12px; border-left:3px solid var(--off); color:var(--text); font-size:14.5px;
+              overflow-wrap:anywhere; }
+.note-quote.highlighted { border-left-color:var(--mark); }
+.note-where { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; color:var(--dim); font-size:12.5px; }
+.note-where > span { flex:1; min-width:0; }
+.note-where button.link { font-size:12.5px; }
+.note-label { margin:6px 0 0; color:var(--dim); font-size:11.5px; font-weight:650; letter-spacing:.06em;
+              text-transform:uppercase; }
+.note-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.note-hilde { display:grid; gap:2px; margin-top:4px; padding:8px 12px; border-left:2px solid var(--ask);
+              border-radius:0 6px 6px 0; background:color-mix(in srgb, var(--ask) 7%, transparent); }
+.note-hilde .note-label { display:flex; align-items:center; gap:6px; margin:0; color:var(--ask); }
+.note-hilde .note-label .ask-icon { width:12px; height:12px; }
+.note-answer > p + p { margin-top:.5em; }
+.note-unplaced { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:6px 10px;
+                 border:1px dashed var(--off); border-radius:8px; font-size:13px; }
+.note-unplaced strong { font-weight:650; }
+.note-unplaced .note-why { color:var(--dim); }
+.note-foot { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-top:4px; color:var(--dim);
+             font-size:12.5px; }
+.note-foot .grow { flex:1; }
+.note-foot button.link { font-size:12.5px; }
+.note-problem { color:var(--bad); }
+.note-ok { color:var(--local); }
+.note-edit { display:grid; gap:8px; margin-top:4px; }
+.note-edit textarea, .note-editor textarea { width:100%; min-height:76px; padding:8px 10px; border:1px solid var(--line);
+  border-radius:8px; background:var(--field); color:var(--text); font:inherit; font-size:15px; line-height:1.45;
+  resize:vertical; }
+.note-edit-actions, .note-editor-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.note-conflict { display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+                 background:var(--surface); }
+/* Save to notes under an answer of Hilde's (yellow, the mark's colour), then Saved to notes. */
+.chat-notes { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:8px; }
+button.chat-save { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:4px 12px;
+                   border-color:color-mix(in srgb, var(--mark) 60%, var(--line)); color:var(--text); font-size:14px; }
+button.chat-save svg { color:var(--mark); }
+button.chat-save.saved { border-color:var(--line); color:var(--dim); }
+.chat-notes .note-problem { font-size:13px; }
+/* The Add note editor under a selection, and Show in text's outline: in a layer at the document's origin. */
+.notes-layer { position:absolute; z-index:16; top:0; left:0; width:0; height:0; }
+.note-editor { position:absolute; display:grid; gap:8px; width:min(400px, calc(100vw - 24px)); padding:12px;
+               border:1px solid var(--line); border-radius:10px; background:var(--raised);
+               box-shadow:0 10px 30px rgba(0,0,0,.5); font-size:15px; }
+.note-editor-quote { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.note-editor-status:empty { display:none; }
+.note-editor-status { font-size:13px; }
+.notes-outline { position:absolute; border:1.5px solid var(--text); border-radius:5px; pointer-events:none;
+                 transition:opacity .4s; }
+@media (prefers-reduced-motion: reduce) { .notes-outline { transition:none; } }
+/* On a phone the Notes sheet (and Ask Hilde's: the same sheet) stops above the player, and the dimmed area leaves
+   the player uncovered, so Play/Pause, the seek bar and speed stay usable; with the keyboard open it may cover. */
+@media (max-width:899.98px) {
+  html.notes-on body:has(main.reading) .side-panel { top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) * .3);
+    height:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
+  html.notes-on.keyboard-open body:has(main.reading) .side-panel { top:var(--vv-top, 0px);
+    height:var(--vv-height, 100dvh); }
+  html.notes-on body:has(main.reading) .panel-backdrop:not(.hidden) { bottom:var(--dock-h, 0px); }
+}
 .shortcut-table { border-collapse:collapse; font-size:14px; }
 .shortcut-table th { padding:5px 16px 5px 0; text-align:left; white-space:nowrap; }
 .shortcut-table td { padding:5px 0; color:var(--dim); }
@@ -23039,6 +23185,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <header class="book-top">
           <button class="library-button" type="button" onclick="closeBook()"><svg viewBox="0 0 16 16"
             aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
+          <!-- Notes (only with the server's notes_enabled): the Notes tab of the side panel, with the count. -->
+          <button id="card-notes" class="notes-button hidden" type="button" onclick="openNotes()"><svg
+            viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
+            /></svg><span class="notes-button-label">Notes</span><span class="notes-count">0</span></button>
           <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
           <p class="book-meta note">
             <span id="reader-voice-name"></span>
@@ -23065,6 +23215,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <button id="paper-bar-title" class="paper-bar-title" type="button" title="Back to the top of the paper"
               onclick="paperBarToTop()"><span id="paper-bar-name"></span></button>
             <span id="paper-bar-meta" class="paper-bar-meta"></span>
+            <button id="paper-bar-notes" class="notes-button hidden" type="button" onclick="openNotes()"><svg
+              viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
+              /></svg><span class="notes-button-label">Notes</span><span class="notes-count">0</span></button>
             <button id="paper-bar-library" class="library-button" type="button" onclick="closeBook()"><svg
               viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
           </div>
@@ -23114,6 +23267,26 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
             d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
             /></svg>Ask Hilde</button>
+          <!-- With notes on (notes_enabled), a touch selection's actions instead of the one Ask Hilde: Highlight, Note
+               and Ask Hilde; while it shows, the player's and the header's Ask Hilde hide. -->
+          <div id="dock-select" class="dock-select hidden" role="toolbar" aria-label="Selected text">
+            <button id="dock-highlight" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M10 2.5l3.5 3.5L6.5 13H3v-3.5zM2 15h12"/></svg>Highlight</button>
+            <button id="dock-note" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"/></svg>Note</button>
+            <button id="dock-select-ask" class="dock-select-ask" type="button" aria-controls="side-panel"><svg
+              class="ask-icon" viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
+              /></svg>Ask Hilde</button>
+          </div>
+          <!-- The Notes sheet shrunk by Show in text on a phone (Back to note), or choosing a note's place. -->
+          <div id="notes-mini" class="notes-mini hidden" role="region" aria-label="Note">
+            <span class="notes-mini-grabber" aria-hidden="true"></span>
+            <span id="notes-mini-label" class="notes-mini-label"></span>
+            <button id="notes-mini-use" class="primary hidden" type="button">Use this place</button>
+            <button id="notes-mini-cancel" class="hidden" type="button">Cancel</button>
+            <button id="notes-mini-back" type="button">Back to note ↑</button>
+          </div>
         </div>
         <!-- The player: one bar docked at the bottom, two rows in one column (560px at most, centred on a wide
              screen; 16px from the edges on a phone): the seek bar between the elapsed and total times, then
@@ -23144,6 +23317,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
       </div>
       <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
+      <!-- With notes on: a mouse selection's actions beside it. -->
+      <div id="selection-actions" class="selection-actions hidden" role="toolbar" aria-label="Selected text">
+        <button type="button" class="sel-highlight" data-act="highlight"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+          d="M10 2.5l3.5 3.5L6.5 13H3v-3.5zM2 15h12"/></svg>Highlight</button>
+        <button type="button" data-act="note"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+          d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"/></svg>Add note</button>
+        <button type="button" class="sel-ask" data-act="ask" aria-controls="side-panel"><svg class="ask-icon"
+          viewBox="0 0 16 16" aria-hidden="true"><path
+          d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
+          /></svg>Ask Hilde</button>
+        <span class="sel-sep" aria-hidden="true"></span>
+        <button type="button" data-act="copy"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+          d="M5.5 5.5h8v8.75h-8zM10.5 5.5V1.75h-8.75v8.75H5.5"/></svg><span>Copy</span></button>
+      </div>
     </div>
   </section>
   <!-- The side panel (Ask Hilde, a figure, a source page) belongs to no page: the header's Ask Hilde opens it on
@@ -23163,6 +23350,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               onclick="showPanelView('chat')"><svg class="ask-icon"
                 viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
                 d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg>Ask Hilde</button>
+            <button id="panel-tab-notes" class="hidden" type="button" role="tab" aria-controls="notes-view"
+              onclick="openNotes()"><svg class="notes-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"
+              focusable="false"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
+              /></svg>Notes<span id="notes-tab-count" class="notes-count">0</span></button>
             <button id="panel-tab-figure" class="hidden" type="button" role="tab"
               aria-controls="figure-view" onclick="showPanelView('figure')"></button>
             <button id="panel-tab-page" class="hidden" type="button" role="tab"
@@ -23260,6 +23451,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <p id="page-problem" class="problem hidden"></p>
           </div>
         </section>
+        <!-- Notes (notes_enabled): highlights, notes and saved answers of the open book, in reading order. -->
+        <section id="notes-view" class="panel-view hidden" role="tabpanel" aria-labelledby="panel-tab-notes">
+          <div id="notes-scroll" class="panel-scroll">
+            <p id="notes-summary" class="notes-summary" role="status"></p>
+            <div id="notes-list" class="notes-list"></div>
+          </div>
+        </section>
       </aside>
 
   <datalist id="server-voice-presets">
@@ -23273,6 +23471,20 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
 <div id="row-menu" class="menu row-menu hidden" role="menu"></div>
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+<!-- Notes (notes_enabled): a layer at the document's origin for the Add note editor under a selection and the
+     outline Show in text draws briefly around a passage; both scroll with the text. -->
+<div id="notes-layer" class="notes-layer">
+  <div id="note-editor" class="note-editor hidden" role="dialog" aria-labelledby="note-editor-quote">
+    <p id="note-editor-quote" class="note-editor-quote"></p>
+    <label for="note-editor-text" class="visually-hidden">Your note</label>
+    <textarea id="note-editor-text" rows="3" maxlength="20000" placeholder="Your note"></textarea>
+    <p id="note-editor-status" class="note-editor-status" role="status" aria-live="polite"></p>
+    <div class="note-editor-actions">
+      <button id="note-editor-cancel" type="button">Cancel</button>
+      <button id="note-editor-save" class="primary" type="button">Save note</button>
+    </div>
+  </div>
+</div>
 
 <!-- One confirmation for every risky action: it names its target. -->
 <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
@@ -23707,6 +23919,17 @@ let readerDownload = null;
 // and Ask Hilde, no audio (openMaking()); "" otherwise.
 let readerMaking = "";
 function makingBook(id) { return String(id || "").startsWith("making-"); }
+// Notes (Listen Part 2): highlights, notes and saved answers, only with the
+// server's notes_enabled (--enable-notes; see "Notes" further down). `marks`:
+// id → item with its place, as the server last confirmed it.
+let notesEnabled = false;
+let marks = new Map(), marksBook = "", marksEpoch = 0, marksProblem = "", markRanges = new Map();
+let noteEdits = new Map(), answerSaves = new Map(), askAnchors = new Map(), noteDraft = null;
+let noteCurrent = "", choosingPlace = "", notesMiniKind = "";
+// Option A (step 7, a prototype): a single click in the text waits this long
+// before it listens, so a double-click can cancel it.
+const READER_CLICK_HOLD = 250, READER_UNDO_WITHIN = 5000;
+let readerTapTimer = 0, readerTapPending = null, readerSeekUndo = null;
 // One shared player keeps hundreds of preview buttons cheap.
 const previewAudio = new Audio();
 let previewing = "";
@@ -23862,6 +24085,8 @@ function load(data) {
   configuration = data.configuration || configuration;
   machine = data.machine || machine;
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
+  notesEnabled = data.notes_enabled === true;
+  document.documentElement.classList.toggle("notes-on", notesEnabled);
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
   populateAssets();
@@ -23880,7 +24105,7 @@ function collect() {
 async function jsonRequest(path, options) {
   const response = await fetch(path, options);
   const answer = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(answer.error || response.statusText), { status:response.status });
+  if (!response.ok) throw Object.assign(new Error(answer.error || response.statusText), { status:response.status, body:answer });
   return answer;
 }
 
@@ -24436,7 +24661,7 @@ function clearReader() {
     fitDock();
   }
   if ($("change-voice-dialog").open) $("change-voice-dialog").close();
-  hideSelectionAsk(); hideDockAsk();
+  hideSelectionAsk(); hideDockAsk(); resetMarks();
   setDetached(false);
   renderPlayer();
 }
@@ -24571,6 +24796,8 @@ function pressReaderText(event) {
   const before = readerPress;
   clearTimeout(before?.timer);
   readerPress = null;
+  // Option A: a press while a click waits is a second click; the first never acts.
+  cancelReaderTap();
   // A second finger while one is down is a pinch, not a tap.
   if (before && !event.isPrimary) return;
   if (!event.isTrusted || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
@@ -24578,15 +24805,23 @@ function pressReaderText(event) {
   const press = readerPress = {
     id:event.pointerId, x:event.clientX, y:event.clientY, at:event.timeStamp, target:event.target,
     shift:event.shiftKey, selected:!!readerSelection(), selecting:false, moved:false, scrolled:false,
+    mouse:event.pointerType === "mouse",
     double:event.pointerType !== "mouse" && !!last && event.timeStamp - last.at < READER_DOUBLE_TAP
       && Math.hypot(event.clientX - last.x, event.clientY - last.y) < 3 * READER_TAP_SLOP,
   };
+  // The fallback: the second tap of a double tap after the first already acted puts the audio back.
+  if (!press.mouse) { if (press.double) undoReaderSeek(); else readerSeekUndo = null; }
   if (event.pointerType !== "mouse")
     press.timer = setTimeout(() => selectPressedWord(press), READER_PRESS_SELECT);
 }
-// The browser's own count of a mouse press: 2 or more is a double-click.
+// The browser's own count of a mouse press: 2 or more is a double-click (the
+// system's double-click speed decides). With notes on, the second press of a
+// double-click that came after the first click already acted puts the audio
+// back (Option A's fallback); any other press forgets that.
 function pressReaderTextAgain(event) {
   if (readerPress && event.detail > 1) readerPress.double = true;
+  if (!readerPress?.mouse) return;
+  if (event.detail > 1) undoReaderSeek(); else readerSeekUndo = null;
 }
 function stopReaderPress(press, why) {
   if (!press) return;
@@ -24614,11 +24849,43 @@ function tapReaderText(event) {
   if (!readerAudio || readerDownload?.restoring || press.target.closest(READER_SKIP) || readerSelection()) return;
   const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
   if (!part) return;
-  if (inSentenceBeingRead(part)) { togglePlayback(); return; }
-  const range = clickedWord({ target:press.target, clientX:event.clientX, clientY:event.clientY }, part)
-    || widenRange(part, 0, "sentence");
-  const passage = Number(part.closest("[data-passage]")?.dataset.passage) || null;
-  if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {});
+  let act;
+  if (inSentenceBeingRead(part)) act = () => togglePlayback();
+  else {
+    const range = clickedWord({ target:press.target, clientX:event.clientX, clientY:event.clientY }, part)
+      || widenRange(part, 0, "sentence");
+    const passage = Number(part.closest("[data-passage]")?.dataset.passage) || null;
+    act = () => { if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {}); };
+  }
+  if (!notesEnabled) { act(); return; }
+  // Option A (notes on): the click waits READER_CLICK_HOLD; a second press or a
+  // selection meanwhile cancels it (a double-click selects, never listens).
+  const audio = readerAudio;
+  readerTapPending = () => {
+    if (readerAudio !== audio || readerSelection()) return;
+    readerSeekUndo = { audio, time:audio.currentTime, paused:audio.paused, at:performance.now() };
+    act();
+  };
+  readerTapTimer = setTimeout(runReaderTap, READER_CLICK_HOLD);
+}
+function runReaderTap() {
+  const pending = readerTapPending;
+  readerTapPending = null;
+  if (pending) pending();
+}
+function cancelReaderTap() {
+  clearTimeout(readerTapTimer);
+  readerTapPending = null;
+}
+// Option A's fallback: the audio back where it was, position and playing or paused.
+function undoReaderSeek() {
+  const undo = readerSeekUndo;
+  readerSeekUndo = null;
+  if (!undo || undo.audio !== readerAudio || performance.now() - undo.at > READER_UNDO_WITHIN) return;
+  readerAudio.currentTime = undo.time;
+  if (undo.paused) readerAudio.pause();
+  else readerAudio.play().catch(() => {});
+  updateReaderHighlight();
 }
 // The sentence being read: the one the player marks, narrated now or where
 // it paused; in Source text, the shown element of its passage.
@@ -25154,7 +25421,7 @@ function readerHasSelection() {
 // whether the word is above or below.
 function renderBackToListening() {
   const button = $("back-to-listening");
-  const free = !readerHasSelection() && $("dock-ask").classList.contains("hidden");
+  const free = !readerHasSelection() && dockBar().classList.contains("hidden");
   const element = detached && readerAudio && free ? readingMark() : null;
   button.classList.toggle("hidden", !element || onScreen(element));
 }
@@ -25700,6 +25967,7 @@ async function openAudiobook(id, focus, voiceName,
       : "Sentences highlight as they're read";
     $("reader-panel").classList.remove("hidden");
     updateReaderHighlight();
+    if (notesEnabled) loadMarks();
     if (keep) keepReadingPlace(keep);
   } catch (_) {
     if (readerAudio !== audio) return;
@@ -26095,12 +26363,14 @@ function fitHelpRoom() {
   main.style.setProperty("--help-room", `${room}px`);
 }
 function renderPanel() {
+  if (panelView === "notes" && !notesAvailable()) panelView = "chat";
   $("side-panel").classList.toggle("hidden", !panelOpen);
   $("panel-backdrop").classList.toggle("hidden", !panelOpen);
   $("book-view").classList.toggle("panel-open", panelOpen);
   document.querySelector("main").classList.toggle("help-panel-open", panelOpen && chatMode === "help");
   document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
-  for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"]]) {
+  for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"],
+                            ["notes", "notes-view"]]) {
     const selected = view === panelView;
     $(id).classList.toggle("hidden", !selected);
     $(`panel-tab-${view}`).setAttribute("aria-selected", String(selected));
@@ -26108,6 +26378,7 @@ function renderPanel() {
   }
   $("panel-tab-figure").classList.toggle("hidden", !figureShown);
   $("panel-tab-page").classList.toggle("hidden", !pageShown);
+  $("panel-tab-notes").classList.toggle("hidden", !notesAvailable());
   // Ask Hilde's model box and ⋯ in the header only while Ask Hilde shows; with other tabs, the box takes a line.
   $("chat-model-pick").classList.toggle("hidden", panelView !== "chat");
   $("chat-menu-wrap").classList.toggle("hidden", panelView !== "chat");
@@ -26365,7 +26636,7 @@ function chatModelLabel(name, selector) {
 // renewed, a provider connected, or a local server added); the model stays.
 const CHAT_FAILED_ADVICE = "Check this model under Settings › Providers (sign in again, connect the provider, or "
   + "make sure its server runs and has the model loaded), or choose another model above. Then ask again.";
-function chatEntryElement(entry) {
+function chatEntryElement(entry, index, list) {
   if (entry.role === "assistant" && !entry.text) return null;
   const block = entry.role === "assistant" || entry.role === "user" || entry.failed;
   const node = document.createElement(block ? "div" : "p");
@@ -26426,6 +26697,11 @@ function chatEntryElement(entry) {
     controls.append(listen, restart);
     node.append(controls);
     setVoiceButton(node, "listen");
+  }
+  // With notes on, an answer to a question about selected text: Save to notes.
+  if (entry.role === "assistant" && notesEnabled && chatMode === "book") {
+    if (!list) { list = [...(chatData ? chatData.conversation : []), entry]; index = list.length - 1; }
+    appendSaveToNotes(node, entry, index, list);
   }
   return node;
 }
@@ -27328,7 +27604,10 @@ function askAboutFocus(focus) {
   if (!chatData) loadChat();
   focusChatInput();
 }
-function askAboutSelection(picked) { askAboutFocus(selectionFocus(picked)); }
+function askAboutSelection(picked) {
+  if (notesEnabled) rememberAskAnchor(picked);
+  askAboutFocus(selectionFocus(picked));
+}
 // Ask Hilde opens the panel's chat as it was left. With text selected, that
 // text is attached, as Ask about this does; with nothing attached and
 // nothing written, the part playing is.
@@ -27361,7 +27640,11 @@ let pointerHeld = false, selectionTimer = 0, lastPointerType = "";
 function touchSelecting() {
   return lastPointerType ? lastPointerType !== "mouse" : window.matchMedia("(hover: none)").matches;
 }
-function hideSelectionAsk() { $("selection-ask").classList.add("hidden"); }
+// With notes on, a mouse selection gets the actions menu instead (Highlight ·
+// Add note · Ask Hilde · Copy) and a touch selection the bar of actions
+// (Highlight · Note · Ask Hilde) instead of the one Ask Hilde (dockBar()).
+function selectionButton() { return $(notesEnabled ? "selection-actions" : "selection-ask"); }
+function hideSelectionAsk() { $("selection-ask").classList.add("hidden"); $("selection-actions").classList.add("hidden"); }
 function queueSelectionAsk() {
   clearTimeout(selectionTimer);
   selectionTimer = setTimeout(showSelectionAsk, 250);
@@ -27369,11 +27652,11 @@ function queueSelectionAsk() {
 function showSelectionAsk() {
   const picked = !pointerHeld && state && state.tab === "player" && !touchSelecting() && readerSelection();
   if (!picked) { hideSelectionAsk(); return; }
-  $("selection-ask").classList.remove("hidden");
+  selectionButton().classList.remove("hidden");
   placeSelectionAsk();
 }
 function placeSelectionAsk() {
-  const button = $("selection-ask"), selection = window.getSelection();
+  const button = selectionButton(), selection = window.getSelection();
   if (button.classList.contains("hidden") || !selection.rangeCount) return;
   const box = selection.getRangeAt(0).getBoundingClientRect(), view = readingViewport();
   const height = button.offsetHeight, width = button.offsetWidth;
@@ -27403,23 +27686,28 @@ function noteSelection() {
   }
   // A press that selects (a long press) is not a tap.
   if (readerPress) readerPress.selecting = true;
+  // Option A: a click still waiting never acts once text is selected.
+  cancelReaderTap();
   if (!touchSelecting()) { hideDockAsk(); return; }
   clearTimeout(dockHideTimer);
   dockPicked = { ...picked, range:picked.range.cloneRange() };
   hideSelectionAsk();
-  if ($("dock-ask").classList.contains("hidden")) {
-    $("dock-ask").classList.remove("hidden");
+  if (dockBar().classList.contains("hidden")) {
+    dockBar().classList.remove("hidden");
+    document.documentElement.classList.toggle("notes-selecting", notesEnabled);
     renderBackToListening();
   }
 }
 function settleDockAsk() {
   if (!dockPressed && !readerSelection()) hideDockAsk();
 }
+function dockBar() { return $(notesEnabled ? "dock-select" : "dock-ask"); }
 function hideDockAsk() {
   clearTimeout(dockHideTimer);
   dockPicked = null;
-  if ($("dock-ask").classList.contains("hidden")) return;
-  $("dock-ask").classList.add("hidden");
+  if (dockBar().classList.contains("hidden")) return;
+  dockBar().classList.add("hidden");
+  document.documentElement.classList.remove("notes-selecting");
   renderBackToListening();
 }
 function askFromDock() {
@@ -27451,6 +27739,734 @@ function listenFromSelection(picked) {
   updateReaderHighlight();
   setDetached(false);
   return true;
+}
+
+// --- Notes: highlights, notes and saved answers (Listen Part 2) --------------
+// Only with the server's notes_enabled; off, nothing of this shows and a click
+// in the text acts at once. Marks live on the server (/api/marks*, one file
+// per book), never in the browser, and "Saved" means only the server's 200.
+// A mark keeps its quote, up to 64 characters before and after it, its view
+// (Narration or Source text), its paragraph (a narration paragraph's
+// data-paragraph, a source passage's data-passage) and its section; the
+// server finds it again in the text as this page renders it: a place
+// confirmed with offsets in that paragraph's text, unclear (the quote is
+// there more than once), or missing. Its text is the paragraph's text nodes
+// in order, chrome left out (MARK_CHROME: labels, tags, flags, pictures and
+// markers), the same text the server reads from the payload; offsets turn
+// into a range by walking those nodes. A highlight is a CSS highlight, so the
+// playback marks show over it unchanged; a note or a saved answer adds a
+// marker (a button with no text) after its passage.
+const MARK_CHROME = ".reader-label, .reader-tag, .reader-flag, .reader-picture, .figure-card, .note-marker";
+const MARK_CONTEXT = 64, NOTE_MAX = 20000, QUOTE_MAX = 2000;
+const NOTE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5'
+  + 'M6.25 8.25h4M6.25 10.75h4"/></svg>';
+const SPARKLE_ICON = '<svg class="ask-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5C8.5 5.4 10.6 7.5 '
+  + '14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg>';
+function notesAvailable() { return notesEnabled && !!state && chatMode === "book" && !!readerAudio && !!state.player.book; }
+// A version 4 UUID, also where crypto.randomUUID is missing (a page over plain http on the network).
+function markId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function noteEl(tag, className = "", text = "") {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text) element.textContent = text;
+  return element;
+}
+function noteButton(className, text, run) {
+  const button = noteEl("button", className, text);
+  button.type = "button";
+  button.addEventListener("click", run);
+  return button;
+}
+// A paragraph's text as the server reads it, and its text nodes: [node, offset].
+function markText(element) {
+  const nodes = [];
+  let text = "";
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, { acceptNode:(node) =>
+    node.parentElement.closest(MARK_CHROME) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) { nodes.push([node, text.length]); text += node.data; }
+  return { nodes, text };
+}
+function markParagraph(view, paragraph) {
+  if (paragraph === null || paragraph === undefined) return null;
+  return $("reader-content").querySelector(view === "source" ? `.reader-original[data-passage="${Number(paragraph)}"]`
+    : `.reader-paragraph[data-paragraph="${Number(paragraph)}"]`);
+}
+// Where a range boundary falls in a paragraph's text.
+function markOffset(model, container, offset) {
+  if (container.nodeType === Node.TEXT_NODE) {
+    const hit = model.nodes.find(([node]) => node === container);
+    if (hit) return hit[1] + Math.min(offset, container.length);
+  }
+  const point = document.createRange();
+  point.setStart(container, offset);
+  let position = 0;
+  for (const [node, at] of model.nodes) {
+    if (point.comparePoint(node, 0) >= 0) break;
+    position = at + node.length;
+  }
+  return position;
+}
+// The range of [start, end) in a paragraph's text, or null.
+function textRange(model, start, end) {
+  if (!(start >= 0) || !(end > start) || end > model.text.length) return null;
+  const locate = (position, atEnd) => {
+    for (const [node, at] of model.nodes)
+      if (atEnd ? position <= at + node.length : position < at + node.length) return [node, position - at];
+    return null;
+  };
+  const first = locate(start, false), last = locate(end, true);
+  if (!first || !last) return null;
+  const range = document.createRange();
+  range.setStart(...first); range.setEnd(...last);
+  return range;
+}
+function placeRange(place) {
+  const element = markParagraph(place.view, place.paragraph);
+  return element ? textRange(markText(element), place.start, place.end) : null;
+}
+function passageSection(passage) {
+  const detail = readerPayload && passage ? (readerPayload.passages || {})[passage] : null;
+  return (detail && detail.section) || null;
+}
+// A mark's anchor from [start, end) of a paragraph's text.
+function textAnchor(element, model, start, end) {
+  const source = element.classList.contains("reader-original");
+  const passage = Number(element.dataset.passage) || null;
+  return {
+    view:source ? "source" : "narration",
+    paragraph:Number(source ? element.dataset.passage : element.dataset.paragraph),
+    source_id:passage,
+    quote:model.text.slice(start, end),
+    prefix:model.text.slice(Math.max(0, start - MARK_CONTEXT), start),
+    suffix:model.text.slice(end, end + MARK_CONTEXT),
+    section:passageSection(passage),
+  };
+}
+// A selection's anchor: its part in the first paragraph it takes text from
+// (a mark has one place), spaces at its ends left out. { anchor, range } or null.
+function rangeAnchor(range) {
+  for (const element of $("reader-content").querySelectorAll(".reader-paragraph, .reader-original")) {
+    if (!shown(element) || !range.intersectsNode(element)) continue;
+    const model = markText(element), whole = document.createRange();
+    whole.selectNodeContents(element);
+    let start = range.compareBoundaryPoints(Range.START_TO_START, whole) > 0
+      ? markOffset(model, range.startContainer, range.startOffset) : 0;
+    let end = range.compareBoundaryPoints(Range.END_TO_END, whole) < 0
+      ? markOffset(model, range.endContainer, range.endOffset) : model.text.length;
+    while (start < end && /\s/.test(model.text[start])) start++;
+    while (end > start && /\s/.test(model.text[end - 1])) end--;
+    if (end <= start) continue;
+    return { anchor:textAnchor(element, model, start, end), range:textRange(model, start, end) };
+  }
+  return null;
+}
+// An answer's anchor from what its question went with (the quote and its first
+// passage), when the selection itself was not kept: found once in that passage,
+// with its context; else the quote alone, which the server reports as unclear
+// or missing, so the card says Place not confirmed.
+function quoteAnchor(quote, passage, section) {
+  const wanted = String(quote || "").replace(/\s+/g, " ").trim();
+  const elements = [...$("reader-content").querySelectorAll(
+    `.reader-paragraph[data-passage="${Number(passage)}"], .reader-original[data-passage="${Number(passage)}"]`)];
+  const hits = [];
+  for (const element of elements) {
+    const model = markText(element);
+    let flat = "";
+    const map = [];
+    for (let index = 0; index < model.text.length; index++) {
+      const char = model.text[index];
+      if (/\s/.test(char)) { if (!flat || flat.endsWith(" ")) continue; flat += " "; } else flat += char;
+      map.push(index);
+    }
+    for (let at = wanted ? flat.indexOf(wanted) : -1; at >= 0; at = flat.indexOf(wanted, at + 1))
+      hits.push({ element, model, start:map[at], end:map[at + wanted.length - 1] + 1 });
+  }
+  // A passage is both a narration paragraph and, in Source text, its original: the view shown decides.
+  const visible = hits.filter((hit) => shown(hit.element));
+  const only = visible.length === 1 ? visible[0] : hits.length === 1 ? hits[0] : null;
+  if (only) return textAnchor(only.element, only.model, only.start, only.end);
+  const element = elements.find(shown) || elements[0];
+  const source = !!element && element.classList.contains("reader-original");
+  return { view:source ? "source" : "narration",
+           paragraph:element ? Number(source ? element.dataset.passage : element.dataset.paragraph) : null,
+           source_id:Number(passage) || null, quote:wanted, prefix:"", suffix:"",
+           section:section || passageSection(passage) };
+}
+
+// The marks of the open book from the server; again whenever Notes opens or
+// the page comes back into view, so another device's notes show here too.
+async function loadMarks() {
+  if (!notesAvailable()) return;
+  const book = state.player.book, epoch = ++marksEpoch;
+  try {
+    const answer = await jsonRequest("/api/marks?book=" + encodeURIComponent(book));
+    if (epoch !== marksEpoch || book !== state.player.book) return;
+    marks = new Map((answer.items || []).filter((item) => !item.deleted).map((item) => [item.id, item]));
+    marksBook = book; marksProblem = "";
+  } catch (error) {
+    if (epoch !== marksEpoch) return;
+    marksProblem = error.message || "The server did not answer.";
+  }
+  renderMarks(); renderNotes(); renderChatSaves();
+}
+function resetMarks() {
+  marksEpoch++;
+  marks = new Map(); marksBook = ""; marksProblem = ""; markRanges = new Map();
+  noteEdits.clear(); answerSaves.clear(); askAnchors.clear();
+  noteCurrent = ""; choosingPlace = "";
+  cancelReaderTap(); readerSeekUndo = null;
+  hideNoteEditor(); hideNotesMini();
+  if (window.CSS && CSS.highlights) CSS.highlights.delete("notes-mark");
+  renderNotes();
+}
+// The fill of every highlight and the marker after every note and saved answer.
+function renderMarks() {
+  for (const marker of $("reader-content").querySelectorAll(".note-marker")) marker.remove();
+  markRanges = new Map();
+  const fills = [];
+  if (notesEnabled) {
+    for (const item of marks.values()) {
+      if (!item.place || item.place.status !== "confirmed") continue;
+      const range = placeRange(item.place);
+      if (!range) continue;
+      markRanges.set(item.id, range);
+      if (item.highlight) fills.push(range);
+      if (item.kind === "answer" || (item.note || "").trim()) placeMarker(item, range);
+    }
+  }
+  if (!window.CSS || !CSS.highlights) return;
+  if (fills.length) CSS.highlights.set("notes-mark", new Highlight(...fills));
+  else CSS.highlights.delete("notes-mark");
+}
+// The marker goes right after the passage, never inside a word's element.
+function placeMarker(item, range) {
+  const marker = noteEl("button", `note-marker${item.kind === "answer" ? " answer" : ""}`);
+  marker.type = "button";
+  marker.dataset.mark = item.id;
+  marker.setAttribute("aria-label", item.kind === "answer" ? "Open Hilde's saved answer" : "Open your note");
+  marker.title = item.kind === "answer" ? "Hilde's answer" : "Your note";
+  marker.innerHTML = item.kind === "answer" ? SPARKLE_ICON : NOTE_ICON;
+  const end = range.endContainer, offset = range.endOffset;
+  const word = (end.nodeType === Node.TEXT_NODE ? end.parentElement : end).closest(".reader-word");
+  if (word) word.after(marker);
+  else if (end.nodeType === Node.TEXT_NODE) {
+    if (offset < end.length) end.splitText(offset);
+    end.after(marker);
+  } else end.insertBefore(marker, end.childNodes[offset] || null);
+}
+// Marks in reading order: by their paragraph in the page, then their start.
+function sortedMarks() {
+  const order = new Map([...$("reader-content").querySelectorAll(".reader-paragraph, .reader-original")]
+    .map((element, index) => [element, index]));
+  const key = (item) => {
+    const place = item.place && item.place.status === "confirmed" ? item.place : null;
+    const element = place ? markParagraph(place.view, place.paragraph)
+      : markParagraph(item.anchor.view, item.anchor.paragraph);
+    return [order.has(element) ? order.get(element) : Infinity, place ? place.start : 0, item.created_at || ""];
+  };
+  const keyed = [...marks.values()].filter((item) => !item.deleted).map((item) => [key(item), item]);
+  // Unplaced marks whose paragraph is gone (Infinity) go last, by when they were made.
+  const compare = (a, b) => (a === b ? 0 : a < b ? -1 : 1);
+  keyed.sort(([a], [b]) => compare(a[0], b[0]) || compare(a[1], b[1]) || compare(a[2], b[2]));
+  return keyed.map(([, item]) => item);
+}
+// What a save sends: the item without what the server sets (times, place).
+function markPayload(item, changes = {}) {
+  const sent = { id:item.id, kind:item.kind, anchor:item.anchor, highlight:!!item.highlight,
+                 note:item.note ?? null, confirmed_place:!!item.confirmed_place };
+  if (item.kind === "answer") sent.answer = item.answer;
+  return { ...sent, ...changes };
+}
+async function saveMark(item) {
+  const answer = await jsonRequest("/api/marks/save", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({ book:marksBook || state.player.book, item }),
+  });
+  marks.set(answer.item.id, answer.item);
+  renderMarks(); renderNotes(); renderChatSaves();
+  return answer.item;
+}
+function selectionTooLong(found) {
+  if (found.anchor.quote.length <= QUOTE_MAX) return false;
+  showToast(`Select less: a mark keeps at most ${QUOTE_MAX.toLocaleString("en")} characters.`);
+  return true;
+}
+
+// Highlight: saved at once; the fill shows once the server has it, and a
+// failed save says so, with Retry.
+function highlightSelection(picked) {
+  const found = picked && rangeAnchor(picked.range);
+  hideSelectionAsk(); hideDockAsk();
+  if (!found || selectionTooLong(found)) return;
+  window.getSelection().removeAllRanges();
+  const item = { id:markId(), kind:"highlight", anchor:found.anchor, highlight:true, note:null, confirmed_place:false };
+  const run = async () => {
+    try { await saveMark(markPayload(item)); }
+    catch (error) { showToast(`Highlight not saved: ${error.message}`, { label:"Retry", run }); }
+  };
+  run();
+}
+async function copySelection(picked, button) {
+  const raw = window.getSelection().toString() || picked.text;
+  let done = false;
+  try { done = document.execCommand("copy"); } catch (_) { done = false; }
+  if (!done && navigator.clipboard) {
+    try { await navigator.clipboard.writeText(raw); done = true; } catch (_) { done = false; }
+  }
+  const label = button.querySelector("span");
+  label.textContent = done ? "Copied" : "Not copied";
+  setTimeout(() => { label.textContent = "Copy"; hideSelectionAsk(); }, 900);
+}
+
+// Add note: a small editor under the selection (no highlight needed); the
+// passage keeps the selection's gray while it is open. Saved means the
+// server's 200; a failed save keeps the text, with Retry.
+function openNoteEditor(picked) {
+  const found = picked && rangeAnchor(picked.range);
+  hideSelectionAsk(); hideDockAsk();
+  if (!found || selectionTooLong(found)) return;
+  window.getSelection().removeAllRanges();
+  noteDraft = { item:{ id:markId(), kind:"note", anchor:found.anchor, highlight:false, note:"", confirmed_place:false },
+                range:found.range, saving:false };
+  if (window.CSS && CSS.highlights && found.range) CSS.highlights.set("notes-pending", new Highlight(found.range));
+  $("note-editor-quote").textContent = `Note on “${cutText(found.anchor.quote, 70)}”`;
+  $("note-editor-text").value = "";
+  noteEditorState("", "Save note");
+  $("note-editor").classList.remove("hidden");
+  // Typing a note: Follow along waits (the pill shows) rather than turning the page away.
+  if (readerAudio) setDetached(true);
+  placeNoteEditor();
+  $("note-editor-text").focus({ preventScroll:true });
+}
+function noteEditorState(status, save, kind = "") {
+  const line = $("note-editor-status");
+  line.textContent = status;
+  line.className = `note-editor-status${kind ? ` note-${kind}` : ""}`;
+  $("note-editor-save").textContent = save;
+  $("note-editor-save").disabled = save === "Saving…";
+  $("note-editor-save").classList.toggle("hidden", !save);
+}
+function placeNoteEditor() {
+  const editor = $("note-editor");
+  if (!noteDraft || editor.classList.contains("hidden")) return;
+  const rects = noteDraft.range ? [...noteDraft.range.getClientRects()] : [];
+  if (!rects.length) return;
+  const origin = $("notes-layer").getBoundingClientRect(), last = rects[rects.length - 1];
+  const width = editor.offsetWidth;
+  const left = Math.min(Math.max(8, rects[0].left), window.innerWidth - width - 8);
+  editor.style.left = `${Math.round(left - origin.left)}px`;
+  editor.style.top = `${Math.round(last.bottom + 8 - origin.top)}px`;
+  // The editor whole above the player.
+  const box = editor.getBoundingClientRect(), bottom = dockTop() - 8;
+  if (box.bottom > bottom) scrollPageBy(Math.min(box.bottom - bottom, box.top - readingViewport().top - 8));
+}
+function hideNoteEditor() {
+  noteDraft = null;
+  $("note-editor").classList.add("hidden");
+  if (window.CSS && CSS.highlights) CSS.highlights.delete("notes-pending");
+}
+async function saveNoteDraft() {
+  const draft = noteDraft;
+  if (!draft || draft.saving) return;
+  const text = $("note-editor-text").value;
+  if (!text.trim()) { noteEditorState("Write your note first.", "Save note", "problem"); return; }
+  if (text.length > NOTE_MAX) {
+    noteEditorState(`A note can have at most ${NOTE_MAX.toLocaleString("en")} characters.`, "Save note", "problem");
+    return;
+  }
+  draft.item.note = text;
+  draft.saving = true;
+  noteEditorState("", "Saving…");
+  try {
+    await saveMark(markPayload(draft.item));
+    if (noteDraft !== draft) return;
+    noteEditorState("✓ Saved", "", "ok");
+    setTimeout(() => { if (noteDraft === draft) hideNoteEditor(); }, 900);
+  } catch (error) {
+    if (noteDraft !== draft) return;
+    draft.saving = false;
+    // A tombstone with this id (deleted elsewhere): the retry goes as a new note.
+    if (error.status === 409) draft.item.id = markId();
+    noteEditorState(`Not saved: ${error.message}. Your note is still here.`, "Retry", "problem");
+  }
+}
+
+// Ask Hilde about a selection keeps its anchor for Save to notes, by what the
+// question goes with (its quote and first passage).
+function rememberAskAnchor(picked) {
+  const found = rangeAnchor(picked.range);
+  const about = found ? focusAbout(selectionFocus(picked)) : null;
+  if (about && about.kind === "selection") askAnchors.set(`${about.start}|${about.quote}`, found.anchor);
+}
+function answerQuestion(index, list) {
+  for (let at = index - 1; at >= 0; at--) if (list[at].role === "user") return list[at];
+  return null;
+}
+function answerKey(question, entry) { return `${question.text}\u0000${entry.text}`; }
+function savedAnswer(question, entry) {
+  return [...marks.values()].find((item) => item.kind === "answer" && item.answer
+    && item.answer.question === question.text && item.answer.text === entry.text) || null;
+}
+// Save to notes: under an answer to a question about selected text.
+function appendSaveToNotes(node, entry, index, list) {
+  const question = answerQuestion(index, list);
+  const about = question && question.context && question.context.about;
+  if (!about || about.kind !== "selection" || entry.stopped) return;
+  const row = noteEl("div", "chat-notes");
+  row.entry = entry; row.question = question;
+  node.append(row);
+  renderSaveToNotes(row);
+}
+function renderChatSaves() {
+  for (const row of $("chat-log").querySelectorAll(".chat-notes")) renderSaveToNotes(row);
+}
+function renderSaveToNotes(row) {
+  const { entry, question } = row, saved = savedAnswer(question, entry);
+  const pending = answerSaves.get(answerKey(question, entry));
+  row.replaceChildren();
+  if (saved) {
+    const open = noteButton("chat-save saved", "", () => openNotes(saved.id));
+    open.innerHTML = `${NOTE_ICON}Saved to notes`;
+    row.append(open);
+    return;
+  }
+  const save = noteButton("chat-save", "", () => saveAnswer(entry, question));
+  save.innerHTML = `${NOTE_ICON}${pending && pending.state === "saving" ? "Saving…"
+    : pending && pending.state === "failed" ? "Retry" : "Save to notes"}`;
+  save.disabled = !!pending && pending.state === "saving";
+  row.append(save);
+  if (pending && pending.state === "failed") row.append(noteEl("span", "note-problem", `Not saved: ${pending.error}`));
+}
+async function saveAnswer(entry, question) {
+  const key = answerKey(question, entry), before = answerSaves.get(key);
+  if (before && before.state === "saving") return;
+  const about = question.context.about;
+  const item = {
+    id:before && before.id ? before.id : markId(), kind:"answer",
+    anchor:askAnchors.get(`${about.start}|${about.quote}`) || quoteAnchor(about.quote, about.start, question.context.section),
+    highlight:true, note:null, confirmed_place:false,
+    // Copied from the conversation: opening it never asks a model again.
+    answer:{ question:question.text, text:entry.text, model:entry.model_name || entry.model || null,
+             asked_at:question.at || entry.at || new Date().toISOString() },
+  };
+  answerSaves.set(key, { state:"saving", id:item.id });
+  renderChatSaves();
+  try {
+    await saveMark(markPayload(item));
+    answerSaves.delete(key);
+  } catch (error) {
+    answerSaves.set(key, { state:"failed", error:error.message, id:error.status === 409 ? "" : item.id });
+  }
+  renderChatSaves();
+}
+
+// The Notes tab: every mark in reading order, highlights without a note too,
+// with the count also on the slim bar's Notes button and the card's.
+function openNotes(id = "") {
+  if (!notesAvailable()) return;
+  hideNotesMini();
+  if (id) noteCurrent = id;
+  setPanel(true, "notes");
+  renderNotes();
+  if (id) revealNoteCard(id);
+  loadMarks();
+}
+function revealNoteCard(id) {
+  const card = [...$("notes-list").children].find((element) => element.dataset.mark === id);
+  if (!card) return;
+  const box = $("notes-scroll");
+  box.scrollTop += card.getBoundingClientRect().top - box.getBoundingClientRect().top - 12;
+  card.focus({ preventScroll:true });
+}
+function noteTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = date.toLocaleString("en", { month:"short" });
+  return `${date.getDate()} ${month}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+function viewName(view) { return view === "source" ? "Source text" : "Narration text"; }
+function renderNotes() {
+  const available = notesAvailable(), items = available ? sortedMarks() : [];
+  for (const id of ["paper-bar-notes", "card-notes"]) {
+    const button = $(id);
+    button.classList.toggle("hidden", !available);
+    button.querySelector(".notes-count").textContent = String(items.length);
+    button.setAttribute("aria-label", `Notes, ${items.length}`);
+  }
+  $("notes-tab-count").textContent = String(items.length);
+  $("panel-tab-notes").classList.toggle("hidden", !available);
+  if (!available) { $("notes-list").replaceChildren(); return; }
+  const summary = $("notes-summary");
+  summary.classList.toggle("problem", !!marksProblem);
+  summary.replaceChildren(marksProblem ? `Notes could not be loaded: ${marksProblem} `
+    : `${items.length} ${items.length === 1 ? "note" : "notes"} · in reading order`);
+  if (marksProblem) summary.append(noteButton("link", "Retry", loadMarks));
+  const list = $("notes-list");
+  // A card being typed in keeps its element (and the focus and text in it) while the list renders again.
+  const kept = new Map([...list.children].filter((card) => card.dataset.editing === "editing"
+    && noteEdits.get(card.dataset.mark)?.state === "editing" && card.contains(document.activeElement))
+    .map((card) => [card.dataset.mark, card]));
+  const cards = items.map((item) => kept.get(item.id) || noteCard(item));
+  if (!items.length && !marksProblem)
+    cards.push(noteEl("p", "notes-empty", "No notes yet. Select text in the paper to highlight it, add a note, or ask Hilde."));
+  list.replaceChildren(...cards);
+}
+function noteCard(item) {
+  const card = noteEl("article", `note-card${item.id === noteCurrent ? " current" : ""}`);
+  card.dataset.mark = item.id;
+  card.tabIndex = -1;
+  const placed = markRanges.has(item.id);
+  card.append(noteEl("blockquote", `note-quote${item.highlight ? " highlighted" : ""}`, item.anchor.quote));
+  const where = noteEl("div", "note-where");
+  // Where it is now (a place can be found in the other view after a Recreate), else where it was made.
+  const view = placed ? item.place.view : item.anchor.view;
+  where.append(noteEl("span", "", [item.anchor.section, viewName(view)].filter(Boolean).join(" · ")));
+  if (placed) where.append(noteButton("link note-show", "Show in text", () => showMarkInText(item.id)));
+  card.append(where);
+  if (!placed) {
+    const box = noteEl("div", "note-unplaced");
+    const status = item.place && item.place.status;
+    box.append(noteEl("strong", "", "Place not confirmed"),
+      noteEl("span", "note-why", status === "unclear" && item.place.candidates > 1
+        ? `The passage is in the text ${item.place.candidates} times.`
+        : status === "unclear" ? "The text around the passage has changed."
+        : "The passage is no longer in the text as it was."));
+    if (choosingPlace === item.id) box.append(noteEl("span", "", "Select its passage in the text…"));
+    else box.append(noteButton("link note-choose", "Choose its place…", () => chooseMarkPlace(item.id)));
+    card.append(box);
+  }
+  const edit = noteEdits.get(item.id);
+  if (item.kind === "answer" && item.answer) {
+    card.append(noteEl("p", "note-label", "You asked"), noteEl("p", "note-text", item.answer.question));
+    const hilde = noteEl("div", "note-hilde"), label = noteEl("p", "note-label");
+    label.innerHTML = SPARKLE_ICON;
+    label.append("Hilde");
+    const answer = noteEl("div", "note-answer note-text");
+    for (const part of String(item.answer.text || "").split(/\n{2,}/)) if (part.trim()) answer.append(noteEl("p", "", part.trim()));
+    hilde.append(label, answer);
+    card.append(hilde);
+    if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "Your comment"), noteEl("p", "note-text", item.note));
+  } else if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "You"), noteEl("p", "note-text", item.note));
+  if (edit) { card.dataset.editing = edit.state; card.append(noteEditForm(item, edit)); }
+  const foot = noteEl("div", "note-foot");
+  const by = item.kind === "answer" && item.answer && item.answer.model ? ` · answer by ${item.answer.model}` : "";
+  foot.append(noteEl("span", "note-saved", `✓ Saved${by} · ${noteTime(item.updated_at)}`), noteEl("span", "grow"));
+  if (!edit) {
+    const has = (item.note || "").trim();
+    foot.append(noteButton("link note-edit-open", has ? "Edit" : item.kind === "answer" ? "Add a comment" : "Add a note",
+      () => { noteEdits.set(item.id, { text:item.note || "", state:"editing" }); renderNotes(); focusNoteEdit(item.id); }));
+  }
+  foot.append(noteButton("link note-delete", "Delete", () => deleteMark(item.id)));
+  card.append(foot);
+  return card;
+}
+function focusNoteEdit(id) {
+  const card = [...$("notes-list").children].find((element) => element.dataset.mark === id);
+  const box = card && card.querySelector("textarea");
+  if (box) { box.focus({ preventScroll:true }); box.setSelectionRange(box.value.length, box.value.length); }
+}
+function noteEditForm(item, edit) {
+  const form = noteEl("div", "note-edit");
+  const label = noteEl("label", "note-label", item.kind === "answer" ? "Your comment" : "You");
+  const box = noteEl("textarea");
+  box.id = `note-edit-${item.id}`; label.htmlFor = box.id;
+  box.maxLength = NOTE_MAX; box.rows = 3; box.value = edit.text;
+  box.addEventListener("input", () => { edit.text = box.value; });
+  form.append(label, box);
+  if (edit.state === "failed") form.append(noteEl("p", "note-problem", `Not saved: ${edit.error}. Your text is still here.`));
+  if (edit.state === "conflict") {
+    const stored = edit.stored, box409 = noteEl("div", "note-conflict");
+    box409.append(noteEl("p", "", stored.deleted ? "This note was deleted on another device."
+      : `This note was changed on another device (${noteTime(stored.updated_at)}). Which one do you keep?`));
+    if (!stored.deleted && (stored.note || "").trim()) box409.append(noteEl("p", "note-text", `Theirs: ${stored.note}`));
+    const row = noteEl("div", "note-edit-actions");
+    row.append(noteButton("", stored.deleted ? "Discard mine" : "Use theirs", () => {
+      noteEdits.delete(item.id);
+      if (stored.deleted) marks.delete(item.id); else marks.set(stored.id, stored);
+      renderMarks(); renderNotes();
+    }), noteButton("primary", stored.deleted ? "Save mine as a new note" : "Keep mine", () => saveNoteEdit(item.id)));
+    box409.append(row);
+    form.append(box409);
+    return form;
+  }
+  const row = noteEl("div", "note-edit-actions");
+  const save = noteButton("primary", edit.state === "saving" ? "Saving…" : edit.state === "failed" ? "Retry" : "Save",
+    () => saveNoteEdit(item.id));
+  save.disabled = edit.state === "saving";
+  row.append(noteButton("", "Cancel", () => { noteEdits.delete(item.id); renderNotes(); }), save);
+  form.append(row);
+  return form;
+}
+// An edit goes with the stored item's updated_at; another device's change
+// meanwhile comes back as 409 with theirs, and the listener chooses.
+async function saveNoteEdit(id) {
+  const edit = noteEdits.get(id), item = marks.get(id);
+  if (!edit || !item || edit.state === "saving") return;
+  if (edit.text.length > NOTE_MAX) { edit.state = "failed"; edit.error = "the note is too long"; renderNotes(); return; }
+  const stored = edit.state === "conflict" ? edit.stored : null;
+  edit.state = "saving";
+  renderNotes();
+  const note = edit.text.trim() ? edit.text : null;
+  const sent = stored && stored.deleted ? markPayload({ ...item, id:markId() }, { note })
+    : markPayload(item, { note, base_updated_at:(stored || item).updated_at });
+  try {
+    await saveMark(sent);
+    noteEdits.delete(id);
+    if (sent.id !== id) { marks.delete(id); noteCurrent = sent.id; renderMarks(); }
+  } catch (error) {
+    if (error.status === 409 && error.body && error.body.item) Object.assign(edit, { state:"conflict", stored:error.body.item });
+    else Object.assign(edit, { state:"failed", error:error.message });
+  }
+  renderNotes();
+}
+async function deleteMark(id) {
+  const item = marks.get(id);
+  if (!item) return;
+  const what = item.kind === "answer" ? "saved answer" : (item.note || "").trim() ? "note" : "highlight";
+  if (!await askConfirm({ title:`Delete this ${what}?`, text:`“${cutText(item.anchor.quote, 90)}”`,
+                          confirm:"Delete", danger:true, icon:true })) return;
+  const run = async () => {
+    try {
+      await jsonRequest("/api/marks/delete", { method:"POST", headers:{ "Content-Type":"application/json" },
+        body:JSON.stringify({ book:marksBook || state.player.book, id }) });
+      marks.delete(id); noteEdits.delete(id);
+      renderMarks(); renderNotes(); renderChatSaves();
+    } catch (error) { showToast(`Not deleted: ${error.message}`, { label:"Retry", run }); }
+  };
+  run();
+}
+
+// Show in text: the passage brought into the visible text and outlined
+// briefly; the audio stays where it is (Follow along waits, and Back to
+// reading position returns). On a phone the sheet shrinks to a bar with Back
+// to note.
+function notesViewport() {
+  const view = readingViewport(), mini = $("notes-mini");
+  return { top:view.top, bottom:shown(mini) ? Math.min(view.bottom, mini.getBoundingClientRect().top) : view.bottom };
+}
+function showMarkInText(id) {
+  const item = marks.get(id);
+  if (!item || !markRanges.has(id)) return;
+  if (item.place.view !== textView && !$("text-view").classList.contains("hidden")) setTextView(item.place.view);
+  const range = markRanges.get(id);
+  if (!range.getClientRects().length) return;
+  noteCurrent = id;
+  if (panelOpen && narrowScreen()) { setPanel(false); showNotesMini("back", item); }
+  if (readerAudio) setDetached(true);
+  glide(() => {
+    const box = range.getBoundingClientRect(), view = notesViewport();
+    return box.top - view.top - Math.max(16, (view.bottom - view.top - box.height) / 3);
+  }, motion());
+  outlineWhenStill(range);
+  renderNotes();
+}
+function outlineWhenStill(range) {
+  let last = NaN, still = 0, frames = 0;
+  const step = () => {
+    if (window.scrollY === last) still++; else { still = 0; last = window.scrollY; }
+    if (still < 4 && ++frames < 150) { requestAnimationFrame(step); return; }
+    outlineRange(range);
+  };
+  requestAnimationFrame(step);
+}
+function outlineRange(range) {
+  const layer = $("notes-layer");
+  for (const old of layer.querySelectorAll(".notes-outline")) old.remove();
+  const origin = layer.getBoundingClientRect(), lines = [];
+  for (const rect of range.getClientRects()) {
+    if (!rect.width) continue;
+    const line = lines.find((other) => Math.abs(other.top - rect.top) < 4);
+    if (line) { line.left = Math.min(line.left, rect.left); line.right = Math.max(line.right, rect.right);
+                line.bottom = Math.max(line.bottom, rect.bottom); }
+    else lines.push({ top:rect.top, left:rect.left, right:rect.right, bottom:rect.bottom });
+  }
+  const boxes = lines.map((line) => {
+    const box = noteEl("div", "notes-outline");
+    box.style.cssText = `left:${line.left - origin.left - 3}px;top:${line.top - origin.top - 2}px;`
+      + `width:${line.right - line.left + 6}px;height:${line.bottom - line.top + 4}px`;
+    layer.append(box);
+    return box;
+  });
+  setTimeout(() => { for (const box of boxes) box.style.opacity = "0"; }, 1800);
+  setTimeout(() => { for (const box of boxes) box.remove(); }, 2400);
+}
+// The small bar above the player: "back" (Back to note, on a phone after Show
+// in text) or "choose" (Choose its place…: select the passage, then Use this place).
+function showNotesMini(kind, item, problem = "") {
+  notesMiniKind = kind;
+  const label = $("notes-mini-label");
+  label.className = `notes-mini-label${problem ? " problem" : kind === "back" && item.kind === "answer" ? " answer" : ""}`;
+  if (problem) label.textContent = problem;
+  else if (kind === "back") {
+    const section = String(item.anchor.section || "");
+    const short = (section.match(/^\d+(?:\.\d+)*/) || [cutText(section, 28)])[0];
+    label.innerHTML = item.kind === "answer" ? SPARKLE_ICON : NOTE_ICON;
+    label.append([item.kind === "answer" ? "Hilde's answer" : (item.note || "").trim() ? "Your note" : "Highlight", short]
+      .filter(Boolean).join(" · "));
+  } else label.textContent = `Select the passage for “${cutText(item.anchor.quote, 40)}”, then`;
+  $("notes-mini-back").classList.toggle("hidden", kind !== "back");
+  $("notes-mini-use").classList.toggle("hidden", kind !== "choose");
+  $("notes-mini-cancel").classList.toggle("hidden", kind !== "choose");
+  $("notes-mini").classList.remove("hidden");
+  renderBackToListening();
+}
+function hideNotesMini() {
+  notesMiniKind = "";
+  $("notes-mini").classList.add("hidden");
+  $("notes-mini-use").disabled = false;
+}
+function backToNote() {
+  const id = noteCurrent;
+  hideNotesMini();
+  openNotes(id);
+}
+// Place not confirmed → Choose its place…: the listener selects the passage;
+// it is saved with that anchor and confirmed_place.
+function chooseMarkPlace(id) {
+  const item = marks.get(id);
+  if (!item) return;
+  choosingPlace = id; noteCurrent = id;
+  if (panelOpen && narrowScreen()) setPanel(false);
+  showNotesMini("choose", item);
+  renderNotes();
+}
+function cancelChoosingPlace() {
+  choosingPlace = "";
+  hideNotesMini();
+  renderNotes();
+}
+async function useChosenPlace() {
+  const id = choosingPlace, item = marks.get(id);
+  if (!item) { cancelChoosingPlace(); return; }
+  const picked = readerSelection() || dockPicked;
+  const found = picked && rangeAnchor(picked.range);
+  if (!found) { showNotesMini("choose", item, "Select its passage in the text first, then press Use this place."); return; }
+  if (selectionTooLong(found)) return;
+  $("notes-mini-use").disabled = true;
+  $("notes-mini-use").textContent = "Saving…";
+  try {
+    await saveMark(markPayload(item, { anchor:found.anchor, confirmed_place:true, base_updated_at:item.updated_at }));
+    window.getSelection().removeAllRanges();
+    hideDockAsk();
+    choosingPlace = "";
+    hideNotesMini();
+    if (narrowScreen()) openNotes(id);
+    else { renderNotes(); revealNoteCard(id); }
+  } catch (error) {
+    // Changed on another device meanwhile: theirs is shown, and choosing again saves over it.
+    if (error.status === 409 && error.body && error.body.item && !error.body.item.deleted) {
+      marks.set(id, error.body.item); renderMarks(); renderNotes();
+    }
+    showNotesMini("choose", item, `Not saved: ${error.message}. Select the passage again, or press Use this place to retry.`);
+  } finally {
+    $("notes-mini-use").disabled = false;
+    $("notes-mini-use").textContent = "Use this place";
+  }
 }
 
 async function refreshLibrary(restore) {
@@ -32393,7 +33409,7 @@ document.addEventListener("focusin", (event) => {
   if (popup && !popupHas(event.target) && !(event.target instanceof HTMLDialogElement)) closePopup();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("selection-ask").classList.contains("hidden")) hideSelectionAsk();
+  if (event.key === "Escape" && !selectionButton().classList.contains("hidden")) hideSelectionAsk();
 });
 // A row's menu stays under its button only while nothing scrolls.
 window.addEventListener("scroll", () => {
@@ -32402,7 +33418,7 @@ window.addEventListener("scroll", () => {
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   lastPointerType = event.pointerType;
-  if (!event.target.closest("#selection-ask")) hideSelectionAsk();
+  if (!event.target.closest("#selection-ask, #selection-actions")) hideSelectionAsk();
   // The page's own scroll bar: held until the press ends.
   scrollBarHeld = event.target === document.documentElement;
   if (scrollBarHeld) userScrollAt = performance.now();
@@ -32441,6 +33457,60 @@ $("selection-ask").addEventListener("click", () => {
   pauseBookForQuestion();
   askAboutSelection(picked);
 });
+// Notes (notes_enabled): the selection's actions, the markers, the editor, the small bar.
+$("selection-actions").addEventListener("pointerdown", (event) => event.preventDefault());
+$("selection-actions").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-act]");
+  const picked = button && readerSelection();
+  if (!picked) { hideSelectionAsk(); return; }
+  const act = button.dataset.act;
+  if (act === "highlight") highlightSelection(picked);
+  else if (act === "note") openNoteEditor(picked);
+  else if (act === "copy") copySelection(picked, button);
+  else {
+    hideSelectionAsk();
+    window.getSelection().removeAllRanges();
+    pauseBookForQuestion();
+    askAboutSelection(picked);
+  }
+});
+for (const id of ["dock-highlight", "dock-note", "dock-select-ask"]) {
+  $(id).addEventListener("pointerdown", (event) => {
+    dockPressed = true;
+    clearTimeout(dockHideTimer);
+    if (event.pointerType === "mouse") event.preventDefault();
+  });
+}
+$("dock-select-ask").addEventListener("click", askFromDock);
+for (const [id, run] of [["dock-highlight", highlightSelection], ["dock-note", openNoteEditor]]) {
+  $(id).addEventListener("click", () => {
+    const picked = readerSelection() || dockPicked;
+    dockPressed = false;
+    run(picked);
+  });
+}
+$("reader-content").addEventListener("click", (event) => {
+  const marker = event.target.closest(".note-marker");
+  if (marker) { event.preventDefault(); openNotes(marker.dataset.mark); }
+});
+$("note-editor-cancel").addEventListener("click", hideNoteEditor);
+$("note-editor-save").addEventListener("click", saveNoteDraft);
+$("note-editor").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); hideNoteEditor(); }
+  else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveNoteDraft(); }
+});
+$("notes-mini-back").addEventListener("click", backToNote);
+$("notes-mini-cancel").addEventListener("click", cancelChoosingPlace);
+$("notes-mini-use").addEventListener("pointerdown", (event) => {
+  dockPressed = true;
+  clearTimeout(dockHideTimer);
+  if (event.pointerType === "mouse") event.preventDefault();
+});
+$("notes-mini-use").addEventListener("click", () => { dockPressed = false; useChosenPlace(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && notesAvailable()) loadMarks();
+});
+window.addEventListener("resize", placeNoteEditor);
 for (const type of ["wheel", "touchmove"])
   window.addEventListener(type, () => { userScrollAt = performance.now(); }, { passive:true });
 window.addEventListener("keydown", (event) => {

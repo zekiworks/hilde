@@ -2492,7 +2492,8 @@ or a source page, a ¶ link in an answer, and the paper bar's title (when the
 word is not on screen at the top) set `detached` too.
 
 A tap (a click) in the text listens or pauses and opens nothing, at once,
-with no wait (pointer events on `#reader-content`, Narration and Source text
+with no wait (with notes on it waits `READER_CLICK_HOLD`; see "Notes in
+Listen" below) (pointer events on `#reader-content`, Narration and Source text
 alike; never `touchstart`). `pressReaderText()` (`pointerdown`: trusted,
 primary pointer, the left button for a mouse) notes the press;
 `tapReaderText()` acts on its `pointerup` only for a completed short tap:
@@ -2654,6 +2655,97 @@ happened.
 One sound plays at a time (`oneSoundAtATime()`): the book, the voice preview
 player (previews and drafts), and the answer voice each pause the others
 when they start; an answer read aloud keeps its place when paused this way.
+
+### Notes in Listen (page side)
+
+Listen Part 2 (24 Oct): highlights, notes and saved answers. Everything here
+exists only while `/api/state` carries `"notes_enabled": true` (the server's
+`--enable-notes`); `load()` sets `notesEnabled` and `html.notes-on`. Off, the
+page is the one described above: the selection gets **Ask about this** or the
+slot's **Ask Hilde**, a click acts at once, and no `/api/marks*` request is
+made. The server side (the marks file, the routes, finding a quote again) is
+described with the routes.
+
+**Clicks (Option A, a prototype).** `tapReaderText()` decides on the
+`pointerup` what the tap does (seek to the word, or `togglePlayback()` in the
+sentence being read) and, with notes on, runs it `READER_CLICK_HOLD` (250 ms,
+a trial value) later (`readerTapPending`, `runReaderTap()`). The next press in
+the text (`pressReaderText()` → `cancelReaderTap()`) or a selection
+(`noteSelection()`) cancels it, so a double-click selects without listening.
+The fallback: when it ran, `readerSeekUndo` keeps the audio's time and
+playing/paused; the second press of a double-click that came after it (a
+mouse `mousedown` with `detail` ≥ 2, the system's double-click time deciding;
+a touch's second tap within `READER_DOUBLE_TAP`) puts both back
+(`undoReaderSeek()`, within `READER_UNDO_WITHIN`, 5 s); any other press forgets
+it. 250 ms does not match every system's double-click time.
+
+**Selection actions.** A mouse selection gets `#selection-actions` (Highlight ·
+Add note · Ask Hilde · Copy) where `#selection-ask` would be
+(`selectionButton()`, `placeSelectionAsk()`); a touch selection gets
+`#dock-select` (Highlight · Note · Ask Hilde) in `#dock-slot` instead of
+`#dock-ask` (`dockBar()`, with the same stored `dockPicked` and `dockPressed`
+rules), and `html.notes-selecting` hides the player's and the header's Ask
+Hilde meanwhile. Copy uses `execCommand("copy")` on the live selection (the
+menu's `pointerdown` keeps it), else the Clipboard API.
+
+**Anchors and places.** A mark's paragraph text is `markText()`: the text
+nodes of a `.reader-paragraph` (view `narration`, its `data-paragraph`) or a
+`.reader-original` (view `source`, its `data-passage`) in order, skipping
+`MARK_CHROME` (labels, tags, flags, `.reader-picture`, figure cards,
+markers), the same string the server builds from the reader payload.
+`rangeAnchor()` turns a selection into `{view, paragraph, source_id (the
+passage), quote, prefix, suffix (64 characters each), section}` from the
+first paragraph it takes text from, spaces at its ends dropped; offsets are
+UTF-16 code units. `quoteAnchor()` anchors a saved answer whose selection was
+not kept (`askAnchors`, filled by `askAboutSelection()`, is page memory) from
+the question's quote and first passage: found once, with its context; else
+the quote alone, which the server reports as unclear or missing. A place
+`{status: "confirmed", view, paragraph, start, end}` becomes a range by
+walking the same nodes (`placeRange()`, `textRange()`).
+
+**Drawing.** `renderMarks()` puts every highlight's range in the CSS Custom
+Highlight `notes-mark` (`--mark` #ddd040 at 22%, never an underline), so the
+sentence tint, the word's underline and the paragraph bar paint as before
+over it, and a `.note-marker` button (no text node, so it never changes a
+paragraph's text) after each note's or saved answer's passage (after the
+`.reader-word` it ends in, else at its text offset): grey note icon, teal
+sparkle for an answer; a click opens its card (`openNotes(id)`). A place that
+is unclear or missing draws nothing.
+
+**Saving.** `saveMark()` posts one item (`markPayload()`: no times, no
+place) and keeps the server's answer in `marks`; nothing is shown as saved
+before that 200 and nothing is kept in browser storage. Highlight saves at
+once (a failure: a toast with Retry). Add note opens `#note-editor` in
+`#notes-layer` (a zero-size layer at the document's origin, so it scrolls with
+the text) under the selection, the passage in the `notes-pending` highlight,
+Follow along detached while it is open; a failed save keeps the text and turns
+**Save note** into **Retry**. **Save to notes** (`appendSaveToNotes()`, under
+an answer whose question went with a selection; `answerSaves` keeps its state
+across the conversation's re-renders) saves kind `answer` with the question,
+the answer's text, its model's name and the question's `at`, copied from the
+conversation; opening it reads the card, never the chat routes. An edit sends
+`base_updated_at`; a 409 shows theirs with **Use theirs** / **Keep mine**
+(Keep mine saves again on theirs; a tombstone: saved as a new item).
+
+**Notes tab.** `#panel-tab-notes` and `#notes-view` in the side panel
+(`renderPanel()` shows the tab while `notesAvailable()`: notes on, book mode,
+a book with audio open); `renderNotes()` lists `sortedMarks()` (by the
+paragraph's place in the page, then the start; unplaced ones by their anchor's
+paragraph, else last), with the count on the tab, `#paper-bar-notes` and
+`#card-notes` (on a phone an icon and the count). The marks load with the book
+and again when Notes opens or the page becomes visible. **Show in text**
+(`showMarkInText()`) switches the view if the place is in the other one,
+`glide()`s the passage into the visible text, sets `detached` and outlines it
+briefly (`outlineRange()`), never touching the audio; on a phone (the panel a
+sheet) it closes the sheet and shows `#notes-mini` with **Back to note**.
+**Place not confirmed** cards offer **Choose its place…**: `#notes-mini`
+asks for a selection and **Use this place** saves the new anchor with
+`confirmed_place: true` and the old `updated_at` as the base.
+
+Below 900 px with a book open, the sheet (Notes and Ask Hilde alike) ends at
+the player's top and `#panel-backdrop` stops there too, so Play/Pause, the
+seek bar and speed stay usable; with the keyboard open the sheet takes the
+visual viewport as before.
 
 ### Ask Hilde
 
