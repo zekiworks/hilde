@@ -96,7 +96,6 @@ from audiobook_tts import (
 
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / "audiobook_tts.py"
-BRAND_IMAGE_PATH = ROOT / "assets" / "zeki.jpg"
 # Hilde Reader's copper leaf, each file served at its own name: the header's
 # bare leaf (no tile), the emblem (the leaf on its navy tile), the favicons
 # (16, 32), the Apple touch icon (180), and the web app manifest's icons (192,
@@ -19253,10 +19252,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(
                 HTTPStatus.OK, APP_MANIFEST, "application/manifest+json"
             )
-        if route == "/zeki.jpg":
-            return self.send_file(
-                str(BRAND_IMAGE_PATH), False, allow_outside=True
-            )
         if route == "/api/jobs":
             return self.reply(
                 HTTPStatus.OK,
@@ -20870,12 +20865,6 @@ body.server-down [inert] { opacity:.5; }
   .header-ask .ask-icon { width:18px; height:18px; }
   .header-ask-label { display:none; }
 }
-/* Inline, not flex: flex drops the spaces around the mark, so copied text
-   read "byZeki Works". */
-.signature { padding:28px 16px 24px; color:var(--dim); font-size:12px;
-             text-align:center; }
-.signature img { width:16px; height:16px; border-radius:4px; vertical-align:-3px;
-                 margin-right:4px; }
 input[type=text], input[type=search], input[type=number], select, textarea {
   background:var(--field); color:var(--text); border:1px solid var(--line);
   border-radius:8px; padding:9px 12px; font:inherit; min-width:0; max-width:100%;
@@ -23269,7 +23258,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <option value="shimmer"><option value="verse">
   </datalist>
 </main>
-<footer class="signature">by <img src="/zeki.jpg" width="16" height="16" alt="">Zeki Works</footer>
 
 <div id="row-menu" class="menu row-menu hidden" role="menu"></div>
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>

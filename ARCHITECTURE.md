@@ -26,7 +26,7 @@ Out of scope: EPUB extraction, CLI playback, built-in web authentication/authori
 | `assets/reader-leaf.svg` | The bare copper leaf (the emblem's path, no tile, its own gradient id `reader-leaf-copper`, viewBox `22 17.5 56 65` cropped to the leaf): the page header's mark (`/reader-leaf.svg`). |
 | `assets/favicon-16.png`, `assets/favicon-32.png`, `assets/apple-touch-icon-180.png`, `assets/icon-192.png`, `assets/icon-512.png` | The copper leaf as icons, each served at its own name (`APP_ICONS`): the browser favicon (16, 32), the Apple touch icon (180), and the web app manifest's icons (192, 512). Used exactly as given; `icon-512.png` is 512 × 513 px as delivered. |
 | `assets/hilde-dark.png` | The old Hilde logo, kept byte-identical and no longer shown or served. |
-| `assets/zeki.jpg` | Small mark in the page footer's "by Zeki Works" signature. |
+| `assets/zeki.jpg` | Kept byte-identical; no longer shown or served (the page has no footer signature). |
 | `prompts/PAPER-AUDIO-BOOK.md` | Text-adaptation instructions for the language model. Each job reads them when it starts. |
 | `prompts/PAPER-VERIFY.md`, `prompts/PAPER-REPAIR.md`, `prompts/PAPER-RECHECK.md` | Error correction's plain-text prompts: the check of a description against its source, the note asking for a corrected description (`{issues}` and `{draft}` are filled in), and the check of the correction. A job with error correction reads them when it starts. |
 | `prompts/PAPER-FIGURE-KIND.md` | The plain-text question that decides whether a figure is a chart, described from its caption and the author's text. Each adapting job reads it when it starts. |
@@ -1111,7 +1111,7 @@ mark (`assets/reader-leaf.svg`, the bare leaf, 36 px tall, 32 px on a phone, cen
 and the tagline "Listen to your documents. Follow the text. Ask to
 understand." (shown on phones too, smaller). Ask Hilde and the voice Hilde
 keep their names.
-A small **by Zeki Works** signature with `assets/zeki.jpg` closes the page. No model names or
+No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
 six colours, each in one role, used only through tokens: blue `--accent`
