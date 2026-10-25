@@ -2771,8 +2771,12 @@ walking the same nodes (`placeRange()`, `textRange()`).
 
 **Drawing.** `renderMarks()` puts every highlight's range in the CSS Custom
 Highlight `notes-mark` (`--mark` #ddd040 at 22%, never an underline), so the
-sentence tint, the word's underline and the paragraph bar paint as before
-over it, and a `.note-marker` button (no text node, so it never changes a
+sentence tint and the paragraph bar paint as before over it. A highlight
+repaints the text decorations under it in its own text color (Chromium: the
+word's white), so `renderMarks()` also gives the words under a fill the class
+`in-mark`, and the word being read there draws its blue underline as a 2 px
+`::after` bar in the underline's place, which no highlight repaints. It also
+puts a `.note-marker` button (no text node, so it never changes a
 paragraph's text) after each note's or saved answer's passage (after the
 `.reader-word` it ends in, else at its text offset): grey note icon, teal
 sparkle for an answer; a click opens its card (`openNotes(id)`). A place that

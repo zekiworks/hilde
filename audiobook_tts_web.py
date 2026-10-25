@@ -22799,6 +22799,12 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
    sentence's blue tint shows around it, not mixed into it (hilde-listen-reading-a-highlight.png). */
 .reader-sentence.active::highlight(notes-mark), .reader-sentence.active *::highlight(notes-mark) {
   background-color:color-mix(in srgb, var(--mark) 22%, var(--bg)); }
+/* A highlight repaints the text decorations under it in its own text color (Chromium: the word's white), so the word
+   being read inside a highlight (in-mark, set by renderMarks()) draws its blue underline as a bar, which no highlight
+   repaints, where the underline was. */
+.reader-word.in-mark.active { position:relative; text-decoration-line:none; }
+.reader-word.in-mark.active::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:2px;
+                                     background:var(--accent-light); pointer-events:none; }
 /* The passage an open Add note editor is about: the selection's gray. */
 ::highlight(notes-pending) { background-color:#5c5c5c; color:var(--text); }
 .notes-button svg, .selection-actions svg:not(.ask-icon), .dock-select svg:not(.ask-icon), .note-marker svg,
@@ -28352,6 +28358,8 @@ function markId() {
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
+// A server's reason ends with its own period: without it, so "Not saved: <reason>. Your note…" reads as one sentence.
+function reasonText(message) { return String(message || "").replace(/[\s.]+$/, ""); }
 function noteEl(tag, className = "", text = "") {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -28521,9 +28529,17 @@ function renderMarks() {
       if (item.kind === "answer" || (item.note || "").trim()) placeMarker(item, range);
     }
   }
+  for (const word of $("reader-content").querySelectorAll(".reader-word.in-mark")) word.classList.remove("in-mark");
   if (!window.CSS || !CSS.highlights) return;
   if (fills.length) CSS.highlights.set("notes-mark", new Highlight(...fills));
   else CSS.highlights.delete("notes-mark");
+  // The words under a fill: the one being read draws its underline as a bar (.reader-word.in-mark.active).
+  for (const range of fills) {
+    const box = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+      ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
+    const words = box.matches(".reader-word") ? [box] : box.querySelectorAll(".reader-word");
+    for (const word of words) if (range.intersectsNode(word)) word.classList.add("in-mark");
+  }
 }
 // The marker goes right after the passage, never inside a word's element.
 function placeMarker(item, range) {
@@ -28674,7 +28690,7 @@ async function saveNoteDraft() {
     draft.saving = false;
     // A tombstone with this id (deleted elsewhere): the retry goes as a new note.
     if (error.status === 409) draft.item.id = markId();
-    noteEditorState(`Not saved: ${error.message}. Your note is still here.`, "Retry", "problem");
+    noteEditorState(`Not saved: ${reasonText(error.message)}. Your note is still here.`, "Retry", "problem");
   }
 }
 
@@ -28860,7 +28876,7 @@ function noteEditForm(item, edit) {
   box.maxLength = NOTE_MAX; box.rows = 3; box.value = edit.text;
   box.addEventListener("input", () => { edit.text = box.value; });
   form.append(label, box);
-  if (edit.state === "failed") form.append(noteEl("p", "note-problem", `Not saved: ${edit.error}. Your text is still here.`));
+  if (edit.state === "failed") form.append(noteEl("p", "note-problem", `Not saved: ${reasonText(edit.error)}. Your text is still here.`));
   if (edit.state === "conflict") {
     const stored = edit.stored, box409 = noteEl("div", "note-conflict");
     box409.append(noteEl("p", "", stored.deleted ? "This note was deleted on another device."
@@ -29044,7 +29060,7 @@ async function useChosenPlace() {
     if (error.status === 409 && error.body && error.body.item && !error.body.item.deleted) {
       marks.set(id, error.body.item); renderMarks(); renderNotes();
     }
-    showNotesMini("choose", item, `Not saved: ${error.message}. Select the passage again, or press Use this place to retry.`);
+    showNotesMini("choose", item, `Not saved: ${reasonText(error.message)}. Select the passage again, or press Use this place to retry.`);
   } finally {
     $("notes-mini-use").disabled = false;
     $("notes-mini-use").textContent = "Use this place";
