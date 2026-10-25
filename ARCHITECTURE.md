@@ -490,14 +490,18 @@ nothing reads or writes `Marks/`.
   `note`, `answer`), `anchor` (`view` `narration`|`source`, `paragraph`,
   `source_id` (the passage number, `data-passage`, or null), `quote`,
   `prefix`, `suffix` (up to `MARK_CONTEXT` 64 UTF-16 units of the paragraph's
-  rendered text on each side), `section`), `highlight`, `note`, `answer`
+  rendered text on each side), `section`), `highlight`, `color` (the
+  highlight's colour, one of `MARK_COLORS`: `yellow`, `green`, `pink`,
+  `purple`; missing or null is kept as `MARK_DEFAULT_COLOR` yellow, and
+  `list_marks()` gives an item stored before colours existed `yellow` without
+  rewriting the file), `note`, `answer`
   (`{question, text, model, asked_at}`, kind `answer` only), `confirmed_place`;
   the server sets `created_at`, `updated_at` (UTC to the millisecond,
   `mark_time()`, always later than the stored one), `deleted`, and, for a
   place the listener chose, `confirmed_for` (the book's `narration_sha256`
   then). `clean_mark()` checks it (note ≤ `MARK_NOTE_MAX` 20,000 characters,
-  quote ≤ `MARK_QUOTE_MAX` 2,000 and not empty, kinds, views, types) and keeps
-  only those fields.
+  quote ≤ `MARK_QUOTE_MAX` 2,000 and not empty, kinds, views, colours, types;
+  anything else is a 400) and keeps only those fields.
 - **Merging:** `save_mark()` and `delete_mark()` hold `marks_lock()`: a
   per-book `threading.Lock` and `fcntl.flock()` on `Marks/.lock`, so a second
   server on the same library waits too. Under it they check the book still
@@ -2027,7 +2031,8 @@ the server:
 
 - `hilde.book.<id>`: a book's place and speed, whether it was heard to the end,
   and when it was last heard (see Reader); the Library's states and order.
-- `hilde.panelWidth`: the side panel's width (`setPanelWidth()`).
+- `hilde.panelWidth`: the side panel's width as last dragged (`setPanelWidth()`; absent until the edge is dragged,
+  then the default applies; a non-number is ignored, a number out of range clamped).
 - `hilde.dismissedJobs`: the `<job id>@<finished_at>` keys of stopped or
   failed jobs dismissed here, newest first, at most 50.
 - `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
@@ -2056,18 +2061,45 @@ Listen below 768 px: the text takes the full width, the view's controls
 player (`narrowLayout()`). Below 900 px (`narrowScreen()`) the side panel (the chat, a figure, a
 source page) is a bottom sheet: fixed at the foot of the visual viewport, the
 full width up to 720 px (centred beyond), 60% of the visible height
-(`--vv-height`), rounded at the top with a grabber (`.sheet-grabber`), the book
+(`--vv-height`), rounded at the top with a grabber (`button#sheet-grabber`), the book
 dimmed above it by `#panel-backdrop` (50% black; a tap there closes the
 panel), and `html.sheet-open` stopping the page from scrolling beneath; **×**
-closes it as on a wide screen. `fitVisualViewport()` sets `--vv-height` and
+closes it as on a wide screen. Its height is `--sheet-size` (else
+`--sheet-default`: 60%, or 70% above the player) above its floor
+(`--sheet-floor`); `sheetSize()` sets `.sheet-tall` (from `--sheet-edge`, the
+slim paper bar's bottom, set by `observePaperBar()`, down to the floor), as
+`askAboutSelection()` opens it, or `.sheet-half` (half of the space above the
+floor); closing forgets it. The grabber is a button: a 16 px strip with a
+36 × 4 px stroke whose handle (`::after`) reaches 28 px above the sheet and
+44 px down over the header's first row (`.panel-head` lets pointer events
+through to it, its children take their own), so the handle is at least 44 px
+tall at the stroke. A drag (pointer events, captured and followed on the
+window; `touch-action:none` on the grabber only, so the page and the sheet's
+lists keep their own scrolling) sets `--sheet-size` from 48 px up to tall,
+`.sheet-dragging` clipping the sheet to its box (`clip-path`, 32 px spare above
+for the handle) and closing any open menu; let go, `sheetSnap()` takes the
+height it would reach 200 ms on at the release speed (the last 120 ms of
+moves): below 55% of half it closes the panel (`closePanel()`, as **×**), else
+tall or half, whichever is nearer (`settleSheet()`, 150 ms, none with reduced
+motion). The book's audio is never touched. In sheet mode the panel's views
+scroll (`overflow-y:auto`) rather than spill onto the player, and at half the
+model box's line and its notes are left out, as with the keyboard open. A
+tap, Enter or Space switches half ↔ tall, ArrowUp / ArrowDown choose. `fitVisualViewport()`
+sets `--vv-height` and
 `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of the
 screen makes the sheet the whole visual viewport and leaves out the model's
-notes (`#chat-model-notes`), the model box's own line in a narrow header, and
+notes (`#chat-model-notes`), the model box's own line in a two-row header, and
 the no-model notice
 (`#chat-problem`; a send then says why in `#chat-hint`), and a context card
 scrolls within a quarter of the visible height, so the message box and
-**Send** stay visible with an on-screen keyboard. Every Listen control is at
-least 44 px on phones and coarse pointers.
+**Send** stay visible with an on-screen keyboard. On a phone (`narrowLayout()`)
+the draft's context card is compact (`#chat-about .chip`: "Selected" and the
+preview cut to one line with ×, then the scope switch and **Context**; no
+Change or Listen from here; their small targets keep a 44 px hit frame).
+Under an answer, `.chat-answer-actions` holds **Read aloud** and **Save to
+notes** in one row, and a `ResizeObserver` keeps the conversation at its end
+when it was there and the foot (card, keyboard) takes room. Every Listen
+control is at least 44 px on phones and coarse pointers.
 
 ### Voice previews
 
@@ -2558,7 +2590,8 @@ or a source page, a ¶ link in an answer, and the paper bar's title (when the
 word is not on screen at the top) set `detached` too.
 
 A tap (a click) in the text listens or pauses and opens nothing, at once,
-with no wait (with notes on it waits `READER_CLICK_HOLD`; see "Notes in
+with no wait (with notes on it waits out the double-click window,
+`READER_DOUBLE_CLICK` or `READER_DOUBLE_TAP`; see "Notes in
 Listen" below) (pointer events on `#reader-content`, Narration and Source text
 alike; never `touchstart`). `pressReaderText()` (`pointerdown`: trusted,
 primary pointer, the left button for a mouse) notes the press;
@@ -2732,27 +2765,80 @@ slot's **Ask Hilde**, a click acts at once, and no `/api/marks*` request is
 made. The server side (the marks file, the routes, finding a quote again) is
 described with the routes.
 
-**Clicks (Option A, a prototype).** `tapReaderText()` decides on the
-`pointerup` what the tap does (seek to the word, or `togglePlayback()` in the
-sentence being read) and, with notes on, runs it `READER_CLICK_HOLD` (250 ms,
-a trial value) later (`readerTapPending`, `runReaderTap()`). The next press in
-the text (`pressReaderText()` → `cancelReaderTap()`) or a selection
-(`noteSelection()`) cancels it, so a double-click selects without listening.
-The fallback: when it ran, `readerSeekUndo` keeps the audio's time and
-playing/paused; the second press of a double-click that came after it (a
-mouse `mousedown` with `detail` ≥ 2, the system's double-click time deciding;
-a touch's second tap within `READER_DOUBLE_TAP`) puts both back
-(`undoReaderSeek()`, within `READER_UNDO_WITHIN`, 5 s); any other press forgets
-it. 250 ms does not match every system's double-click time.
+**Clicks (Option A).** `tapReaderText()` decides on the `pointerup` what the
+tap does (seek to the word, `togglePlayback()` in the sentence being read, or,
+on a highlight, `openMarkChoices()`) and, with notes on, runs it once the
+double-click window has passed (`readerTapPending`, `runReaderTap()`): a
+mouse `READER_DOUBLE_CLICK` (500 ms, the default double-click time of macOS
+and Windows; a trackpad's slow double-tap comes 300–450 ms after the first),
+a touch `READER_DOUBLE_TAP` (350 ms). The next press in the text
+(`pressReaderText()` → `cancelReaderTap()`) or a selection
+(`noteSelection()`) cancels it, so the first click of a double-click never
+seeks, plays or redraws, whether the book is playing, paused or never
+started. (Until 25 Oct the hold was 250 ms: a double-click whose second press
+came later, but inside the system's double-click time, found the first click
+already acted, and on a paused book that meant a seek and a start.) The
+fallback, for a second press later still: when it ran, `readerSeekUndo` keeps
+the audio's time and playing/paused; the second press of a double-click that
+came after it (a mouse `mousedown` with `detail` ≥ 2, the system's
+double-click time deciding) puts the time back (`undoReaderSeek()`, within
+`READER_UNDO_WITHIN`, 5 s) and leaves the book paused there, since the
+double-click selects and a selection pauses (`undoReaderSeek(true)`: never a
+resume racing the selection's pause); any other press forgets it.
 
-**Selection actions.** A mouse selection gets `#selection-actions` (Highlight ·
-Add note · Ask Hilde · Copy) where `#selection-ask` would be
-(`selectionButton()`, `placeSelectionAsk()`); a touch selection gets
-`#dock-select` (Highlight · Note · Ask Hilde) in `#dock-slot` instead of
-`#dock-ask` (`dockBar()`, with the same stored `dockPicked` and `dockPressed`
-rules), and `html.notes-selecting` hides the player's and the header's Ask
-Hilde meanwhile. Copy uses `execCommand("copy")` on the live selection (the
-menu's `pointerdown` keeps it), else the Clipboard API.
+**Selection: pause, actions.** A selection in the text (a double-click, a
+drag, a long press) pauses a playing book where it is
+(`noteSelection()` → `pauseBookForQuestion()`); nothing resumes it but Play. A
+mouse selection gets `#selection-actions` (Highlight in the colour last used ·
+the four colour dots · Add note · Ask Hilde · Copy) where `#selection-ask`
+would be (`selectionButton()`, `placeSelectionAsk()`); a touch selection gets
+no menu of Hilde's beside it (the phone's own Copy, Look Up stay alone there)
+but the **Paused · “…” ×** pill (`#selection-pill`, `dockBar()`) in
+`#dock-slot`, × clearing the selection (`clearReaderSelection()`), with the
+same stored `dockPicked` and `dockPressed` rules as `#dock-ask`. The player
+bar has **Highlight** and **Note** (`#player-marks`: `#player-highlight`, its
+pen underlined in the colour last used, and `#player-note`) between speed and
+Ask Hilde; with a selection (`playerPicked()`: the live one, else
+`dockPicked`) the three act on it and show `.on` (`renderPlayerMarks()`), the
+book staying paused; with nothing selected **Highlight** marks the sentence
+being read (`sentenceBeingRead()`: the shown parts of `activeReaderBlock`, in
+Source text its element) while playback goes on (a sentence already
+highlighted just shows its bar), and **Note** pauses and opens
+`openNoteEditor()` on that sentence. On a phone Play · speed · Highlight · Note
+· Ask Hilde fit 375 px (Ask Hilde a narrower pill), every target 44 px. Copy
+uses `execCommand("copy")` on the live selection (the menu's `pointerdown`
+keeps it), else the Clipboard API.
+
+**Colours.** A highlight has `color` (`yellow`, `green`, `pink`, `purple`;
+none reads as yellow, `itemColor()`), drawn from `--mark-<color>`. Highlight
+uses the colour last used on this device (`markColor()`, `setMarkColor()`:
+`localStorage` `hilde.markColor`, a preference; the marks stay on the server
+only). After a highlight is saved, `#mark-bar` shows **Highlighted ● ● ● ●
+Undo** for `MARK_BAR_FOR` (6 s): a dot recolours it (`recolorMark()`, a save
+with `base_updated_at`), Undo deletes it. A highlight clicked (a mouse) opens
+`#selection-actions` in mark mode beside it, tapped (a finger) `#mark-bar` in
+`tapped` mode: the dots · **Add note** (`noteOnHighlight()`: the editor with
+`picked.mark`) · **Remove highlight** (`removeHighlight()`: a highlight alone
+is deleted, one with a note or an answer keeps them with `highlight: false`);
+either, like a tap that listens, after the double-click window
+(`highlightAt()` finds the highlight under the point).
+
+**The stack above the player.** `#dock-slot` is a column on the player's
+measured height (`--dock-h`, `fitDock()`): Back to reading position, **Saved
+to Notes · Show** (`#saved-bar`), the Highlighted bar, `#dock-ask` or the
+Paused pill, the small Notes bar. `layoutStack()` (on a menu opening or
+closing, `toggleMenu()`/`closePopup()`, a resize, the visual viewport, and a
+`ResizeObserver` on the slot) measures the open ⋯ or speed menu: where it
+reaches into the stack, the stack slides up above the menu's top
+(`--stack-lift`, a 150 ms transform; none with `prefers-reduced-motion`), and
+where that leaves no room below the reading area's top (a short landscape
+phone, the keyboard open) the stack hides (`.stack-hidden`) until the menu
+closes. The open menu is always on top (`.listen-bar:has(.menu:not(.hidden))`
+above the stack and the player) and closes on a press outside. With the phone
+sheet open only Saved to Notes shows, over the sheet's foot.
+`noteSaved(item)` (called after the server's 200 for a note and for Save to
+notes) shows the confirmation for `SAVED_BAR_FOR` (5 s); **Show** calls
+`openNotes(item.id)`.
 
 **Anchors and places.** A mark's paragraph text is `markText()`: the text
 nodes of a `.reader-paragraph` (view `narration`, its `data-paragraph`) or a
@@ -2770,7 +2856,8 @@ the quote alone, which the server reports as unclear or missing. A place
 walking the same nodes (`placeRange()`, `textRange()`).
 
 **Drawing.** `renderMarks()` puts every highlight's range in the CSS Custom
-Highlight `notes-mark` (`--mark` #ddd040 at 22%, never an underline), so the
+Highlight of its colour, `notes-mark-<color>` (`--mark-<color>` at 22%, never
+an underline), so the
 sentence tint and the paragraph bar paint as before over it. A highlight
 repaints the text decorations under it in its own text color (Chromium: the
 word's white), so `renderMarks()` also gives the words under a fill the class
@@ -2785,11 +2872,22 @@ is unclear or missing draws nothing.
 **Saving.** `saveMark()` posts one item (`markPayload()`: no times, no
 place) and keeps the server's answer in `marks`; nothing is shown as saved
 before that 200 and nothing is kept in browser storage. Highlight saves at
-once (a failure: a toast with Retry). Add note opens `#note-editor` in
-`#notes-layer` (a zero-size layer at the document's origin, so it scrolls with
-the text) under the selection, the passage in the `notes-pending` highlight,
-Follow along detached while it is open; a failed save keeps the text and turns
-**Save note** into **Retry**. **Save to notes** (`appendSaveToNotes()`, under
+once (a failure: a toast with Retry). Add note (`openNoteEditor(picked)`)
+always opens `#note-editor` in `#notes-layer` (a zero-size layer at the
+document's origin, so it scrolls with the text) with its box focused: "Add
+note" and ×, the passage (`--quote-mark`: its highlight's colour), Cancel and
+Save note; under the selection on a wider screen, on a phone (`narrowLayout()`)
+fixed across the bottom of the visual viewport, on the player's top
+(`--note-floor`, `--dock-h`) or, with `html.keyboard-open`, on the keyboard,
+`placeNoteEditor()` scrolling the passage above it (again on every
+`visualViewport` resize). The passage is in the `notes-pending` highlight,
+Follow along detached while it is open; nothing is saved before Save note.
+`picked.mark` (optional, a highlight's id) puts the note on that highlight (an
+edit with `base_updated_at`), `picked.color` colours the quote; without an
+anchor it says so in a toast. A failed save keeps the text and turns
+**Save note** into **Retry**. After the 200 of an editor save or a Save to
+notes, `noteSaved(item)` (the confirmation above the player, guarded by
+`typeof`) gets the server's item. **Save to notes** (`appendSaveToNotes()`, under
 an answer whose question went with a selection; `answerSaves` keeps its state
 across the conversation's re-renders) saves kind `answer` with the question,
 the answer's text, its model's name and the question's `at`, copied from the
@@ -2803,7 +2901,16 @@ a book with audio open); `renderNotes()` lists `sortedMarks()` (by the
 paragraph's place in the page, then the start; unplaced ones by their anchor's
 paragraph, else last), with the count on the tab, `#paper-bar-notes` and
 `#card-notes` (on a phone an icon and the count). The marks load with the book
-and again when Notes opens or the page becomes visible. **Show in text**
+and again when Notes opens or the page becomes visible. A card (`noteCard()`)
+shows the quote with its side bar in the highlight's colour
+(`quoteMarkColor()`: `var(--mark-<color>, #ddd040)`, a missing `color` yellow; grey
+for a note without a highlight), the listener's words under **You** and
+Hilde's under **Hilde** (an answer: **You asked**, **Hilde**, the comment under
+**You**), and an edit button on every card: **Edit** (a note), **Add your
+comment** / **Edit comment** (an answer), **Add a note** (a bare highlight).
+`openNotes(id)` opens the tab at that card: `noteCurrent` (`.current`,
+`aria-current`), scrolled into view and focused (`revealNoteCard()`), again
+after the reload if the focus was lost with the old card. **Show in text**
 (`showMarkInText()`) switches the view if the place is in the other one,
 `glide()`s the passage into the visible text, sets `detached` and outlines it
 briefly (`outlineRange()`), never touching the audio; on a phone (the panel a
@@ -2813,9 +2920,9 @@ asks for a selection and **Use this place** saves the new anchor with
 `confirmed_place: true` and the old `updated_at` as the base.
 
 Below 900 px with a book open, the sheet (Notes and Ask Hilde alike) ends at
-the player's top and `#panel-backdrop` stops there too, so Play/Pause, the
-seek bar and speed stay usable; with the keyboard open the sheet takes the
-visual viewport as before.
+the player's top (`--sheet-floor`: `--dock-h`) and `#panel-backdrop` stops
+there too, so Play/Pause, the seek bar and speed stay usable; with the keyboard
+open the sheet takes the visual viewport as before.
 
 ### Ask Hilde
 
@@ -2824,12 +2931,18 @@ a source page (`#page-view`), with a tab for each one opened. It belongs to no
 page (it and `#panel-backdrop` are children of `main`, after the pages), so it
 opens on every screen. On a screen
 900 px or wider it sits fixed at the right from `--panel-top` (see Reader) to the bottom, `--panel-w` wide (on the
-root; 440 px by
-default, 400 to 720 by dragging its left edge or with ← and → on it, 360 at
-the least in a window under 1100 px, and at most the window less 700 px;
-`setPanelWidth()`, kept as `hilde.panelWidth`, fitted again on every resize;
-at 900 px the panel is 360 px and the reading column 481 px, about 50
-characters a line), and the text moves left
+root; by default (`defaultPanelWidth()`, unchanged) 440 px, kept between 400
+(360 in a window under 1100 px) and the window less 700 px; dragged by its left
+edge (`#panel-resize`, a 10 px `col-resize` zone over the border, a 2 px accent
+line on hover, focus and while dragged) or set with its keys (← / → ±16 px,
+Home the widest, End the narrowest), any width in `panelBounds()`: 320 to 720 px,
+leaving the reading column `PANEL_TEXT_LEAST` (480) px. A dragged width is kept as
+`hilde.panelWidth` (`setPanelWidth(width, save, anchor)`) and fitted again, never
+saved, on every resize (`fitPanelWidth()`; without a kept width, the default).
+The text keeps its place while the column reflows: `keepPlace()` restores the
+anchor `readingAnchor()` took as the drag started (the sentence being read and
+followed, else the paragraph at the top); at 900 px the default panel is 360 px
+and the reading column 481 px, about 50 characters a line), and the text moves left
 beside it (`.panel-open`); narrower, it covers the reading view (see the
 phone paragraph under UI contract). Each view keeps its state while another
 shows or the panel is closed, until another book opens (`resetChatFor()`):
@@ -2896,11 +3009,15 @@ the chat is shown, its model box (`#chat-model-pick`) and **⋯**
 (`#chat-more`); and **×** (`closePanel()`) at the right on every size, in one
 row. In a panel narrower than 420 px (`.narrow-head`, set by a
 `ResizeObserver` on the panel: a phone's sheet, a 900–1099 px window) or with
-a figure or page tab (`.has-tabs`), the model box wraps onto a line of its own
-under the title row, still in the header. The model box is the shared model
+more than one tab shown (`.has-tabs`, `fitPanelHead()` from `renderPanel()` and
+`renderNotes()`: Notes counts as a figure or page tab does), the header takes
+two rows: the tabs, **⋯** and **×**, then the model box on a line of its own,
+still in the header: Runs on as its icon, then the model box the full width
+with the badge first and the whole name, wrapping rather than cut. The model
+box is the shared model
 picker in a small form (the `chat` picker of Create step 3's component, its
 **Runs on** and **Model** labels visually hidden, its **Change** left out as
-the model box opens the same list; Runs on shows only its icon in one row; the
+the model box opens the same list; Runs on shows only its icon; the
 badge shows its kind, Local or Cloud, and keeps the rest of its text, the
 server or the provider and how it is reached, in `.badge-detail`, visually
 hidden but in the box's accessible name; `chatModel()` is its usable choice,

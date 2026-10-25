@@ -14358,6 +14358,42 @@ class MarksTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             web.save_mark(self.storage, self.book, {**good, "kind": "highlight"})
 
+    def test_a_highlight_keeps_its_colour_and_an_old_mark_reads_as_yellow(self):
+        anchor = self.anchor("narration", 5, "attention heads")
+        saved = {}
+        for color in ("yellow", "green", "pink", "purple"):
+            saved[color] = web.save_mark(self.storage, self.book, self.item(anchor, color=color))
+            self.assertEqual(saved[color]["color"], color)
+        listed = {entry["id"]: entry for entry in web.list_marks(self.storage, self.book)}
+        self.assertEqual({color: listed[mark["id"]]["color"] for color, mark in saved.items()},
+                         {color: color for color in saved})
+        # Recoloured in place: same id, the new colour.
+        first = listed[saved["yellow"]["id"]]
+        web.save_mark(self.storage, self.book, {**self.item(anchor), "id": first["id"], "color": "pink",
+                                                "base_updated_at": first["updated_at"]})
+        self.assertEqual(self.place_color(first["id"]), "pink")
+        # Sent without a colour (or null), a mark is yellow.
+        self.assertEqual(web.save_mark(self.storage, self.book, self.item(anchor))["color"], "yellow")
+        self.assertEqual(web.save_mark(self.storage, self.book, self.item(anchor, color=None))["color"], "yellow")
+        # A mark kept before colours existed lists as yellow; its file is not rewritten by being read.
+        old = self.item(anchor)
+        web.save_mark(self.storage, self.book, old)
+        path = self.storage.root / "Marks" / f"{self.book}.json"
+        stored = json.loads(path.read_text())
+        del stored["items"][old["id"]]["color"]
+        path.write_text(json.dumps(stored))
+        self.assertEqual(self.place_color(old["id"]), "yellow")
+        self.assertNotIn("color", json.loads(path.read_text())["items"][old["id"]])
+        # Any other colour is refused, before anything is kept.
+        count = len(web.list_marks(self.storage, self.book))
+        for color in ("blue", "teal", "Yellow", "", 3, True, ["green"]):
+            with self.assertRaises(ValueError, msg=repr(color)):
+                web.save_mark(self.storage, self.book, self.item(anchor, color=color))
+        self.assertEqual(len(web.list_marks(self.storage, self.book)), count)
+
+    def place_color(self, mark_id):
+        return next(entry["color"] for entry in web.list_marks(self.storage, self.book) if entry["id"] == mark_id)
+
     def serve(self, enabled):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
@@ -14402,6 +14438,12 @@ class MarksTests(unittest.TestCase):
         self.assertEqual((status, conflict["item"]["note"]), (409, "Hm."))
         self.assertIn("place", conflict["item"])
         self.assertEqual(self.request(on, "/api/marks/save", {"book": self.book, "item": {**item, "kind": 1}})[0], 400)
+        status, refused = self.request(on, "/api/marks/save", {"book": self.book, "item": {**item, "color": "blue"}})
+        self.assertEqual(status, 400)
+        self.assertIn("colour", refused["error"])
+        status, green = self.request(on, "/api/marks/save", {"book": self.book, "item": {
+            **item, "color": "green", "base_updated_at": saved["item"]["updated_at"]}})
+        self.assertEqual((status, green["item"]["color"]), (200, "green"))
         self.assertEqual(self.request(on, "/api/marks/save", {"book": "x--" + "0" * 12, "item": item})[0], 404)
         self.assertEqual(self.request(on, "/api/marks?book=../x")[0], 400)
         status, deleted = self.request(on, "/api/marks/delete", {"book": self.book, "id": item["id"]})

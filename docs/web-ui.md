@@ -601,12 +601,16 @@ not zoom the text (pinch to zoom instead). To ask about text, select it.
   this** for the mouse, **Ask Hilde** above the player bar for a finger.
 
 Nothing opens until you press that button (or **Ask Hilde** in the
-player): then the book pauses and the chat opens (on a phone, as a sheet from
-the bottom) with a card headed **Selected text**: your words in quotes, and under
+player): then the book pauses and the chat opens (on a phone, as a tall sheet
+from the bottom, from just below the slim paper bar down to the player) with a
+card headed **Selected text**: your words in quotes, and under
 **Context details** the section they are in, all of your selection, and the
 sentence around it as context. The card's **Word | Sentence | Paragraph**
 switch widens what you ask about, and the book marks it in gray; **Listen from
-here** on the card plays from the start of it. A question you had already
+here** on the card plays from the start of it. On a phone the card is compact:
+one line **Selected “…” ×**, then **Word | Sentence | Paragraph** and
+**Context** on one row (no **Change** or **Listen from here** there: a tap in the
+text plays from that word). A question you had already
 typed stays in the box; otherwise the box is empty and the button reads
 **Explain this part**.
 
@@ -645,11 +649,30 @@ about this figure**.
 than 900 px, as a sheet rising from the bottom over about 60% of the screen,
 with a grabber and rounded top, the book dimmed above it: **×** or a tap on the
 book closes it; with the keyboard open it grows so **Send** stays in view). From
-900 px it is a panel at the right, 360 px wide in a window under 1100 px so the
-text keeps about 50 characters a line beside it. Its header is Hilde's sparkle
+a selection it opens tall, up to just below the slim paper bar (with highlights
+and notes on it still stops above the player). Drag the grabber at its top (or
+just above it, or the free part of the header's first row): up to make the sheet
+full height, down to about half, and further down (or a quick flick down from
+half) to close it as **×** does; it settles on the nearest of the three. Dragging
+never scrolls the book or moves the audio, and with highlights and notes on the
+player stays usable at every height. At half height the model box's line steps
+aside, as with the keyboard open. A tap on the grabber, **Enter** or **Space**
+switches between half and full, and the up and down arrows choose. From
+900 px it is a panel at the right, 440 px wide (360 px in a window under
+1100 px, so the text keeps about 50 characters a line beside it). Drag its left
+edge to make it narrower or wider, from 320 to 720 px, always leaving the text
+at least 480 px; the text keeps its place while it reflows. With the edge
+focused, the left and right arrows widen or narrow it by 16 px, **Home** makes
+it as wide as it can be and **End** as narrow. This browser remembers the
+width. Its header is Hilde's sparkle
 and **Ask Hilde** in teal, then the chat's model box, **⋯**, and **×** at the
-right; in a panel under 420 px wide (a phone, a narrow window) the model box has
-a line of its own under them.
+right. With more than one tab (**Ask Hilde | Notes**, a figure, a page) or in a
+panel under 420 px wide (a phone, a narrow window) the header has two rows: the
+tabs, **⋯** and **×** on the first, and the whole model box on the second (the
+**Runs on** icon, then the model's badge and its full name, wrapping rather than
+cut). Under an answer, **Read aloud** and **Save to notes** sit side by side in
+one row, and the conversation keeps its end in sight when the card or the
+keyboard takes room, so neither is cut off.
 It pauses the book, as **Ask about this** or the phone's **Ask Hilde** on
 selected words and **Ask about this figure** do; the book waits at that sentence until you press play in the
 player bar (the chat has no play button for the book); closing the chat never
@@ -718,7 +741,7 @@ above the message box, in teal, Ask Hilde's colour (as are the cards of past
 questions, and the card while it is prepared or when it couldn't be attached):
 headed **Selected text** for a selection, else the
 section heading as in the book, below it your words in quotes or the part's
-first words, **Change** to attach what
+first words, **Change** (not on a phone's compact card) to attach what
 you have selected, or else what is playing now, and **×** to remove it. It
 stays as attached while you write, even if you play the book again. Its
 collapsed **Context details** list exactly what goes with
@@ -854,21 +877,45 @@ Highlights and notes are off unless the server is started with
 `--enable-notes`; everything above describes Listen with them off. When they
 are on:
 
-- A single click (a tap) on a word still plays from that word, but waits
-  about a quarter of a second first, so a double-click can select a word
-  instead without moving the audio. If the second click of a double-click
-  comes after the book has already moved (a slow double-click), the audio is
-  put back where it was, playing or paused as before. This timing is a trial:
-  how fast a double-click must be depends on your system's settings.
-- Selected text gets **Highlight · Add note · Ask Hilde · Copy**: on a computer
-  in a small menu next to the selection, on a phone in a bar just above the
-  player (your phone's own Copy menu stays next to the selection). While text
-  is selected on a phone, only that bar's **Ask Hilde** shows; Play/Pause, the
-  seek bar and the speed stay.
-- **Highlight** marks the passage with a soft yellow fill. The blue marks of
-  the paragraph, sentence and word being read show over it as usual.
-- **Add note** opens a small editor under the selection (**Cancel**, **Save
-  note**); no highlight is needed. A grey note icon then follows the passage.
+- A single click (a tap) on a word still plays from that word, but only once
+  a double-click can no longer follow: half a second after the click (a third
+  of a second after a tap). So the first click of a double-click never moves
+  or starts the audio, whether the book is playing, paused or not yet
+  started. If the second click comes later still but your system counts it as
+  a double-click, the audio is put back where it was and stays paused there,
+  as for any selection.
+- Selecting text (a double-click, a drag, a long press) pauses the book where
+  it is; only **Play** resumes it. On a computer the selection gets a small
+  menu next to it: **Highlight**, the four colour dots, **Add note**, **Ask
+  Hilde**, **Copy**. On a phone Hilde puts nothing next to the selection
+  (your phone's own Copy and Look Up stay there); instead **Paused ·
+  “selected text” ×** shows just above the player, and **×** clears the
+  selection.
+- The player bar has **Highlight** and **Note** between the speed and **Ask
+  Hilde**, on a computer and a phone. With text selected they (and Ask Hilde)
+  act on it and look pressed. With nothing selected, **Highlight** marks the
+  sentence being read while the book plays on, and **Note** pauses the book
+  and opens the note box for that sentence.
+- **Highlight** marks the passage with a soft fill in one of four colours,
+  yellow, green, pink or purple: the colour you used last on this device,
+  yellow at first. Afterwards **Highlighted ● ● ● ● Undo** shows above the
+  player for a few seconds: a dot changes the colour, **Undo** removes it.
+  Clicking (tapping) a highlight offers its dots, **Add note** and **Remove
+  highlight**. The blue marks of the paragraph, sentence and word being read
+  show over every colour as usual.
+- After a note or a saved answer is saved, **Saved to Notes · Show** shows
+  above the player for about five seconds; **Show** opens the Notes tab at it.
+- Everything above the player (Paused, Highlighted, Saved to Notes, **Back to
+  reading position**) is one stack: when the **⋯** or speed menu opens there,
+  the stack slides up above the menu and back down when it closes; where there
+  is no room (a phone held sideways, the keyboard open) it hides while the menu
+  is open. A tap outside a menu closes it.
+- **Add note** always opens a box for your own words, ready to type in:
+  **Add note** and **×**, the passage, the text box, **Cancel** and **Save
+  note**. On a computer it sits under the selection; on a phone it is a box
+  across the bottom, on top of the player, and with the keyboard up, on top of
+  the keyboard. Nothing is saved until you press **Save note**; no highlight is
+  needed. A grey note icon then follows the passage.
 - Under Hilde's answer to a question about selected text, **Save to notes**
   keeps one card: the passage and where it is (its section, Narration or
   Source text), your question, Hilde's answer and the model that wrote it, and
@@ -876,15 +923,22 @@ are on:
   later never asks the model again; asking alone keeps nothing.
 - **Notes** in the slim paper bar (an icon and the count on a phone) and the
   **Notes** tab beside **Ask Hilde** in the side panel list every highlight,
-  note and saved answer of the book in reading order, with their count.
-  Clicking an icon in the text opens its card. **Show in text** scrolls to
+  note and saved answer of the book in reading order, with their count. Each
+  card shows the passage with a side bar in its highlight's colour (grey for a
+  note without a highlight), your words under **You** and Hilde's under
+  **Hilde** (a saved answer: **You asked**, **Hilde**, then your comment under
+  **You**). Every card can be edited: **Edit** on a note, **Add your comment**
+  and then **Edit comment** on a saved answer, **Add a note** on a highlight.
+  Clicking an icon in the text opens the Notes tab at its card, marked as the
+  current one. **Show in text** scrolls to
   the passage and outlines it briefly; it never moves the audio. On a phone
   the Notes sheet (like the Ask Hilde sheet) ends above the player, so Pause
   stays in reach; **Show in text** shrinks it to a small bar, and **Back to
   note** opens it again at the same card.
 - Notes are kept on the Hilde server, one file per book outside the book's
   folder, so every device sees the same notes and recreating a book keeps
-  them; nothing is kept in the browser. **Saved** shows only once the server
+  them; nothing of them is kept in the browser (only the last highlight
+  colour). **Saved** shows only once the server
   has confirmed a save; a failed save keeps your text with **Retry**. A note
   changed on another device meanwhile asks which version to keep.
 - When the book opens, each note finds its passage again. If the passage is

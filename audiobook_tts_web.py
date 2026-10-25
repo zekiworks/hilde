@@ -3260,6 +3260,9 @@ MARKS_SCHEMA = 1
 MARKS_LOCK_FILE = ".lock"
 MARK_KINDS = ("highlight", "note", "answer")
 MARK_VIEWS = ("narration", "source")
+# A highlight's colour (the page's --mark-<color> fill); a mark saved without one is yellow.
+MARK_COLORS = ("yellow", "green", "pink", "purple")
+MARK_DEFAULT_COLOR = "yellow"
 MARK_ID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 MARK_NOTE_MAX = 20_000
 MARK_QUOTE_MAX = 2_000
@@ -3402,12 +3405,15 @@ def clean_mark(item):
             "section": _mark_text(anchor.get("section"), "section", MARK_SECTION_MAX),
         },
         "highlight": item.get("highlight", False),
+        "color": MARK_DEFAULT_COLOR if item.get("color") is None else item["color"],
         "note": _mark_text(item.get("note"), "note", MARK_NOTE_MAX),
         "answer": None,
         "confirmed_place": item.get("confirmed_place", False),
     }
     if not isinstance(clean["highlight"], bool) or not isinstance(clean["confirmed_place"], bool):
         raise ValueError("A note's highlight and confirmed_place are true or false.")
+    if not isinstance(clean["color"], str) or clean["color"] not in MARK_COLORS:
+        raise ValueError("A highlight's colour is yellow, green, pink or purple.")
     answer = item.get("answer")
     if kind != "answer":
         if answer is not None:
@@ -3495,7 +3501,7 @@ def list_marks(storage, book):
     place (mark_place())."""
     marks_book(storage, book)
     # The file is only ever replaced whole: read without the lock.
-    items = [item for item in read_marks(storage, book).values()
+    items = [{"color": MARK_DEFAULT_COLOR, **item} for item in read_marks(storage, book).values()
              if isinstance(item, dict) and not item.get("deleted")]
     items.sort(key=lambda item: (str(item.get("created_at")), str(item.get("id"))))
     return marks_with_places(storage, book, items)
@@ -21398,9 +21404,11 @@ PAGE = r"""<!doctype html>
            yellow (hue 55°, not amber) marks the open step only, never a
            warning. */
         --step-open:#ddd040;
-        /* Notes (Listen Part 2, only with the server's notes_enabled): a highlight is a soft fill of this yellow, 22%
-           over the ground, never an underline (the word being read owns the blue underline). */
+        /* Notes (Listen Part 2, only with the server's notes_enabled): a highlight is a soft fill (22% over the ground)
+           of one of four colours, never an underline (the word being read owns the blue underline), never the
+           playback blue or Ask Hilde's teal. --mark is the first (yellow): the Notes accents. */
         --mark:#ddd040;
+        --mark-yellow:#ddd040; --mark-green:#3fb950; --mark-pink:#d66bc6; --mark-purple:#c678dd;
         --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
         --popover:#1d1f23; --popover-line:#3a3d44; }
 * { box-sizing:border-box; }
@@ -22394,6 +22402,8 @@ html { scrollbar-gutter:stable; }
 .listen-bar { position:sticky; top:0; z-index:5; display:grid; gap:8px; padding:8px 0 4px;
               background:var(--bg); }
 .listen-bar .book-controls { margin:0; }
+/* Its open ⋯ menu above the stack over the player and the player itself: always on top, all of it tappable. */
+.listen-bar:has(.menu:not(.hidden)) { z-index:17; }
 .reader-download { margin:0; font-size:12px; }
 .reader-download:empty { display:none; }
 /* The player: one bar docked at the bottom on every screen, inside the safe
@@ -22457,6 +22467,20 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .player-bar .player-speed:active:not(:disabled) { transform:none; filter:none; }
 /* Its speed menu opens upwards. */
 .player-bar .menu { top:auto; bottom:calc(100% + 6px); }
+/* With notes on: Highlight and Note between speed and Ask Hilde, outlined squares (frame 1, the desktop image), the
+   pen's underline in the colour Highlight uses. Text selected, they act on it and show it (on). */
+.player-marks { display:flex; flex:none; align-items:center; gap:8px; margin-left:auto; }
+.player-marks:not(.hidden) + .ask-hilde { margin-left:0; }
+.player-bar .player-mark { display:grid; place-items:center; width:40px; height:34px; min-height:0; padding:0;
+                           border:1px solid var(--line); border-radius:8px; background:transparent; box-shadow:none;
+                           color:var(--text); }
+.player-bar .player-mark svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.4;
+                               stroke-linejoin:round; stroke-linecap:round; }
+.player-bar .player-mark:hover:not(:disabled) { background:var(--hover); }
+.player-bar .player-mark.on { border-color:color-mix(in srgb, var(--accent-light) 70%, var(--line));
+                              background:color-mix(in srgb, var(--accent-light) 14%, var(--surface)); }
+.player-bar .ask-hilde.on { background:color-mix(in srgb, var(--ask) 24%, var(--surface)); border-color:var(--ask); }
+#book-view.dock-only .player-marks { display:none !important; }
 .reader-panel { margin-top:12px; padding:10px 0; background:var(--surface); border-radius:var(--radius); }
 #reader-unavailable { margin-top:12px; }
 /* Files Hilde wrote for the book, under its title. */
@@ -22489,14 +22513,17 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .side-panel { position:fixed; z-index:20; top:var(--panel-top, 0px); right:0; bottom:0; display:flex;
               flex-direction:column; width:var(--panel-w); background:var(--surface);
               border-left:1px solid var(--line); overscroll-behavior:contain; }
+/* Its left edge widens or narrows it (320-720 px, setPanelWidth()): a 10 px zone over the border, a 2 px line in
+   the accent on hover, focus and while dragged. */
 .panel-resize { position:absolute; z-index:1; top:0; bottom:0; left:-5px; width:10px;
                 cursor:col-resize; touch-action:none; }
-.panel-resize:hover, .panel-resize:focus-visible { background:linear-gradient(90deg,
+.panel-resize:hover, .panel-resize:focus-visible, .panel-resize.dragging { background:linear-gradient(90deg,
   transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
 .sheet-grabber, .panel-backdrop { display:none; }
-/* One row: the tabs, Ask Hilde's model box and ⋯ (with Ask Hilde shown), ×. In a panel narrower than 420 px
-   (.narrow-head: a phone's sheet, a narrow window) or with other tabs, the model box takes a line of its own under
-   them, still in the header, Runs on then with its word too. */
+/* One row: the tabs, Ask Hilde's model box and ⋯ (with Ask Hilde shown), ×. With more than one tab (.has-tabs: Ask
+   Hilde | Notes, a figure, a page) or in a panel narrower than 420 px (.narrow-head: a phone's sheet, a narrow
+   window), two rows: the tabs, ⋯ and × on the first; the model box whole on the second, still in the header: Runs
+   on as its icon, then the model's badge and its whole name (a long one wraps, never cut). */
 .panel-head { display:flex; flex:none; align-items:center; gap:4px 6px; min-height:44px;
               padding:4px 8px 4px 16px; border-bottom:1px solid var(--line); }
 .panel-tabs { display:flex; flex:0 1 auto; gap:4px; min-width:0; overflow-x:auto; }
@@ -22548,7 +22575,15 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
                         max-width:min(320px, calc(100vw - 16px)); }
 .panel-head:is(.has-tabs, .narrow-head) { flex-wrap:wrap; }
 .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick { order:1; flex:1 1 100%; margin:0 0 4px; }
-.panel-head:is(.has-tabs, .narrow-head) .picker-kind .kind-value { gap:6px; font-size:inherit; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-boxes { width:100%; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-field-model { flex:1; min-width:0; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-field-model .picker-box { width:100%; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-box .badge { order:-1; }
+.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-box .picker-name { flex:1; white-space:normal;
+  overflow-wrap:anywhere; text-align:left; }
+/* The first row stays one line at any width (a 320 px panel too): the tabs take what ⋯ and × leave, and scroll
+   sideways if that is too little. */
+.panel-head:is(.has-tabs, .narrow-head) .panel-tabs { flex:1 1 0; }
 .panel-head:is(.has-tabs, .narrow-head) .chat-menu-wrap { margin-left:auto; }
 .keyboard-open .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick { display:none; }
 .menu .menu-notes { margin:0 0 4px; padding:6px 12px 8px; border-bottom:1px solid var(--line); color:var(--dim);
@@ -22609,10 +22644,15 @@ button.help-example:hover:not(:disabled) { background:color-mix(in srgb, var(--a
 .chat-assistant > .chat-stopped { margin-top:6px; color:var(--dim); font-size:13px; white-space:normal; }
 .chat-cite { color:var(--accent-light); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
-/* Under an answer: Read aloud starts it, Start over once it is paused; pausing and resuming are the panel's own
-   button. While it is read, nothing shows here, and the answer stays plain text (no fill on the part being read). */
-.chat-voice { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:.7em; }
+/* Under an answer, one row (.chat-answer-actions), side by side and whole: Read aloud starts it, Start over once it
+   is paused (pausing and resuming are the panel's own button); then Save to notes. While it is read, Read aloud's
+   place is empty, and the answer stays plain text (no fill on the part being read). */
+.chat-answer-actions { display:flex; flex-wrap:wrap; align-items:center; column-gap:10px; }
+.chat-assistant > .chat-answer-actions { margin-top:0; }
+.chat-answer-actions > * { margin-top:.7em; }
+.chat-voice { display:flex; flex:none; align-items:center; gap:8px 14px; }
 .chat-voice:not(:has(> :not(.hidden))) { display:none; }
+.chat-answer-actions button { white-space:nowrap; }
 button.chat-listen { min-height:32px; padding:0 12px; border-style:dashed; border-radius:999px;
                      font-size:13px; }
 .chat-restart { font-size:13px; }
@@ -22627,8 +22667,10 @@ button.chat-listen { min-height:32px; padding:0 12px; border-style:dashed; borde
 .chat-notice.failed .chat-advice { color:var(--dim); font-size:13px; }
 .chat-notice.failed .line { display:flex; gap:12px; }
 /* Under the conversation, never scrolling with it: the teal button for what Hilde is doing, with its short
-   status; the card attached to the next question; the question box. */
-.chat-foot { display:grid; flex:none; gap:10px; padding:12px 16px; border-top:1px solid var(--line); }
+   status; the card attached to the next question; the question box. One column the foot's width: a card's
+   one-line title and preview (a phone's compact card) are cut there, never widening it. */
+.chat-foot { display:grid; flex:none; grid-template-columns:minmax(0, 1fr); gap:10px; padding:12px 16px;
+             border-top:1px solid var(--line); }
 .chat-action-row { display:flex; align-items:center; gap:10px; min-width:0; }
 button.chat-action { display:inline-flex; flex:none; align-items:center; gap:8px; min-height:30px; padding:0 16px 0 14px;
                      border:0; border-radius:999px; background:var(--ask); box-shadow:none; color:#0e1a18;
@@ -22658,6 +22700,9 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .chat-compose textarea { flex:1; min-height:30px; max-height:160px; padding:5px 0 5px 12px; border:0;
                          background:transparent; font-size:14px; resize:none; field-sizing:content; }
 .chat-compose textarea:focus-visible { outline:0; }
+/* Empty, with the longer hint ("Type a question, or press Enter to explain …"): room for its two lines, so none is
+   cut (Safari sizes the box to less than the hint needs, also with field-sizing). */
+.chat-compose textarea.long-hint:placeholder-shown { min-height:calc(2lh + 10px); }
 .chat-compose button { flex:0 0 auto; align-self:center; min-height:26px; max-width:9em; padding:2px 10px;
                        border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
                        color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
@@ -22696,6 +22741,29 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 .chip-where { color:var(--dim); font-size:12px; }
 .chip-piece p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .chip-note, .chip-image { padding-left:10px; color:var(--dim); }
+/* A phone: the card of the next question compact. One line: "Selected" (or the section), the preview cut to that
+   line, ×; the next: Word | Sentence | Paragraph and Context (open, its details run on below). No Change and no
+   Listen from here (a tap in the text listens there). The small controls keep a 44 px touch (an invisible frame). */
+@media (max-width:767.98px) {
+  #chat-about .chip:not(.chip-failed) { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px;
+                                        padding:4px 4px 8px 12px; }
+  #chat-about .chip:not(.chip-failed) > .chip-head { display:contents; }
+  #chat-about .chip-section { flex:0 1 auto; max-width:50%; }
+  #chat-about :is(.chip-long, .chip-change, .chip-listen) { display:none; }
+  #chat-about .chip > .chip-preview { order:1; flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                                      white-space:nowrap; }
+  #chat-about .chip-remove { position:relative; order:2; min-width:28px; min-height:28px; padding:0; }
+  #chat-about .chip:not(.chip-failed)::after { content:""; order:3; flex-basis:100%; height:0; }
+  #chat-about .chip > .chip-focus { order:4; margin:0; }
+  #chat-about .chip > .chip-details { order:5; }
+  #chat-about .chip > .chip-details[open] { flex-basis:100%; }
+  #chat-about .chip > :is(.problem, .chip-whole) { order:6; flex-basis:100%; }
+  #chat-about .chip-scope button { position:relative; min-height:28px; }
+  #chat-about .chip-details > summary { position:relative; min-height:0; padding:6px 0; line-height:16px; }
+  #chat-about :is(.chip-remove, .chip-scope button, .chip-details > summary)::before { content:""; position:absolute;
+    inset:-9px -2px; }
+  #chat-about .chip .chip-head .chip-remove::before { inset:-4px -8px -14px; }
+}
 /* The figure and the source page, large. */
 .figure-view-title { margin-bottom:10px; font-size:16px; }
 .zoom-card { cursor:default; }
@@ -22783,11 +22851,21 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
 /* Notes (Listen Part 2): only with the server's notes_enabled (html.notes-on); nothing here shows otherwise. A highlight
    is a CSS highlight (no element in the text), so the sentence tint, the word's blue underline and the paragraph bar
    all show over it as before. */
-::highlight(notes-mark) { background-color:color-mix(in srgb, var(--mark) 22%, transparent); }
-/* In the sentence being read the fill is the same yellow it shows on the ground (22% over --bg, opaque), so the
+/* One CSS highlight per colour (notes-mark-<color>, renderMarks()): its token at 22% over the ground. */
+::highlight(notes-mark-yellow) { background-color:color-mix(in srgb, var(--mark-yellow) 22%, transparent); }
+::highlight(notes-mark-green) { background-color:color-mix(in srgb, var(--mark-green) 22%, transparent); }
+::highlight(notes-mark-pink) { background-color:color-mix(in srgb, var(--mark-pink) 22%, transparent); }
+::highlight(notes-mark-purple) { background-color:color-mix(in srgb, var(--mark-purple) 22%, transparent); }
+/* In the sentence being read the fill is the same colour it shows on the ground (22% over --bg, opaque), so the
    sentence's blue tint shows around it, not mixed into it (hilde-listen-reading-a-highlight.png). */
-.reader-sentence.active::highlight(notes-mark), .reader-sentence.active *::highlight(notes-mark) {
-  background-color:color-mix(in srgb, var(--mark) 22%, var(--bg)); }
+.reader-sentence.active::highlight(notes-mark-yellow), .reader-sentence.active *::highlight(notes-mark-yellow) {
+  background-color:color-mix(in srgb, var(--mark-yellow) 22%, var(--bg)); }
+.reader-sentence.active::highlight(notes-mark-green), .reader-sentence.active *::highlight(notes-mark-green) {
+  background-color:color-mix(in srgb, var(--mark-green) 22%, var(--bg)); }
+.reader-sentence.active::highlight(notes-mark-pink), .reader-sentence.active *::highlight(notes-mark-pink) {
+  background-color:color-mix(in srgb, var(--mark-pink) 22%, var(--bg)); }
+.reader-sentence.active::highlight(notes-mark-purple), .reader-sentence.active *::highlight(notes-mark-purple) {
+  background-color:color-mix(in srgb, var(--mark-purple) 22%, var(--bg)); }
 /* A highlight repaints the text decorations under it in its own text color (Chromium: the word's white), so the word
    being read inside a highlight (in-mark, set by renderMarks()) draws its blue underline as a bar, which no highlight
    repaints, where the underline was. */
@@ -22796,7 +22874,7 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
                                      background:var(--accent-light); pointer-events:none; }
 /* The passage an open Add note editor is about: the selection's gray. */
 ::highlight(notes-pending) { background-color:#5c5c5c; color:var(--text); }
-.notes-button svg, .selection-actions svg:not(.ask-icon), .dock-select svg:not(.ask-icon), .note-marker svg,
+.notes-button svg, .selection-actions svg:not(.ask-icon), .stack-bar svg:not(.ask-icon), .note-marker svg,
 .notes-icon, button.chat-save svg:not(.ask-icon), .notes-mini-label svg:not(.ask-icon) { flex:none; width:15px; height:15px;
   fill:none; stroke:currentColor; stroke-width:1.4;
   stroke-linejoin:round; stroke-linecap:round; }
@@ -22826,8 +22904,9 @@ html.notes-on .book-top > .library-button { grid-column:3; }
                       background:color-mix(in srgb, var(--ask) 14%, var(--surface)); }
 .note-marker.answer svg { stroke-width:1.3; }
 button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:var(--hover); }
-/* A mouse selection's actions: Highlight · Add note · Ask Hilde | Copy, beside the selection (its own id: the 18 Oct
-   Ask/Copy menu it replaces was #selection-menu, which stays retired). */
+/* A mouse selection's actions: Highlight · the colour dots · Add note · Ask Hilde | Copy, beside the selection (its
+   own id: the 18 Oct Ask/Copy menu it replaces was #selection-menu, which stays retired). A highlight tapped with a
+   mouse gets the same menu as its own (mark mode): the dots · Add note · Remove highlight. */
 .selection-actions { position:fixed; z-index:40; display:flex; align-items:center; gap:2px; padding:4px;
                      border:1px solid var(--line); border-radius:10px; background:var(--raised); white-space:nowrap;
                      box-shadow:0 10px 30px rgba(0,0,0,.5); }
@@ -22835,20 +22914,57 @@ button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:va
                             border:0; border-radius:7px; background:none; box-shadow:none; color:var(--text);
                             font-size:15px; }
 .selection-actions button:hover:not(:disabled), .selection-actions button:focus-visible { background:var(--hover); }
-.selection-actions .sel-highlight svg { color:var(--mark); }
 .selection-actions .sel-ask { color:var(--ask); }
 .selection-actions .sel-sep { width:1px; align-self:stretch; margin:6px 2px; background:var(--line); }
-/* A touch selection's actions above the player: Highlight · Note · Ask Hilde (teal, as the one it replaces). */
+.selection-actions.mark-mode :is([data-act=highlight], [data-act=ask], [data-act=copy], .sel-sep),
+.selection-actions:not(.mark-mode) [data-act=remove] { display:none; }
+/* The pen's underline in the colour Highlight uses now (the last one used, --mark-last on <html>). */
+.mark-pen .mark-pen-line { stroke:var(--mark-last, var(--mark-yellow)); stroke-width:2; }
+/* The colour dots: a filled circle each, the colour in use ringed. */
+.mark-dots { display:inline-flex; align-items:center; gap:2px; }
+.selection-actions .mark-dots button, .stack-bar .mark-dots button { display:grid; place-items:center; width:30px;
+  min-width:0; height:34px; min-height:0; padding:0; border:0; border-radius:50%; background:none; box-shadow:none; }
+.mark-dots button::before { content:""; width:18px; height:18px; border-radius:50%; background:var(--dot);
+                            box-shadow:0 0 0 0 transparent; }
+.mark-dots button[aria-checked=true]::before { box-shadow:0 0 0 2px var(--raised), 0 0 0 4px var(--text); }
+.mark-dots button:hover:not(:disabled), .mark-dots button:focus-visible { background:var(--hover); }
+.mark-dots [data-color=yellow] { --dot:var(--mark-yellow); }
+.mark-dots [data-color=green] { --dot:var(--mark-green); }
+.mark-dots [data-color=pink] { --dot:var(--mark-pink); }
+.mark-dots [data-color=purple] { --dot:var(--mark-purple); }
+/* Everything above the player is one stack (#dock-slot, a column): the Paused pill of a touch selection, the
+   Highlighted bar, Saved to Notes, Back to reading position, the small Notes bar. It sits on the player's measured
+   height (--dock-h); an open ⋯ or speed menu lifts it above the menu's measured top (--stack-lift, layoutStack()),
+   in 150 ms (none with reduced motion), or hides it while there is no room. */
 html.notes-on .dock-slot { flex-direction:column; align-items:center; gap:8px; }
-.dock-select { display:flex; align-items:center; gap:2px; padding:4px; border:1px solid var(--line);
-               border-radius:999px; background:var(--raised); box-shadow:0 6px 20px rgba(0,0,0,.5); }
-.dock-select button { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0 16px; border:0;
-                      border-radius:999px; background:none; box-shadow:none; color:var(--text); font-size:15px; }
-.dock-select #dock-highlight svg { color:var(--mark); }
-.dock-select .dock-select-ask, .dock-select .dock-select-ask:hover:not(:disabled) { background:var(--ask);
-  color:#0e1a18; font-weight:650; }
-/* One Ask Hilde while text is selected on a phone: the bar's. Play/Pause, the seek bar and speed stay. */
-html.notes-selecting #ask-hilde, html.notes-selecting #header-ask { visibility:hidden; }
+.dock-slot { transform:translateY(calc(-1 * var(--stack-lift, 0px))); transition:transform .15s ease; }
+.dock-slot.stack-hidden { visibility:hidden; }
+.dock-slot.stack-hidden > * { pointer-events:none; }
+@media (prefers-reduced-motion:reduce) { .dock-slot { transition:none; } }
+.stack-bar { display:flex; align-items:center; gap:4px; max-width:min(560px, 100%); min-height:44px;
+             padding:0 6px 0 16px; border:1px solid var(--line); border-radius:999px; background:var(--raised);
+             box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:15px; white-space:nowrap; }
+.stack-bar > button:not(.mark-dot) { min-height:44px; padding:0 12px; border:0; border-radius:999px; background:none;
+                                     box-shadow:none; color:var(--text); font-size:15px; }
+.stack-bar > button:hover:not(:disabled) { background:var(--hover); }
+.stack-bar > button.stack-link { color:var(--accent-light); font-weight:600; }
+.stack-bar .mark-dots button { width:40px; height:44px; }
+.stack-label { color:var(--dim); }
+.selection-pill .stack-quote { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.selection-pill .stack-close { flex:none; width:44px; padding:0; font-size:18px; color:var(--dim); }
+/* The Highlighted bar: Highlighted · the dots · Undo just after highlighting; a highlight tapped on a touch screen
+   (tapped): the dots · Add note · Remove highlight, on two rows where one is too narrow. */
+.mark-bar:not(.tapped) :is(#mark-bar-note, #mark-bar-remove), .mark-bar.tapped :is(#mark-bar-label, #mark-bar-undo) {
+  display:none; }
+.mark-bar.tapped { flex-wrap:wrap; justify-content:center; padding:0 6px; border-radius:22px; }
+.mark-bar.tapped .mark-dots { flex-basis:100%; justify-content:center; }
+/* One Ask Hilde while text is selected on a phone: the player's (it acts on the selection); the header's hides. */
+html.notes-selecting #header-ask { visibility:hidden; }
+/* With the phone sheet open (Save to notes under an answer) only Saved to Notes shows, over the sheet's foot. */
+@media (max-width:899.98px) {
+  html.sheet-open .dock-slot:has(> #saved-bar:not(.hidden)) { z-index:21; }
+  html.sheet-open .dock-slot > :not(#saved-bar) { display:none !important; }
+}
 /* The shrunk Notes sheet (Back to note), or choosing a note's place: a small bar just above the player. */
 .notes-mini { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
               width:min(560px, 100%); min-height:52px; padding:12px 10px 8px 16px; border:1px solid var(--line);
@@ -22873,7 +22989,8 @@ html.notes-selecting #ask-hilde, html.notes-selecting #header-ask { visibility:h
 .note-card:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
 .note-quote { margin:0; padding:0 0 0 12px; border-left:3px solid var(--off); color:var(--text); font-size:14.5px;
               overflow-wrap:anywhere; }
-.note-quote.highlighted { border-left-color:var(--mark); }
+/* A highlight's passage: its side bar the highlight's colour (--quote-mark: var(--mark-<colour>, #ddd040)). */
+.note-quote.highlighted { border-left-color:var(--quote-mark, var(--mark)); }
 .note-where { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; color:var(--dim); font-size:12.5px; }
 .note-where > span { flex:1; min-width:0; }
 .note-where button.link { font-size:12.5px; }
@@ -22902,29 +23019,52 @@ html.notes-selecting #ask-hilde, html.notes-selecting #header-ask { visibility:h
 .note-edit-actions, .note-editor-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
 .note-conflict { display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
                  background:var(--surface); }
-/* Save to notes under an answer of Hilde's (yellow, the mark's colour), then Saved to notes. */
-.chat-notes { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:8px; }
+/* Save to notes under an answer of Hilde's (yellow, the mark's colour), then Saved to notes; why a save failed, on a
+   line of its own. */
+.chat-notes { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
+.chat-notes .note-problem { flex-basis:100%; }
 button.chat-save { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:4px 12px;
                    border-color:color-mix(in srgb, var(--mark) 60%, var(--line)); color:var(--text); font-size:14px; }
 button.chat-save svg { color:var(--mark); }
 button.chat-save.saved { border-color:var(--line); color:var(--dim); }
 .chat-notes .note-problem { font-size:13px; }
-/* The Add note editor under a selection, and Show in text's outline: in a layer at the document's origin. */
+/* On a phone or a touch screen the answer's actions are 44 px tall, side by side. */
+@media (max-width:767.98px), (pointer:coarse) { .chat-answer-actions button { min-height:44px; } }
+/* The Add note editor under a selection, and Show in text's outline: in a layer at the document's origin. The
+   editor: "Add note" and ×, the passage (its side bar the highlight's colour when it has one), the box, Cancel and
+   Save note. */
 .notes-layer { position:absolute; z-index:16; top:0; left:0; width:0; height:0; }
-.note-editor { position:absolute; display:grid; gap:8px; width:min(400px, calc(100vw - 24px)); padding:12px;
+.note-editor { position:absolute; display:grid; gap:8px; width:min(400px, calc(100vw - 24px)); padding:6px 12px 12px;
                border:1px solid var(--line); border-radius:10px; background:var(--raised);
                box-shadow:0 10px 30px rgba(0,0,0,.5); font-size:15px; }
-.note-editor-quote { color:var(--dim); font-size:13px; overflow-wrap:anywhere; }
+.note-editor-head { display:flex; align-items:center; gap:8px; margin-right:-6px; }
+.note-editor-title { flex:1; margin:0; font-size:15px; font-weight:650; }
+button.note-editor-close { min-width:36px; min-height:36px; padding:0 8px; border-color:transparent;
+                           background:transparent; box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
+.note-editor-quote { margin:0; padding-left:10px; border-left:3px solid var(--quote-mark, var(--off)); color:var(--dim);
+                     font-size:13px; overflow-wrap:anywhere; }
 .note-editor-status:empty { display:none; }
 .note-editor-status { font-size:13px; }
+/* A phone: a box across the bottom, on the player's top (with the keyboard open, on the keyboard's), whatever is
+   selected; the passage is scrolled above it (placeNoteEditor()). */
+@media (max-width:767.98px) {
+  .note-editor { position:fixed; right:0; left:0; width:auto; max-height:calc(var(--vv-height, 100dvh) - 16px);
+                 overflow:auto; top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) - var(--note-floor, 0px));
+                 transform:translateY(-100%); padding:6px 16px 14px; border-bottom:0; border-radius:16px 16px 0 0;
+                 box-shadow:0 -8px 30px rgba(0,0,0,.5); }
+  html.notes-on:not(.keyboard-open) body:has(main.reading) .note-editor { --note-floor:var(--dock-h, 0px); }
+  .note-editor button { min-height:44px; }
+  button.note-editor-close { min-width:44px; }
+}
 .notes-outline { position:absolute; border:1.5px solid var(--text); border-radius:5px; pointer-events:none;
                  transition:opacity .4s; }
 @media (prefers-reduced-motion: reduce) { .notes-outline { transition:none; } }
-/* On a phone the Notes sheet (and Ask Hilde's: the same sheet) stops above the player, and the dimmed area leaves
-   the player uncovered, so Play/Pause, the seek bar and speed stay usable; with the keyboard open it may cover. */
+/* On a phone the Notes sheet (and Ask Hilde's: the same sheet) stops above the player (its floor), and the dimmed
+   area leaves the player uncovered, so Play/Pause, the seek bar and speed stay usable; with the keyboard open it may
+   cover. */
 @media (max-width:899.98px) {
-  html.notes-on body:has(main.reading) .side-panel { top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) * .3);
-    height:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
+  html.notes-on body:has(main.reading) .side-panel { --sheet-floor:var(--dock-h, 0px);
+    --sheet-default:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
   html.notes-on.keyboard-open body:has(main.reading) .side-panel { top:var(--vv-top, 0px);
     height:var(--vv-height, 100dvh); }
   html.notes-on body:has(main.reading) .panel-backdrop:not(.hidden) { bottom:var(--dock-h, 0px); }
@@ -22944,16 +23084,45 @@ button.chat-save.saved { border-color:var(--line); color:var(--dim); }
   main.help-panel-open #book-view.dock-only :is(.player-dock, .dock-slot) { right:var(--panel-w); }
 }
 /* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
-   grabber, 60% of the visible viewport high, the book dimmed above it (a tap there closes it). With the keyboard
-   open it takes the whole visible viewport, so the box and Send stay in sight. */
+   grabber, the book dimmed above it (a tap there closes it). Its height (--sheet-size, from its bottom: the screen's,
+   or the player's top) is 60% of the visible viewport, or as sized (sheetSize()): tall, from just below the slim
+   bar (--sheet-edge, fitPinned()), as it opens from a selection; half; or where the grabber is being dragged. With
+   the keyboard open it takes the whole visible viewport, so the box and Send stay in sight. */
 @media (max-width:899.98px) {
-  .side-panel { right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2)); bottom:auto;
-                top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) * .4); width:auto;
-                height:calc(var(--vv-height, 100dvh) * .6); border:1px solid var(--line); border-bottom:0;
-                border-radius:16px 16px 0 0; }
+  .side-panel { --sheet-floor:0px; --sheet-default:calc(var(--vv-height, 100dvh) * .6);
+                right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2)); bottom:auto;
+                top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) - var(--sheet-floor)
+                  - var(--sheet-size, var(--sheet-default)));
+                width:auto; height:var(--sheet-size, var(--sheet-default)); border:1px solid var(--line);
+                border-bottom:0; border-radius:16px 16px 0 0; }
+  .side-panel.sheet-tall { --sheet-size:calc(var(--vv-height, 100dvh) - var(--sheet-edge, 48px) - var(--sheet-floor)); }
+  .side-panel.sheet-half { --sheet-size:calc((var(--vv-height, 100dvh) - var(--sheet-floor)) * .5); }
+  /* Nothing of the sheet ever reaches past its bottom (onto the player): a view taller than its share scrolls. At
+     half, the model box's line and its notes step aside (as with the keyboard open), so the conversation, the card
+     and the box fit; while dragged, the sheet is clipped to its own box (and the 32 px above it, the grabber's
+     handle). */
+  .side-panel .panel-view { overflow-y:auto; }
+  .side-panel.sheet-half :is(.panel-head .chat-model-pick, .chat-model-notes) { display:none; }
+  .side-panel.sheet-dragging { clip-path:inset(-32px 0 0 0); }
+  .side-panel.sheet-settling { transition:top .15s ease-out, height .15s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .side-panel.sheet-settling { transition:none; } }
   html.keyboard-open .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
-  .sheet-grabber { display:block; flex:none; width:36px; height:4px; margin:8px auto 0; border-radius:2px;
-                   background:#5a5a5a; }
+  /* The grabber: a small stroke at the top; its handle (::after) reaches 28 px above the sheet's edge and down over
+     the header's first row, whose tabs and buttons sit above it, so a press on the stroke (at least 44 px tall
+     there), just above it, or on that row's free part drags the sheet: full, half or closed (sheetSnap()). A tap,
+     Enter or Space switches between half and full; ArrowUp and ArrowDown too. */
+  button.sheet-grabber { position:relative; display:block; flex:none; width:100%; height:16px; min-height:0; margin:0;
+                         padding:0; border:0; border-radius:16px 16px 0 0; background:transparent; box-shadow:none;
+                         cursor:grab; touch-action:none; -webkit-tap-highlight-color:transparent; }
+  button.sheet-grabber:hover:not(:disabled) { background:transparent; }
+  button.sheet-grabber:active:not(:disabled) { transform:none; filter:none; cursor:grabbing; }
+  .sheet-grabber::before { content:""; position:absolute; top:8px; left:calc(50% - 18px); width:36px; height:4px;
+                           border-radius:2px; background:#5a5a5a; }
+  .sheet-grabber::after { content:""; position:absolute; top:-28px; right:0; left:0; height:calc(100% + 72px); }
+  .sheet-grabber:focus-visible { outline:0; }
+  .sheet-grabber:focus-visible::before { outline:2px solid var(--accent-light); outline-offset:3px; }
+  .side-panel .panel-head { position:relative; pointer-events:none; }
+  .side-panel .panel-head > * { pointer-events:auto; }
   .panel-backdrop:not(.hidden) { display:block; position:fixed; z-index:19; inset:0; background:rgba(0,0,0,.5); }
   html.sheet-open { overflow:hidden; }
   .panel-resize { display:none; }
@@ -22980,6 +23149,10 @@ button.chat-save.saved { border-color:var(--line); color:var(--dim); }
 @media (max-width:767.98px) {
   .player-play { width:48px; height:48px; }
   .player-play svg { width:20px; height:20px; }
+  /* Notes on: Play · speed · Highlight · Note · Ask Hilde fit 375px (343 inside the dock's padding); Ask Hilde stays
+     a pill, narrower. */
+  html.notes-on .player-controls { gap:8px; }
+  html.notes-on .player-bar .ask-hilde { min-width:0; padding:0 12px; }
 }
 .footer { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
 .footer .grow { flex:1; }
@@ -23131,6 +23304,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .page-nav button, .back-to-listening, .book-controls label.check { min-height:44px; }
   .player-speed, .chip-head button, .panel-close, .chat-more, .page-nav button { min-width:44px; }
   .player-bar .ask-hilde { height:44px; }
+  .player-bar .player-mark { width:44px; height:44px; }
+  .selection-actions .mark-dots button { width:40px; height:44px; }
   /* The speed pill keeps its small look; an invisible frame around it makes the target at least 44 × 44. */
   .player-bar .player-speed { min-width:0; min-height:0; }
   .player-bar .player-speed::before { content:""; position:absolute; inset:-11px -4px; }
@@ -23835,26 +24010,33 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <section id="reader-panel" class="reader-panel hidden" aria-label="Text">
           <article id="reader-content" class="reader-content"></article>
         </section>
-        <!-- One spot just above the player bar, shared by Back to reading position and Ask Hilde for text selected
-             by touch: never both; while text is selected in the reading column only Ask Hilde shows. -->
+        <!-- Everything above the player bar, one stack (a column, layoutStack()): Back to reading position (never
+             while text is selected), Saved to Notes · Show, the Highlighted bar (or a tapped highlight's choices on a
+             touch screen), Ask Hilde for text selected by touch (notes off) or, with notes on, the Paused pill of a
+             touch selection, and the small Notes bar. -->
         <div id="dock-slot" class="dock-slot">
           <button id="back-to-listening" class="back-to-listening hidden" type="button"
             onclick="backToListening()">↓ Back to reading position</button>
+          <div id="saved-bar" class="stack-bar saved-bar hidden" role="status">
+            <span id="saved-bar-label">Saved to Notes</span><span class="stack-label" aria-hidden="true">·</span>
+            <button id="saved-bar-show" class="stack-link" type="button">Show</button>
+          </div>
+          <div id="mark-bar" class="stack-bar mark-bar hidden" role="toolbar" aria-label="Highlight">
+            <span id="mark-bar-label" class="stack-label">Highlighted</span>
+            <span class="mark-dots" role="radiogroup" aria-label="Highlight colour"></span>
+            <button id="mark-bar-undo" class="stack-link" type="button">Undo</button>
+            <button id="mark-bar-note" type="button">Add note</button>
+            <button id="mark-bar-remove" type="button">Remove highlight</button>
+          </div>
           <button id="dock-ask" class="dock-ask hidden" type="button" aria-controls="side-panel"><svg class="ask-icon"
             viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
             d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
             /></svg>Ask Hilde</button>
-          <!-- With notes on (notes_enabled), a touch selection's actions instead of the one Ask Hilde: Highlight, Note
-               and Ask Hilde; while it shows, the player's and the header's Ask Hilde hide. -->
-          <div id="dock-select" class="dock-select hidden" role="toolbar" aria-label="Selected text">
-            <button id="dock-highlight" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path
-              d="M10 2.5l3.5 3.5L6.5 13H3v-3.5zM2 15h12"/></svg>Highlight</button>
-            <button id="dock-note" type="button"><svg viewBox="0 0 16 16" aria-hidden="true"><path
-              d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"/></svg>Note</button>
-            <button id="dock-select-ask" class="dock-select-ask" type="button" aria-controls="side-panel"><svg
-              class="ask-icon" viewBox="0 0 16 16" aria-hidden="true"><path
-              d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
-              /></svg>Ask Hilde</button>
+          <!-- With notes on (notes_enabled), text selected by touch: the book paused and what is selected; the
+               player's Highlight, Note and Ask Hilde act on it. Never beside the selection (the phone's Copy, Look Up). -->
+          <div id="selection-pill" class="stack-bar selection-pill hidden" role="status">
+            <span class="stack-label">Paused ·</span><span id="selection-pill-quote" class="stack-quote"></span>
+            <button id="selection-pill-clear" class="stack-close" type="button" aria-label="Clear the selection">×</button>
           </div>
           <!-- The Notes sheet shrunk by Show in text on a phone (Back to note), or choosing a note's place. -->
           <div id="notes-mini" class="notes-mini hidden" role="region" aria-label="Note">
@@ -23884,6 +24066,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                   aria-expanded="false" aria-controls="speed-menu" onclick="toggleMenu('speed')">1.0×</button>
                 <div id="speed-menu" class="menu hidden" role="menu" aria-label="Playback speed"></div>
               </div>
+              <!-- With notes on: Highlight and Note, for the text selected or else the sentence being read. -->
+              <div id="player-marks" class="player-marks hidden">
+                <button id="player-highlight" class="player-mark mark-pen" type="button"
+                  aria-label="Highlight the sentence being read" title="Highlight"><svg viewBox="0 0 16 16"
+                  aria-hidden="true"><path d="M10 2.5l3.5 3.5L6.5 13H3v-3.5z"/><path class="mark-pen-line"
+                  d="M2 15h12"/></svg></button>
+                <button id="player-note" class="player-mark" type="button"
+                  aria-label="Add a note to the sentence being read" title="Add note"><svg viewBox="0 0 16 16"
+                  aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
+                  /></svg></button>
+              </div>
               <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel"><svg class="ask-icon"
                 viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
                 d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg><span
@@ -23894,12 +24087,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
       </div>
       <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
-      <!-- With notes on: a mouse selection's actions beside it. -->
+      <!-- With notes on: a mouse selection's actions beside it (Highlight in the colour last used, the colour dots,
+           Add note, Ask Hilde | Copy); for a highlight clicked, its own: the dots, Add note, Remove highlight. -->
       <div id="selection-actions" class="selection-actions hidden" role="toolbar" aria-label="Selected text">
-        <button type="button" class="sel-highlight" data-act="highlight"><svg viewBox="0 0 16 16" aria-hidden="true"><path
-          d="M10 2.5l3.5 3.5L6.5 13H3v-3.5zM2 15h12"/></svg>Highlight</button>
+        <button type="button" class="sel-highlight mark-pen" data-act="highlight"><svg viewBox="0 0 16 16"
+          aria-hidden="true"><path d="M10 2.5l3.5 3.5L6.5 13H3v-3.5z"/><path class="mark-pen-line" d="M2 15h12"
+          /></svg>Highlight</button>
+        <span class="mark-dots" role="radiogroup" aria-label="Highlight colour"></span>
         <button type="button" data-act="note"><svg viewBox="0 0 16 16" aria-hidden="true"><path
           d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"/></svg>Add note</button>
+        <button type="button" data-act="remove">Remove highlight</button>
         <button type="button" class="sel-ask" data-act="ask" aria-controls="side-panel"><svg class="ask-icon"
           viewBox="0 0 16 16" aria-hidden="true"><path
           d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
@@ -23915,12 +24112,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div id="panel-backdrop" class="panel-backdrop hidden" aria-hidden="true" onclick="closePanel()"></div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
         <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
-          aria-label="Panel width" aria-valuemin="400" tabindex="0"></div>
-        <!-- Below 900px the panel is a bottom sheet: its grabber, and the book dimmed above it. -->
-        <div class="sheet-grabber" aria-hidden="true"></div>
+          aria-label="Panel width" aria-valuemin="320" aria-valuemax="720" tabindex="0"></div>
+        <!-- Below 900px the panel is a bottom sheet: its grabber (drag it, or tap / Enter / Space: about half or
+             full height), and the book dimmed above it. -->
+        <button id="sheet-grabber" class="sheet-grabber" type="button" aria-controls="side-panel"
+          aria-label="Make the panel full height"></button>
         <!-- The header: the tabs (Ask Hilde's sparkle and name as its title), then, with Ask Hilde shown, its model
              box (the shared picker, small: Runs on and Model with the model's badge) and ⋯, the conversation's
-             menu; ×. Where the panel is narrow (a phone) or other tabs show, the model box takes a line of its own. -->
+             menu; ×. With more than one tab, or where the panel is narrow (a phone), the model box takes a line of
+             its own. -->
         <div id="panel-head" class="panel-head">
           <div id="panel-tabs" class="panel-tabs" role="tablist" aria-label="Panel">
             <button id="panel-tab-chat" type="button" role="tab" aria-controls="chat-pane"
@@ -24047,10 +24247,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
 <div id="row-menu" class="menu row-menu hidden" role="menu"></div>
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-<!-- Notes (notes_enabled): a layer at the document's origin for the Add note editor under a selection and the
-     outline Show in text draws briefly around a passage; both scroll with the text. -->
+<!-- Notes (notes_enabled): a layer at the document's origin for the Add note editor (under the selection; on a phone
+     a box at the bottom, above the player or the keyboard) and the outline Show in text draws briefly around a
+     passage; both scroll with the text. -->
 <div id="notes-layer" class="notes-layer">
-  <div id="note-editor" class="note-editor hidden" role="dialog" aria-labelledby="note-editor-quote">
+  <div id="note-editor" class="note-editor hidden" role="dialog" aria-labelledby="note-editor-title"
+    aria-describedby="note-editor-quote">
+    <div class="note-editor-head">
+      <h2 id="note-editor-title" class="note-editor-title">Add note</h2>
+      <button id="note-editor-close" class="note-editor-close" type="button" aria-label="Cancel the note">×</button>
+    </div>
     <p id="note-editor-quote" class="note-editor-quote"></p>
     <label for="note-editor-text" class="visually-hidden">Your note</label>
     <textarea id="note-editor-text" rows="3" maxlength="20000" placeholder="Your note"></textarea>
@@ -24502,9 +24708,12 @@ let notesEnabled = false;
 let marks = new Map(), marksBook = "", marksEpoch = 0, marksProblem = "", markRanges = new Map();
 let noteEdits = new Map(), answerSaves = new Map(), askAnchors = new Map(), noteDraft = null;
 let noteCurrent = "", choosingPlace = "", notesMiniKind = "";
-// Option A (step 7, a prototype): a single click in the text waits this long
-// before it listens, so a double-click can cancel it.
-const READER_CLICK_HOLD = 250, READER_UNDO_WITHIN = 5000;
+// Option A: a single click in the text waits out the double-click window
+// before it listens, so the first click of a double-click never acts, the
+// book playing, paused or never started alike: a mouse READER_DOUBLE_CLICK
+// (500 ms, the default double-click time of macOS and Windows; a slow trackpad
+// double-tap comes 300–450 ms after the first), a touch READER_DOUBLE_TAP.
+const READER_DOUBLE_CLICK = 500, READER_UNDO_WITHIN = 5000;
 let readerTapTimer = 0, readerTapPending = null, readerSeekUndo = null;
 // One shared player keeps hundreds of preview buttons cheap.
 const previewAudio = new Audio();
@@ -24663,6 +24872,8 @@ function load(data) {
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
   notesEnabled = data.notes_enabled === true;
   document.documentElement.classList.toggle("notes-on", notesEnabled);
+  $("player-marks").classList.toggle("hidden", !notesEnabled);
+  if (notesEnabled) renderMarkColor();
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
   populateAssets();
@@ -25397,7 +25608,8 @@ function pressReaderText(event) {
 function pressReaderTextAgain(event) {
   if (readerPress && event.detail > 1) readerPress.double = true;
   if (!readerPress?.mouse) return;
-  if (event.detail > 1) undoReaderSeek(); else readerSeekUndo = null;
+  // A double-click selects, and a selection pauses the book (notes on): the audio goes back where it was, paused.
+  if (event.detail > 1) undoReaderSeek(notesEnabled); else readerSeekUndo = null;
 }
 function stopReaderPress(press, why) {
   if (!press) return;
@@ -25425,8 +25637,11 @@ function tapReaderText(event) {
   if (!readerAudio || readerDownload?.restoring || press.target.closest(READER_SKIP) || readerSelection()) return;
   const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
   if (!part) return;
+  // With notes on, a tap on a highlight offers its choices (colour, Add note, Remove highlight) and does not listen.
+  const highlight = notesEnabled ? highlightAt(event.clientX, event.clientY) : "";
   let act;
-  if (inSentenceBeingRead(part)) act = () => togglePlayback();
+  if (highlight) act = () => openMarkChoices(highlight, press.mouse);
+  else if (inSentenceBeingRead(part)) act = () => togglePlayback();
   else {
     const range = clickedWord({ target:press.target, clientX:event.clientX, clientY:event.clientY }, part)
       || widenRange(part, 0, "sentence");
@@ -25434,15 +25649,15 @@ function tapReaderText(event) {
     act = () => { if (listenFromSelection({ range, first:passage })) readerAudio.play().catch(() => {}); };
   }
   if (!notesEnabled) { act(); return; }
-  // Option A (notes on): the click waits READER_CLICK_HOLD; a second press or a
-  // selection meanwhile cancels it (a double-click selects, never listens).
+  // Option A (notes on): the click waits out the double-click window; a second
+  // press or a selection meanwhile cancels it (a double-click selects, never listens).
   const audio = readerAudio;
   readerTapPending = () => {
     if (readerAudio !== audio || readerSelection()) return;
-    readerSeekUndo = { audio, time:audio.currentTime, paused:audio.paused, at:performance.now() };
+    if (!highlight) readerSeekUndo = { audio, time:audio.currentTime, paused:audio.paused, at:performance.now() };
     act();
   };
-  readerTapTimer = setTimeout(runReaderTap, READER_CLICK_HOLD);
+  readerTapTimer = setTimeout(runReaderTap, press.mouse ? READER_DOUBLE_CLICK : READER_DOUBLE_TAP);
 }
 function runReaderTap() {
   const pending = readerTapPending;
@@ -25453,13 +25668,15 @@ function cancelReaderTap() {
   clearTimeout(readerTapTimer);
   readerTapPending = null;
 }
-// Option A's fallback: the audio back where it was, position and playing or paused.
-function undoReaderSeek() {
+// Option A's fallback: the audio back where it was, position and playing or
+// paused; `pause` (a double-click, which selects and so pauses) leaves it paused
+// there, never resumed by the fallback and paused again by the selection.
+function undoReaderSeek(pause = false) {
   const undo = readerSeekUndo;
   readerSeekUndo = null;
   if (!undo || undo.audio !== readerAudio || performance.now() - undo.at > READER_UNDO_WITHIN) return;
   readerAudio.currentTime = undo.time;
-  if (undo.paused) readerAudio.pause();
+  if (undo.paused || pause) readerAudio.pause();
   else readerAudio.play().catch(() => {});
   updateReaderHighlight();
 }
@@ -25911,8 +26128,8 @@ function scrollPageBy(delta, behavior = "auto") {
   expectScrollUntil = performance.now() + (behavior === "smooth" ? 1500 : 400);
   window.scrollBy({ top:delta, behavior });
 }
-function keepPlace(change) {
-  const anchor = readingAnchor();
+// A change of layout with the reading anchor kept where it was (an anchor taken earlier, as a drag starts, or now).
+function keepPlace(change, anchor = readingAnchor()) {
   change();
   if (anchor && anchor.element.isConnected)
     scrollPageBy(anchor.element.getBoundingClientRect().top - anchor.top);
@@ -26069,9 +26286,10 @@ function queuePinned() {
   if (!pinnedFrame) pinnedFrame = requestAnimationFrame(() => { pinnedFrame = 0; fitPinned(); });
 }
 // The bar's bottom edge, where its slot sticks: the safe area's top (a
-// phone's notch) plus its height.
+// phone's notch) plus its height. A phone's tall sheet starts there.
 function observePaperBar() {
   const edge = parseFloat(getComputedStyle($("paper-bar")).top) || 48;
+  $("side-panel").style.setProperty("--sheet-edge", `${edge}px`);
   if (paperBarObserver && edge === paperBarEdge) return;
   paperBarEdge = edge;
   paperBarObserver?.disconnect();
@@ -26258,6 +26476,7 @@ function closePopup(how = "quiet") {
   const { opener, hide, fallback } = popup;
   popup = null;
   hide();
+  layoutStack();
   if (how === "back") focusOpener(opener, fallback);
   else if (how === "outside") popupReturn = { opener, fallback };
 }
@@ -26285,6 +26504,7 @@ function toggleMenu(name) {
   menu.classList.remove("hidden");
   button.setAttribute("aria-expanded", "true");
   openPopup(menu, button, () => { menu.classList.add("hidden"); button.setAttribute("aria-expanded", "false"); });
+  layoutStack();
   (menu.querySelector("[aria-checked=true]") || menu.querySelector("button:not(.hidden)"))
     ?.focus({ preventScroll:true });
 }
@@ -26941,6 +27161,8 @@ function fitHelpRoom() {
 function renderPanel() {
   if (panelView === "notes" && !notesAvailable()) panelView = "chat";
   $("side-panel").classList.toggle("hidden", !panelOpen);
+  // Closed by any path (×, a new book), a phone's sheet forgets its size.
+  if (!panelOpen && sheetSized) sheetSize("");
   $("panel-backdrop").classList.toggle("hidden", !panelOpen);
   $("book-view").classList.toggle("panel-open", panelOpen);
   document.querySelector("main").classList.toggle("help-panel-open", panelOpen && chatMode === "help");
@@ -26955,14 +27177,20 @@ function renderPanel() {
   $("panel-tab-figure").classList.toggle("hidden", !figureShown);
   $("panel-tab-page").classList.toggle("hidden", !pageShown);
   $("panel-tab-notes").classList.toggle("hidden", !notesAvailable());
-  // Ask Hilde's model box and ⋯ in the header only while Ask Hilde shows; with other tabs, the box takes a line.
+  // Ask Hilde's model box and ⋯ in the header only while Ask Hilde shows.
   $("chat-model-pick").classList.toggle("hidden", panelView !== "chat");
   $("chat-menu-wrap").classList.toggle("hidden", panelView !== "chat");
-  $("panel-head").classList.toggle("has-tabs", !!(figureShown || pageShown));
+  fitPanelHead();
   $("ask-hilde").setAttribute("aria-expanded", String(chatShown() && chatMode === "book"));
   $("header-ask").setAttribute("aria-expanded", String(chatShown()));
   if (panelOpen) fitPinned();
   fitHelpRoom();
+}
+// With more than one tab (Notes counts, as a figure or a page does), the header takes two rows: the tabs, ⋯ and ×,
+// then the model box on a line of its own (as in a panel under 420 px, .narrow-head).
+function fitPanelHead() {
+  $("panel-head").classList.toggle("has-tabs",
+    [...$("panel-tabs").children].filter((tab) => !tab.classList.contains("hidden")).length > 1);
 }
 function rememberChatScroll() {
   const log = $("chat-log");
@@ -26989,6 +27217,39 @@ function closePanel() {
   panelOpener = null;
   back.focus({ preventScroll:true });
 }
+// The phone's sheet: tall (from just below the slim bar down to the player) as it opens from a selection, else its
+// own height ("": 60%, or 70% above the player); closed, it forgets. The grabber drags it and it snaps to one of
+// three places (sheetSnap()): tall, half, or closed (as × closes it) once dragged well below half or flung down
+// past it. A tap on the grabber, Enter or Space switches between half and tall, ArrowUp and ArrowDown choose.
+let sheetSized = "", sheetDrag = null, sheetPressedAt = -Infinity;
+function sheetSize(size) {
+  sheetSized = size;
+  const panel = $("side-panel");
+  panel.style.removeProperty("--sheet-size");
+  panel.classList.toggle("sheet-tall", size === "tall");
+  panel.classList.toggle("sheet-half", size === "half");
+  $("sheet-grabber").setAttribute("aria-label", size === "tall" ? "Make the panel half height"
+    : "Make the panel full height");
+}
+function settleSheet(size) {
+  const panel = $("side-panel");
+  panel.classList.add("sheet-settling");
+  sheetSize(size);
+  setTimeout(() => panel.classList.remove("sheet-settling"), 200);
+}
+// Half and tall, in px: the sheet's bottom (the player's top, or the screen's) stays where it is.
+function sheetHeights() {
+  const top = window.visualViewport ? window.visualViewport.offsetTop : 0;
+  const bottom = $("side-panel").getBoundingClientRect().bottom;
+  return { half:(bottom - top) * .5, tall:bottom - top - paperBarEdge };
+}
+// Where a released drag settles: the height it would reach in a moment at the speed it was let go (px/ms, positive
+// downwards), tall or half, whichever is nearer; below 55% of half, closed.
+function sheetSnap(height, speed) {
+  const { half, tall } = sheetHeights(), aim = height - speed * 200;
+  if (aim < half * .55) return "closed";
+  return aim - half > tall - aim ? "tall" : "half";
+}
 // Ask Hilde's ⋯ menu: what the conversation is about, then Read answers
 // aloud and New conversation. Enter, Space, or ArrowDown on ⋯ opens it on
 // its first item (ArrowUp: on its last); arrows, Home and End move; Tab
@@ -27006,22 +27267,45 @@ function toggleChatMenu(open = !(popup && popup.panel === $("chat-menu")), at = 
   const items = chatMenuItems();
   (at === "last" ? items.at(-1) : items[0])?.focus({ preventScroll:true });
 }
-// The panel's width: 400 to 720 px, at most the window less 700 px for the
-// text; in a window under 1100 px (the side panel starts at 900) it may be
-// 360 px, so the reading column keeps about 48 characters a line at 900.
-// Kept in this browser; fitted again when the window changes.
-function setPanelWidth(width, save) {
+// The panel's width. Undragged, as it always was: 440 px, kept between 400
+// (360 in a window under 1100 px) and the window less 700 px, at most 720
+// (defaultPanelWidth()). Dragged by its left edge (or its keys), any width
+// from 320 to 720 px that leaves the reading column PANEL_TEXT_LEAST px
+// (panelBounds()); that width is kept in this browser ("panelWidth") and
+// fitted again, never saved, when the window changes. The text keeps its
+// place meanwhile (keepPlace(), with the anchor taken as a drag starts).
+const PANEL_LEAST = 320, PANEL_MOST = 720, PANEL_TEXT_LEAST = 480;
+function defaultPanelWidth() {
   const least = window.innerWidth < 1100 ? 360 : 400;
-  const most = Math.max(least, Math.min(720, window.innerWidth - 700));
-  const value = Math.round(Math.min(most, Math.max(least, width)));
+  return Math.max(least, Math.min(440, Math.max(least, Math.min(PANEL_MOST, window.innerWidth - 700))));
+}
+function panelBounds() {
+  return { least:PANEL_LEAST, most:Math.max(PANEL_LEAST, Math.min(PANEL_MOST, window.innerWidth - PANEL_TEXT_LEAST)) };
+}
+// The width kept in this browser, when it is a number; else none.
+function storedPanelWidth() {
+  const width = Number(stored("panelWidth"));
+  return Number.isFinite(width) && width > 0 ? width : null;
+}
+function fitPanelWidth() {
+  const width = storedPanelWidth();
+  if (width === null) applyPanelWidth(defaultPanelWidth());
+  else setPanelWidth(width, false);
+}
+function setPanelWidth(width, save, anchor) {
+  const { least, most } = panelBounds(), value = Math.round(Math.min(most, Math.max(least, width)));
+  applyPanelWidth(value, anchor);
+  if (save) store("panelWidth", value);
+}
+function applyPanelWidth(value, anchor) {
+  const { least, most } = panelBounds();
   if (document.documentElement.style.getPropertyValue("--panel-w") !== `${value}px`)
-    keepPlace(() => document.documentElement.style.setProperty("--panel-w", `${value}px`));
+    keepPlace(() => document.documentElement.style.setProperty("--panel-w", `${value}px`), anchor);
   fitHelpRoom();
   const handle = $("panel-resize");
   handle.setAttribute("aria-valuenow", String(value));
   handle.setAttribute("aria-valuemin", String(least));
   handle.setAttribute("aria-valuemax", String(most));
-  if (save) store("panelWidth", value);
 }
 // A phone's keyboard shrinks only the visual viewport; the panel follows
 // it, and while the keyboard takes a quarter of the screen or more the chat
@@ -27271,7 +27555,7 @@ function chatEntryElement(entry, index, list) {
     restart.className = "link chat-restart hidden";
     restart.textContent = "Start over";
     controls.append(listen, restart);
-    node.append(controls);
+    answerActions(node).append(controls);
     setVoiceButton(node, "listen");
   }
   // With notes on, an answer to a question about selected text: Save to notes.
@@ -27280,6 +27564,16 @@ function chatEntryElement(entry, index, list) {
     appendSaveToNotes(node, entry, index, list);
   }
   return node;
+}
+// Under an answer, one row: Read aloud (and Start over), then Save to notes.
+function answerActions(node) {
+  let row = node.querySelector(":scope > .chat-answer-actions");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "chat-answer-actions";
+    node.append(row);
+  }
+  return row;
 }
 // The answer arriving: its text, and under it the running turn's model.
 function chatLiveElement() {
@@ -27376,6 +27670,8 @@ function renderChatControls() {
     : chatAbout.about.kind === "selection" ? "Type a question, or press Enter to explain the selection"
     : chatAbout.about.kind === "figure" ? "Type a question, or press Enter to explain the figure"
     : "Type a question, or press Enter to explain this part";
+  // The longer hint has room for its two lines (Safari would size the box to less: .long-hint:placeholder-shown).
+  $("chat-input").classList.toggle("long-hint", $("chat-input").placeholder !== CHAT_PLACEHOLDER);
   $("chat-input").disabled = !!(chatData && chatData.problem);
   $("chat-new").disabled = running || !(chatData && chatData.conversation.length);
   $("chat-speak").classList.toggle("hidden", !chatData || chatData.speech !== "");
@@ -27996,6 +28292,14 @@ function cutText(text, most) {
   return flat.length > most ? `${flat.slice(0, most - 1).trimEnd()}…` : flat;
 }
 function chatQuote(quote) { return `“${cutText(quote, 80)}”`; }
+// A label whose last word a phone's compact card leaves out ("Selected text", "Context details"): that word in a
+// span of its own (.chip-long), the whole label still the element's text.
+function chipLabel(element, short, long) {
+  const rest = document.createElement("span");
+  rest.className = "chip-long";
+  rest.textContent = long;
+  element.replaceChildren(short, rest);
+}
 // The card's title ("Selected text" for a selection, else the section
 // heading as in the book), with small Change and × controls on the draft's card.
 function chipHead(title, editable) {
@@ -28003,7 +28307,8 @@ function chipHead(title, editable) {
   head.className = "chip-head";
   const section = document.createElement("span");
   section.className = "chip-section";
-  section.textContent = title; section.title = title;
+  if (title === "Selected text") chipLabel(section, "Selected", " text"); else section.textContent = title;
+  section.title = title;
   head.append(section);
   if (!editable) return head;
   const change = document.createElement("button");
@@ -28040,7 +28345,7 @@ function chipDetails(manifest, withSection) {
   const details = document.createElement("details");
   details.className = "chip-details";
   const summary = document.createElement("summary");
-  summary.textContent = "Context details";
+  chipLabel(summary, "Context", " details");
   details.append(summary);
   if (withSection) {
     const line = document.createElement("p");
@@ -28180,8 +28485,10 @@ function askAboutFocus(focus) {
   if (!chatData) loadChat();
   focusChatInput();
 }
+// From a selection, a phone's sheet opens tall: the answer has room under the card.
 function askAboutSelection(picked) {
   if (notesEnabled) rememberAskAnchor(picked);
+  sheetSize("tall");
   askAboutFocus(selectionFocus(picked));
 }
 // Ask Hilde opens the panel's chat as it was left. With text selected, that
@@ -28217,24 +28524,34 @@ function touchSelecting() {
   return lastPointerType ? lastPointerType !== "mouse" : window.matchMedia("(hover: none)").matches;
 }
 // With notes on, a mouse selection gets the actions menu instead (Highlight ·
-// Add note · Ask Hilde · Copy) and a touch selection the bar of actions
-// (Highlight · Note · Ask Hilde) instead of the one Ask Hilde (dockBar()).
+// the colour dots · Add note · Ask Hilde · Copy), and a touch selection the
+// Paused pill above the player instead of the one Ask Hilde (dockBar()); the
+// player's Highlight, Note and Ask Hilde act on either (playerPicked()).
 function selectionButton() { return $(notesEnabled ? "selection-actions" : "selection-ask"); }
-function hideSelectionAsk() { $("selection-ask").classList.add("hidden"); $("selection-actions").classList.add("hidden"); }
+function hideSelectionAsk() {
+  $("selection-ask").classList.add("hidden");
+  $("selection-actions").classList.add("hidden");
+  $("selection-actions").classList.remove("mark-mode");
+  markMenuId = "";
+}
 function queueSelectionAsk() {
   clearTimeout(selectionTimer);
   selectionTimer = setTimeout(showSelectionAsk, 250);
 }
 function showSelectionAsk() {
   const picked = !pointerHeld && state && state.tab === "player" && !touchSelecting() && readerSelection();
-  if (!picked) { hideSelectionAsk(); return; }
+  if (!picked) { if (!markMenuId) hideSelectionAsk(); return; }
+  $("selection-actions").classList.remove("mark-mode");
+  markMenuId = "";
+  renderMarkDots();
   selectionButton().classList.remove("hidden");
   placeSelectionAsk();
 }
 function placeSelectionAsk() {
   const button = selectionButton(), selection = window.getSelection();
-  if (button.classList.contains("hidden") || !selection.rangeCount) return;
-  const box = selection.getRangeAt(0).getBoundingClientRect(), view = readingViewport();
+  const range = markMenuId ? markRanges.get(markMenuId) : selection.rangeCount ? selection.getRangeAt(0) : null;
+  if (button.classList.contains("hidden") || !range) return;
+  const box = range.getBoundingClientRect(), view = readingViewport();
   const height = button.offsetHeight, width = button.offsetWidth;
   let top = box.top - height - 8;
   if (top < view.top + 4) top = box.bottom + 8;
@@ -28245,12 +28562,13 @@ function placeSelectionAsk() {
   button.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
     Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
 }
-// The slot's Ask Hilde asks about the selection stored at its last
-// selectionchange (dockPicked, the range cloned, since the selection's own
-// range changes with it): iOS clears the selection when the button is
-// touched, before its click. A cleared selection hides the button only
-// DOCK_ASK_LINGER later and never while it is pressed (dockPressed), so the
-// press that cleared it still lands on it and asks.
+// The slot's Ask Hilde (notes off), and with notes on the player's Highlight,
+// Note and Ask Hilde, act on the selection stored at its last selectionchange
+// (dockPicked, the range cloned, since the selection's own range changes with
+// it): iOS clears the selection when a button is touched, before its click. A
+// cleared selection hides the slot's button (or the Paused pill) only
+// DOCK_ASK_LINGER later and never while a button is pressed (dockPressed), so
+// the press that cleared it still lands and acts on it.
 const DOCK_ASK_LINGER = 400;
 let dockPicked = null, dockPressed = false, dockHideTimer = 0;
 function noteSelection() {
@@ -28258,33 +28576,44 @@ function noteSelection() {
   if (!picked) {
     clearTimeout(dockHideTimer);
     dockHideTimer = setTimeout(settleDockAsk, DOCK_ASK_LINGER);
+    renderPlayerMarks();
     return;
   }
   // A press that selects (a long press) is not a tap.
   if (readerPress) readerPress.selecting = true;
   // Option A: a click still waiting never acts once text is selected.
   cancelReaderTap();
-  if (!touchSelecting()) { hideDockAsk(); return; }
+  if (notesEnabled) {
+    // Selecting (a double-click, a drag, a long press) pauses the book where it is; only Play resumes it.
+    pauseBookForQuestion();
+    if (!$("mark-bar").classList.contains("hidden")) hideMarkBar();
+  }
+  if (!touchSelecting()) { hideDockAsk(); renderPlayerMarks(); return; }
   clearTimeout(dockHideTimer);
   dockPicked = { ...picked, range:picked.range.cloneRange() };
   hideSelectionAsk();
+  if (notesEnabled) $("selection-pill-quote").textContent = `“${cutText(picked.text, 80)}”`;
   if (dockBar().classList.contains("hidden")) {
     dockBar().classList.remove("hidden");
     document.documentElement.classList.toggle("notes-selecting", notesEnabled);
     renderBackToListening();
+    layoutStack();
   }
+  renderPlayerMarks();
 }
 function settleDockAsk() {
   if (!dockPressed && !readerSelection()) hideDockAsk();
 }
-function dockBar() { return $(notesEnabled ? "dock-select" : "dock-ask"); }
+function dockBar() { return $(notesEnabled ? "selection-pill" : "dock-ask"); }
 function hideDockAsk() {
   clearTimeout(dockHideTimer);
   dockPicked = null;
+  renderPlayerMarks();
   if (dockBar().classList.contains("hidden")) return;
   dockBar().classList.add("hidden");
   document.documentElement.classList.remove("notes-selecting");
   renderBackToListening();
+  layoutStack();
 }
 function askFromDock() {
   const picked = readerSelection() || dockPicked;
@@ -28294,6 +28623,12 @@ function askFromDock() {
   window.getSelection().removeAllRanges();
   pauseBookForQuestion();
   askAboutSelection(picked);
+}
+// The Paused pill's ×: the selection cleared, the book stays paused.
+function clearReaderSelection() {
+  window.getSelection().removeAllRanges();
+  dockPressed = false;
+  hideDockAsk();
 }
 // Seeks to the first word of the selection (a clicked word, the card's
 // focus), else to its sentence or passage; false when nothing there is narrated.
@@ -28499,28 +28834,32 @@ function resetMarks() {
   noteCurrent = ""; choosingPlace = "";
   cancelReaderTap(); readerSeekUndo = null;
   hideNoteEditor(); hideNotesMini();
-  if (window.CSS && CSS.highlights) CSS.highlights.delete("notes-mark");
+  if (window.CSS && CSS.highlights) for (const color of MARK_COLORS) CSS.highlights.delete(`notes-mark-${color}`);
+  hideMarkBar(); hideSavedBar();
   renderNotes();
 }
 // The fill of every highlight and the marker after every note and saved answer.
 function renderMarks() {
   for (const marker of $("reader-content").querySelectorAll(".note-marker")) marker.remove();
   markRanges = new Map();
-  const fills = [];
+  const fills = [], byColor = new Map(MARK_COLORS.map((color) => [color, []]));
   if (notesEnabled) {
     for (const item of marks.values()) {
       if (!item.place || item.place.status !== "confirmed") continue;
       const range = placeRange(item.place);
       if (!range) continue;
       markRanges.set(item.id, range);
-      if (item.highlight) fills.push(range);
+      if (item.highlight) { fills.push(range); byColor.get(itemColor(item)).push(range); }
       if (item.kind === "answer" || (item.note || "").trim()) placeMarker(item, range);
     }
   }
   for (const word of $("reader-content").querySelectorAll(".reader-word.in-mark")) word.classList.remove("in-mark");
   if (!window.CSS || !CSS.highlights) return;
-  if (fills.length) CSS.highlights.set("notes-mark", new Highlight(...fills));
-  else CSS.highlights.delete("notes-mark");
+  // One CSS highlight per colour (notes-mark-<color>), each painted in its own fill.
+  for (const [color, ranges] of byColor) {
+    if (ranges.length) CSS.highlights.set(`notes-mark-${color}`, new Highlight(...ranges));
+    else CSS.highlights.delete(`notes-mark-${color}`);
+  }
   // The words under a fill: the one being read draws its underline as a bar (.reader-word.in-mark.active).
   for (const range of fills) {
     const box = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
@@ -28564,7 +28903,7 @@ function sortedMarks() {
 // What a save sends: the item without what the server sets (times, place).
 function markPayload(item, changes = {}) {
   const sent = { id:item.id, kind:item.kind, anchor:item.anchor, highlight:!!item.highlight,
-                 note:item.note ?? null, confirmed_place:!!item.confirmed_place };
+                 note:item.note ?? null, confirmed_place:!!item.confirmed_place, color:itemColor(item) };
   if (item.kind === "answer") sent.answer = item.answer;
   return { ...sent, ...changes };
 }
@@ -28585,14 +28924,20 @@ function selectionTooLong(found) {
 
 // Highlight: saved at once; the fill shows once the server has it, and a
 // failed save says so, with Retry.
-function highlightSelection(picked) {
+function highlightSelection(picked, color = markColor()) {
   const found = picked && rangeAnchor(picked.range);
   hideSelectionAsk(); hideDockAsk();
   if (!found || selectionTooLong(found)) return;
   window.getSelection().removeAllRanges();
-  const item = { id:markId(), kind:"highlight", anchor:found.anchor, highlight:true, note:null, confirmed_place:false };
+  saveHighlight(found.anchor, color);
+}
+// A new highlight in a colour (which becomes the one Highlight uses); once the
+// server has it, the Highlighted bar: its dots recolour it, Undo removes it.
+function saveHighlight(anchor, color) {
+  setMarkColor(color);
+  const item = { id:markId(), kind:"highlight", anchor, highlight:true, note:null, confirmed_place:false, color };
   const run = async () => {
-    try { await saveMark(markPayload(item)); }
+    try { showMarkBar((await saveMark(markPayload(item))).id, false); }
     catch (error) { showToast(`Highlight not saved: ${error.message}`, { label:"Retry", run }); }
   };
   run();
@@ -28609,25 +28954,247 @@ async function copySelection(picked, button) {
   setTimeout(() => { label.textContent = "Copy"; hideSelectionAsk(); }, 900);
 }
 
-// Add note: a small editor under the selection (no highlight needed); the
-// passage keeps the selection's gray while it is open. Saved means the
-// server's 200; a failed save keeps the text, with Retry.
+// --- Highlight colours; the player's Highlight and Note; the stack above the player ---
+const MARK_COLORS = ["yellow", "green", "pink", "purple"];
+// Highlight uses the last colour used on this device, yellow at first: a
+// preference, so in localStorage (the marks themselves are only on the server).
+function markColor() { const color = stored("markColor"); return MARK_COLORS.includes(color) ? color : "yellow"; }
+// A mark saved before colours existed has none: yellow.
+function itemColor(item) { return MARK_COLORS.includes(item && item.color) ? item.color : "yellow"; }
+function setMarkColor(color) {
+  if (!MARK_COLORS.includes(color)) return;
+  store("markColor", color);
+  renderMarkColor();
+}
+// The pens' underline (--mark-last) and the dots.
+function renderMarkColor() {
+  document.documentElement.style.setProperty("--mark-last", `var(--mark-${markColor()})`);
+  renderMarkDots();
+}
+// markMenuId: the highlight whose own menu #selection-actions shows (mark
+// mode, a mouse); markBarId: the one #mark-bar is about (just made, or tapped).
+let markMenuId = "", markBarId = "", markBarTimer = 0, savedBarId = "", savedBarTimer = 0;
+const MARK_BAR_FOR = 6000, SAVED_BAR_FOR = 5000;
+// The four dots of the selection menu and of the bar: ringed, the colour a new
+// highlight takes, or the colour of the highlight they are about.
+function renderMarkDots() {
+  for (const [group, id] of [[$("selection-actions").querySelector(".mark-dots"), markMenuId],
+                             [$("mark-bar").querySelector(".mark-dots"), markBarId]]) {
+    if (!group.children.length) group.append(...MARK_COLORS.map((color) => {
+      const dot = noteEl("button", "mark-dot");
+      dot.type = "button";
+      dot.dataset.color = color;
+      dot.setAttribute("role", "radio");
+      dot.setAttribute("aria-label", color[0].toUpperCase() + color.slice(1));
+      return dot;
+    }));
+    const chosen = id && marks.has(id) ? itemColor(marks.get(id)) : markColor();
+    for (const dot of group.children) dot.setAttribute("aria-checked", String(dot.dataset.color === chosen));
+  }
+}
+// The highlight under a point of the screen (the last drawn, the innermost), or "".
+function highlightAt(x, y) {
+  let found = "";
+  for (const [id, range] of markRanges) {
+    if (!marks.get(id)?.highlight) continue;
+    for (const rect of range.getClientRects())
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) found = id;
+  }
+  return found;
+}
+// A highlight tapped: its colour dots, Add note and Remove highlight; beside it
+// for a mouse (the selection menu in mark mode), in the stack for a finger.
+function openMarkChoices(id, mouse) {
+  if (!marks.has(id)) return;
+  if (!mouse) { showMarkBar(id, true); return; }
+  markMenuId = id;
+  $("selection-actions").classList.add("mark-mode");
+  renderMarkDots();
+  $("selection-actions").classList.remove("hidden");
+  placeSelectionAsk();
+}
+function showMarkBar(id, tapped) {
+  markBarId = id;
+  const bar = $("mark-bar");
+  bar.classList.toggle("tapped", tapped);
+  bar.setAttribute("aria-label", tapped ? "This highlight" : "Highlighted");
+  renderMarkDots();
+  bar.classList.remove("hidden");
+  clearTimeout(markBarTimer);
+  if (!tapped) markBarTimer = setTimeout(hideMarkBar, MARK_BAR_FOR);
+  layoutStack();
+}
+function hideMarkBar() {
+  clearTimeout(markBarTimer);
+  markBarId = "";
+  if ($("mark-bar").classList.contains("hidden")) return;
+  $("mark-bar").classList.add("hidden");
+  layoutStack();
+}
+async function recolorMark(id, color) {
+  const item = marks.get(id);
+  if (!item || !MARK_COLORS.includes(color)) return;
+  setMarkColor(color);
+  if (itemColor(item) === color) return;
+  try { await saveMark(markPayload(item, { color, base_updated_at:item.updated_at })); }
+  catch (error) { showToast(`Colour not changed: ${error.message}`); }
+  renderMarkDots();
+}
+async function deleteMarkNow(id) {
+  await jsonRequest("/api/marks/delete", { method:"POST", headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({ book:marksBook || state.player.book, id }) });
+  marks.delete(id); noteEdits.delete(id);
+  renderMarks(); renderNotes(); renderChatSaves();
+}
+// Undo (just highlighted): the mark is deleted. Remove highlight: a highlight
+// alone is deleted; one with a note or an answer keeps those, without the fill.
+async function removeHighlight(id, undo = false) {
+  const item = marks.get(id);
+  hideMarkBar(); hideSelectionAsk();
+  if (!item) return;
+  try {
+    if (undo || (item.kind === "highlight" && !(item.note || "").trim())) await deleteMarkNow(id);
+    else await saveMark(markPayload(item, { highlight:false, base_updated_at:item.updated_at }));
+  } catch (error) {
+    showToast(`Highlight not removed: ${error.message}`, { label:"Retry", run:() => removeHighlight(id, undo) });
+  }
+}
+// Add note on a highlight: the note goes on that highlight (openNoteEditor's picked.mark).
+function noteOnHighlight(id) {
+  const range = markRanges.get(id), item = marks.get(id);
+  hideMarkBar(); hideSelectionAsk();
+  if (!range || !item) return;
+  pauseBookForQuestion();
+  openNoteEditor({ range:range.cloneRange(), text:item.anchor.quote, mark:id, color:itemColor(item) });
+}
+// The player's Highlight, Note and Ask Hilde act on the text selected (or, on
+// a touch screen, the selection stored at its last change), else on the
+// sentence being read: the parts of its sentence in the view shown.
+function playerPicked() { return readerSelection() || dockPicked; }
+function sentenceBeingRead() {
+  const parts = textView === "source" ? [listeningElement()].filter(Boolean)
+    : (readerBlocks[activeReaderBlock] || []).filter(shown);
+  if (!parts.length) return null;
+  const range = document.createRange();
+  range.setStartBefore(parts[0]); range.setEndAfter(parts[parts.length - 1]);
+  return { range, text:range.toString().replace(/\s+/g, " ").trim() };
+}
+// Highlight: the selection (the book stays paused), or the sentence being read
+// in the colour last used while it plays on (hands-free); a sentence already
+// highlighted just shows its bar.
+function playerHighlight() {
+  const picked = playerPicked();
+  dockPressed = false;
+  if (picked) { highlightSelection(picked); return; }
+  const sentence = sentenceBeingRead(), found = sentence && rangeAnchor(sentence.range);
+  if (!found) { showToast("Nothing is being read here yet: select the words to highlight."); return; }
+  if (selectionTooLong(found)) return;
+  const same = [...marks.values()].find((item) => item.highlight && item.anchor.view === found.anchor.view
+    && item.anchor.paragraph === found.anchor.paragraph && item.anchor.quote === found.anchor.quote);
+  if (same) { showMarkBar(same.id, false); return; }
+  saveHighlight(found.anchor, markColor());
+}
+// Note: the book pauses, then the note box for the selection or the sentence being read.
+function playerNote() {
+  const picked = playerPicked();
+  dockPressed = false;
+  pauseBookForQuestion();
+  hideMarkBar();
+  if (picked) { openNoteEditor(picked); return; }
+  const sentence = sentenceBeingRead();
+  if (!sentence) { showToast("Nothing is being read here yet: select the words for your note."); return; }
+  openNoteEditor(sentence);
+}
+// On (frame 1) while there is a selection to act on; the labels say what they act on.
+function renderPlayerMarks() {
+  const on = notesEnabled && !!playerPicked();
+  $("player-highlight").classList.toggle("on", on);
+  $("player-note").classList.toggle("on", on);
+  $("ask-hilde").classList.toggle("on", on);
+  $("player-highlight").setAttribute("aria-label", on ? "Highlight the selected text" : "Highlight the sentence being read");
+  $("player-note").setAttribute("aria-label", on ? "Add a note to the selected text" : "Add a note to the sentence being read");
+}
+// After a note (or a saved answer) is saved, the server's item: Saved to Notes
+// · Show above the player for SAVED_BAR_FOR; Show opens the Notes tab at it.
+function noteSaved(item) {
+  if (!item || !item.id) return;
+  savedBarId = item.id;
+  $("saved-bar-label").textContent = "Saved to Notes";
+  $("saved-bar").classList.remove("hidden");
+  clearTimeout(savedBarTimer);
+  savedBarTimer = setTimeout(hideSavedBar, SAVED_BAR_FOR);
+  layoutStack();
+}
+function hideSavedBar() {
+  clearTimeout(savedBarTimer);
+  savedBarId = "";
+  if ($("saved-bar").classList.contains("hidden")) return;
+  $("saved-bar").classList.add("hidden");
+  layoutStack();
+}
+function showSavedNote() {
+  const id = savedBarId;
+  hideSavedBar();
+  if (id) openNotes(id);
+}
+// The stack above the player (#dock-slot) sits on the player's measured height
+// (--dock-h). An open ⋯ or speed menu reaching into it lifts it above the
+// menu's measured top (--stack-lift, slid in 150 ms); with no room left above
+// (a short landscape phone, the keyboard open) it hides until the menu closes.
+function layoutStack() {
+  const slot = $("dock-slot");
+  const menu = popup && [$("more-menu"), $("speed-menu")].includes(popup.panel) ? popup.panel : null;
+  const parts = [...slot.children].filter(shown);
+  let lift = 0, hide = false;
+  if (menu && shown(menu) && parts.length) {
+    const box = menu.getBoundingClientRect(), bottom = dockTop() - 8, top = bottom - slot.offsetHeight;
+    const left = Math.min(...parts.map((part) => part.getBoundingClientRect().left));
+    const right = Math.max(...parts.map((part) => part.getBoundingClientRect().right));
+    if (box.top < bottom && box.bottom > top && box.left < right && box.right > left) {
+      lift = bottom - (box.top - 8);
+      hide = top - lift < readingViewport().top + 4;
+    }
+  }
+  slot.style.setProperty("--stack-lift", `${hide ? 0 : Math.round(lift)}px`);
+  slot.classList.toggle("stack-hidden", hide);
+}
+
+// Add note: always the editor, its box focused (no highlight needed): under
+// the selection, on a phone a box at the bottom (above the player, or the
+// keyboard once it is up). The passage keeps the selection's gray while it is
+// open. With picked.mark (a highlight's id) the note goes on that highlight.
+// Saved means the server's 200; a failed save keeps the text, with Retry.
 function openNoteEditor(picked) {
   const found = picked && rangeAnchor(picked.range);
   hideSelectionAsk(); hideDockAsk();
-  if (!found || selectionTooLong(found)) return;
+  if (!found) { showToast("Select text in the paper to add a note."); return; }
+  if (selectionTooLong(found)) return;
   window.getSelection().removeAllRanges();
-  noteDraft = { item:{ id:markId(), kind:"note", anchor:found.anchor, highlight:false, note:"", confirmed_place:false },
+  const on = picked.mark && marks.get(picked.mark);
+  noteDraft = { item:on ? { ...on } : { id:markId(), kind:"note", anchor:found.anchor, highlight:false, note:"",
+                                        confirmed_place:false },
                 range:found.range, saving:false };
   if (window.CSS && CSS.highlights && found.range) CSS.highlights.set("notes-pending", new Highlight(found.range));
-  $("note-editor-quote").textContent = `Note on “${cutText(found.anchor.quote, 70)}”`;
-  $("note-editor-text").value = "";
+  $("note-editor-title").textContent = on && (on.note || "").trim() ? "Edit note" : "Add note";
+  $("note-editor-quote").textContent = `“${cutText((on || found).anchor.quote, 90)}”`;
+  const color = quoteMarkColor(on || picked);
+  if (color) $("note-editor-quote").style.setProperty("--quote-mark", color);
+  else $("note-editor-quote").style.removeProperty("--quote-mark");
+  $("note-editor-text").value = on ? on.note || "" : "";
   noteEditorState("", "Save note");
   $("note-editor").classList.remove("hidden");
   // Typing a note: Follow along waits (the pill shows) rather than turning the page away.
   if (readerAudio) setDetached(true);
   placeNoteEditor();
   $("note-editor-text").focus({ preventScroll:true });
+}
+// A highlight's colour for a side bar (one of the four; a highlight without one is yellow), or "" for no highlight.
+// (Not markColor(), the colour Highlight uses next.)
+function quoteMarkColor(item) {
+  if (!item || (item.kind && !item.highlight)) return "";
+  if (!item.kind && !item.color) return "";
+  const color = MARK_COLORS.includes(item.color) ? item.color : "yellow";
+  return `var(--mark-${color}, #ddd040)`;
 }
 function noteEditorState(status, save, kind = "") {
   const line = $("note-editor-status");
@@ -28641,6 +29208,15 @@ function placeNoteEditor() {
   const editor = $("note-editor");
   if (!noteDraft || editor.classList.contains("hidden")) return;
   const rects = noteDraft.range ? [...noteDraft.range.getClientRects()] : [];
+  // A phone: the box is at the bottom (CSS); the passage is brought into sight above it.
+  if (narrowLayout()) {
+    editor.style.left = ""; editor.style.top = "";
+    if (!rects.length) return;
+    const top = editor.getBoundingClientRect().top - 12, view = readingViewport().top + 8;
+    const first = rects[0].top, last = rects[rects.length - 1].bottom;
+    if (last > top || first < view) scrollPageBy(last - first > top - view ? first - view : last - top);
+    return;
+  }
   if (!rects.length) return;
   const origin = $("notes-layer").getBoundingClientRect(), last = rects[rects.length - 1];
   const width = editor.offsetWidth;
@@ -28665,19 +29241,32 @@ async function saveNoteDraft() {
     noteEditorState(`A note can have at most ${NOTE_MAX.toLocaleString("en")} characters.`, "Save note", "problem");
     return;
   }
-  draft.item.note = text;
   draft.saving = true;
   noteEditorState("", "Saving…");
+  // A note on a highlight goes with the stored item's updated_at, as an edit in Notes does.
+  const sent = draft.item.updated_at ? markPayload(draft.item, { note:text, base_updated_at:draft.item.updated_at })
+    : markPayload({ ...draft.item, note:text });
   try {
-    await saveMark(markPayload(draft.item));
+    const saved = await saveMark(sent);
+    if (typeof noteSaved === "function") noteSaved(saved);
     if (noteDraft !== draft) return;
     noteEditorState("✓ Saved", "", "ok");
     setTimeout(() => { if (noteDraft === draft) hideNoteEditor(); }, 900);
   } catch (error) {
     if (noteDraft !== draft) return;
     draft.saving = false;
+    const stored = error.status === 409 && error.body && error.body.item;
+    if (stored && !stored.deleted && draft.item.updated_at) {
+      // The highlight changed on another device meanwhile: Save note again keeps this text on it.
+      marks.set(stored.id, stored); renderMarks(); renderNotes();
+      draft.item = { ...stored };
+      noteEditorState("This highlight was changed on another device. Save note again to keep your note.",
+        "Save note", "problem");
+      return;
+    }
     // A tombstone with this id (deleted elsewhere): the retry goes as a new note.
-    if (error.status === 409) draft.item.id = markId();
+    if (error.status === 409) draft.item = { id:markId(), kind:"note", anchor:draft.item.anchor, highlight:false,
+                                             note:"", confirmed_place:false };
     noteEditorState(`Not saved: ${reasonText(error.message)}. Your note is still here.`, "Retry", "problem");
   }
 }
@@ -28705,7 +29294,7 @@ function appendSaveToNotes(node, entry, index, list) {
   if (!about || about.kind !== "selection" || entry.stopped) return;
   const row = noteEl("div", "chat-notes");
   row.entry = entry; row.question = question;
-  node.append(row);
+  answerActions(node).append(row);
   renderSaveToNotes(row);
 }
 function renderChatSaves() {
@@ -28743,8 +29332,9 @@ async function saveAnswer(entry, question) {
   answerSaves.set(key, { state:"saving", id:item.id });
   renderChatSaves();
   try {
-    await saveMark(markPayload(item));
+    const saved = await saveMark(markPayload(item));
     answerSaves.delete(key);
+    if (typeof noteSaved === "function") noteSaved(saved);
   } catch (error) {
     answerSaves.set(key, { state:"failed", error:error.message, id:error.status === 409 ? "" : item.id });
   }
@@ -28752,15 +29342,20 @@ async function saveAnswer(entry, question) {
 }
 
 // The Notes tab: every mark in reading order, highlights without a note too,
-// with the count also on the slim bar's Notes button and the card's.
-function openNotes(id = "") {
+// with the count also on the slim bar's Notes button and the card's. With an
+// id (a marker, Saved to notes, Show after a save): opened at that card,
+// scrolled into view and marked current, again once the list is reloaded.
+async function openNotes(id = "") {
   if (!notesAvailable()) return;
   hideNotesMini();
   if (id) noteCurrent = id;
   setPanel(true, "notes");
   renderNotes();
   if (id) revealNoteCard(id);
-  loadMarks();
+  await loadMarks();
+  // The reload drew the cards again: the focus (on the old card) is gone unless the listener moved it.
+  if (id && noteCurrent === id && panelOpen && panelView === "notes" && document.activeElement === document.body)
+    revealNoteCard(id);
 }
 function revealNoteCard(id) {
   const card = [...$("notes-list").children].find((element) => element.dataset.mark === id);
@@ -28786,6 +29381,7 @@ function renderNotes() {
   }
   $("notes-tab-count").textContent = String(items.length);
   $("panel-tab-notes").classList.toggle("hidden", !available);
+  fitPanelHead();
   if (!available) { $("notes-list").replaceChildren(); return; }
   const summary = $("notes-summary");
   summary.classList.toggle("problem", !!marksProblem);
@@ -28802,12 +29398,18 @@ function renderNotes() {
     cards.push(noteEl("p", "notes-empty", "No notes yet. Select text in the paper to highlight it, add a note, or ask Hilde."));
   list.replaceChildren(...cards);
 }
+// A card: the passage (its side bar the highlight's colour), where it is, then the words: the listener's labelled
+// You, Hilde's Hilde (a saved answer: You asked, Hilde, and the listener's comment, You). Every card can be
+// edited: a note's Edit, a saved answer's Add your comment, then Edit comment; a bare highlight's Add a note.
 function noteCard(item) {
   const card = noteEl("article", `note-card${item.id === noteCurrent ? " current" : ""}`);
   card.dataset.mark = item.id;
   card.tabIndex = -1;
+  if (item.id === noteCurrent) card.setAttribute("aria-current", "true");
   const placed = markRanges.has(item.id);
-  card.append(noteEl("blockquote", `note-quote${item.highlight ? " highlighted" : ""}`, item.anchor.quote));
+  const quote = noteEl("blockquote", `note-quote${item.highlight ? " highlighted" : ""}`, item.anchor.quote);
+  if (item.highlight) quote.style.setProperty("--quote-mark", quoteMarkColor(item));
+  card.append(quote);
   const where = noteEl("div", "note-where");
   // Where it is now (a place can be found in the other view after a Recreate), else where it was made.
   const view = placed ? item.place.view : item.anchor.view;
@@ -28836,15 +29438,15 @@ function noteCard(item) {
     for (const part of String(item.answer.text || "").split(/\n{2,}/)) if (part.trim()) answer.append(noteEl("p", "", part.trim()));
     hilde.append(label, answer);
     card.append(hilde);
-    if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "Your comment"), noteEl("p", "note-text", item.note));
-  } else if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "You"), noteEl("p", "note-text", item.note));
+  }
+  if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "You"), noteEl("p", "note-text", item.note));
   if (edit) { card.dataset.editing = edit.state; card.append(noteEditForm(item, edit)); }
   const foot = noteEl("div", "note-foot");
   const by = item.kind === "answer" && item.answer && item.answer.model ? ` · answer by ${item.answer.model}` : "";
   foot.append(noteEl("span", "note-saved", `✓ Saved${by} · ${noteTime(item.updated_at)}`), noteEl("span", "grow"));
   if (!edit) {
-    const has = (item.note || "").trim();
-    foot.append(noteButton("link note-edit-open", has ? "Edit" : item.kind === "answer" ? "Add a comment" : "Add a note",
+    const has = (item.note || "").trim(), answer = item.kind === "answer";
+    foot.append(noteButton("link note-edit-open", answer ? (has ? "Edit comment" : "Add your comment") : has ? "Edit" : "Add a note",
       () => { noteEdits.set(item.id, { text:item.note || "", state:"editing" }); renderNotes(); focusNoteEdit(item.id); }));
   }
   foot.append(noteButton("link note-delete", "Delete", () => deleteMark(item.id)));
@@ -28858,7 +29460,7 @@ function focusNoteEdit(id) {
 }
 function noteEditForm(item, edit) {
   const form = noteEl("div", "note-edit");
-  const label = noteEl("label", "note-label", item.kind === "answer" ? "Your comment" : "You");
+  const label = noteEl("label", "note-label", "You");
   const box = noteEl("textarea");
   box.id = `note-edit-${item.id}`; label.htmlFor = box.id;
   box.maxLength = NOTE_MAX; box.rows = 3; box.value = edit.text;
@@ -34005,6 +34607,8 @@ document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   lastPointerType = event.pointerType;
   if (!event.target.closest("#selection-ask, #selection-actions")) hideSelectionAsk();
+  // A tapped highlight's choices close with a press anywhere else.
+  if ($("mark-bar").classList.contains("tapped") && !event.target.closest("#mark-bar")) hideMarkBar();
   // The page's own scroll bar: held until the press ends.
   scrollBarHeld = event.target === document.documentElement;
   if (scrollBarHeld) userScrollAt = performance.now();
@@ -34043,14 +34647,21 @@ $("selection-ask").addEventListener("click", () => {
   pauseBookForQuestion();
   askAboutSelection(picked);
 });
-// Notes (notes_enabled): the selection's actions, the markers, the editor, the small bar.
+// Notes (notes_enabled): the selection's actions (or a clicked highlight's), the markers, the editor, the small bar.
 $("selection-actions").addEventListener("pointerdown", (event) => event.preventDefault());
 $("selection-actions").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-act]");
-  const picked = button && readerSelection();
+  const dot = event.target.closest(".mark-dot"), button = event.target.closest("button[data-act]");
+  if (markMenuId) {
+    const id = markMenuId;
+    if (dot) recolorMark(id, dot.dataset.color);
+    else if (button && button.dataset.act === "note") noteOnHighlight(id);
+    else if (button && button.dataset.act === "remove") removeHighlight(id);
+    return;
+  }
+  const picked = (dot || button) && readerSelection();
   if (!picked) { hideSelectionAsk(); return; }
-  const act = button.dataset.act;
-  if (act === "highlight") highlightSelection(picked);
+  const act = dot ? "highlight" : button.dataset.act;
+  if (act === "highlight") highlightSelection(picked, dot ? dot.dataset.color : markColor());
   else if (act === "note") openNoteEditor(picked);
   else if (act === "copy") copySelection(picked, button);
   else {
@@ -34060,26 +34671,44 @@ $("selection-actions").addEventListener("click", (event) => {
     askAboutSelection(picked);
   }
 });
-for (const id of ["dock-highlight", "dock-note", "dock-select-ask"]) {
+// The player's Highlight and Note: pressed, they keep the selection they act on
+// (a mouse's live one; a finger's stored one, iOS clearing it at the touch).
+for (const id of ["player-highlight", "player-note"]) {
   $(id).addEventListener("pointerdown", (event) => {
     dockPressed = true;
     clearTimeout(dockHideTimer);
     if (event.pointerType === "mouse") event.preventDefault();
   });
 }
-$("dock-select-ask").addEventListener("click", askFromDock);
-for (const [id, run] of [["dock-highlight", highlightSelection], ["dock-note", openNoteEditor]]) {
-  $(id).addEventListener("click", () => {
-    const picked = readerSelection() || dockPicked;
-    dockPressed = false;
-    run(picked);
-  });
-}
+$("player-highlight").addEventListener("click", playerHighlight);
+$("player-note").addEventListener("click", playerNote);
+$("selection-pill-clear").addEventListener("click", clearReaderSelection);
+$("mark-bar").addEventListener("pointerdown", (event) => { if (event.pointerType === "mouse") event.preventDefault(); });
+$("mark-bar").addEventListener("click", (event) => {
+  const id = markBarId, dot = event.target.closest(".mark-dot");
+  if (!id) return;
+  if (dot) {
+    recolorMark(id, dot.dataset.color);
+    // Choosing keeps the bar a while longer.
+    if (!$("mark-bar").classList.contains("tapped")) {
+      clearTimeout(markBarTimer);
+      markBarTimer = setTimeout(hideMarkBar, MARK_BAR_FOR);
+    }
+  } else if (event.target.closest("#mark-bar-undo")) removeHighlight(id, true);
+  else if (event.target.closest("#mark-bar-note")) noteOnHighlight(id);
+  else if (event.target.closest("#mark-bar-remove")) removeHighlight(id);
+});
+$("saved-bar-show").addEventListener("click", showSavedNote);
+// Whatever changes the stack's height (a bar shown or hidden) places it again above an open menu.
+new ResizeObserver(() => layoutStack()).observe($("dock-slot"));
+window.addEventListener("resize", layoutStack);
+window.visualViewport?.addEventListener("resize", layoutStack);
 $("reader-content").addEventListener("click", (event) => {
   const marker = event.target.closest(".note-marker");
   if (marker) { event.preventDefault(); openNotes(marker.dataset.mark); }
 });
 $("note-editor-cancel").addEventListener("click", hideNoteEditor);
+$("note-editor-close").addEventListener("click", hideNoteEditor);
 $("note-editor-save").addEventListener("click", saveNoteDraft);
 $("note-editor").addEventListener("keydown", (event) => {
   if (event.key === "Escape") { event.preventDefault(); hideNoteEditor(); }
@@ -34110,40 +34739,116 @@ window.addEventListener("scroll", () => {
   // The side panel's top follows the tab row while it scrolls away.
   if (panelOpen && tabsInView) queuePinned();
 }, { passive:true });
+// The panel's left edge (setPanelWidth()): dragged, the width follows the pointer and is kept once let go; the
+// text's anchor is taken as the drag starts, so the passage at the top (or the one being read, followed) stays put
+// however far the column reflows. ArrowLeft / ArrowRight: 16 px wider / narrower; Home / End: the widest /
+// narrowest.
+let panelDrag = null;
 $("panel-resize").addEventListener("pointerdown", (event) => {
   event.currentTarget.setPointerCapture(event.pointerId);
   event.preventDefault();
+  panelDrag = { id:event.pointerId, x:event.clientX, anchor:readingAnchor(), moved:false };
+  event.currentTarget.classList.add("dragging");
 });
 // The panel's right edge is the viewport's, beside any scroll bar.
 const panelWidthAt = (event) => $("side-panel").getBoundingClientRect().right - event.clientX;
 $("panel-resize").addEventListener("pointermove", (event) => {
-  if (event.currentTarget.hasPointerCapture(event.pointerId))
-    setPanelWidth(panelWidthAt(event), false);
+  if (!panelDrag || event.pointerId !== panelDrag.id) return;
+  if (!panelDrag.moved && Math.abs(event.clientX - panelDrag.x) < 2) return;
+  panelDrag.moved = true;
+  setPanelWidth(panelWidthAt(event), false, panelDrag.anchor);
 });
-$("panel-resize").addEventListener("pointerup", (event) => {
-  setPanelWidth(panelWidthAt(event), true);
-});
+for (const type of ["pointerup", "pointercancel"]) {
+  $("panel-resize").addEventListener(type, (event) => {
+    if (!panelDrag || event.pointerId !== panelDrag.id) return;
+    const { moved, anchor } = panelDrag;
+    panelDrag = null;
+    event.currentTarget.classList.remove("dragging");
+    if (moved) setPanelWidth(type === "pointerup" ? panelWidthAt(event) : $("side-panel").offsetWidth, true, anchor);
+  });
+}
 $("panel-resize").addEventListener("keydown", (event) => {
-  const step = { ArrowLeft:16, ArrowRight:-16 }[event.key];
-  if (!step) return;
+  const { least, most } = panelBounds();
+  const width = { ArrowLeft:$("side-panel").offsetWidth + 16, ArrowRight:$("side-panel").offsetWidth - 16,
+                  Home:most, End:least }[event.key];
+  if (width === undefined) return;
   event.preventDefault();
-  setPanelWidth($("side-panel").offsetWidth + step, true);
+  setPanelWidth(width, true);
 });
 $("panel-tabs").addEventListener("keydown", (event) => {
-  const views = ["chat", "figure", "page"].filter((view) => !$(`panel-tab-${view}`).classList.contains("hidden"));
+  const views = ["chat", "notes", "figure", "page"].filter((view) => !$(`panel-tab-${view}`).classList.contains("hidden"));
   const index = views.indexOf(panelView);
   const next = { ArrowRight:views[(index + 1) % views.length],
                  ArrowLeft:views[(index + views.length - 1) % views.length] }[event.key];
   if (!next) return;
   event.preventDefault();
-  showPanelView(next);
+  if (next === "notes") openNotes(); else showPanelView(next);
   $(`panel-tab-${next}`).focus();
 });
+// The phone sheet's grabber (sheetSize()): dragged, the height follows the pointer from tall down to near nothing
+// and, let go, settles where sheetSnap() says, by where it is and how fast it moved: tall, half, or closed as ×
+// closes it. Only the grabber takes the drag (touch-action:none on it); the sheet's own lists still scroll, the
+// page never does, and nothing here touches the book's audio. A press that barely moves is a tap and switches
+// half ↔ tall. The press is captured, and followed on the window too, so a finger that leaves the grabber still
+// drags. The click a press sends after either is left alone (sheetPressedAt); a click without a press (Enter,
+// Space: detail 0; a screen reader) switches.
+const SHEET_LEAST = 48;
+$("sheet-grabber").addEventListener("pointerdown", (event) => {
+  if (event.button > 0) return;
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) { /* followed on the window */ }
+  sheetDrag = { id:event.pointerId, y:event.clientY, height:$("side-panel").getBoundingClientRect().height, moved:false,
+                trail:[[performance.now(), event.clientY]] };
+});
+window.addEventListener("pointermove", (event) => {
+  if (!sheetDrag || event.pointerId !== sheetDrag.id) return;
+  const rise = sheetDrag.y - event.clientY, now = performance.now();
+  sheetDrag.trail = [...sheetDrag.trail.filter(([at]) => now - at < 120), [now, event.clientY]];
+  if (!sheetDrag.moved && Math.abs(rise) < 6) return;
+  if (!sheetDrag.moved) { closePopup(); $("side-panel").classList.add("sheet-dragging"); }
+  sheetDrag.moved = true;
+  const height = Math.min(sheetHeights().tall, Math.max(SHEET_LEAST, sheetDrag.height + rise));
+  $("side-panel").style.setProperty("--sheet-size", `${Math.round(height)}px`);
+});
+for (const type of ["pointerup", "pointercancel"]) {
+  window.addEventListener(type, (event) => {
+    if (!sheetDrag || event.pointerId !== sheetDrag.id) return;
+    const { moved, trail } = sheetDrag;
+    sheetDrag = null;
+    $("side-panel").classList.remove("sheet-dragging");
+    sheetPressedAt = performance.now();
+    if (!moved) { if (type === "pointerup") settleSheet(sheetSized === "tall" ? "half" : "tall"); return; }
+    // The speed over the last 120 ms before the release (px/ms, positive downwards).
+    const [first, last] = [trail[0], [performance.now(), event.clientY]];
+    const speed = last[0] - first[0] > 0 ? (last[1] - first[1]) / (last[0] - first[0]) : 0;
+    const size = sheetSnap($("side-panel").getBoundingClientRect().height, type === "pointerup" ? speed : 0);
+    if (size === "closed") closePanel(); else settleSheet(size);
+  });
+}
+$("sheet-grabber").addEventListener("click", (event) => {
+  if (event.detail > 0 && performance.now() - sheetPressedAt < 800) return;
+  settleSheet(sheetSized === "tall" ? "half" : "tall");
+});
+$("sheet-grabber").addEventListener("keydown", (event) => {
+  const size = { ArrowUp:"tall", ArrowDown:"half" }[event.key];
+  if (!size) return;
+  event.preventDefault();
+  settleSheet(size);
+});
+// The conversation keeps its end in sight when the box under it grows (the card attached, the keyboard): what was
+// at the bottom (an answer's Read aloud and Save to notes) stays whole.
+let chatLogAtEnd = true;
+$("chat-log").addEventListener("scroll", () => {
+  const log = $("chat-log");
+  chatLogAtEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+}, { passive:true });
+new ResizeObserver(() => { if (chatLogAtEnd && chatShown()) $("chat-log").scrollTop = $("chat-log").scrollHeight; })
+  .observe($("chat-log"));
 window.visualViewport?.addEventListener("resize", fitVisualViewport);
 window.visualViewport?.addEventListener("scroll", fitVisualViewport);
+window.visualViewport?.addEventListener("resize", placeNoteEditor);
 window.addEventListener("resize", () => {
   fitVisualViewport(); fitDock(); observePaperBar(); queuePinned();
-  setPanelWidth(Number(stored("panelWidth")) || 440, false);
+  fitPanelWidth();
   document.documentElement.classList.toggle("sheet-open", !!state && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
@@ -34160,7 +34865,7 @@ new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();
-setPanelWidth(Number(stored("panelWidth")) || 440, false);
+fitPanelWidth();
 setHighlightStyle(stored("highlightStyle"), false);
 renderPlayer();
 
