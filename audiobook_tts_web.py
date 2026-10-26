@@ -6536,7 +6536,7 @@ def arxiv_id(url):
 
 def arxiv_pdf_url(url):
     """An arXiv abstract page (arxiv.org/abs/<id>) as the PDF it describes
-    (arxiv.org/pdf/<id>), so From a URL takes the page's link; other URLs as given."""
+    (arxiv.org/pdf/<id>), so Create's Link takes the page's link; other URLs as given."""
     parsed = urllib.parse.urlsplit(url)
     paper = arxiv_id(url)
     if paper and parsed.path.startswith("/abs/"):
@@ -12445,8 +12445,8 @@ def normalize(state):
     step = audiobook.get("step")
     if step not in ("book", "voice", "create"):
         step = "book"
-    # Step 1's chosen source card, the last one this browser used. A new
-    # browser starts on Upload a file; one from before the cards used its
+    # Step 1's chosen source tab, the last one this browser used. A new
+    # browser starts on File; one from before the tabs used its
     # typed link when it had one, else its dropdown's document.
     source = audiobook.get("source")
     if source not in DOCUMENT_SOURCES:
@@ -12484,9 +12484,9 @@ def normalize(state):
             "draft": draft_id(audiobook.get("draft")),
             "server_voice": stored_text(audiobook, "server_voice"),
             "voice": stored_text(audiobook, "voice"),
-            # Each source card keeps its own value; only `source`'s is used
-            # (chosen_document()): the Saved document dropdown, the file
-            # uploaded under Upload, and the link with its Save as name, the
+            # Each source tab keeps its own value; only `source`'s is used
+            # (chosen_document()): Library's document field, the file
+            # uploaded under File, and Link's link with its Save as name, the
             # Documents name Continue downloaded it to (`url_document`), and,
             # for an arXiv link, the paper's title (`url_title`), shown for it;
             # the Documents name Continue saved a pasted text as
@@ -20418,7 +20418,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def upload_document(self, name, paste=False):
         """Save a document into Documents under `name`, replacing a file of
-        that name. `paste` (Create's Paste text, sent as a .txt or .md file):
+        that name. `paste` (Create's Text, sent as a .txt or .md file):
         a document with the same bytes keeps its name and nothing is written,
         and a name already taken gets " 2", " 3"… (pasted_document_name())."""
         def refuse(code, message, unread=None):
@@ -21367,29 +21367,31 @@ PAGE = r"""<!doctype html>
 <link rel="manifest" href="/manifest.webmanifest">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, and six colours,
-           each in one role only, used through these tokens:
-           blue: --accent, the fill of buttons and chosen things (Play/Pause
-           too), white ink on it (5.5:1); --accent-light, selected items,
-           links, the LED dot of a selected tab or a switch that is on, the
-           quiet blue buttons' text, icon and border (Change, and Library
-           with a book open), and the reading highlight (6.6:1 on the
-           ground), never a button's fill;
-           teal --ask: Ask Hilde only: the player's Ask Hilde button (a 12%
-           tint, its border, text and sparkle), the chat panel's header, the
-           chat's Stop / Pause / Resume button and Ask Hilde for a touch
-           selection above the player bar (dark ink on it, 6.9:1), and
-           every Ask Hilde card (6.6:1 on the ground; light mode, Phase 3:
-           #127a6e, 5.2:1 on white);
-           green --local: the Local badge (with a chip) and Runs on Local;
+        /* One charcoal ground, one neutral gray family, one interface accent
+           (blue), and a few colours each in one role only, used through these
+           tokens:
+           blue: --accent, the fill of a screen's main action and Play/Pause,
+           white ink on it (5.5:1); --accent-light, selected items (a tab's
+           line, a chosen tag's border), links, the LED dot of a selected tab
+           or a switch that is on, the quiet blue buttons' text, icon and
+           border (Change, and Library with a book open), and the reading
+           highlight (6.6:1 on the ground), never a button's fill;
+           teal --ask: a marker of Ask Hilde only, never an area: the
+           player's Ask Hilde button (a 12% tint, its border, text and
+           sparkle), the selection bar's Ask Hilde, Ask Hilde for a touch
+           selection above the player bar, and the ✦ sparkle wherever it
+           stands (the header's button, the panel tab, a saved answer's marker
+           and label). The panel's header, its cards (Selected text, a
+           passage), the help examples and the question box are neutral;
+           green --local: the Local badge (with a chip) and Runs on Local, and
+           a finished step of Create;
            purple --cloud: the Cloud badge (with a cloud) and Runs on Cloud;
            gray --off: disabled and "not running" items (the selection
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
-           and text. No orange anywhere; no glow stays lit. Create's steps
-           (yellow --step-open for the open step, --local green for a
-           finished one) and the Voices list (#page-voice: --play, --tag) set
-           their own. */
+           and text. No orange anywhere; no glow stays lit. The Voices list
+           (#page-voice: --play) sets its own; its tags are neutral, a chosen
+           one blue (--accent-light) with a tick. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
         --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
@@ -21397,13 +21399,10 @@ PAGE = r"""<!doctype html>
         --ask:#2bb3a3; /* light mode: #127a6e */
         --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
         --bad:#e5534b; --radius:12px;
-        /* Create's step rows: their own darker ground, on which the open
-           step's yellow --step-open (11.1:1, dark number on it 11.8:1) and a
-           finished step's green --local (7.0:1) clear 3:1 and 4.5:1; thin row
-           and card lines; a gray circle for a step not reached (3.5:1). The
-           yellow (hue 55°, not amber) marks the open step only, never a
-           warning. */
-        --step-open:#ddd040;
+        /* Create's step rows: their own darker ground; the open step's number
+           in a filled blue circle (white on --accent, 5.5:1), a finished
+           step's green --local (7.0:1); thin row and card lines; a gray circle
+           for a step not reached (3.5:1). No coloured frame around a step. */
         /* Notes (Listen Part 2, only with the server's notes_enabled): a highlight is a soft fill (22% over the ground)
            of one of four colours, never an underline (the word being read owns the blue underline), never the
            playback blue or Ask Hilde's teal. --mark is the first (yellow): the Notes accents. */
@@ -21442,17 +21441,17 @@ body.server-down [inert] { opacity:.5; }
 .brand-name { font-size:24px; font-weight:600; white-space:nowrap; }
 .brand-name span { font-weight:400; color:#c9ccd2; }
 .brand-tagline { color:var(--dim); font-size:13px; }
-/* Ask Hilde at the header's top right on every page: Ask Hilde's teal pill (the player bar button's tint, border
-   and text), the sparkle and the words; filled teal while its panel is open. On a phone, the sparkle alone in a
-   round 44 px button, still named "Ask Hilde". */
+/* Ask Hilde at the header's top right on every page: a neutral pill (gray border, the text's colour) with Ask
+   Hilde's teal sparkle, its marker; while its panel is open, pressed: a raised fill and a light border. On a phone,
+   the sparkle alone in a round 44 px button, still named "Ask Hilde". */
 .header-ask { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:8px; margin-left:auto;
-              min-height:40px; padding:0 18px; border:1px solid color-mix(in srgb, var(--ask) 65%, var(--surface));
-              border-radius:999px; background:color-mix(in srgb, var(--ask) 12%, var(--surface)); box-shadow:none;
-              color:var(--ask); font-size:15px; font-weight:600; white-space:nowrap; }
-.header-ask:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 18%, var(--surface)); }
+              min-height:40px; padding:0 18px; border:1px solid #5a5a5a; border-radius:999px;
+              background:var(--surface); box-shadow:none; color:var(--text); font-size:15px; font-weight:600;
+              white-space:nowrap; }
+.header-ask:hover:not(:disabled) { background:var(--hover); }
 .header-ask[aria-expanded=true], .header-ask[aria-expanded=true]:hover:not(:disabled) {
-  border-color:var(--ask); background:var(--ask); color:#0e1a18; }
-.header-ask .ask-icon { width:16px; height:16px; stroke-width:1.4; }
+  border-color:var(--text); background:var(--hover); }
+.header-ask .ask-icon { width:16px; height:16px; stroke-width:1.4; color:var(--ask); }
 @media (max-width:599.98px) {
   .header-ask { width:44px; height:44px; min-height:44px; padding:0; }
   .header-ask .ask-icon { width:18px; height:18px; }
@@ -21590,22 +21589,20 @@ label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true
 .banner > span { flex:1 1 200px; }
 .steps { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:0; padding:0;
          list-style:none; }
-/* Create's steps: rows on one page, coloured by state, the same for every
-   step. Open: a 2 px yellow border and a solid yellow circle with a dark
-   number, a white bold title. Finished: a check in a green ring with a faint
-   green fill, a green title. Not reached: a gray outline circle with its
-   number and a gray title. */
-.step { --step:var(--step-open); --step-done:var(--local); --step-ink:#111111; }
+/* Create's steps: rows on one page, the same for every step. Open: a plain row (no coloured frame), its number in a
+   filled blue circle (white on blue, as every main action) and a white bold title. Finished: a check in a green
+   ring with a faint green fill, a green title. Not reached: a gray outline circle with its number and a gray
+   title. The state is also said in words (.step-state) and by the shape (filled, check, outline). */
+.step { --step:var(--accent); --step-done:var(--local); --step-ink:var(--accent-ink); }
 .step { min-width:0; padding:14px 19px; background:var(--step-bg); border:1px solid var(--step-line);
         border-radius:var(--radius); }
-.step.is-active { padding:18px 18px 20px; border:2px solid var(--step); }
+.step.is-active { padding:18px 19px 20px; }
 .step.drop-target { outline:2px dashed var(--accent-light); outline-offset:-2px; }
 .step-head { display:flex; align-items:center; gap:12px; min-height:32px; min-width:0; }
 .step-marker { display:grid; place-items:center; flex:0 0 auto; width:30px; height:30px;
                border:2px solid var(--step-off); border-radius:50%; background:transparent; color:var(--off);
                font-size:14px; font-weight:650; line-height:1; }
-.step.is-active .step-marker { border-color:var(--step); background:var(--step); color:var(--step-ink);
-                               box-shadow:0 0 0 4px color-mix(in srgb, var(--step) 22%, transparent); }
+.step.is-active .step-marker { border-color:var(--step); background:var(--step); color:var(--step-ink); }
 .step.is-done .step-marker { border-color:var(--step-done); color:var(--step-done);
                              background:color-mix(in srgb, var(--step-done) 12%, transparent); }
 .step-marker svg { width:14px; height:14px; }
@@ -21659,37 +21656,44 @@ button.back svg { flex:0 0 auto; width:15px; height:15px; }
 .step-hint.problem { color:var(--bad); }
 .step-actions > button { flex:0 0 auto; }
 details > summary { width:max-content; max-width:100%; color:var(--dim); cursor:pointer; }
-/* Step 1: four ways to bring a document, two by two on a wide screen, one
-   radio group. The chosen card: a filled dot and a blue border. The others:
-   an empty circle, gray --off text (not opacity alone), disabled controls
-   that keep their values; a click anywhere on one reaches the card (its
-   contents take no pointer) and chooses it. */
-.sources { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
-.source-card { display:flex; flex-direction:column; min-width:0; min-height:158px; padding:14px 16px 16px;
-               background:var(--step-card); border:2px solid var(--step-line); border-radius:12px; }
-.source-card.is-on { border-color:var(--accent); }
-.source-card.is-off { cursor:pointer; }
-.source-card.is-off * { pointer-events:none; }
-.source-card.is-off .source-radio { pointer-events:auto; }
-.source-card.is-off .source-title, .source-card.is-off .source-sub, .source-card.is-off .field > label,
-.source-card.is-off .note, .source-card.is-off .upload-name, .source-card.is-off .dropzone,
-.source-card.is-off .dropzone-types { color:var(--off); }
-.source-card.is-off :is(input, select, button, textarea):disabled { opacity:1; color:var(--off); }
-.source-card.is-off :is(input, textarea)::placeholder { color:var(--off); }
-/* Paste text: a large box (16 px type, so a phone does not zoom into it), then Title (optional). */
+/* Step 1: four ways to bring a document as tabs, File · Link · Text · Library: the chosen one in the text's colour,
+   semibold, on a 2 px blue line (not colour alone: the weight, the line and aria-selected); the others gray. Only the
+   chosen tab's form shows (.source-card, a tabpanel), with Continue right after it; the others are hidden and keep
+   what was entered. Each tab is at least 44 px tall. */
+.source-tabs { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); border-bottom:1px solid var(--line); }
+button.source-tab { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-width:0;
+                    min-height:44px; margin-bottom:-1px; padding:8px 6px; border:0; border-bottom:2px solid transparent;
+                    border-radius:6px 6px 0 0; background:none; box-shadow:none; color:var(--dim); font-size:15px;
+                    white-space:nowrap; }
+button.source-tab:hover:not(:disabled) { background:none; color:var(--text); }
+button.source-tab[aria-selected=true] { border-bottom-color:var(--accent-light); color:var(--text); font-weight:650; }
+button.source-tab:focus-visible { outline:2px solid var(--accent-light); outline-offset:-2px; }
+.source-tab svg { flex:0 0 auto; width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.5;
+                  stroke-linecap:round; stroke-linejoin:round; }
+/* Under 370 px the four labels need the whole tab: the icons go, the gap narrows (every label whole down to 300 px). */
+@media (max-width:369.98px) {
+  .source-tab svg { display:none; }
+  button.source-tab { gap:0; padding:8px 2px; }
+}
+.sources { display:grid; grid-template-columns:minmax(0,1fr); }
+.source-card { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; min-width:0; }
+.source-card:not(.is-on) { display:none; }
+.source-card .field { gap:8px; }
+/* Text: "Your text" with Paste from clipboard at its right, then a large box (16 px type, so a phone does not zoom
+   into it), how to paste, then Title (optional). */
+.paste-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 12px; }
+.paste-head > label { color:var(--dim); font-size:13px; }
+button.paste-clipboard { display:inline-flex; align-items:center; gap:6px; min-height:44px; padding:4px 10px;
+                         border-color:transparent; background:none; box-shadow:none; color:var(--text); font-size:14px; }
+button.paste-clipboard:hover:not(:disabled) { background:var(--hover); }
+.paste-clipboard svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.4; stroke-linejoin:round; }
 .paste-text { min-height:132px; font-size:16px; line-height:1.45; }
 .paste-note { margin:0; }
-.source-head { display:flex; align-items:center; gap:10px; min-width:0; }
-.source-title { flex:1 1 auto; min-width:0; margin:0; font-size:16px; font-weight:650; }
-.source-title label { cursor:pointer; }
-.source-sub { margin:4px 0 14px; color:var(--dim); font-size:13px; }
-.source-card .field { margin-top:10px; }
-.source-radio { appearance:none; flex:0 0 auto; width:20px; height:20px; margin:0; border:2px solid var(--off);
-                border-radius:50%; background:var(--field); cursor:pointer; }
-.source-radio:checked { border-color:var(--accent-light);
-                        background:radial-gradient(circle, var(--accent-light) 0 4px, var(--field) 5px); }
-.source-radio:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
-/* Saved document: a field that opens the list of saved documents (newest
+.source-sub { margin:0; color:var(--dim); font-size:13px; }
+/* A field with a problem: a red border, the problem (with its ⚠ and words) right under it. */
+.source-card [aria-invalid=true], .source-card .doc-select[aria-invalid=true] { border-color:var(--bad); }
+.source-card > .problem, .source-card > .paste-note { margin:0; }
+/* Library: a field that opens the list of saved documents (newest
    first: name, date, and a trash button each), and a trash button after it
    for the one chosen. Trash buttons are gray, red under the pointer. */
 .doc-field { position:relative; display:flex; gap:12px; min-width:0; }
@@ -21721,7 +21725,7 @@ button.doc-pick:hover:not(:disabled) { background:transparent; }
 .doc-date { flex:0 0 auto; color:var(--off); font-size:13px; }
 .doc-row button.trash { width:32px; min-width:32px; min-height:32px; border-color:transparent; }
 .doc-list .note { padding:8px 10px; }
-/* Upload a file: a dashed drop area with a browse link and, under it, the
+/* File: a dashed drop area with a browse link and, under it, the
    types Hilde reads. A touch screen can't drop a file: Choose a file, a
    button, with the types under it. */
 .dropzone { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:0 .3em; min-height:72px;
@@ -21987,13 +21991,14 @@ legend ~ * { clear:both; }
 .data-table td { padding:10px 12px; border-bottom:1px solid var(--surface);
                  vertical-align:middle; }
 .data-table tbody tr:hover { background:var(--surface); }
-/* Voices (Part C, 20 Oct): white names; green (#3fb950) play circles, the
-   selected voice's faint green row and its solid "✓ Selected"; each voice's
-   tags as pink-purple chips (#d66bc6) that fill the search box; Select, ⋯ and
-   the search box gray. Chips sit on an opaque tint so their text keeps 4.5:1
-   on any row (5.1:1, 4.6:1 hovered), their border 3:1 on the green row. */
-#page-voice, #selected-voice, #tag-review { --play:#3fb950; --play-ink:#0d1117; --tag:#d66bc6; --tag-ink:#160d15;
-              --tag-line:color-mix(in srgb, var(--tag) 80%, #111); --gray-line:#707070; }
+/* Voices (Part C, 20 Oct; one accent, 26 Oct): white names; green (#3fb950) play circles, the selected voice's
+   faint green row and its solid "✓ Selected"; each voice's tags as neutral chips (light gray text, a gray border)
+   that fill the search box; a chosen tag (a pressed one in the list, a kept one in Review tags, a picked one in New
+   voice) blue: a faint blue fill, a blue border and a tick, never colour alone. Select, ⋯ and the search box gray.
+   The chips' text keeps 4.5:1 on any row, their gray border (#7a7a7a) 3:1. */
+#page-voice, #selected-voice, #tag-review { --play:#3fb950; --play-ink:#0d1117; --tag:#d8d4ce; --tag-ink:var(--text);
+              --tag-line:#7a7a7a; --gray-line:#707070;
+              --tag-on:color-mix(in srgb, var(--accent-light) 18%, var(--bg)); }
 .voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
                   text-transform:none; }
 .voice-table .preview { width:64px; }
@@ -22053,7 +22058,9 @@ legend ~ * { clear:both; }
 .voice-table button.voice-tag:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 20%, #111); }
 .voice-table button.voice-tag[aria-pressed=true],
 .voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled) {
-  background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
+  background:var(--tag-on); border-color:var(--accent-light); color:var(--text); font-weight:600; }
+.voice-table button.voice-tag[aria-pressed=true]::before, .tag-picker button.tag-option[aria-pressed=true]::before {
+  content:"✓\00a0"; }
 .voice-no-description { display:block; margin-top:2px; color:var(--dim); font-size:13px; line-height:20px; }
 .voice-table td.modified { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 @media (min-width:641px) {
@@ -22071,10 +22078,10 @@ legend ~ * { clear:both; }
 .tag-banner-text b { font-weight:700; }
 .tag-banner button.link { flex:0 0 auto; color:var(--dim); text-decoration:none; }
 .tag-banner button.link:hover:not(:disabled) { color:var(--text); }
-/* Review tags: filled #d66bc6 with dark text, 6.2:1. */
-button.tag-review-open { flex:0 0 auto; margin-left:auto; border-color:var(--tag); background:var(--tag);
-  color:var(--tag-ink); box-shadow:none; font-weight:650; }
-button.tag-review-open:hover:not(:disabled) { border-color:#e183d3; background:#e183d3; }
+/* Review tags: the banner's main action, filled blue with white ink (5.5:1). */
+button.tag-review-open { flex:0 0 auto; margin-left:auto; border-color:var(--accent); background:var(--accent);
+  color:var(--accent-ink); box-shadow:none; font-weight:650; }
+button.tag-review-open:hover:not(:disabled) { border-color:var(--accent); background:var(--accent); filter:brightness(1.08); }
 @media (max-width:640px) {
   .tag-banner { flex-wrap:nowrap; padding:12px 12px 12px 16px; gap:8px 12px; }
   .tag-banner-more { display:none; }
@@ -22103,15 +22110,16 @@ button.tag-review-close:hover:not(:disabled) { background:var(--hover); color:va
   background:var(--field); color:var(--text); font-size:15px; line-height:1.75; overflow-wrap:anywhere; }
 .tag-review-description.is-empty { color:var(--dim); }
 .tag-review-description mark { padding:1px 3px; border-radius:4px; color:var(--text);
-  background:color-mix(in srgb, var(--tag) 30%, var(--field)); }
+  background:color-mix(in srgb, var(--accent-light) 26%, var(--field)); }
 .tag-review-chips { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
 .tag-review-inline { display:contents; }
 #tag-review button.review-chip, #tag-review button.review-idea, #tag-review button.tag-review-add {
   display:inline-flex; align-items:center; gap:6px; min-height:32px; max-width:100%; padding:3px 14px;
-  border:1px solid var(--tag); border-radius:16px; box-shadow:none; font-size:15px; line-height:20px;
+  border:1px solid var(--tag-line); border-radius:16px; box-shadow:none; font-size:15px; line-height:20px;
   overflow-wrap:anywhere; }
-#tag-review button.review-chip { background:var(--tag); color:var(--tag-ink); font-weight:650; }
-#tag-review button.review-chip:hover:not(:disabled) { border-color:#e183d3; background:#e183d3; }
+#tag-review button.review-chip { border-color:var(--accent-light); background:var(--tag-on); color:var(--text);
+  font-weight:650; }
+#tag-review button.review-chip:hover:not(:disabled) { background:color-mix(in srgb, var(--accent-light) 26%, var(--bg)); }
 #tag-review button.review-chip svg { flex:0 0 auto; width:13px; height:13px; fill:currentColor; }
 #tag-review button.review-chip.is-dropped, #tag-review button.review-idea {
   border:1px dashed var(--tag-line); background:transparent; color:var(--tag); font-weight:400; }
@@ -22129,7 +22137,7 @@ button.tag-review-close:hover:not(:disabled) { background:var(--hover); color:va
 .tag-pick-group { padding:8px 8px 2px; color:var(--dim); font-size:12px; font-weight:600; }
 .tag-pick-option { padding:6px 10px; border-radius:6px; cursor:pointer; overflow-wrap:anywhere; }
 .tag-pick-option:hover, .tag-pick-option[aria-selected=true] { background:var(--hover); }
-.tag-pick-option[data-new] { color:var(--tag); }
+.tag-pick-option[data-new] { color:var(--accent-light); }
 .tag-pick-none { margin:6px 8px; color:var(--dim); font-size:13px; }
 #tag-review-save-problem { margin:12px 0 0; }
 .tag-review-foot { display:flex; align-items:center; gap:12px 18px; padding:18px 32px 26px; }
@@ -22168,7 +22176,7 @@ button.tag-review-close:hover:not(:disabled) { background:var(--hover); color:va
 .tag-picker button.tag-option:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 14%, #111); }
 .tag-picker button.tag-option[aria-pressed=true],
 .tag-picker button.tag-option[aria-pressed=true]:hover:not(:disabled) {
-  background:var(--tag); border-color:var(--tag); color:var(--tag-ink); font-weight:600; }
+  background:var(--tag-on); border-color:var(--accent-light); color:var(--text); font-weight:600; }
 .tag-mine button.tag-option { border-radius:16px 0 0 16px; }
 .tag-picker button.tag-remove { min-height:32px; min-width:32px; padding:0 8px; border:1px solid var(--tag-line);
   border-left:0; border-radius:0 16px 16px 0; background:transparent; color:var(--dim); box-shadow:none; }
@@ -22533,10 +22541,11 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
                          white-space:nowrap; box-shadow:none; }
 .panel-tabs [role=tab][aria-selected=true] { background:var(--raised); color:var(--text);
                                              box-shadow:inset 0 -2px 0 var(--accent-light); }
-/* With the chat open, the header is Ask Hilde's: its sparkle and name in teal, as a title. */
-.panel-tabs #panel-tab-chat { padding-left:0; }
-.panel-tabs #panel-tab-chat[aria-selected=true] { background:transparent; color:var(--ask); box-shadow:none; }
-.panel-tabs #panel-tab-chat:not([aria-selected=true]) { padding-left:10px; }
+/* With the chat open, the header is a neutral title: "Ask Hilde" in the text's colour, only its sparkle teal (the
+   marker); beside the Notes tab, selected as a tab: the blue line under it. */
+.panel-head:not(.has-tabs) .panel-tabs #panel-tab-chat[aria-selected=true] { padding-left:0; background:transparent;
+  box-shadow:none; }
+.panel-tabs #panel-tab-chat .ask-icon { color:var(--ask); }
 .panel-close { min-width:36px; min-height:36px; margin-left:auto; padding:0 8px; border-color:transparent;
                background:transparent; box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
 .chat-menu-wrap:not(.hidden) + .panel-close { margin-left:0; }
@@ -22560,9 +22569,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .chat-model-pick .badge { padding:1px 6px; font-size:12px; }
 .chat-model-pick .badge svg { display:none; }
 .chat-model-pick .chevron { width:12px; height:12px; }
-/* The header is Ask Hilde's teal, never blue: the box hovered or open shows a teal border. */
+/* The header is neutral: the box hovered or open shows a light gray border. */
 .chat-model-pick button.picker-box:hover:not(:disabled),
-.chat-model-pick button.picker-box[aria-expanded=true] { border-color:var(--ask); }
+.chat-model-pick button.picker-box[aria-expanded=true] { border-color:var(--dim); }
 .chat-more { min-width:36px; min-height:36px; padding:0 8px; border-color:transparent; background:transparent;
              box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
 .chat-model-notes { display:grid; flex:0 1 auto; gap:6px; min-height:0; overflow:auto; padding:8px 16px;
@@ -22617,7 +22626,7 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .chat-log { display:grid; flex:1; align-content:start; gap:14px; min-height:0; overflow:auto;
             overscroll-behavior:contain; padding:16px; }
 /* Help mode: at the top of the conversation, the heading, what the panel is for, and three example questions as
-   quiet teal buttons (outlined, the text left-aligned); a click puts one in the box. */
+   quiet neutral buttons (outlined, the text left-aligned); a click puts one in the box. */
 .help-intro { display:grid; gap:8px; margin:0 0 6px; }
 /* Only at the top of the help conversation (applyChat()); the markup's own copy outside it never shows. */
 #chat-pane > .help-intro { display:none; }
@@ -22626,9 +22635,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .help-intro p { color:var(--dim); line-height:1.5; }
 .help-examples { display:grid; gap:8px; margin-top:6px; }
 button.help-example { justify-content:flex-start; min-height:40px; padding:8px 14px; text-align:left;
-                      border:1px solid color-mix(in srgb, var(--ask) 55%, var(--surface)); border-radius:10px;
-                      background:transparent; box-shadow:none; color:var(--ask); font-size:14px; font-weight:400; }
-button.help-example:hover:not(:disabled) { background:color-mix(in srgb, var(--ask) 10%, var(--surface)); }
+                      border:1px solid #5a5a5a; border-radius:10px;
+                      background:transparent; box-shadow:none; color:var(--text); font-size:14px; font-weight:400; }
+button.help-example:hover:not(:disabled) { background:var(--hover); }
 @media (pointer:coarse) { button.help-example { min-height:44px; } }
 /* A question: its card (what went with it) the panel's width, the words right-aligned in a bubble. */
 .chat-user { display:grid; gap:12px; margin:0; }
@@ -22666,30 +22675,31 @@ button.chat-listen { min-height:32px; padding:0 12px; border-style:dashed; borde
 .chat-notice.failed > p { margin:0; }
 .chat-notice.failed .chat-advice { color:var(--dim); font-size:13px; }
 .chat-notice.failed .line { display:flex; gap:12px; }
-/* Under the conversation, never scrolling with it: the teal button for what Hilde is doing, with its short
-   status; the card attached to the next question; the question box. One column the foot's width: a card's
-   one-line title and preview (a phone's compact card) are cut there, never widening it. */
+/* Under the conversation, never scrolling with it: the blue button for what Hilde is doing (Stop, Pause, Resume),
+   with its short status; the card attached to the next question; the question box; under it, one small gray line
+   that Hilde can make mistakes. One column the foot's width: a card's one-line title and preview (a phone's compact
+   card) are cut there, never widening it. */
 .chat-foot { display:grid; flex:none; grid-template-columns:minmax(0, 1fr); gap:10px; padding:12px 16px;
              border-top:1px solid var(--line); }
 .chat-action-row { display:flex; align-items:center; gap:10px; min-width:0; }
 button.chat-action { display:inline-flex; flex:none; align-items:center; gap:8px; min-height:30px; padding:0 16px 0 14px;
-                     border:0; border-radius:999px; background:var(--ask); box-shadow:none; color:#0e1a18;
+                     border:0; border-radius:999px; background:var(--accent); box-shadow:none; color:var(--accent-ink);
                      font-size:14px; font-weight:650; }
-button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
+button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
 .chat-action svg { width:12px; height:12px; fill:currentColor; }
 .chat-action-status { color:var(--dim); font-size:13px; white-space:nowrap; }
 .chat-hint { margin:0; color:var(--dim); font-size:13px; }
 /* A question that can't go while Hilde still answers: said in a box, not only the small grey line. */
-.chat-hint.busy { padding:8px 12px; border:1px solid color-mix(in srgb, var(--ask) 65%, transparent);
-                  border-radius:8px; background:color-mix(in srgb, var(--ask) 12%, transparent); color:var(--text);
-                  font-size:14px; }
-/* A part just attached: a short teal glow (none with reduced motion) and an outline. */
-@keyframes chip-pulse { 0%, 35% { background:var(--accent-soft); } 100% { background:transparent; } }
-.chat-about { --accent-soft:color-mix(in srgb, var(--ask) 16%, transparent); border-radius:8px; }
+.chat-hint.busy { padding:8px 12px; border:1px solid #5a5a5a; border-radius:8px; background:var(--surface);
+                  color:var(--text); font-size:14px; }
+/* A part just attached: a short gray glow (none with reduced motion) and a blue outline. */
+@keyframes chip-pulse { 0%, 35% { background:color-mix(in srgb, var(--text) 12%, transparent); }
+                        100% { background:transparent; } }
+.chat-about { border-radius:8px; }
 .chat-about.attached { animation:chip-pulse 1.6s ease-out; }
 .chat-about.attached .chip { outline:2px solid var(--accent-light); outline-offset:0; }
 @media (prefers-reduced-motion: reduce) { .chat-about.attached { animation:none; } }
-.chip-failed-title { font-weight:600; color:var(--ask); }
+.chip-failed-title { font-weight:600; color:var(--text); }
 .chip-failed .chip-head { flex-wrap:wrap; }
 /* The question box: one bordered field, the text and a small outlined Send inside it on the right ("Explain this
    part" with a card attached and nothing typed). The box grows with its text where the browser can size a field
@@ -22707,19 +22717,21 @@ button.chat-action:hover:not(:disabled) { background:var(--ask); filter:brightne
                        border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
                        color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
 .chat-compose button:hover:not(:disabled) { background:var(--hover); }
-/* The card of what a question is about, in Ask Hilde's teal: a 1px teal border on a faint teal tint, the title
-   ("Selected text" for a selection, else the section heading) teal, then a preview of the text. The draft's card
-   also has Change and ×, the Word / Sentence / Paragraph switch and Listen from here (small, in one line), and
-   every card the collapsed Context details. Open, it scrolls within a share of the visible viewport, so an
-   on-screen keyboard leaves the message box and Send in sight. Every card is Ask Hilde's (a selection, a
-   passage, a figure; Preparing, Couldn't attach, too long; past questions' cards): its accents (the border, the
-   attached outline, the switch underline, the details mark, focus outlines) and its title are teal. */
+/* Under the question box, always: one line of small gray text (12 px fits one line in a 375 px phone's sheet). */
+.chat-disclaimer { margin:-4px 0 0; color:var(--dim); font-size:12px; line-height:1.4; text-align:center;
+                   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* The card of what a question is about, neutral: a 1px gray border on the surface, the title ("Selected text" for a
+   selection, else the section heading) in light gray, then a preview of the text. The draft's card also has Change
+   and ×, the Word / Sentence / Paragraph switch and Listen from here (small, in one line), and every card the
+   collapsed Context details. Open, it scrolls within a share of the visible viewport, so an on-screen keyboard
+   leaves the message box and Send in sight. Every card (a selection, a passage, a figure; Preparing, Couldn't
+   attach, too long; past questions' cards) looks the same; its accents (the attached outline, the switch
+   underline, the details mark, focus outlines) are the interface blue. */
 .chip { display:grid; gap:2px; max-height:calc(var(--vv-height, 100vh) * .25); overflow:auto; padding:7px 12px;
-        border:1px solid color-mix(in srgb, var(--ask) 65%, var(--surface)); border-radius:8px;
-        background:color-mix(in srgb, var(--ask) 12%, var(--surface)); font-size:13px; --accent-light:var(--ask); }
+        border:1px solid #4a4a4a; border-radius:8px; background:var(--surface); font-size:13px; }
 .chip-head { display:flex; align-items:center; gap:4px; }
-.chip-section { flex:1; min-width:0; font-weight:500; overflow:hidden; text-overflow:ellipsis;
-                white-space:nowrap; color:var(--ask); }
+.chip-section { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis;
+                white-space:nowrap; color:var(--dim); }
 .chip-head button { min-height:22px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
 .chip-head .chip-remove { border-color:transparent; background:transparent; box-shadow:none; color:var(--dim); }
@@ -22916,6 +22928,12 @@ button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:va
 .selection-actions button:hover:not(:disabled), .selection-actions button:focus-visible { background:var(--hover); }
 .selection-actions .sel-ask { color:var(--ask); }
 .selection-actions .sel-sep { width:1px; align-self:stretch; margin:6px 2px; background:var(--line); }
+/* The handle at the bar's left: six dots, a grab cursor (grabbing while dragged); it takes no touch gestures. */
+.selection-actions button.sel-handle { width:28px; padding:0; justify-content:center; color:var(--dim); cursor:grab;
+                                       touch-action:none; }
+.selection-actions.dragging, .selection-actions.dragging button.sel-handle { cursor:grabbing; }
+.selection-actions .sel-handle svg { width:14px; height:14px; fill:currentColor; stroke:none; }
+.selection-actions .sel-handle-sep { width:1px; align-self:stretch; margin:6px 2px 6px 0; background:var(--line); }
 .selection-actions.mark-mode :is([data-act=highlight], [data-act=ask], [data-act=copy], .sel-sep),
 .selection-actions:not(.mark-mode) [data-act=remove] { display:none; }
 /* The pen's underline in the colour Highlight uses now (the last one used, --mark-last on <html>). */
@@ -22973,7 +22991,7 @@ html.notes-selecting #header-ask { visibility:hidden; }
                       background:#5a5a5a; }
 .notes-mini-label { display:inline-flex; flex:1; align-items:center; gap:8px; min-width:0; overflow:hidden;
                     white-space:nowrap; text-overflow:ellipsis; }
-.notes-mini-label.answer { color:var(--ask); }
+.notes-mini-label.answer .ask-icon { color:var(--ask); }
 .notes-mini-label.problem { color:var(--bad); white-space:normal; }
 .notes-mini button { min-height:34px; padding:4px 12px; }
 /* Notes in the side panel. */
@@ -22982,36 +23000,61 @@ html.notes-selecting #header-ask { visibility:hidden; }
 .notes-summary.problem { color:var(--bad); }
 .notes-list { display:grid; gap:12px; }
 .notes-empty { color:var(--dim); font-size:14px; }
-.note-card { display:grid; gap:6px; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
-             background:var(--bg); font-size:14px; line-height:1.45; }
+/* A card: the listener's own words as its main text (15 px, the text's colour), then a saved answer's question and
+   Hilde's answer, then calmer the passage (gray, smaller, its side bar the highlight's colour) and where it is; the
+   ⋯ menu (date, Edit, Delete) at the top right, 44 px on a touch screen. */
+.note-card { position:relative; display:grid; gap:8px; padding:12px 44px 12px 14px; border:1px solid var(--line);
+             border-radius:10px; background:var(--bg); font-size:14px; line-height:1.45; }
 .note-card.current { border-color:var(--accent-light); }
 .note-card:focus { outline:none; }
 .note-card:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
-.note-quote { margin:0; padding:0 0 0 12px; border-left:3px solid var(--off); color:var(--text); font-size:14.5px;
+.note-card > button.note-more { position:absolute; top:4px; right:4px; min-width:36px; min-height:36px; padding:0 8px;
+  border-color:transparent; background:transparent; box-shadow:none; color:var(--dim); }
+.note-card > button.note-more:hover:not(:disabled), .note-card > button.note-more[aria-expanded=true] {
+  background:var(--hover); color:var(--text); }
+.note-own { color:var(--text); font-size:15px; }
+.note-question { color:var(--text); font-weight:600; }
+.note-quote { margin:0; padding:0 0 0 10px; border-left:3px solid var(--off); color:var(--dim); font-size:13px;
               overflow-wrap:anywhere; }
 /* A highlight's passage: its side bar the highlight's colour (--quote-mark: var(--mark-<colour>, #ddd040)). */
 .note-quote.highlighted { border-left-color:var(--quote-mark, var(--mark)); }
-.note-where { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; color:var(--dim); font-size:12.5px; }
+.note-where { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 10px; margin-top:-4px; color:var(--dim);
+              font-size:12.5px; }
 .note-where > span { flex:1; min-width:0; }
 .note-where button.link { font-size:12.5px; }
-.note-label { margin:6px 0 0; color:var(--dim); font-size:11.5px; font-weight:650; letter-spacing:.06em;
-              text-transform:uppercase; }
+.note-label { margin:0; color:var(--dim); font-size:12px; font-weight:650; }
 .note-text { white-space:pre-wrap; overflow-wrap:anywhere; }
-.note-hilde { display:grid; gap:2px; margin-top:4px; padding:8px 12px; border-left:2px solid var(--ask);
-              border-radius:0 6px 6px 0; background:color-mix(in srgb, var(--ask) 7%, transparent); }
-.note-hilde .note-label { display:flex; align-items:center; gap:6px; margin:0; color:var(--ask); }
-.note-hilde .note-label .ask-icon { width:12px; height:12px; }
+/* A saved answer of Hilde's: its label (the teal sparkle, "Hilde", the model in gray) over the answer, on a thin
+   gray side bar. */
+.note-hilde { display:grid; gap:2px; padding:2px 0 2px 12px; border-left:2px solid var(--line); }
+.note-hilde .note-label { display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; color:var(--text); }
+.note-hilde .note-label .ask-icon { width:12px; height:12px; color:var(--ask); }
+.note-model { color:var(--dim); font-weight:400; }
+.note-model::before { content:"· "; }
 .note-answer > p + p { margin-top:.5em; }
 .note-unplaced { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; padding:6px 10px;
                  border:1px dashed var(--off); border-radius:8px; font-size:13px; }
 .note-unplaced strong { font-weight:650; }
 .note-unplaced .note-why { color:var(--dim); }
-.note-foot { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-top:4px; color:var(--dim);
-             font-size:12.5px; }
-.note-foot .grow { flex:1; }
-.note-foot button.link { font-size:12.5px; }
 .note-problem { color:var(--bad); }
 .note-ok { color:var(--local); }
+.note-flash { margin:0; font-size:13px; }
+/* A phone or a touch screen: every control takes at least a 44 px touch (with the Listen block further down). Where
+   the look stays small (a compact card's ×, Change, Context details, Show in text), a transparent ::after makes the
+   touch area 44 px, as the speed pill's ::before does. */
+@media (max-width:767.98px), (pointer:coarse) {
+  .note-card > button.note-more { min-width:44px; min-height:44px; top:0; right:0; }
+  .note-card { padding-right:48px; }
+  .notes-button, button.row-more, .menu button, .panel-close, .chat-more, .panel-tabs [role=tab] { min-width:44px;
+    min-height:44px; }
+  .doc-select, button.doc-select, button.trash { min-height:44px; }
+  button.trash { min-width:44px; }
+  .chip-head .chip-remove::after, .chip-head button.link::after,
+  .chip-details > summary::after, .note-where button.link::after {
+    content:""; position:absolute; inset:-11px -4px; }
+  .chip-head .chip-remove, .chip-head button.link, .chip-details > summary, .note-where button.link {
+    position:relative; }
+}
 .note-edit { display:grid; gap:8px; margin-top:4px; }
 .note-edit textarea, .note-editor textarea { width:100%; min-height:76px; padding:8px 10px; border:1px solid var(--line);
   border-radius:8px; background:var(--field); color:var(--text); font:inherit; font-size:15px; line-height:1.45;
@@ -23019,13 +23062,12 @@ html.notes-selecting #header-ask { visibility:hidden; }
 .note-edit-actions, .note-editor-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
 .note-conflict { display:grid; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
                  background:var(--surface); }
-/* Save to notes under an answer of Hilde's (yellow, the mark's colour), then Saved to notes; why a save failed, on a
-   line of its own. */
+/* Save to notes under an answer of Hilde's (a plain button), then Saved to notes; why a save failed, on a line of
+   its own. */
 .chat-notes { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
 .chat-notes .note-problem { flex-basis:100%; }
 button.chat-save { display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:4px 12px;
-                   border-color:color-mix(in srgb, var(--mark) 60%, var(--line)); color:var(--text); font-size:14px; }
-button.chat-save svg { color:var(--mark); }
+                   color:var(--text); font-size:14px; }
 button.chat-save.saved { border-color:var(--line); color:var(--dim); }
 .chat-notes .note-problem { font-size:13px; }
 /* On a phone or a touch screen the answer's actions are 44 px tall, side by side. */
@@ -23553,15 +23595,73 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>Change</span>
         </div>
         <div class="step-body">
-          <!-- One radio group: the chosen card is the only source Continue uses;
-               the others are dimmed and disabled but keep what was entered. -->
-          <div class="sources" role="radiogroup" aria-label="Source document">
-            <section class="source-card" data-source="saved" aria-labelledby="source-saved-title">
-              <div class="source-head">
-                <input id="source-pick-saved" class="source-radio" type="radio" name="source" value="saved">
-                <h4 class="source-title"><label id="source-saved-title" for="source-pick-saved">Saved document</label></h4>
+          <!-- Four ways to bring a document, as tabs in this order: File, Link, Text, Library. Only the chosen
+               tab's form shows; the others stay in the page, hidden, and keep what was entered (a switch never
+               clears a field). The chosen tab is the only source Continue uses. -->
+          <div class="source-tabs" role="tablist" aria-label="Source document">
+            <button id="source-pick-upload" class="source-tab" type="button" role="tab" data-source="upload"
+              aria-controls="source-panel-upload"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M8 10.5V2.5M4.8 5.6L8 2.4l3.2 3.2M2.5 10.5v2.2c0 .5.4.8.8.8h9.4c.5 0 .8-.3.8-.8v-2.2"/></svg>File</button>
+            <button id="source-pick-url" class="source-tab" type="button" role="tab" data-source="url"
+              aria-controls="source-panel-url"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M6.6 9.4a2.6 2.6 0 0 0 3.7 0l2.4-2.4a2.6 2.6 0 0 0-3.7-3.7l-.8.8M9.4 6.6a2.6 2.6 0 0 0-3.7 0L3.3 9a2.6 2.6 0 0 0 3.7 3.7l.8-.8"/></svg>Link</button>
+            <button id="source-pick-paste" class="source-tab" type="button" role="tab" data-source="paste"
+              aria-controls="source-panel-paste"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg>Text</button>
+            <button id="source-pick-saved" class="source-tab" type="button" role="tab" data-source="saved"
+              aria-controls="source-panel-saved"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M3 2.5v11M6 2.5v11M9 3l3.5 10.2"/></svg>Library</button>
+          </div>
+          <div class="sources">
+            <section id="source-panel-upload" class="source-card" data-source="upload" role="tabpanel"
+              aria-labelledby="source-pick-upload">
+              <!-- A touch screen (hover: none) shows Choose a file as the panel's action, no drag and drop; the
+                   accept list and the type line come from DOCUMENT_TYPES. -->
+              <p id="source-file-title" class="source-sub"><span class="pointer-only">A file from your computer</span><span
+                class="touch-only">A file from your device</span></p>
+              <input id="document-file" class="hidden" type="file">
+              <div class="dropzone"><span class="pointer-only">Drop a file here or</span><button id="document-upload"
+                class="browse" type="button" onclick="chooseDocument()"><span class="pointer-only">browse</span><span
+                class="touch-only">Choose a file</span></button><span class="dropzone-types doc-types"></span></div>
+              <p id="upload-name" class="upload-name hidden"></p>
+            </section>
+            <section id="source-panel-url" class="source-card" data-source="url" role="tabpanel"
+              aria-labelledby="source-pick-url">
+              <div class="field">
+                <label id="source-url-title" for="source-url">A link to a document or an arXiv page</label>
+                <input id="source-url" type="text" inputmode="url" placeholder="https://arxiv.org/abs/…">
               </div>
-              <p class="source-sub">A document already in your library</p>
+              <div class="field">
+                <label for="download-name">Save as (optional)</label>
+                <input id="download-name" type="text" placeholder="For example paper.pdf">
+              </div>
+            </section>
+            <!-- Text: the phone's own Paste works in the box, and so does Cmd+V / Ctrl+V; Paste from clipboard reads
+                 the clipboard only when pressed. Continue saves the text as a .txt (a .md when it is clearly
+                 Markdown) through the upload route, named by the title or, without one, the first line. -->
+            <section id="source-panel-paste" class="source-card" data-source="paste" role="tabpanel"
+              aria-labelledby="source-pick-paste">
+              <div class="field">
+                <div class="paste-head">
+                  <label id="source-paste-title" for="paste-text">Your text</label>
+                  <button id="paste-clipboard" class="paste-clipboard" type="button"
+                    onclick="pasteFromClipboard()"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+                    d="M5.5 3H4.2c-.4 0-.7.3-.7.7v9.6c0 .4.3.7.7.7h7.6c.4 0 .7-.3.7-.7V3.7c0-.4-.3-.7-.7-.7h-1.3M6 2h4v2H6z"/></svg>Paste from clipboard</button>
+                </div>
+                <textarea id="paste-text" class="paste-text" rows="5" aria-describedby="source-paste-sub"
+                  placeholder="Paste the text here"></textarea>
+                <p id="source-paste-sub" class="note"><span class="pointer-only">Paste with ⌘V or Ctrl+V.</span><span
+                  class="touch-only">Touch and hold the box, then tap Paste.</span></p>
+              </div>
+              <div class="field">
+                <label for="paste-title">Title (optional)</label>
+                <input id="paste-title" type="text" autocomplete="off" placeholder="Without one, the first line">
+              </div>
+              <p id="paste-name" class="upload-name hidden"></p>
+            </section>
+            <section id="source-panel-saved" class="source-card" data-source="saved" role="tabpanel"
+              aria-labelledby="source-pick-saved">
+              <p id="source-saved-title" class="source-sub">A document already in your library</p>
               <div class="doc-field">
                 <button id="document" class="doc-select" type="button" aria-expanded="false"
                   aria-controls="document-list" aria-labelledby="source-saved-title document-name"><span
@@ -23575,51 +23675,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 <div id="document-list" class="doc-list hidden" role="group" aria-label="Saved documents"></div>
               </div>
             </section>
-            <section class="source-card" data-source="url" aria-labelledby="source-url-title">
-              <div class="source-head">
-                <input id="source-pick-url" class="source-radio" type="radio" name="source" value="url">
-                <h4 class="source-title"><label id="source-url-title" for="source-pick-url">From a URL</label></h4>
-              </div>
-              <p id="source-url-sub" class="source-sub">A link to a document or an arXiv page</p>
-              <input id="source-url" type="text" inputmode="url" aria-labelledby="source-url-title"
-                aria-describedby="source-url-sub" placeholder="https://arxiv.org/abs/…">
-              <div class="field">
-                <label for="download-name">Save as (optional)</label>
-                <input id="download-name" type="text" placeholder="For example paper.pdf">
-              </div>
-            </section>
-            <section class="source-card" data-source="upload" aria-labelledby="source-file-title">
-              <div class="source-head">
-                <input id="source-pick-upload" class="source-radio" type="radio" name="source" value="upload">
-                <h4 class="source-title"><label id="source-file-title" for="source-pick-upload">Upload a file</label></h4>
-              </div>
-              <!-- A touch screen (hover: none) shows Choose a file as the card's action, no drag and drop; the
-                   accept list and the type line come from DOCUMENT_TYPES. -->
-              <p class="source-sub"><span class="pointer-only">A file from your computer</span><span
-                class="touch-only">A file from your device</span></p>
-              <input id="document-file" class="hidden" type="file">
-              <div class="dropzone"><span class="pointer-only">Drop a file here or</span><button id="document-upload"
-                class="browse" type="button" onclick="chooseDocument()"><span class="pointer-only">browse</span><span
-                class="touch-only">Choose a file</span></button><span class="dropzone-types doc-types"></span></div>
-              <p id="upload-name" class="upload-name hidden"></p>
-            </section>
-            <!-- Paste text: the phone's own Paste works in the box; Continue saves it as a .txt (a .md when it is
-                 clearly Markdown) through the upload route, named by the title or, without one, the first line. -->
-            <section class="source-card" data-source="paste" aria-labelledby="source-paste-title">
-              <div class="source-head">
-                <input id="source-pick-paste" class="source-radio" type="radio" name="source" value="paste">
-                <h4 class="source-title"><label id="source-paste-title" for="source-pick-paste">Paste text</label></h4>
-              </div>
-              <p id="source-paste-sub" class="source-sub">Text from a web page, an email or your notes</p>
-              <textarea id="paste-text" class="paste-text" rows="5" aria-labelledby="source-paste-title"
-                aria-describedby="source-paste-sub" placeholder="Paste the text here"></textarea>
-              <div class="field">
-                <label for="paste-title">Title (optional)</label>
-                <input id="paste-title" type="text" autocomplete="off" placeholder="Without one, the first line">
-              </div>
-              <p id="paste-name" class="upload-name hidden"></p>
-            </section>
           </div>
+          <!-- What a paste on the step brought, and a problem with the chosen source (an empty Continue, a link that
+               would not download, a type Hilde doesn't read): moved into the chosen panel, under its field
+               (renderSources()), so what was entered stays in sight beside it. -->
           <p id="paste-note" class="note paste-note hidden" role="status"></p>
           <p id="book-problem" class="problem hidden" role="alert"></p>
           <div id="existing-book" class="notice hidden" role="status">
@@ -23937,10 +23996,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <header class="book-top">
           <button class="library-button" type="button" onclick="closeBook()"><svg viewBox="0 0 16 16"
             aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
-          <!-- Notes (only with the server's notes_enabled): the Notes tab of the side panel, with the count. -->
-          <button id="card-notes" class="notes-button hidden" type="button" onclick="openNotes()"><svg
+          <!-- Notes (only with the server's notes_enabled): opens the Notes tab of the side panel (the count is on
+               that tab only). -->
+          <button id="card-notes" class="notes-button hidden" type="button" aria-label="Notes" onclick="openNotes()"><svg
             viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
-            /></svg><span class="notes-button-label">Notes</span><span class="notes-count">0</span></button>
+            /></svg><span class="notes-button-label">Notes</span></button>
           <h2 id="reader-title" class="clamp" tabindex="-1">Audiobook</h2>
           <p class="book-meta note">
             <span id="reader-voice-name"></span>
@@ -23967,9 +24027,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <button id="paper-bar-title" class="paper-bar-title" type="button" title="Back to the top of the paper"
               onclick="paperBarToTop()"><span id="paper-bar-name"></span></button>
             <span id="paper-bar-meta" class="paper-bar-meta"></span>
-            <button id="paper-bar-notes" class="notes-button hidden" type="button" onclick="openNotes()"><svg
-              viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
-              /></svg><span class="notes-button-label">Notes</span><span class="notes-count">0</span></button>
+            <button id="paper-bar-notes" class="notes-button hidden" type="button" aria-label="Notes"
+              onclick="openNotes()"><svg viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
+              /></svg><span class="notes-button-label">Notes</span></button>
             <button id="paper-bar-library" class="library-button" type="button" onclick="closeBook()"><svg
               viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h2.5v12H2zm3.5 0H8v12H5.5zm3.3.6 2.4-.7 3.1 11.5-2.4.7z"/></svg>Library</button>
           </div>
@@ -24088,8 +24149,15 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       </div>
       <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
       <!-- With notes on: a mouse selection's actions beside it (Highlight in the colour last used, the colour dots,
-           Add note, Ask Hilde | Copy); for a highlight clicked, its own: the dots, Add note, Remove highlight. -->
+           Add note, Ask Hilde | Copy); for a highlight clicked, its own: the dots, Add note, Remove highlight. At its
+           left a handle moves it (a drag, or the arrow keys; Escape puts it back beside the selection). -->
       <div id="selection-actions" class="selection-actions hidden" role="toolbar" aria-label="Selected text">
+        <button type="button" id="sel-handle" class="sel-handle" data-act="move"
+          aria-label="Move these actions: drag, or use the arrow keys; Escape puts them back"><svg viewBox="0 0 16 16"
+          aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8"
+          r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12"
+          r="1.1"/></svg></button>
+        <span class="sel-handle-sep" aria-hidden="true"></span>
         <button type="button" class="sel-highlight mark-pen" data-act="highlight"><svg viewBox="0 0 16 16"
           aria-hidden="true"><path d="M10 2.5l3.5 3.5L6.5 13H3v-3.5z"/><path class="mark-pen-line" d="M2 15h12"
           /></svg>Highlight</button>
@@ -24180,9 +24248,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <button type="button" class="help-example">What is the difference between Local and Cloud?</button>
             </div>
           </div>
-          <!-- Fixed under the conversation's scroll: one teal button for what Hilde is doing (Stop while she writes,
+          <!-- Fixed under the conversation's scroll: one blue button for what Hilde is doing (Stop while she writes,
                Pause while she reads an answer aloud, Resume once paused; hidden otherwise) with its status, the
-               card attached to the next question, and the question box (renderChatAction()). -->
+               card attached to the next question, the question box (renderChatAction()), and under it one small
+               gray line, always shown, that Hilde can make mistakes. -->
           <div class="chat-foot">
             <p id="chat-hint" class="chat-hint hidden" role="status" aria-live="polite"></p>
             <div id="chat-action-row" class="chat-action-row hidden">
@@ -24195,6 +24264,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <textarea id="chat-input" rows="1" maxlength="8000" placeholder="Type a question"></textarea>
               <button id="chat-send" type="submit">Send</button>
             </form>
+            <p id="chat-disclaimer" class="chat-disclaimer">Hilde can make mistakes. Check the source text.</p>
           </div>
         </section>
         <section id="figure-view" class="panel-view hidden" role="tabpanel" aria-labelledby="panel-tab-figure">
@@ -24773,7 +24843,7 @@ function populateAssets() {
   fillAssetSelect("shared-voice", assets.voices, state.audiobook.voice, "Choose a voice");
 }
 
-// Step 1's Saved document: a field that opens the saved documents, newest
+// Step 1's Library: a field that opens the saved documents, newest
 // first, each with its date and its own trash button; the trash button after
 // the field deletes the one chosen.
 function documentTime(name) { return Number((assets.document_times || {})[name]) || 0; }
@@ -24982,10 +25052,15 @@ async function replaceDocumentOk(names) {
     confirm:"Replace it", danger:true,
   });
 }
-// Step 1's source cards (state.audiobook.source, remembered in this browser's
-// state cookie): only the chosen card's value is used, the others keep theirs.
-const SOURCE_LABELS = { saved:"Saved document", url:"URL", upload:"Upload", paste:"Paste text" };
+// Step 1's source tabs (state.audiobook.source, remembered in this browser's
+// state cookie): only the chosen tab's form shows and its value is used; the
+// others stay in the page, hidden, and keep theirs.
+const SOURCE_ORDER = ["upload", "url", "paste", "saved"];
+const SOURCE_LABELS = { saved:"Library", url:"Link", upload:"File", paste:"Text" };
 const SOURCE_FIRST = { saved:"document", url:"source-url", upload:"document-upload", paste:"paste-text" };
+// Continue with the chosen tab empty: said under its field.
+const SOURCE_EMPTY = { saved:"Choose a document first.", url:"Enter a link first.", upload:"Choose a file first.",
+                       paste:"Paste or type the text first." };
 let uploading = false;
 function chosenDocument() {
   const book = state.audiobook;
@@ -25002,7 +25077,7 @@ function pendingUrl() {
   const book = state.audiobook;
   return book.source === "url" && !chosenDocument() ? book.source_url.trim() : "";
 }
-// Paste text: the text stays in the page (and this tab's sessionStorage, so a
+// Text: the text stays in the page (and this tab's sessionStorage, so a
 // reload keeps it), never in the state cookie; Continue saves it into
 // Documents (materializePaste()) and the card then holds that document's name.
 function pendingPaste() {
@@ -25050,6 +25125,28 @@ function pasteChanged() {
   }, 300);
   render(); queueSync();
 }
+// Paste from clipboard (Text): the clipboard is read only on this press. The
+// text goes where the caret last was in the box (else after what is there),
+// never replacing it. Refused (no permission, an insecure page, no text API),
+// the box takes the focus for the browser's own paste, and its text stays.
+let pasteCaret = null;
+async function pasteFromClipboard() {
+  const box = $("paste-text");
+  let text = null;
+  try { text = await navigator.clipboard.readText(); } catch (_) { text = null; }
+  box.focus({ preventScroll:true });
+  if (typeof text !== "string" || !text) {
+    notePaste(text === "" ? "The clipboard has no text to paste."
+      : "Hilde couldn't read the clipboard. Paste into the box with ⌘V or Ctrl+V, or touch and hold it and tap Paste.");
+    return;
+  }
+  if (new Blob([text]).size > DOCUMENT_TYPES.limit) { setBookProblem(TOO_LARGE); return; }
+  const at = pasteCaret || { start:box.value.length, end:box.value.length };
+  box.setRangeText(text, Math.min(at.start, box.value.length), Math.min(at.end, box.value.length), "end");
+  pasteCaret = null;
+  pasteChanged();
+  notePaste(`Pasted ${characters(text).toLocaleString()} characters`);
+}
 function restorePaste() {
   let kept = null;
   try { kept = JSON.parse(sessionStorage.getItem("hilde.paste")); } catch (_) {}
@@ -25069,22 +25166,30 @@ function selectSource(source, focusField) {
 }
 function renderSources() {
   const book = state.audiobook;
+  for (const tab of document.querySelectorAll(".source-tab")) {
+    const on = tab.dataset.source === book.source;
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+  }
+  let active = null;
   for (const card of document.querySelectorAll(".source-card")) {
     const on = card.dataset.source === book.source;
     card.classList.toggle("is-on", on);
-    card.classList.toggle("is-off", !on);
-    card.querySelector(".source-radio").checked = on;
+    if (on) active = card;
   }
-  const saved = book.source === "saved", url = book.source === "url", upload = book.source === "upload";
-  const paste = book.source === "paste";
-  $("document").disabled = !saved;
+  // The paste line and the problem go right under the chosen tab's first field.
+  if (active) {
+    const field = $(SOURCE_FIRST[book.source]).closest(".field, .doc-field, .dropzone");
+    if (field.nextElementSibling !== $("paste-note")) field.after($("paste-note"), $("book-problem"));
+  }
   // The trash after the field shows once a saved document is chosen in it.
   const savedOne = (assets.documents || []).includes(book.document);
+  $("document").disabled = submitting;
   $("document-delete").classList.toggle("hidden", !savedOne);
-  $("document-delete").disabled = !saved || submitting || !savedOne;
-  $("source-url").disabled = $("download-name").disabled = !url || submitting;
-  $("document-upload").disabled = !upload || uploading;
-  $("paste-text").disabled = $("paste-title").disabled = !paste || submitting;
+  $("document-delete").disabled = submitting || !savedOne;
+  $("source-url").disabled = $("download-name").disabled = submitting;
+  $("document-upload").disabled = uploading;
+  $("paste-text").disabled = $("paste-title").disabled = $("paste-clipboard").disabled = submitting;
   $("upload-name").textContent = book.upload ? `Uploaded: ${book.upload}` : "";
   $("upload-name").classList.toggle("hidden", !book.upload);
   $("paste-name").textContent = book.paste_document ? `Saved as ${book.paste_document}` : "";
@@ -25164,7 +25269,7 @@ async function materializeUrl() {
     return false;
   }
 }
-// Paste text on Continue: the text as a .txt (.md when clearly Markdown)
+// Text on Continue: the text as a .txt (.md when clearly Markdown)
 // file, through the upload route, with the upload's size limit.
 async function materializePaste() {
   const text = pendingPaste();
@@ -25188,8 +25293,8 @@ async function materializePaste() {
   }
 }
 // Cmd+V / Ctrl+V on step 1 with no text field focused (the phone uses its own
-// Paste in the box): a copied file goes to Upload a file as a drop would, one
-// web link to From a URL, any other text into Paste text; one line says what
+// Paste in the box): a copied file goes to File as a drop would, one
+// web link to Link, any other text into Text; one line says what
 // was pasted. An empty paste does nothing.
 const TEXT_FIELD = "textarea, [contenteditable]:not([contenteditable=false]), "
   + "input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=file]):not([type=range])";
@@ -25205,7 +25310,7 @@ function pasteOnStep(event) {
   const file = (data.files && data.files[0]) || (item ? item.getAsFile() : null);
   if (file) {
     event.preventDefault();
-    // Upload a file takes it now (uploadDocument() chooses the card first);
+    // File takes it now (uploadDocument() chooses the tab first);
     // a type Hilde reads is said at once, and unsaid if the upload fails.
     const note = `Pasted ${file.name}`;
     notePaste("");
@@ -26452,7 +26557,7 @@ function setSpeed(speed) {
 }
 // --- Menus, lists and popovers: one behaviour -------------------------------
 // Every menu (the book's ⋯ and speed, Ask Hilde's ⋯, a voice's or a book
-// card's ⋯), list (Saved document's, a model picker's) and popover (Review
+// card's ⋯), list (Library's document field, a model picker's) and popover (Review
 // tags' + Add a tag) opens from a button, its opener, and only one is open at
 // a time: its open function shows it and calls openPopup(). Escape, a press
 // outside it, or a choice in it closes it and gives the focus back to the
@@ -27208,6 +27313,7 @@ function setPanel(open, view = panelView) {
     log.scrollTop = chatScroll.atEnd ? log.scrollHeight : chatScroll.top;
   }
   if (panelOpen) renderChatHeader();
+  placeSelectionSoon();
 }
 function showPanelView(view) { setPanel(true, view); }
 function closePanel() {
@@ -28533,34 +28639,112 @@ function hideSelectionAsk() {
   $("selection-actions").classList.add("hidden");
   $("selection-actions").classList.remove("mark-mode");
   markMenuId = "";
+  selBarRange = null;
 }
 function queueSelectionAsk() {
   clearTimeout(selectionTimer);
   selectionTimer = setTimeout(showSelectionAsk, 250);
 }
+// The selection bar opens beside its selection (or clicked highlight): above
+// it, else below, never over it, never pushing the text (it is fixed), inside
+// the reading area and the screen; placed again on scroll, resize and as the
+// panel opens, closes or is resized (the text's box changes). Moved by its
+// handle (selBarMoved: a drag, or the arrow keys), it stays where it was put,
+// on scroll too, until a new selection (selBarFor: what it was placed for) or
+// Escape on the handle brings it back beside the selection.
+let selBarMoved = null, selBarFor = null, selBarFrame = 0;
+// The selection the bar was opened for (a copy): WebKit clears the page's selection when a button takes the keyboard
+// focus, so the focus moving into the bar (Tab, the handle) puts that selection back (keepSelBarSelection()); while
+// the focus is in the bar, the bar stays and its buttons act on that copy (barSelection()).
+let selBarRange = null;
+function keepSelBarSelection() {
+  if (markMenuId || !selBarRange || readerSelection() || !selBarRange.startContainer.isConnected) return false;
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(selBarRange.cloneRange());
+  return !!readerSelection();
+}
+function barFocused() { return $("selection-actions").contains(document.activeElement); }
+// The selection the bar acts on: the page's, else (the focus in the bar) the copy it was opened for.
+function barSelection() {
+  const live = readerSelection();
+  if (live || !selBarRange || !barFocused() || !selBarRange.startContainer.isConnected) return live;
+  const text = selBarRange.toString().replace(/\s+/g, " ").trim(), passages = selectedPassages(selBarRange);
+  return text ? { text, range:selBarRange.cloneRange(),
+                  first:passages.length ? Math.min(...passages) : null, last:passages.length ? Math.max(...passages) : null } : null;
+}
+// Placed again on the next frame, once the text has wrapped.
+function placeSelectionSoon() {
+  cancelAnimationFrame(selBarFrame);
+  selBarFrame = requestAnimationFrame(placeSelectionAsk);
+}
+// What the bar is placed for: a clicked highlight, else the selection (a selection dropped to a caret, as WebKit does
+// while the bar has the focus, is no new selection).
+function selBarTarget() {
+  if (markMenuId) return markMenuId;
+  const selection = window.getSelection();
+  if (!selection.rangeCount || selection.isCollapsed) return selBarFor;
+  const range = selection.getRangeAt(0);
+  return [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+}
+function sameSelBarTarget(a, b) {
+  return !!a && !!b && (typeof a === "string" ? a === b : Array.isArray(b) && a.every((part, at) => part === b[at]));
+}
 function showSelectionAsk() {
+  // The focus in the bar (keyboard): its selection stays, even where the browser dropped it on focusing.
+  if (barFocused()) keepSelBarSelection();
   const picked = !pointerHeld && state && state.tab === "player" && !touchSelecting() && readerSelection();
-  if (!picked) { if (!markMenuId) hideSelectionAsk(); return; }
+  if (!picked) { if (!markMenuId && !(barFocused() && selBarRange)) hideSelectionAsk(); return; }
   $("selection-actions").classList.remove("mark-mode");
   markMenuId = "";
+  selBarRange = picked.range.cloneRange();
   renderMarkDots();
   selectionButton().classList.remove("hidden");
   placeSelectionAsk();
 }
 function placeSelectionAsk() {
   const button = selectionButton(), selection = window.getSelection();
-  const range = markMenuId ? markRanges.get(markMenuId) : selection.rangeCount ? selection.getRangeAt(0) : null;
+  const live = selection.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0) : null;
+  const range = markMenuId ? markRanges.get(markMenuId) : live || (barFocused() ? selBarRange : null);
   if (button.classList.contains("hidden") || !range) return;
-  const box = range.getBoundingClientRect(), view = readingViewport();
-  const height = button.offsetHeight, width = button.offsetWidth;
-  let top = box.top - height - 8;
-  if (top < view.top + 4) top = box.bottom + 8;
-  if (top + height > view.bottom - 4) top = box.top - height - 8;
-  // A selection scrolled partly away keeps its button on screen.
+  const target = selBarTarget();
+  if (!sameSelBarTarget(selBarFor, target)) { selBarFor = target; selBarMoved = null; }
+  const view = readingViewport(), height = button.offsetHeight, width = button.offsetWidth;
+  if (selBarMoved) { moveSelectionBar(selBarMoved.left, selBarMoved.top); return; }
+  // The part of the selection in sight (a long one scrolled partly away), else all of it.
+  const rects = [...range.getClientRects()].filter((rect) => rect.width || rect.height);
+  const seen = rects.filter((rect) => rect.bottom > view.top && rect.top < view.bottom);
+  const parts = seen.length ? seen : rects.length ? rects : [range.getBoundingClientRect()];
+  const box = { top:Math.min(...parts.map((rect) => rect.top)), bottom:Math.max(...parts.map((rect) => rect.bottom)),
+                left:Math.min(...parts.map((rect) => rect.left)), right:Math.max(...parts.map((rect) => rect.right)) };
+  const above = box.top - height - 8, below = box.bottom + 8;
+  let top;
+  if (above >= view.top + 4) top = above;
+  else if (below + height <= view.bottom - 4) top = below;
+  // No room on either side (a selection taller than the screen): the side with more room, kept on screen.
+  else top = box.top - view.top >= view.bottom - box.bottom ? view.top + 4 : view.bottom - height - 4;
   top = Math.min(Math.max(top, view.top + 4), view.bottom - height - 4);
+  // Centred on the selection, inside the reading area (the text's column) and the screen.
+  const area = $("reader-content").getBoundingClientRect();
+  let least = Math.max(8, area.left), most = Math.min(window.innerWidth - 8, area.right) - width;
+  if (most < least) { least = 8; most = window.innerWidth - width - 8; }
+  const left = Math.min(most, Math.max(least, (box.left + box.right) / 2 - width / 2));
   button.style.top = `${Math.round(top)}px`;
-  button.style.left = `${Math.round(Math.min(window.innerWidth - width - 8,
-    Math.max(8, box.left + box.width / 2 - width / 2)))}px`;
+  button.style.left = `${Math.round(left)}px`;
+}
+// Puts the moved bar at left/top, kept whole on the screen and between the top bars and the player.
+function moveSelectionBar(left, top) {
+  const bar = $("selection-actions"), view = readingViewport();
+  const width = bar.offsetWidth, height = bar.offsetHeight;
+  left = Math.min(Math.max(4, left), window.innerWidth - width - 4);
+  top = Math.min(Math.max(view.top + 4, top), view.bottom - height - 4);
+  selBarMoved = { left, top };
+  bar.style.left = `${Math.round(left)}px`;
+  bar.style.top = `${Math.round(top)}px`;
+}
+function selectionBarHome() {
+  selBarMoved = null;
+  placeSelectionAsk();
 }
 // The slot's Ask Hilde (notes off), and with notes on the player's Highlight,
 // Note and Ask Hilde, act on the selection stored at its last selectionchange
@@ -29371,22 +29555,19 @@ function noteTime(iso) {
   return `${date.getDate()} ${month}, ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 function viewName(view) { return view === "source" ? "Source text" : "Narration text"; }
+// The count shows once, on the panel's Notes tab (its accessible name says it
+// too); the slim bar's and the book card's Notes buttons open the tab, uncounted.
 function renderNotes() {
   const available = notesAvailable(), items = available ? sortedMarks() : [];
-  for (const id of ["paper-bar-notes", "card-notes"]) {
-    const button = $(id);
-    button.classList.toggle("hidden", !available);
-    button.querySelector(".notes-count").textContent = String(items.length);
-    button.setAttribute("aria-label", `Notes, ${items.length}`);
-  }
+  for (const id of ["paper-bar-notes", "card-notes"]) $(id).classList.toggle("hidden", !available);
   $("notes-tab-count").textContent = String(items.length);
+  $("panel-tab-notes").setAttribute("aria-label", `Notes, ${items.length}`);
   $("panel-tab-notes").classList.toggle("hidden", !available);
   fitPanelHead();
   if (!available) { $("notes-list").replaceChildren(); return; }
   const summary = $("notes-summary");
   summary.classList.toggle("problem", !!marksProblem);
-  summary.replaceChildren(marksProblem ? `Notes could not be loaded: ${marksProblem} `
-    : `${items.length} ${items.length === 1 ? "note" : "notes"} · in reading order`);
+  summary.replaceChildren(marksProblem ? `Notes could not be loaded: ${marksProblem} ` : items.length ? "In reading order" : "");
   if (marksProblem) summary.append(noteButton("link", "Retry", loadMarks));
   const list = $("notes-list");
   // A card being typed in keeps its element (and the focus and text in it) while the list renders again.
@@ -29398,15 +29579,48 @@ function renderNotes() {
     cards.push(noteEl("p", "notes-empty", "No notes yet. Select text in the paper to highlight it, add a note, or ask Hilde."));
   list.replaceChildren(...cards);
 }
-// A card: the passage (its side bar the highlight's colour), where it is, then the words: the listener's labelled
-// You, Hilde's Hilde (a saved answer: You asked, Hilde, and the listener's comment, You). Every card can be
-// edited: a note's Edit, a saved answer's Add your comment, then Edit comment; a bare highlight's Add a note.
+// A card: the listener's own words first, as its main text (a note, or a saved answer's comment), with no label;
+// a saved answer's question and Hilde's answer (labelled Hilde and the model that wrote it); then, calmer, the
+// passage (its side bar the highlight's colour) and where it is (section · Narration text or Source text) with
+// Show in text. The date and the card's actions are in its ⋯ menu: a note's Edit (a bare highlight's Add a note,
+// a saved answer's Add your comment, then Edit comment) and Delete. No standing "Saved" line: a save says
+// "✓ Saved" for a moment (NOTE_SAVED_FOR); saving and a failed save stay in sight, the text kept, with Retry.
+const NOTE_SAVED_FOR = 2500;
+let noteSavedFlash = "", noteSavedTimer = 0;
+function flashNoteSaved(id) {
+  noteSavedFlash = id;
+  clearTimeout(noteSavedTimer);
+  noteSavedTimer = setTimeout(() => { noteSavedFlash = ""; renderNotes(); }, NOTE_SAVED_FOR);
+}
 function noteCard(item) {
   const card = noteEl("article", `note-card${item.id === noteCurrent ? " current" : ""}`);
   card.dataset.mark = item.id;
   card.tabIndex = -1;
   if (item.id === noteCurrent) card.setAttribute("aria-current", "true");
   const placed = markRanges.has(item.id);
+  const edit = noteEdits.get(item.id), own = (item.note || "").trim(), answer = item.kind === "answer";
+  const editLabel = answer ? (own ? "Edit comment" : "Add your comment") : own ? "Edit" : "Add a note";
+  const what = answer ? "saved answer" : own ? "note" : "highlight";
+  const more = rowMoreButton(`More for this ${what}: ${cutText(own || item.anchor.quote, 40)}`, () => [
+    ...(edit ? [] : [{ label:editLabel, act:"edit",
+      run:() => { noteEdits.set(item.id, { text:item.note || "", state:"editing" }); renderNotes(); focusNoteEdit(item.id); } }]),
+    { label:"Delete", act:"delete", run:() => deleteMark(item.id) },
+  ], `Saved ${noteTime(item.updated_at)}`);
+  more.classList.add("note-more");
+  card.append(more);
+  if (own && !edit) card.append(noteEl("p", "note-text note-own", item.note));
+  if (edit) { card.dataset.editing = edit.state; card.append(noteEditForm(item, edit)); }
+  if (answer && item.answer) {
+    card.append(noteEl("p", "note-text note-question", item.answer.question));
+    const hilde = noteEl("div", "note-hilde"), label = noteEl("p", "note-label");
+    label.innerHTML = SPARKLE_ICON;
+    label.append(noteEl("span", "", "Hilde"));
+    if (item.answer.model) label.append(noteEl("span", "note-model", item.answer.model));
+    const text = noteEl("div", "note-answer note-text");
+    for (const part of String(item.answer.text || "").split(/\n{2,}/)) if (part.trim()) text.append(noteEl("p", "", part.trim()));
+    hilde.append(label, text);
+    card.append(hilde);
+  }
   const quote = noteEl("blockquote", `note-quote${item.highlight ? " highlighted" : ""}`, item.anchor.quote);
   if (item.highlight) quote.style.setProperty("--quote-mark", quoteMarkColor(item));
   card.append(quote);
@@ -29428,29 +29642,11 @@ function noteCard(item) {
     else box.append(noteButton("link note-choose", "Choose its place…", () => chooseMarkPlace(item.id)));
     card.append(box);
   }
-  const edit = noteEdits.get(item.id);
-  if (item.kind === "answer" && item.answer) {
-    card.append(noteEl("p", "note-label", "You asked"), noteEl("p", "note-text", item.answer.question));
-    const hilde = noteEl("div", "note-hilde"), label = noteEl("p", "note-label");
-    label.innerHTML = SPARKLE_ICON;
-    label.append("Hilde");
-    const answer = noteEl("div", "note-answer note-text");
-    for (const part of String(item.answer.text || "").split(/\n{2,}/)) if (part.trim()) answer.append(noteEl("p", "", part.trim()));
-    hilde.append(label, answer);
-    card.append(hilde);
+  if (item.id === noteSavedFlash && !edit) {
+    const ok = noteEl("p", "note-ok note-flash", "✓ Saved");
+    ok.setAttribute("role", "status");
+    card.append(ok);
   }
-  if ((item.note || "").trim() && !edit) card.append(noteEl("p", "note-label", "You"), noteEl("p", "note-text", item.note));
-  if (edit) { card.dataset.editing = edit.state; card.append(noteEditForm(item, edit)); }
-  const foot = noteEl("div", "note-foot");
-  const by = item.kind === "answer" && item.answer && item.answer.model ? ` · answer by ${item.answer.model}` : "";
-  foot.append(noteEl("span", "note-saved", `✓ Saved${by} · ${noteTime(item.updated_at)}`), noteEl("span", "grow"));
-  if (!edit) {
-    const has = (item.note || "").trim(), answer = item.kind === "answer";
-    foot.append(noteButton("link note-edit-open", answer ? (has ? "Edit comment" : "Add your comment") : has ? "Edit" : "Add a note",
-      () => { noteEdits.set(item.id, { text:item.note || "", state:"editing" }); renderNotes(); focusNoteEdit(item.id); }));
-  }
-  foot.append(noteButton("link note-delete", "Delete", () => deleteMark(item.id)));
-  card.append(foot);
   return card;
 }
 function focusNoteEdit(id) {
@@ -29460,7 +29656,7 @@ function focusNoteEdit(id) {
 }
 function noteEditForm(item, edit) {
   const form = noteEl("div", "note-edit");
-  const label = noteEl("label", "note-label", "You");
+  const label = noteEl("label", "visually-hidden", item.kind === "answer" ? "Your comment" : "Your note");
   const box = noteEl("textarea");
   box.id = `note-edit-${item.id}`; label.htmlFor = box.id;
   box.maxLength = NOTE_MAX; box.rows = 3; box.value = edit.text;
@@ -29506,6 +29702,7 @@ async function saveNoteEdit(id) {
     await saveMark(sent);
     noteEdits.delete(id);
     if (sent.id !== id) { marks.delete(id); noteCurrent = sent.id; renderMarks(); }
+    flashNoteSaved(sent.id);
   } catch (error) {
     if (error.status === 409 && error.body && error.body.item) Object.assign(edit, { state:"conflict", stored:error.body.item });
     else Object.assign(edit, { state:"failed", error:error.message });
@@ -29917,8 +30114,9 @@ function playFromLibrary(book, fromStart = false) {
     { inLibrary:true, play:true, fromStart });
 }
 
-// A row's ⋯ button: its menu (one shared element) opens under it.
-function rowMoreButton(label, items) {
+// A row's ⋯ button: its menu (one shared element) opens under it; `note`, a
+// muted line above the items (a note card's date).
+function rowMoreButton(label, items, note = "") {
   const button = document.createElement("button");
   button.type = "button"; button.className = "row-more";
   button.textContent = "⋯";
@@ -29926,18 +30124,21 @@ function rowMoreButton(label, items) {
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("aria-controls", "row-menu");
-  button.addEventListener("click", () => openRowMenu(button, label, items()));
+  button.addEventListener("click", () => openRowMenu(button, label, items(), note));
   return button;
 }
-function openRowMenu(button, label, items) {
+function openRowMenu(button, label, items, note = "") {
   const menu = $("row-menu");
   if (popup && popup.panel === menu && popup.opener === button) { closePopup("back"); return; }
   closePopup();
   menu.setAttribute("aria-label", label);
-  menu.replaceChildren(...items.map((item) => {
+  const head = note ? [noteEl("div", "menu-notes")] : [];
+  if (note) { head[0].setAttribute("role", "none"); head[0].append(noteEl("p", "menu-note", note)); }
+  menu.replaceChildren(...head, ...items.map((item) => {
     const entry = document.createElement("button");
     entry.type = "button"; entry.setAttribute("role", "menuitem");
     entry.textContent = item.label;
+    if (item.act) entry.dataset.act = item.act;
     entry.addEventListener("click", () => { closePopup("back"); item.run(button); });
     return entry;
   }));
@@ -31104,8 +31305,8 @@ function startCreateHistory() {
   }
   if (state.tab === "audiobook") replaceCreateEntry();
 }
-// Continue uses only the chosen card. Nothing in it: "Choose a document
-// first" beside Continue. A step reopened from step 3 goes back there, its
+// Continue uses only the chosen tab. Nothing in it: SOURCE_EMPTY under its
+// field, which takes the focus. A step reopened from step 3 goes back there, its
 // choices kept; Overwrite and Change voice (`ahead` false) go through step 2.
 // A link is downloaded and a pasted text saved first; a pasted text that is a
 // book you already have stops on step 1 with that notice, as an upload does.
@@ -31114,6 +31315,7 @@ async function continueFromBook(ahead = true) {
   collect();
   if (!chosenDocument() && !pendingUrl() && !pendingPaste()) {
     bookEmptyContinue = true; render();
+    $(SOURCE_FIRST[state.audiobook.source]).focus({ preventScroll:true });
     return;
   }
   if (pendingUrl() || pendingPaste()) {
@@ -31429,22 +31631,29 @@ function renderCreate() {
   setSummary($("book-summary"), step !== "book" && done.book ? title || documentName : "",
     type || "not a type Hilde reads", title ? `${title} (saved as ${documentName})` : documentName);
   $("book-change").classList.toggle("hidden", step === "book" || !done.book);
-  // Beside Continue: what the chosen card holds (its link as typed, or the
+  // Beside Continue: what the chosen tab holds (its link as typed, or the
   // paper's title once downloaded, else its document and type), or that
   // nothing is chosen yet.
   const source = state.audiobook.source, link = state.audiobook.source_url.trim();
   const pasted = pendingPaste();
-  const chosenText = source === "url" ? (title && done.book ? `Chosen (URL): ${chosen}` : link ? `Chosen (URL): ${link}` : "")
+  const chosenText = source === "url" ? (title && done.book ? `Chosen (Link): ${chosen}` : link ? `Chosen (Link): ${link}` : "")
     : done.book ? `Chosen (${SOURCE_LABELS[source]}): ${chosen}`
-    : pasted ? `Chosen (Paste text): ${pasteChars.toLocaleString()} characters` : "";
+    : pasted ? `Chosen (Text): ${pasteChars.toLocaleString()} characters` : "";
   const empty = bookEmptyContinue && !documentName && !pendingUrl() && !pasted;
-  $("book-chosen").textContent = empty ? "Choose a document first" : chosenText || "No document chosen yet";
-  $("book-chosen").classList.toggle("problem", empty);
+  $("book-chosen").textContent = chosenText || "No document chosen yet";
   $("book-chosen").title = chosenText;
-  const problem = bookProblemText
+  // A problem shows under the chosen tab's field (renderSources() moved it there), which is marked invalid; what
+  // was entered stays.
+  const problem = bookProblemText || (empty ? SOURCE_EMPTY[source] : "")
     || (done.book && !type ? DOCUMENT_TYPES.problem : "");
   $("book-problem").textContent = problem;
   $("book-problem").classList.toggle("hidden", !problem);
+  for (const [name, id] of Object.entries(SOURCE_FIRST)) {
+    const field = $(id);
+    if (name === source && problem) {
+      field.setAttribute("aria-invalid", "true"); field.setAttribute("aria-errormessage", "book-problem");
+    } else { field.removeAttribute("aria-invalid"); field.removeAttribute("aria-errormessage"); }
+  }
   const voiceName = facts.clone_server
     ? state.audiobook.server_voice.trim() : state.audiobook.voice;
   setSummary($("voice-summary"), step !== "voice" && done.voice ? voiceName : "");
@@ -32652,7 +32861,7 @@ async function continueJob(entry) {
     } finally { submitting = false; render(); }
     return;
   }
-  // The job's document, as the Saved document card's choice.
+  // The job's document, as the Library tab's choice.
   state.audiobook.source = "saved";
   state.audiobook.document = entry.document;
   state.audiobook[facts.clone_server ? "server_voice" : "voice"] = entry.voice;
@@ -34249,17 +34458,27 @@ for (const id of ["source-url", "download-name"])
     bookProblemText = "";
     state.audiobook.url_document = state.audiobook.url_title = "";
   });
-// Step 1's source cards: the radios (arrow keys move the choice and keep focus
-// on the radio), and a click anywhere on a dimmed card, which chooses it and
-// focuses its first field. A keyboard's click (Space, arrows) has detail 0.
-for (const radio of document.querySelectorAll(".source-radio"))
-  radio.addEventListener("change", () => { if (radio.checked) selectSource(radio.value, false); });
-for (const card of document.querySelectorAll(".source-card"))
-  card.addEventListener("click", (event) => {
-    if (!card.classList.contains("is-off") || event.detail === 0) return;
-    selectSource(card.dataset.source, true);
+// Step 1's source tabs: a click or tap chooses one (its form shows, the focus
+// stays on the tab); ArrowLeft and ArrowRight move to the previous or next
+// tab and choose it, Home and End the first and last (one Tab stop: the chosen
+// tab, then its form).
+for (const tab of document.querySelectorAll(".source-tab")) {
+  tab.addEventListener("click", () => selectSource(tab.dataset.source, false));
+  tab.addEventListener("keydown", (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const at = SOURCE_ORDER.indexOf(tab.dataset.source), last = SOURCE_ORDER.length - 1;
+    const next = { ArrowLeft:at === 0 ? last : at - 1, ArrowRight:at === last ? 0 : at + 1, Home:0, End:last }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    selectSource(SOURCE_ORDER[next], false);
+    $(`source-pick-${SOURCE_ORDER[next]}`).focus();
   });
-// Saved document's field opens and closes its list (a click, Enter or Space;
+}
+// Where the caret was in the Text box, for Paste from clipboard.
+$("paste-text").addEventListener("blur", () => {
+  pasteCaret = { start:$("paste-text").selectionStart, end:$("paste-text").selectionEnd };
+});
+// Library's field opens and closes its list (a click, Enter or Space;
 // ArrowDown or ArrowUp open it too). Open, ArrowDown and ArrowUp move through
 // the rows, Home and End go to the first and last, Enter chooses, and Tab goes
 // to the row's trash button, then on out of the list (which closes it).
@@ -34304,7 +34523,7 @@ for (const head of document.querySelectorAll("#create-steps .step-head[data-step
     if (event.target === head && event.key === " " && done()) setStep(head.dataset.step);
   });
 }
-// Paste text: a changed text or title is saved again on Continue.
+// Text: a changed text or title is saved again on Continue.
 for (const id of ["paste-text", "paste-title"]) $(id).addEventListener("input", pasteChanged);
 document.addEventListener("paste", pasteOnStep);
 for (const [id] of FIELDS) {
@@ -34320,7 +34539,7 @@ $("shared-voice").addEventListener("change", () => { stopPreview(); renderVoiceT
 $("document-file").accept = [...Object.keys(DOCUMENT_TYPES.suffixes), ...DOCUMENT_TYPES.media].join(",");
 for (const node of document.querySelectorAll(".doc-types")) node.textContent = DOCUMENT_TYPES.text;
 $("document-file").addEventListener("change", () => uploadDocument($("document-file").files[0]));
-// The whole first step takes a dropped file, as Upload a file does.
+// The whole first step takes a dropped file, as File does.
 const bookStep = $("step-book");
 const dragsFile = (event) => [...event.dataTransfer.types].includes("Files");
 for (const type of ["dragenter", "dragover"]) {
@@ -34606,7 +34825,7 @@ window.addEventListener("scroll", () => {
 document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   lastPointerType = event.pointerType;
-  if (!event.target.closest("#selection-ask, #selection-actions")) hideSelectionAsk();
+  if (!event.target.closest("#selection-ask, #selection-actions")) { hideSelectionAsk(); selBarMoved = null; }
   // A tapped highlight's choices close with a press anywhere else.
   if ($("mark-bar").classList.contains("tapped") && !event.target.closest("#mark-bar")) hideMarkBar();
   // The page's own scroll bar: held until the press ends.
@@ -34649,8 +34868,45 @@ $("selection-ask").addEventListener("click", () => {
 });
 // Notes (notes_enabled): the selection's actions (or a clicked highlight's), the markers, the editor, the small bar.
 $("selection-actions").addEventListener("pointerdown", (event) => event.preventDefault());
+// The keyboard focus moving into the bar keeps its selection (WebKit drops it as a button takes the focus).
+$("selection-actions").addEventListener("focusin", () => { keepSelBarSelection(); setTimeout(keepSelBarSelection, 0); });
+// The handle: a drag moves the bar (the selection stays, the press being cancelled), and where it is let go it
+// stays; ArrowLeft/Right/Up/Down move it 16 px (Shift: 64 px), Escape puts it back beside the selection.
+let selBarDrag = null;
+$("sel-handle").addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  const box = $("selection-actions").getBoundingClientRect();
+  selBarDrag = { id:event.pointerId, dx:event.clientX - box.left, dy:event.clientY - box.top };
+  $("sel-handle").setPointerCapture(event.pointerId);
+  $("selection-actions").classList.add("dragging");
+});
+$("sel-handle").addEventListener("pointermove", (event) => {
+  if (!selBarDrag || event.pointerId !== selBarDrag.id) return;
+  moveSelectionBar(event.clientX - selBarDrag.dx, event.clientY - selBarDrag.dy);
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"])
+  $("sel-handle").addEventListener(type, () => {
+    if (!selBarDrag) return;
+    selBarDrag = null;
+    $("selection-actions").classList.remove("dragging");
+  });
+$("sel-handle").addEventListener("keydown", (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  const step = event.shiftKey ? 64 : 16;
+  const move = { ArrowLeft:[-step, 0], ArrowRight:[step, 0], ArrowUp:[0, -step], ArrowDown:[0, step] }[event.key];
+  if (move) {
+    event.preventDefault();
+    const box = $("selection-actions").getBoundingClientRect();
+    moveSelectionBar(box.left + move[0], box.top + move[1]);
+  } else if (event.key === "Escape" && selBarMoved) {
+    event.preventDefault(); event.stopPropagation();
+    keepSelBarSelection();
+    selectionBarHome();
+  }
+});
 $("selection-actions").addEventListener("click", (event) => {
   const dot = event.target.closest(".mark-dot"), button = event.target.closest("button[data-act]");
+  if (button && button.dataset.act === "move") return;
   if (markMenuId) {
     const id = markMenuId;
     if (dot) recolorMark(id, dot.dataset.color);
@@ -34658,7 +34914,7 @@ $("selection-actions").addEventListener("click", (event) => {
     else if (button && button.dataset.act === "remove") removeHighlight(id);
     return;
   }
-  const picked = (dot || button) && readerSelection();
+  const picked = (dot || button) && barSelection();
   if (!picked) { hideSelectionAsk(); return; }
   const act = dot ? "highlight" : button.dataset.act;
   if (act === "highlight") highlightSelection(picked, dot ? dot.dataset.color : markColor());
@@ -34703,6 +34959,10 @@ $("saved-bar-show").addEventListener("click", showSavedNote);
 new ResizeObserver(() => layoutStack()).observe($("dock-slot"));
 window.addEventListener("resize", layoutStack);
 window.visualViewport?.addEventListener("resize", layoutStack);
+// The selection bar follows its selection as the text's box changes (the window resized, the panel opened, closed
+// or resized, the text's size changed; setPanel() asks too, for a panel that only moves the text).
+new ResizeObserver(placeSelectionSoon).observe($("reader-content"));
+window.addEventListener("resize", placeSelectionSoon);
 $("reader-content").addEventListener("click", (event) => {
   const marker = event.target.closest(".note-marker");
   if (marker) { event.preventDefault(); openNotes(marker.dataset.mark); }

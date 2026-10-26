@@ -54,8 +54,8 @@ closes it and moves on.
 
 **Create** walks through three steps, shown as rows on one page, one open at a
 time: **Add the source document**, **Choose a voice**, and **How Hilde prepares
-the text**. A step's colour says where you are: the open step is yellow, with
-a yellow border and a filled yellow circle with its number. A finished step is
+the text**. A step's look says where you are: the open step has its number in
+a filled blue circle and a white title, with no coloured frame. A finished step is
 green and folds into one row: a check in a green circle and its title in
 green, then what you chose (the file name and its type, or the voice), then
 **Change** (a pencil and the word, in blue). On a phone, **Change** sits under
@@ -90,16 +90,17 @@ the finished book) instead of its form, so the same book is never sent twice.
 Two taps on **Create audiobook**, or the same form sent from two tabs, make one
 job.
 
-The first step offers four ways to choose a document, as four cards, two by
-two (stacked on a phone). A radio circle in each card's header says which one
-is used: exactly one is chosen, with a filled dot and a blue border. The other
-three are dimmed, with gray text and their fields switched off, but they keep
-what you entered. Click anywhere on a dimmed card to choose it; its first field
-gets the focus. With the keyboard, the arrow keys move between the four
-choices. The first time, **Upload a file** is chosen; after that, this browser
-remembers the card you used last.
+The first step offers four ways to choose a document, as four tabs in this
+order: **File**, **Link**, **Text** and **Library**. The chosen tab is in white
+and semibold on a blue line; only its form shows, with **Continue** right
+after it. The other forms are hidden but keep what you entered: switching from
+**Text** to **File** and back finds your text and title as you left them, and
+the same holds for the link and **Save as**. With the keyboard, the left and
+right arrows move between the tabs (Home and End to the first and last), and
+Tab goes on into the chosen form. The first time, **File** is chosen; after
+that, this browser remembers the tab you used last.
 
-- **Saved document**: one you added before. The field opens the list of your
+- **Library**: a document you added before. The field opens the list of your
   saved documents, newest first, each with the date it was added and its own
   trash button on the right (gray; red under the pointer). Once you have chosen
   one, a trash button after the field deletes it. Either asks first: 'Delete
@@ -114,7 +115,7 @@ remembers the card you used last.
   trash button deletes, after its question. In the question, Tab stays inside
   it, Escape is **Cancel**, and the focus goes back to the field (or to the
   trash button after it, if you used that one).
-- **From a URL**: a direct HTTP(S) link to a PDF, TXT or Markdown file or
+- **Link**: a direct HTTP(S) link to a PDF, TXT or Markdown file or
   an arXiv page, downloaded when you press **Continue**. **Save as** is
   optional: the server works out the document type and adds the matching
   extension when needed, including for PDF links without one, such as arXiv
@@ -127,48 +128,56 @@ remembers the card you used last.
   "Couldn't download this arXiv paper: arXiv has no paper at that link (404).
   Check the link or try again.", or that arXiv could not be reached, or did
   not send a PDF.
-- **Upload a file** ("A file from your computer"): drop a file on the dashed
+- **File** ("A file from your computer"): drop a file on the dashed
   area ("Drop a file here or browse", with "PDF, TXT or Markdown" under it),
-  or **browse**; the card then names the uploaded file. Dropping a file
-  anywhere on the step chooses this card and uploads it. On a touch screen
-  (a phone or tablet, which can't drop files) the card says "A file from
+  or **browse**; the tab then names the uploaded file. Dropping a file
+  anywhere on the step chooses this tab and uploads it. On a touch screen
+  (a phone or tablet, which can't drop files) it says "A file from
   your device" and its action is a **Choose a file** button, with "PDF, TXT
   or Markdown" under it.
-- **Paste text** ("Text from a web page, an email or your notes"): a large
-  box for the text and **Title (optional)**. **Continue** saves the text as a
+- **Text**: a large box, **Your text**, for text you copied (from a web page,
+  an email or your notes), then **Title (optional)**. Paste into the box with
+  Cmd+V or Ctrl+V, or on a phone touch and hold it and tap **Paste**.
+  **Paste from clipboard**, at the box's top right, reads the clipboard only
+  when you press it and adds its text where the cursor was (else at the end),
+  never replacing what is there. If the browser does not allow that, the box
+  gets the focus, a line says to paste with the keys or the phone's own
+  **Paste**, and your text stays as it was. **Continue** saves the text as a
   document, through the same route as an uploaded file: a `.txt`, or a `.md`
   when it is clearly Markdown (a heading, a code fence or a table, or two of
   links, bold, quotes, lists and inline code), named after the title or,
-  without one, the text's first line ("Saved as …" in the card). The same text
-  pasted again keeps the document it was saved as; another text under a name
-  you already have gets "Name 2.txt". On a phone, use the phone's own Paste in
-  the box. The upload's 64 MiB limit applies, and a pasted text that is a
-  book you already have shows "You already have this one", as an upload does.
+  without one, the text's first line ("Saved as …" under the box). The same
+  text pasted again keeps the document it was saved as; another text under a
+  name you already have gets "Name 2.txt". The upload's 64 MiB limit applies,
+  and a pasted text that is a book you already have shows "You already have
+  this one", as an upload does.
 
 **Cmd+V** (Mac) or **Ctrl+V** on the first step, while no text field has the
 focus, takes what you copied: a copied file (PDF, TXT or Markdown) goes to
-**Upload a file**, as if you had dropped it; a single web link (such as an
-arXiv page) fills **From a URL**; any other text fills **Paste text**. One
+**File**, as if you had dropped it; a single web link (such as an
+arXiv page) fills **Link**; any other text fills **Text**. One
 line says what was pasted: "Pasted paper.pdf", "Pasted a link" or "Pasted
 12,400 characters". An empty paste does nothing; a file of another type gets
 the same message as a wrong upload. Whether a browser hands over a file
 copied in Finder or Explorer is up to the browser.
 
-**Continue** uses only the chosen card, whatever the others hold: no link is
-downloaded unless **From a URL** is chosen. Beside **Continue**, the step says
-what that card holds: "Chosen (URL): https://…" (after an arXiv download, the
-paper's title and type), "Chosen (Saved document): X.pdf · PDF", or "Chosen
-(Upload): X.pdf · PDF", and "No document chosen yet"
-before that. Pressed with the chosen card empty, **Continue** stays and says
-"Choose a document first". Files are limited to 64 MiB. Supported document
+**Continue** uses only the chosen tab, whatever the others hold: no link is
+downloaded unless **Link** is chosen. Beside **Continue**, the step says
+what that tab holds: "Chosen (Link): https://…" (after an arXiv download, the
+paper's title and type), "Chosen (Library): X.pdf · PDF", "Chosen (File):
+X.pdf · PDF" or "Chosen (Text): 1,200 characters", and "No document chosen
+yet" before that. A problem shows right under the chosen tab's field, in red
+with a ⚠, the field outlined in red, and what you entered stays: pressed with
+the tab empty, **Continue** stays and says "Choose a file first.", "Enter a
+link first.", "Paste or type the text first." or "Choose a document first.",
+and the field gets the focus. Files are limited to 64 MiB. Supported document
 types are PDF, TXT or Markdown (`.pdf`; `.txt` or `.text`; `.md` or
 `.markdown`), not HTML web pages. A file of another type (the picker's "All
 files", or a drop) is not sent: the step says "Hilde reads PDF, TXT or
 Markdown files: choose one ending in .pdf, .txt or .md.", the same words the
 server answers with. Another problem, such as a link that is not a
-document, is said in a short sentence inside
-the step. Adding a document under a name you already have asks first, naming
-the file it would replace.
+document, is said in a short sentence under the field. Adding a document under
+a name you already have asks first, naming the file it would replace.
 
 The voice step is a dropdown of your saved voices (the same choice as
 **Select** on **Voices**), with a card that previews the one you choose and
@@ -308,7 +317,7 @@ Overwrite continues through the voice and preparation steps as for a new book,
 and **Overwrite audiobook** asks (naming the book), then makes the book again
 from this document with those settings, as **Recreate with the latest Hilde**
 does on Listen: its text is written again, and its other voices will need to
-be made again. While **From a URL** is chosen and its link not yet
+be made again. While **Link** is chosen and its link not yet
 downloaded, the link is the next book, so that notice gives way to
 **Continue**.
 
@@ -664,8 +673,8 @@ edge to make it narrower or wider, from 320 to 720 px, always leaving the text
 at least 480 px; the text keeps its place while it reflows. With the edge
 focused, the left and right arrows widen or narrow it by 16 px, **Home** makes
 it as wide as it can be and **End** as narrow. This browser remembers the
-width. Its header is Hilde's sparkle
-and **Ask Hilde** in teal, then the chat's model box, **⋯**, and **×** at the
+width. Its header is Hilde's sparkle (teal, Ask Hilde's marker)
+and **Ask Hilde** in the text's colour, then the chat's model box, **⋯**, and **×** at the
 right. With more than one tab (**Ask Hilde | Notes**, a figure, a page) or in a
 panel under 420 px wide (a phone, a narrow window) the header has two rows: the
 tabs, **⋯** and **×** on the first, and the whole model box on the second (the
@@ -737,7 +746,7 @@ model can read quickly and well, the oldest questions go too, and the chat
 says so. Hilde looks up again what it needs.
 
 Ask Hilde attaches the part being read (or the words you selected) as a card
-above the message box, in teal, Ask Hilde's colour (as are the cards of past
+above the message box, in a plain gray frame (as are the cards of past
 questions, and the card while it is prepared or when it couldn't be attached):
 headed **Selected text** for a selection, else the
 section heading as in the book, below it your words in quotes or the part's
@@ -775,7 +784,7 @@ nothing typed, the button reads **Explain this part** and it, or Enter, sends
 Your question stays in the box until Hilde has it: if
 sending fails, the chat says why above the box and the text is still there.
 The chat also says why when nothing can go yet: an empty box, models still
-loading or none added, or Hilde still answering. That last one shows in a teal
+loading or none added, or Hilde still answering. That last one shows in a gray
 box, naming the model still writing: "Hilde is still answering with … Your
 question stays here: wait for the answer, or press Stop, then send it." If the
 conversation can't be loaded again after an answer, the chat says so in red,
@@ -797,7 +806,10 @@ frees its GPU. Code, web addresses, and Markdown are not read; a citation such
 as ¶12 is read as "paragraph 12". Reading aloud needs the server's own
 narration model (`--voice-clone-model`); without it, neither shows.
 
-At the bottom of the chat, just above the question box, one teal button with a
+Under the question box one small gray line always says "Hilde can make
+mistakes. Check the source text." (on a phone too, on one line).
+
+At the bottom of the chat, just above the question box, one blue button with a
 short gray note beside it says what Hilde is doing and stays in place while
 the conversation scrolls (on a phone too, at the bottom of the sheet): **■
 Stop** with "Writing…" while an answer arrives, **❚❚ Pause** with "Reading
@@ -885,9 +897,19 @@ are on:
   a double-click, the audio is put back where it was and stays paused there,
   as for any selection.
 - Selecting text (a double-click, a drag, a long press) pauses the book where
-  it is; only **Play** resumes it. On a computer the selection gets a small
-  menu next to it: **Highlight**, the four colour dots, **Add note**, **Ask
-  Hilde**, **Copy**. On a phone Hilde puts nothing next to the selection
+  it is; only **Play** resumes it. A double-click selects the word and shows
+  the menu below; it does not open Ask Hilde by itself. On a computer the
+  selection gets a small floating menu: **Highlight**, the four colour dots,
+  **Add note**, **Ask Hilde**, **Copy**. It opens just above the selection
+  (below it when there is no room above), never over it and never pushing the
+  text, inside the text's column and the screen, and it follows the selection
+  when you scroll, resize the window or open, close or resize the side panel;
+  a new selection brings it beside that one. The six dots at its left move
+  it: drag them, or focus them and use the arrow keys (Shift for bigger
+  steps). It stays where you put it, also while you scroll, until you select
+  something else; **Escape** on the dots puts it back beside the selection.
+  Moving it never changes the selection, and its buttons act on that same
+  selection. On a phone Hilde puts nothing next to the selection
   (your phone's own Copy and Look Up stay there); instead **Paused ·
   “selected text” ×** shows just above the player, and **×** clears the
   selection.
@@ -921,14 +943,17 @@ are on:
   Source text), your question, Hilde's answer and the model that wrote it, and
   an optional comment of yours. A teal sparkle follows the passage. Opening it
   later never asks the model again; asking alone keeps nothing.
-- **Notes** in the slim paper bar (an icon and the count on a phone) and the
-  **Notes** tab beside **Ask Hilde** in the side panel list every highlight,
-  note and saved answer of the book in reading order, with their count. Each
-  card shows the passage with a side bar in its highlight's colour (grey for a
-  note without a highlight), your words under **You** and Hilde's under
-  **Hilde** (a saved answer: **You asked**, **Hilde**, then your comment under
-  **You**). Every card can be edited: **Edit** on a note, **Add your comment**
-  and then **Edit comment** on a saved answer, **Add a note** on a highlight.
+- **Notes** in the slim paper bar and on the book's card and the **Notes** tab
+  beside **Ask Hilde** in the side panel list every highlight, note and saved
+  answer of the book in reading order; the count shows once, on the panel's
+  **Notes** tab. Each card leads with your own words, unlabelled; a saved
+  answer then shows your question and Hilde's answer under **Hilde** and the
+  model that wrote it. Under that, quieter, comes the passage, with a side bar
+  in its highlight's colour (grey for a note without a highlight), and where
+  it is (its section, **Narration text** or **Source text**) with **Show in
+  text**. The card's **⋯** menu shows when it was saved and holds **Edit**
+  (**Add your comment**, then **Edit comment**, on a saved answer; **Add a
+  note** on a highlight) and **Delete**, which asks first.
   Clicking an icon in the text opens the Notes tab at its card, marked as the
   current one. **Show in text** scrolls to
   the passage and outlines it briefly; it never moves the audio. On a phone
@@ -938,8 +963,9 @@ are on:
 - Notes are kept on the Hilde server, one file per book outside the book's
   folder, so every device sees the same notes and recreating a book keeps
   them; nothing of them is kept in the browser (only the last highlight
-  colour). **Saved** shows only once the server
-  has confirmed a save; a failed save keeps your text with **Retry**. A note
+  colour). A save says **✓ Saved** for a moment, only once the server has
+  confirmed it; while it saves the button reads **Saving…**, and a failed save
+  stays on screen with **Retry**, your text kept. A note
   changed on another device meanwhile asks which version to keep.
 - When the book opens, each note finds its passage again. If the passage is
   gone (after a Recreate) or appears more than once, the note stays, marked
@@ -983,7 +1009,7 @@ and **Select**. The selected voice comes first, on a faint green row, then
 every other voice A–Z by name, ignoring upper and lower case, with letters
 such as Ö, Ş, and Ü where your browser's language sorts them.
 
-Each voice is two lines. The first is its name, then its tags as pink chips:
+Each voice is two lines. The first is its name, then its tags as gray chips:
 at most four on a wide screen and one on a phone, then "+N" for the rest. The
 second is one line of plain gray text that ends in "…" when it is longer: the
 voice's description, or, for a voice made from tags, its **More details**. A
@@ -1015,7 +1041,7 @@ You can add your own (**Yours**). A tag is at most 32 characters, on one line,
 without commas; a voice has at most 12.
 
 The list shows only the tags you have confirmed. When Hilde has **suggested**
-tags for a voice, its first line ends in one dashed pink pill instead, "4
+tags for a voice, its first line ends in one dashed gray pill instead, "4
 suggested · Review" ("4 to review" on a phone, in place of the tags), and a
 banner above the list says "Hilde suggested tags for **3 voices**. Nothing
 changes until you confirm." (on a phone just the first sentence). **Later**
@@ -1159,10 +1185,10 @@ saved have none; give them tags with **Edit** to make them searchable.
 ## Ask Hilde on every page
 
 At the top right of the header, on every page (Create, Voices, Listen and
-Settings), is **Ask Hilde**: a teal pill with Hilde's sparkle and the words,
+Settings), is **Ask Hilde**: a gray-outlined pill with Hilde's teal sparkle and the words,
 or, on a phone narrower than 600 px, a round 44 px button with the sparkle
 alone (still named "Ask Hilde" for screen readers). It opens the same panel as
-the player bar's **Ask Hilde** and is filled teal while the panel is open. From
+the player bar's **Ask Hilde** and looks pressed while the panel is open. From
 900 px the panel sits at the right under the tab row (or the lowest bar pinned
 at the top), never over the header, the tabs or **Settings**; the page under
 the tabs narrows so nothing of it hides behind the panel. Narrower, it is the
@@ -1177,7 +1203,7 @@ The screen decides what the panel is for:
   plays from the Library), **help mode**. The header still reads **Ask
   Hilde**; inside are the heading **Help with Hilde Reader**, the line "Ask how
   something works in Hilde Reader. To ask about a paper, open it in Listen.",
-  and three example questions as quiet teal buttons. A click puts one in the
+  and three example questions as quiet outlined buttons. A click puts one in the
   box; nothing is sent until you send it. Nothing of a book goes with a help
   question: no card, no selection, no part playing, no title; a book playing
   keeps playing.

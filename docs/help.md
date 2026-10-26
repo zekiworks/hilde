@@ -15,7 +15,7 @@ The tabs are **Create** (make an audiobook), **Voices**, **Listen** (your **Libr
 ## Adding a document
 
 1. Open **Create**.
-2. In **Add the source document**, pick one of four cards: **Saved document** (one you added before), **From a URL** (a link to a PDF, TXT or Markdown file, or an arXiv page), **Upload a file** (drop a file or **browse**; on a phone or tablet, **Choose a file**), or **Paste text** (an optional title, else its first line). Here **Cmd+V** or **Ctrl+V** outside a text field puts a copied file, link or text into the matching card.
+2. In **Add the source document**, pick a tab: **File** (drop a file or **browse**; on a phone, **Choose a file**), **Link** (a PDF, TXT, Markdown or arXiv link), **Text** (paste text; an optional title, else its first line) or **Library** (a document you added before). Other tabs keep their entries. **Cmd+V** or **Ctrl+V** outside a text field puts a copied file, link or text into the matching tab.
 3. Press **Continue**, then choose a voice.
 4. In **How Hilde prepares the text**, choose the model and the options, such as **Adapt the text for listening**. The **Summary** shows, with a **Local** or **Cloud** badge, where your text goes.
 5. Press **Create audiobook**.
@@ -27,7 +27,7 @@ If you add or paste a document you already have, Hilde says **You already have t
 To go back, click or tap a step's row or press **← Back**; your choices are kept. The browser's Back and Forward move through the steps you visited; once a book has started, they open its progress, so it is never made twice.
 
 <!-- more: docs/web-ui.md › Create an audiobook -->
-<!-- checked: docs/web-ui.md "Create an audiobook" (four cards, Paste text, Cmd+V, finished rows, Back, browser history, Continue, Summary, You already have this one, queue), "Following an audiobook being made" (Stop, Continue from the last completed part) -->
+<!-- checked: docs/web-ui.md "Create an audiobook" (four tabs, Text, Paste from clipboard, Cmd+V, finished rows, Back, browser history, Continue, Summary, You already have this one, queue), "Following an audiobook being made" (Stop, Continue from the last completed part) -->
 
 ## Choosing and changing a voice
 
@@ -119,7 +119,7 @@ Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` 
 
 ## Common problems and fixes
 
-- **"Choose a document first"**: the chosen card is empty: fill it in or pick another.
+- **"Choose a document first"** (or the like), under the field: the chosen tab is empty: fill it in or pick another.
 - **Create audiobook stays gray**: the text beside it names the reason, with one-click fixes such as **Use the text model**.
 - **"⚠ … is unreachable"**: that model's server does not answer. Click one of the models offered below it. Hilde never switches models by itself.
 - **The chat shows a red box**: you are not signed in, the model's server is not running, or the connection failed. Follow the hint, or use **Providers…**.

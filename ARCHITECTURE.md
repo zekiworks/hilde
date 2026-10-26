@@ -579,8 +579,8 @@ needs the text written again. The browser asks and retries with
 
 - `runtime`: dtype, attention, language, input encoding, seed;
 - `voice`: remote design voice, name, New voice's `tags` (`stored_voice_tags()`: the valid ones, once each, at most 12, in vocabulary order) and `details` (More details), reference WAV subtype. `values_of()` composes `instruct` from them (`compose_voice_instruct()`), and `derived()` returns it as `voice_instruct`;
-- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source card `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each card's own value, kept while another card is chosen: `document` (the Saved document dropdown), `upload` (the file uploaded under Upload a file), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen card's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another card's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
-- `audiobook` also keeps `draft`, this browser's Create draft (`draft_id()`: a string of 8 to 64 letters, digits, `-`, `_`, else empty; the page makes one with `newDraftId()`, and a new one after each confirmed start), and for the fourth source card `paste` its `paste_document`, the Documents name **Continue** saved a pasted text as (`chosen_document()` uses it; the text itself never enters the cookie).
+- `audiobook`: current Create step (`book`, `voice`, or `create`; anything else becomes `book`), remote clone voice or saved voice, step 1's chosen source tab `source` (`saved`, `url`, or `upload`; anything else becomes `url` when a link is stored, else `saved`) and each tab's own value, kept while another tab is chosen: `document` (the Library dropdown), `upload` (the file uploaded under File), `source_url` with its optional `download_name`, and `url_document` (the Documents name **Continue** downloaded that link to; the page empties it when the link or name changes), with `url_title`, the paper's title an arXiv link's download answered (emptied with it). `chosen_document()` gives the chosen tab's document, the only one `values_of()` uses, and `pending_url()` the chosen link still to download, else empty, so another tab's link is never downloaded or checked. Then adaptation settings (model; `verify`, error correction, true only when stored as `true`, `verify_model`, its checking model, the text model when empty, `interpret_figures`, Interpret and narrate figures/charts, true only when stored as `true`, and `figure_model`, the model that then describes figures, the text model when empty), and chunk, batch, and compression settings. Local model servers are not browser state: they are the server's (`local_endpoints()`, see [Local model servers](#local-model-servers)). The earlier per-browser `local_servers` (and the older `local_server`, `local_provider`, `local_vision`) is no longer read or written; a stored one is dropped, not migrated. The batch size defaults to 2; a state saved under schema 3 with that schema's default of 1 moves to 2 once;
+- `audiobook` also keeps `draft`, this browser's Create draft (`draft_id()`: a string of 8 to 64 letters, digits, `-`, `_`, else empty; the page makes one with `newDraftId()`, and a new one after each confirmed start), and for the Text tab (`source` `paste`) its `paste_document`, the Documents name **Continue** saved a pasted text as (`chosen_document()` uses it; the text itself never enters the cookie).
 - `player`: the book open on Listen (or a book being made, `making-<job id>`, which opens without audio; see [Books being made](#books-being-made)), the voice playing, so a refresh reopens them, `in_library`, whether that book plays from the Library (loaded, with the Library shown and of the book's view only the player bar; true only when stored as `true`), `chat_model`, the model chosen for Ask Hilde (this browser's, apart from the book's model), and `chat_speak`, whether answers are read aloud as they finish (true only when stored as `true`). A book name from before book folders is an earlier MP3 name; the page maps it through the library's `legacy_names` to its book and voice. Each book's place and speed, the side panel's width, and the dismissed stopped or failed jobs are this browser's alone, in `localStorage` (see [Browser storage](#browser-storage)), never in cookies or on the server.
 
 Normalized state is compressed into bounded, chunked, year-lived `HttpOnly; SameSite=Strict` cookies, also `Secure` when the request came over HTTPS (`Handler.secure()`). TTS model paths/IDs, speech endpoints, credentials, worker devices/hosts, storage paths, and output paths are server-owned and never accepted from browser state.
@@ -1190,34 +1190,37 @@ marker, and a pressed preview, with white ink (`--accent-ink`, 5.5:1); `--accent
 (#5aa2ff, 6.6:1 on the #1b1b1b ground) draws selected states (tab and switch
 underlines, the focus outline, links, indicators, a card's border, the LED
 dots, the reading highlight) and never fills a button; `--accent-soft` mixes
-16% of it; teal `--ask`
-(#2bb3a3; its light-mode value #127a6e is recorded beside it for Phase 3) only
-Ask Hilde: the player's **Ask Hilde** button (a 12% tint over `--surface`, a
-1 px border of 65% `--ask`, teal text and sparkle), the chat panel's header
-while the chat is shown (the sparkle and **Ask Hilde** in teal), the chat's
-Stop / Pause / Resume button (`#chat-action`: a solid `--ask` fill with dark
-ink #0e1a18), **Ask Hilde** for a touch selection above the player bar
-(`#dock-ask`: the same solid fill and dark ink, with the sparkle), and every Ask Hilde card
-(`.chip`: a selection, a passage, a figure, Preparing, Couldn't attach, a
-selection too long to attach, and the collapsed cards of past questions: a
-1 px border of 65% `--ask` on a 12% tint; the
-card sets `--accent-light` to `--ask`, so its attached outline,
-scope-switch underline, details mark, and focus outlines are teal, and so is
-its title; `#chat-about`'s attach glow is 16% `--ask`), and the chat's "Hilde is
-still answering" box (`.chat-hint.busy`: the card's border on its tint); green `--local`
+16% of it. Blue is the one accent; teal `--ask`
+(#2bb3a3; its light-mode value #127a6e is recorded beside it for Phase 3) is
+only a marker of Ask Hilde, never an area: the player's **Ask Hilde** button (a
+12% tint over `--surface`, a 1 px border of 65% `--ask`, teal text and
+sparkle), the selection bar's **Ask Hilde** (`.sel-ask`), **Ask Hilde** for a
+touch selection above the player bar (`#dock-ask`, shown while notes are off),
+the ✦ sparkle (`.ask-icon`) wherever it stands (the header button, the panel
+tab `#panel-tab-chat`), and the markers and labels of saved answers in notes.
+Everything else of Ask Hilde is neutral: the header's **Ask Hilde** pill
+(`.header-ask`: a gray #5a5a5a border on `--surface`, `--text` words, only the
+sparkle teal; pressed look, `--text` border on `--hover`, while the panel is
+open), the panel's header and tab text, the context card (`.chip`: a 1 px
+#4a4a4a border on `--surface`, its title `.chip-section` in `--dim`; its
+attached outline, scope-switch underline, details mark and focus outlines are
+the interface blue; the attach pulse is gray), the question box, the help
+examples (`button.help-example`), and the "Hilde is still answering" box
+(`.chat-hint.busy`, a neutral box). The chat's Stop / Pause / Resume button
+(`button.chat-action`) is blue: an `--accent` fill with `--accent-ink`. The
+model box's hover border is `--dim`. Green `--local`
 (#3fb950) only the Local badge and Runs on Local, purple `--cloud` (#c678dd)
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items and the played part of the seek bar, red `--bad` (#e5534b) errors and destructive actions, always
 with an icon and text. Like Create's steps, the Voices list sets its own colours on `#page-voice` (Part C):
-`--play` (#3fb950) for its play circles and the selected voice, `--tag` (#d66bc6) for description tags, and
+`--play` (#3fb950) for its play circles and the selected voice, a neutral `--tag` (#d8d4ce text, `--tag-line`
+#7a7a7a, 3:1 on the chip's tint) for description tags, `--tag-on` (18% `--accent-light` over `--bg`) for chosen tags, and
 `--gray-line` (#707070, 3.5:1) for the search box and Select outlines (see **Voices** below). Contrast of `--ask`, dark: the Ask Hilde button's teal
 text and sparkle 4.9:1 on its tint (4.6:1 on the 16% hover tint), its border
-3.3:1 on the bar; the header's teal 6.0:1 on `--surface`; a card's border
-3.3:1 and title 4.9:1 on its tint; the dark ink of Stop / Pause / Resume 6.9:1
-on `--ask`; its gray status (`--dim`) 6.1:1 on `--surface`; light (#127a6e on
+3.3:1 on the bar; light (#127a6e on
 white): border, icon, and title 5.2:1, icon 4.2:1 on its 15% tint, dark text
 14:1 on that tint. Selected text (`::selection`) is a neutral gray fill
-(#5c5c5c). No orange is left; no glow stays lit (the LED dots
+(#5c5c5c). No orange or yellow is left; no glow stays lit (the LED dots
 are flat); an answer being read aloud stays plain text (no fill); danger buttons are dark ink (`var(--bg)`) on
 `--bad`.
 
@@ -1240,10 +1243,10 @@ Create's job, `fillFailureCard()`); **Generate preview**, then **Save voice**
 in the voice editor (`renderVoiceForm()` moves the class); **Save and next**
 in Review tags; **Create your first audiobook** on an empty Library; **Ask about
 this** for a selection in the reading view; a dialog's confirm button (or its
-red danger button); none on Voices, in Settings, or in the Ask Hilde panel.
+red danger button); none in Settings or in the Ask Hilde panel, and on Voices only the banner's **Review tags**.
 Role colours are not primary buttons and stay: Play/Pause in the player bar and
 a playing card's play button, a playing voice preview (`--accent`, pressed),
-Ask Hilde's teal (`--ask`) buttons, and the tag pink of **Review tags**.
+Ask Hilde's teal (`--ask`) markers. **Save to notes** (`button.chat-save`) is a plain button.
 A secondary action beside a screen's main job is `button.secondary`, the quiet
 blue of Create's **Change** (an outline, no fill): **New voice** on Voices.
 Other buttons are neutral; destructive or rare actions are text buttons or
@@ -1307,13 +1310,11 @@ Each page:
 - **Create** shows three steps as rows on one page, one open at a time; a
   finished step collapses to one row, a later step opens only after the
   earlier ones are complete, and going back resets nothing. A step's colour
-  is its state, the same for all three (`.step` sets `--step` yellow
-  `--step-open` #ddd040, `--step-done` green `--local`, `--step-ink` #111111),
-  on the rows' own ground `--step-bg` #17181b: the yellow 11.1:1 with the dark
-  number on it 11.8:1, the green 7.0:1. The yellow (hue 55°, not amber, so the
-  page still has no orange) marks the open step only; no warning uses it.
-  Open (`.is-active`): a 2 px border and a solid circle in
-  `--step`, a white bold title. Finished (`.is-done`, `renderCreate()`):
+  is its state, the same for all three (`.step` sets `--step` to `--accent`,
+  `--step-ink` to `--accent-ink`, `--step-done` green `--local`), on the rows'
+  own ground `--step-bg` #17181b: the green 7.0:1. There is no yellow frame.
+  Open (`.is-active`, no coloured border): a filled blue circle in
+  `--step` with its number in `--step-ink`, a white bold title. Finished (`.is-done`, `renderCreate()`):
   `STEP_CHECK_ICON` in a `--step-done` ring with a 12% fill, the title in
   `--step-done`, then `.step-summary`
   (`setSummary()`: the value cut with "…", a gray "· type"), then its
@@ -1335,19 +1336,19 @@ Each page:
   `--accent-light`, 3.5:1), no fill; Listen's **Library** shares its colours,
   border and fill (see below). Step 3 is never finished: a
   queued book starts the next one.
-  1. **Add the source document**: four `.source-card`s, two by two
-     (stacked up to 640 px), always shown, in
-     one radio group (`.sources`, `role="radiogroup"` "Source document"; a
-     native radio `.source-radio` in each header, named by the card's title,
-     so arrow keys move the choice). The chosen card (`audiobook.source`,
-     `selectSource()`, `renderSources()`) is `.is-on`: filled dot, `--accent`
-     border, controls enabled. The others are `.is-off`: empty circle, text
-     in `--off` gray (at least 3:1; never opacity alone), controls disabled
-     with their values kept, and their contents take no pointer, so a click
-     anywhere on the card reaches it, chooses it, and focuses its first field
-     (`SOURCE_FIRST`); a keyboard click (`detail` 0) leaves focus on the
-     radio. A new browser starts on Upload (`normalize()`), then keeps the
-     last card used. **Saved document** is a field (`#document`, a button)
+  1. **Add the source document**: four tabs (`.source-tabs`, `role="tablist"`
+     "Source document"; each a `button.source-tab[role=tab]` with
+     `data-source`, `aria-selected` and a roving `tabindex`, in `SOURCE_ORDER`:
+     **File** `#source-pick-upload`, **Link** `#source-pick-url`, **Text**
+     `#source-pick-paste`, **Library** `#source-pick-saved`), each controlling
+     its panel `#source-panel-<source>` (`.source-card[role=tabpanel]`). The
+     chosen tab (`audiobook.source`, `selectSource()`, `renderSources()`) has
+     the `--accent-light` underline; only its panel (`.is-on`) shows, the others
+     are `display:none` with their values kept. Fields are disabled only while
+     submitting. A click chooses a tab; ArrowLeft/ArrowRight (wrapping), Home
+     and End choose and focus the next tab (the listener near the script's
+     end). A new browser starts on File (`normalize()`), then keeps the
+     last tab used. **Library** is a field (`#document`, a button)
      opening `#document-list` (`openDocumentList()`, `renderDocumentList()`):
      the saved documents newest first by `assets.document_times`, each row a
      `.doc-pick` (name, `documentDate()`) and its own `.doc-trash` (gray,
@@ -1366,7 +1367,7 @@ Each page:
      deep red `button.danger.with-icon`; Tab and Shift+Tab go round the
      confirmation's controls, Escape is Cancel) and removes only that file
      (`POST /api/documents/delete`); cancelled, focus returns to the button
-     that asked (a row's trash passes the field). **From a URL** is a link and
+     that asked (a row's trash passes the field). **Link** is a link and
      an optional save-as name, which **Continue** downloads first
      (`materializeUrl()`, only while `pendingUrl()`; a request that gets no
      answer at all says the server couldn't be reached). An arXiv link
@@ -1385,14 +1386,14 @@ Each page:
      `url_document` (cleared with it: a changed link or Save as, a delete,
      `clearBookChoice()`), and `chosenTitle()` shows it for that document: the
      finished step's summary (tooltip "<title> (saved as <name>)"), the hint
-     beside **Continue**, and step 3's summary. **Upload a file** ("A file
+     beside **Continue**, and step 3's summary. **File** ("A file
      from your computer") is a dashed drop area, "Drop a file here or
      **browse**" over the type line; on a touch screen (`@media (hover:
-     none)`, `.pointer-only` / `.touch-only`) the card says "A file from your
+     none)`, `.pointer-only` / `.touch-only`) the panel says "A file from your
      device", the drop words go, and `#document-upload` is a bordered **Choose
      a file** button (44 px) over the type line. It uploads at once and names
      the file in `#upload-name`; a file dropped anywhere on the step chooses
-     Upload and uploads. The types come from one constant, `DOCUMENT_TYPES`
+     File and uploads. The types come from one constant, `DOCUMENT_TYPES`
      (Python, beside `PAPER_SUFFIXES`, which is its suffixes): `text` "PDF,
      TXT or Markdown", `suffixes` (`.pdf`, `.txt`, `.text`, `.md`,
      `.markdown`, each with its type label), `media`, and `problem`, the one
@@ -1403,11 +1404,17 @@ Each page:
      another type (the picker's All files, a drop) with `problem` before
      sending it (`uploadDocument()`); the upload route and a job's check
      answer the same `problem`, so both sides read alike. **Continue** uses only
-     `chosenDocument()`; pressed with it empty it stays and `#book-chosen`,
-     the hint beside it, says "Choose a document first" (`bookEmptyContinue`).
-     Otherwise `#book-chosen` shows the chosen card alone:
-     "Chosen (URL): <link>" (once an arXiv link is downloaded, "<title> ·
-     PDF"), or "Chosen (Saved document|Upload): <name> ·
+     `chosenDocument()`; pressed with the chosen tab empty (`continueFromBook()`,
+     `bookEmptyContinue`) it stays and focuses that tab's field. Problems are
+     said inline: `renderSources()` moves `#paste-note` and `#book-problem`
+     right after the chosen tab's first field (`SOURCE_FIRST`'s closest
+     `.field`, `.doc-field` or `.dropzone`), and `renderCreate()` sets the
+     problem text (`bookProblemText`, else `SOURCE_EMPTY[source]` such as
+     "Enter a link first." when `bookEmptyContinue`, else the type problem)
+     and `aria-invalid` / `aria-errormessage="book-problem"` on that field.
+     `#book-chosen` shows the chosen tab alone (`SOURCE_LABELS`):
+     "Chosen (Link): <link>" (once an arXiv link is downloaded, "<title> ·
+     PDF"), or "Chosen (Library|File|Text): <name> ·
      PDF|Markdown|Text", else "No document chosen yet"; **Continue** refuses
      other types. Reopened from step 3 (`reachedCreate`), **Continue** returns
      to step 3 with every choice kept; Overwrite and Change voice go through step 2.
@@ -1422,10 +1429,10 @@ Each page:
      upload or link whose predicted file name (`predictedDownloadNames()`) is
      already in Documents asks first (`replaceDocumentOk()`). A link still to
      download hides **You already have this one** and shows **Continue**.
-     `clearBookChoice()` empties every card (the chosen card stays) once
+     `clearBookChoice()` empties every tab (the chosen tab stays) once
      **Create audiobook** has queued a book, and when **Create another
      book** or **Start listening** begins the next one.
-     **Paste text** (`data-source="paste"`): `#paste-text` (16 px type) and
+     **Text** (`data-source="paste"`): `#paste-text` (16 px type) and
      `#paste-title`; the text stays in the page (`sessionStorage`
      `hilde.paste`, so a reload of the tab keeps it), never in the cookie.
      **Continue** saves it first (`materializePaste()`, while `pendingPaste()`):
@@ -1441,10 +1448,15 @@ Each page:
      `pasteOnStep()` (the document's `paste` event) acts on step 1 only when no
      text field (`TEXT_FIELD`) has the focus and no dialog is open: a file in
      `clipboardData` goes to `uploadDocument()` as a drop; one `http(s)` link
-     fills **From a URL**; other non-blank text fills **Paste text** (over the
+     fills **Link**; other non-blank text fills **Text** (over the
      limit: the upload's size message, the box untouched); `#paste-note` says
      "Pasted <file>", "Pasted a link" or "Pasted N characters". A blank paste
-     does nothing.
+     does nothing. **Paste from clipboard** (`#paste-clipboard`,
+     `pasteFromClipboard()`) reads `navigator.clipboard.readText()` only on
+     press and inserts the text with `setRangeText()` at the caret remembered
+     when the box lost focus (`pasteCaret`), else at the end, never replacing
+     what is there; refused or empty, it focuses the box and `notePaste()`
+     explains (the text kept).
 
      **History** (`setStep()`, `backStep()`, `showEntry()`,
      `startCreateHistory()`): an entry is `{hilde: "create", step, draft,
@@ -1698,9 +1710,9 @@ Each page:
   (from `GET /api/voices` or a tag route's answer, the same shape) and
   `renderVoiceTable()` moves the selected match to the top. Line 1
   (`.voice-head`, one line): the name (whole up to 9em, then "…"), the voice's
-  confirmed tags only (`voice.tags`) as `button.voice-tag` chips in #d66bc6 on
-  an opaque 14% tint (text 5.1:1, 4.6:1 hovered; border 80% of the colour,
-  ≥ 3:1 on the green row), at most `VOICE_TAGS_WIDE` (4) on a wide screen and
+  confirmed tags only (`voice.tags`) as `button.voice-tag` chips in the
+  neutral `--tag` (#d8d4ce) on an opaque 14% tint with a `--tag-line` border;
+  a pressed chip has the `--tag-on` fill, an `--accent-light` border and a ✓; at most `VOICE_TAGS_WIDE` (4) on a wide screen and
   `VOICE_TAGS_NARROW` (1) up to 640 px (the stylesheet hides the rest of a
   closed row's chips), then `span.voice-tag-more` "+N" (one per width, the
   hidden tags in its tooltip); chips that still run past the cell fade out
@@ -1759,7 +1771,7 @@ Each page:
   **N voices**. Nothing changes until you confirm." (the second sentence,
   `.tag-banner-more`, hidden up to 640 px), **Later** (`laterTagReview()`:
   sessionStorage `hilde.tagReviewLater`, see Browser storage), and **Review
-  tags** (`openTagReview()`), filled #d66bc6 with #160d15 text (6.2:1).
+  tags** (`#tag-banner-review`, `button.tag-review-open`, `openTagReview()`), filled `--accent` with `--accent-ink`.
 - Review tags (`dialog#tag-review`, modal; up to 640 px a sheet filling the
   screen, its head and buttons fixed and the rest scrolling): `tagReview`
   holds the queue, the voice at hand and its chips. `openTagReview(start,
@@ -1769,10 +1781,10 @@ Each page:
   button (`previewButton()`), the name (`h2`), "Voice X of N" (not in edit
   mode), and × (`closeTagReview()`). Then the description read only, the
   words matched for the dialog's tags marked (`renderReviewDescription()`:
-  the server's `matches` spans merged into `mark`s, by code point); edit mode
+  the server's `matches` spans merged into `mark`s, by code point, on a 26% `--accent-light` tint); edit mode
   only: the confirmed tags as kept chips ("Tags: click to keep (filled) or
   drop (dashed)"); "Suggested by Hilde: click to keep (filled) or drop
-  (dashed)" with `voice.suggested` as `button.review-chip`, kept (filled, ✓,
+  (dashed)" with `voice.suggested` as `button.review-chip`, kept (`--tag-on` fill, `--accent-light` border, ✓,
   `aria-pressed=true`) until clicked (`is-dropped`, dashed), a click again
   keeps it; "Add your own": the added tags as the same chips, **+ Add a tag**
   (`toggleTagPick()`) and up to three dashed `button.review-idea`s with "from
@@ -1802,7 +1814,7 @@ Each page:
   voice stops.
 - The tag picker (`renderTagPicker()`, New voice): one
   `fieldset.tag-group` per vocabulary group (`legend`, `button.tag-option`
-  toggles with `aria-pressed` and `data-tag`), then **Yours**: the user's own
+  toggles with `aria-pressed` and `data-tag`; a picked one has the `--tag-on` fill, an `--accent-light` border and a ✓), then **Yours**: the user's own
   tags, each with `button.tag-remove` ("Remove <tag> from your tags", `POST
   /api/voices/vocabulary` `remove`), any chosen tag of no group, and **Add your
   own tag** (`input.tag-add-input`, **Add** or Enter: `add`; the server's
@@ -2045,7 +2057,7 @@ the server:
 Two `sessionStorage` keys, so they last for this browser tab
 only: `hilde.tagReviewLater` (raw, not JSON) is `"1"` once **Later** hid the Voices banner of
 suggested tags (`laterTagReview()`); a reload keeps the banner hidden, a new
-tab shows it again. `hilde.paste` is Paste text's `{text, title}` (JSON; left
+tab shows it again. `hilde.paste` is the Text tab's `{text, title}` (JSON; left
 out when it does not fit), emptied by `clearBookChoice()`.
 
 Phones (up to 640 px) keep the tagline, smaller, and turn the tables, step
@@ -2704,7 +2716,14 @@ every target is at least 44 × 44 px: **Ask Hilde** grows to 44 px, the speed
 pill keeps its size inside an invisible 44 px frame (its `::before`), and the
 seek input is 44 px tall over its 18 px row (the controls
 row sits over its lower edge; the bar's top padding grows so it stays inside
-the bar). There is no mute button
+the bar). A further block, `@media (max-width:767.98px), (pointer:coarse)`
+after `.note-flash`, gives 44 px minimum sizes to a note card's **⋯**
+(`note-more`), the Notes buttons, every row **⋯**, `.menu` items, the panel's
+**×**, `.chat-more`, the panel tabs, `.doc-select` and the trash buttons, and
+a transparent `::after` hit area (`inset: -11px -4px`) to a card's **×**
+(`.chip-remove`) and **Change** (`.chip-head button.link`), the **Context
+details** summary, and **Show in text** (`.note-where button.link`), whose
+look stays small. There is no mute button
 or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
 bar's height, on a `ResizeObserver`; the page's bottom padding
 (`body:has(main.reading)`) is that height, so the last paragraph ends above
@@ -2789,9 +2808,32 @@ resume racing the selection's pause); any other press forgets it.
 **Selection: pause, actions.** A selection in the text (a double-click, a
 drag, a long press) pauses a playing book where it is
 (`noteSelection()` → `pauseBookForQuestion()`); nothing resumes it but Play. A
-mouse selection gets `#selection-actions` (Highlight in the colour last used ·
+mouse selection gets `#selection-actions` (the handle `#sel-handle` and its
+`.sel-handle-sep` · Highlight in the colour last used ·
 the four colour dots · Add note · Ask Hilde · Copy) where `#selection-ask`
-would be (`selectionButton()`, `placeSelectionAsk()`); a touch selection gets
+would be (`selectionButton()`, `placeSelectionAsk()`). `placeSelectionAsk()`
+uses the selection's visible client rects: above them (`box.top - h - 8`)
+when that is at least 4 px under the reading viewport's top, else below,
+else on the side with more room; clamped vertically to `readingViewport()`
+and horizontally to `#reader-content`'s box within the screen (8 px in).
+`placeSelectionSoon()` (one `requestAnimationFrame`) places it again from a
+`ResizeObserver` on `#reader-content`, the window's `resize`, and
+`setPanel()`. The handle (`button.sel-handle`, `data-act="move"`, six dots,
+`touch-action: none`) moves the bar: a pointer drag with
+`setPointerCapture()` (the bar's `pointerdown` `preventDefault()` keeps the
+selection), or the arrow keys, 16 px (64 with Shift), through
+`moveSelectionBar(left, top)`, which keeps it on the screen and inside
+`readingViewport()`. A moved bar (`selBarMoved`, for `selBarFor`) stays where
+it was put, also on scroll, until the target changes (`selBarTarget()`: the
+range's boundary points, or `markMenuId`; `sameSelBarTarget()`) or a
+`pointerdown` lands outside the bar; Escape on a moved bar returns it
+(`selectionBarHome()`, stopping propagation). The bar's click handler
+ignores `data-act=move`. WebKit drops the page's selection when a button takes
+the keyboard focus: the bar keeps a copy (`selBarRange`, set by
+`showSelectionAsk()`), a `focusin` on the bar puts it back
+(`keepSelBarSelection()`), a caret left by that drop is no new target, the bar
+stays while it has the focus, and its buttons act on `barSelection()` (the live
+selection, else that copy while the bar has the focus). A touch selection gets
 no menu of Hilde's beside it (the phone's own Copy, Look Up stay alone there)
 but the **Paused · “…” ×** pill (`#selection-pill`, `dockBar()`) in
 `#dock-slot`, × clearing the selection (`clearReaderSelection()`), with the
@@ -2899,15 +2941,29 @@ conversation; opening it reads the card, never the chat routes. An edit sends
 (`renderPanel()` shows the tab while `notesAvailable()`: notes on, book mode,
 a book with audio open); `renderNotes()` lists `sortedMarks()` (by the
 paragraph's place in the page, then the start; unplaced ones by their anchor's
-paragraph, else last), with the count on the tab, `#paper-bar-notes` and
-`#card-notes` (on a phone an icon and the count). The marks load with the book
+paragraph, else last), with the count only on the tab (`#notes-tab-count`;
+`#panel-tab-notes`'s `aria-label` "Notes, N"); `#paper-bar-notes` and
+`#card-notes` carry no count (`aria-label` "Notes"). `#notes-summary` says "In
+reading order" (or the load problem with Retry). The marks load with the book
 and again when Notes opens or the page becomes visible. A card (`noteCard()`)
-shows the quote with its side bar in the highlight's colour
-(`quoteMarkColor()`: `var(--mark-<color>, #ddd040)`, a missing `color` yellow; grey
-for a note without a highlight), the listener's words under **You** and
-Hilde's under **Hilde** (an answer: **You asked**, **Hilde**, the comment under
-**You**), and an edit button on every card: **Edit** (a note), **Add your
-comment** / **Edit comment** (an answer), **Add a note** (a bare highlight).
+shows, in order: its **⋯** (`rowMoreButton(label, items, note)`, class
+`note-more`), which opens `#row-menu` with a `.menu-notes` line "Saved <time>"
+and the items **Edit** / **Add a note** / **Add your comment** / **Edit
+comment** (`act: "edit"`, opening the edit form) and **Delete** (`act:
+"delete"`, `deleteMark()` asking first with `askConfirm()`); the listener's own
+text (`.note-own`, no label); for a saved answer the question
+(`.note-question`) and `.note-hilde` (a label of the teal sparkle, "Hilde"
+and the model's name in `.note-model`, then the answer); then the calmer quote
+(`.note-quote`, 13 px, `--dim`) with its side bar in the highlight's colour
+(`quoteMarkColor()`: `var(--mark-<color>)`, a missing `color` the default
+highlight colour; none for a note without a highlight) and `.note-where` (the
+section · Narration text or Source text, and **Show in text**); the unplaced
+box when the place is lost. The edit form's label is visually hidden ("Your
+note" / "Your comment"); Saving…, Not saved… and Retry stay in sight. After a
+successful `saveNoteEdit()`, `flashNoteSaved()` shows "✓ Saved"
+(`.note-ok.note-flash`, `role=status`) for `NOTE_SAVED_FOR` (2500 ms); a card
+has no other footer. `rowMoreButton()` / `openRowMenu()` take the optional
+`note` line, and each item an optional `act`.
 `openNotes(id)` opens the tab at that card: `noteCurrent` (`.current`,
 `aria-current`), scrolled into view and focused (`revealNoteCard()`), again
 after the reload if the focus was lost with the old card. **Show in text**
@@ -2952,9 +3008,10 @@ arriving, which keeps streaming into the hidden conversation. Under the
 book's title, `#book-files` lists the book's `files/` as download links.
 
 **The header's Ask Hilde** (`#header-ask`, in `.app-header` after the brand,
-`margin-left:auto`): on every page a teal pill (the player bar button's 12%
-`--ask` tint, 65% border, `--ask` text; filled `--ask` with dark ink while
-`aria-expanded`) with the sparkle and "Ask Hilde"; under 600 px a round 44 px
+`margin-left:auto`): on every page a neutral pill (`.header-ask`: a gray
+#5a5a5a border on `--surface`, `--text` words, only the sparkle in teal
+`--ask`; while `aria-expanded` the pressed look, a `--text` border on
+`--hover`) with the sparkle and "Ask Hilde"; under 600 px a round 44 px
 button with the sparkle alone, its `aria-label` "Ask Hilde". `headerAsk()`
 opens the panel in the screen's mode.
 
@@ -2974,11 +3031,11 @@ conversation shown: `chatScope()`, `chatQuery()` (`book=…` or `help=1`),
 `chatTarget()` (`{book}` or `{help: true}`); `stopChatTurn()` and
 `cancelChatAnswer()` take the target of the conversation they started in. In
 help mode the panel's `data-mode` is `help` and its label "Ask Hilde"; the
-header still reads **Ask Hilde** in teal; the log starts with `#help-intro`
+header still reads **Ask Hilde** (neutral, its sparkle teal); the log starts with `#help-intro`
 (`HELP_INTRO`, put first by `applyChat()` and `restoreChat()`): the heading
 "Help with Hilde Reader", "Ask how something works in Hilde Reader. To ask
-about a paper, open it in Listen.", and three `.help-example` buttons (quiet
-teal: outlined, `--ask` text) whose click puts its question in the box and
+about a paper, open it in Listen.", and three `button.help-example` buttons (neutral
+outlined buttons) whose click puts its question in the box and
 sends nothing. Nothing of a book is ever attached or shown there: no card
 (`sendChat()` sends `about` only in book mode), no book or section in **⋯**
 (`.chat-where` hidden), no files, and a book playing in the background keeps
@@ -3004,7 +3061,7 @@ is (a figure passage as a figure). `selectedPassages()` takes only passages
 the selection takes words from, so a triple-click ending at offset 0 of the
 next paragraph does not attach it. The panel's header (`#panel-head`) is the
 tablist, whose **Ask Hilde** tab carries the sparkle (`.ask-icon`, the bar
-button's own) and reads as a teal title while the chat is shown; then, while
+button's own, teal) and neutral text while the chat is shown; then, while
 the chat is shown, its model box (`#chat-model-pick`) and **⋯**
 (`#chat-more`); and **×** (`closePanel()`) at the right on every size, in one
 row. In a panel narrower than 420 px (`.narrow-head`, set by a
@@ -3027,7 +3084,7 @@ line, alternatives, and Add local / Connect a provider (the picker's own
 elements, moved into `#chat-model-notes` when the page starts) show under the
 header only when there is something to say; its list (`#chat-picker-pop`)
 hangs from the panel, outside the header, and the box's hover and open border
-is teal (`--ask`), as the header never shows blue. **⋯** opens `#chat-menu`
+is `--dim`. **⋯** opens `#chat-menu`
 (`toggleChatMenu()`, `role=menu`): a muted block that is not a control, the
 book and the section of the card (else of the passage playing) and "Web
 search on" when the server searches, then **Read answers aloud**
@@ -3050,7 +3107,10 @@ small outlined **Send**, empty for the listener's own question, whose
 placeholder says what Enter does: "Type a question, or press Enter to explain
 the selection" (or "… the figure", "… this part"), and with nothing attached
 "Type a question". Enter sends, Shift+Enter breaks the line; while Hilde
-answers, the button row's **Stop** ends the answer.
+answers, the button row's **Stop** ends the answer. Under `#chat-compose`, in
+`.chat-foot`, `#chat-disclaimer` (`.chat-disclaimer`: 12 px, `--dim`, one
+centred line, `nowrap`) always reads "Hilde can make mistakes. Check the
+source text."
 
 The context card (`attachAbout()`) is the `about` of the question, frozen when
 attached: playback moving on never changes it. The page asks
@@ -3102,8 +3162,8 @@ word in the hint line: an empty box with no card ("Type a question first."),
 a request still in flight, Hilde still answering, no model (loading, or none
 available). Hilde still answering (`chatData.running`, with no model change)
 keeps the rule of one answer at a time but says so as a box, not the small
-gray line (`chatHint(…, "busy")`, `.chat-hint.busy`: 14 px text on a 12% `--ask`
-tint with a 65% `--ask` border), naming the model writing: "Hilde is still
+gray line (`chatHint(…, "busy")`, `.chat-hint.busy`: 14 px text in a neutral
+box), naming the model writing: "Hilde is still
 answering with <model>. Your question stays here: wait for the answer, or
 press Stop, then send it."; it goes when the answer ends (`applyChat()`).
 While the card prepares, **Send** reads **Preparing context…**
@@ -3605,7 +3665,7 @@ for the answer read last (`panelAnswer`) paused partway (its `chatPlace`);
 else the row is hidden. `panelAnswer` is cleared when the book plays, and an
 answer that ends (`stopSpeaking(true)`) clears its place. `renderChatAction()`
 (from `renderChatControls()`, `pauseOtherSounds()`, `setVoiceButton()`, and
-`stopSpeaking()`) draws the icon and label, dark ink on a solid `--ask` pill;
+`stopSpeaking()`) draws the icon and label, `--accent-ink` on a solid blue `--accent` pill;
 `chatAction()` stops the turn (`stopChat()`), pauses the answer
 (`stopSpeaking()` keeps its place), or goes on (`speakAnswer()`). The
 per-answer **🔈 Read aloud** starts reading an answer, and **Start over** reads
@@ -3631,7 +3691,7 @@ read aloud by **Read answers aloud**.
 | `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install), and `notes_enabled` (`--enable-notes`). |
 | `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; never a host); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
-| `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Paste text, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
+| `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Text tab, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |
 | `POST /api/voices/delete`, `POST /api/documents/delete`, `POST /api/audiobooks/delete` | Delete one asset named by JSON `name` (a book id for an audiobook) and return the shared catalog (`asset_catalog()`: `voices`, `documents`, and `document_times`, each document's modification time in seconds for Create's dated list). A voice folder is renamed out of `Voices/` in one step before its files are removed; a linked voice or document loses only its link; the voice's entry in `voice-tags.json` goes too. A document delete removes only that one file in `Documents/` (`resolve_asset()` refuses any name that is not one plain component, HTTP 400); books made from it, voices, notes, and chats are never touched. An audiobook is the whole book folder with every voice; a book being made (`making-<job id>`) is its job, stopped, and its stage with the text prepared so far and its conversation (`delete_making()`, see [Books being made](#books-being-made)), HTTP 409 while the job is still stopping. A missing asset returns HTTP 404 with a fixed message; errors never name server paths. |
 | `POST /api/voices/rename` | Rename the saved voice JSON `name` to `new_name` (`rename_voice()`) and return the new name and the shared catalog. The folder is renamed (a linked voice renames its link), so the voice's files and version stay as they were; its entry in `voice-tags.json`, if any, moves to the new name. Every book voice whose `voice_version` is one of the voice's versions (`voice_versions()`: its current files and each kept in `.versions/`) takes the new name: its folder in the book, then its `book.json` entry, under `_BOOK_LOCK`. A book voice of the same name but another version keeps its name. HTTP 400 for a name that is not one plain path component, 404 for a missing voice, 409 while a preparing, queued, or running audiobook reads with it (`JobQueue.voice_in_use()`), for a name another voice has, for a book that already has a voice of the new name, or for a book holding the voice under two names. |
