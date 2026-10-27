@@ -277,8 +277,11 @@ much is listened, finished, playing) and a play button that plays it without
 opening it, the books in progress first; it
 plays a book with its synchronized text, its source text, and its figures as
 printed in the PDF; **Ask Hilde**, at the top right of every page, answers
-questions about the book open in Listen (it gets the book's abstract and looks
-up the paragraphs it needs, never the whole book) and, on every other page in
+questions about the book open in Listen (it gets the book's abstract and the
+paragraphs most similar to each question, found by an embedding model that
+llama.cpp runs on the CPU, or by keyword search without one, as Settings and
+the panel say; it reads others by number, never the whole book; see
+[Similarity search](docs/configuration.md#similarity-search)) and, on every other page in
 a help conversation of its own, about Hilde Reader itself (from
 [the help](docs/help.md), then the developer docs and the code, linking the
 exact lines at the commit the server runs), and writes Markdown notes about a

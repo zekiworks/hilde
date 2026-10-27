@@ -13849,6 +13849,331 @@ class AskWhileMakingTests(unittest.TestCase):
             web.delete_making(self.storage, queue, None, making)
 
 
+class FakeEmbedder:
+    """Stands in for AskEmbedder: a text's vector counts a few words (and a
+    small constant, so none is zero); it keeps what it was asked to embed."""
+
+    WORDS = ("cat", "dog", "dam", "storm")
+
+    def __init__(self, fail=None):
+        self.calls, self.fail = [], fail
+
+    def check(self, key):
+        pass
+
+    def embed(self, settings, texts, query=False):
+        if self.fail:
+            raise web.AskEmbedderUnavailable(self.fail)
+        self.calls.append((query, list(texts)))
+        matrix = np.array([[text.lower().count(word) for word in self.WORDS] + [0.01] for text in texts],
+                          dtype=np.float32)
+        return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
+
+
+# llama-server as the embedder starts it, for the lifecycle test: /health,
+# /tokenize (a long text, to be cut), /v1/embeddings ([tokens, last token, 1]).
+FAKE_LLAMA_SERVER = """#!{python}
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+args = sys.argv[1:]
+if "--fail" in open(args[args.index("-m") + 1]).read():
+    print("boom: no such architecture", flush=True)
+    sys.exit(3)
+assert "--embedding" in args and args[args.index("--pooling") + 1] == "mean" and args[args.index("--host") + 1] == "127.0.0.1"
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def send(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        self.send({{"status": "ok"}})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/tokenize":
+            words = body["content"].split()
+            self.send({{"tokens": [0] + [len(word) for word in words] * (300 if len(words) > 3 else 1) + [2]}})
+        else:
+            self.send({{"data": [{{"index": index, "embedding": [float(len(tokens)), float(tokens[-1]), 1.0]}}
+                               for index, tokens in reversed(list(enumerate(body["input"])))]}})
+
+
+HTTPServer(("127.0.0.1", int(args[args.index("--port") + 1])), Handler).serve_forever()
+"""
+
+
+class AskRetrievalTests(unittest.TestCase):
+    """Ask with retrieval (Can, 27 Oct: workspace/rag-eval/ASK-RAG-SPEC.md):
+    the paragraphs found by the mix come with the message, search_document
+    leaves the book, keyword search when the embedding model is missing, the
+    index under the library's cache, and the stream guard. No model runs:
+    the embedder is FakeEmbedder, the chat model FakeChatModel."""
+
+    PASSAGES = ("Storms come in spring.", "The cat sat on the cat mat with a cat.", "A cat naps.",
+                "Dogs bark at storms.", "The ZQ-9 identifier names the dam gauge.", "Rivers carry silt.")
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.storage = web.SharedStorage(root / "library")
+        self.storage.ensure()
+        self.home = root / ".hilde"
+        (self.home / "models").mkdir(parents=True)
+        (self.home / "models" / "embed.gguf").write_bytes(b"GGUF")
+        self.configure(k=3)
+        self.embedder = FakeEmbedder()
+        for patch in (mock.patch.object(web, "HILDE_HOME", self.home), mock.patch.object(web, "_ASK_INDEXES", {}),
+                      mock.patch.object(web, "ASK_EMBEDDER", self.embedder)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def configure(self, **retrieval):
+        (self.home / "ask.yaml").write_text(yaml.safe_dump({"retrieval": {
+            "model": "models/embed.gguf", "server": sys.executable, **retrieval}}))
+
+    def book(self):
+        book = store_book(self.storage, narration={"schema": 2, "original_view": False, "passages": [
+            {"type": "body", "text": text, "paragraphs": [index], "summary": f"S{index}", "tags": ["t"]}
+            for index, text in enumerate(self.PASSAGES)]})
+        return book, web.document_id(book)
+
+    def document(self, passages=None):
+        return web.AskDocument(ASK_DOC, "paper", "Book", [{"text": text} for text in passages or self.PASSAGES])
+
+    def ask(self, book, *questions, replies):
+        """Each question as one turn to FakeChatModel; its requests, and the server log."""
+        FakeChatModel.requests, FakeChatModel.replies = [], list(replies)
+        # The stream guard closes a stream the fake is still writing: that is no error here.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        server.handle_error = lambda *args: None
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        chats, log = web.ChatRegistry(), io.StringIO()
+        with redirect_stdout(log):
+            for question in questions:
+                turn = web.ChatTurn(self.storage, book, question, "lm-studio/fake", local_servers_at(server))
+                self.assertTrue(chats.start(turn))
+                self.assertTrue(turn.wait_done(10))
+        return FakeChatModel.requests, log.getvalue(), chats
+
+    def test_the_mix_puts_the_keyword_rankings_best_two_first_then_the_similarity_ranking(self):
+        settings = web.ask_config()["retrieval"]
+        document = self.document()
+        # BM25 on "ZQ-9 cat": ¶5 holds both rare words; then the cat paragraphs.
+        self.assertEqual(web.AskBM25([(n, t) for n, t in enumerate(self.PASSAGES, 1)]).rank("ZQ-9 cat")[:3], [5, 2, 3])
+        numbers, took = web.ask_retrieve(self.storage, document, "ZQ-9 cat", {**settings, "k": 4})
+        # Similarity alone ranks ¶3 and ¶2 (cats) first, then ¶6 (no word at all), and would miss the identifier's ¶5.
+        self.assertEqual(numbers, [5, 2, 3, 6])
+        self.assertIsNotNone(took["index_s"])
+        self.assertEqual(web.ask_retrieve(self.storage, document, "ZQ-9 cat", settings)[0], [5, 2, 3])
+        # Repeats are dropped: here both halves rank ¶2 and ¶3 first.
+        self.assertEqual(web.ask_retrieve(self.storage, document, "cat", settings)[0], [2, 3, 6])
+        self.assertEqual(self.embedder.calls[-1], (True, ["cat"]))
+
+    def test_the_paragraphs_found_come_with_the_message_and_a_follow_up_adds_the_previous_message(self):
+        book, doc = self.book()
+        requests, log, _ = self.ask(book, "Where do cats sit?", "And the dogs?", replies=[
+            [({"content": f"On a mat, {doc}:2."}, "stop")], [({"content": f"They bark, {doc}:4."}, "stop")]])
+        queries = [texts[0] for query, texts in self.embedder.calls if query]
+        self.assertEqual(queries, ["Where do cats sit?", "Where do cats sit?\nAnd the dogs?"])
+        first = requests[0]["messages"][-1]["content"]
+        # Labelled exactly as read_paragraphs gives them, after the head line and before the question.
+        self.assertTrue(first.startswith(web.ASK_RETRIEVED_HEAD + "\n\n"
+                                         f'<paragraph id="{doc}:3" label="Hilde\'s narration">\n{self.PASSAGES[2]}\n'
+                                         "</paragraph>"), first)
+        self.assertTrue(first.endswith("Where do cats sit?"))
+        saved = web.read_chat(web.read_book(self.storage, book)[0])
+        self.assertEqual([item["id"] for item in saved[0]["retrieved"]], [f"{doc}:3", f"{doc}:2", f"{doc}:6"])
+        # Turn 2: its own paragraphs; one turn 1 already gave reads "(already above)".
+        second = requests[1]["messages"][-1]["content"]
+        self.assertIn(f'<paragraph id="{doc}:4" label="Hilde\'s narration">', second)
+        self.assertIn(web.ASK_ALREADY, second)
+        self.assertRegex(log, rf"Ask reading: turn=\w+ mode=similarity model=embed k=3 query=message index=built "
+                              rf"[\d.]+s embed=[\d.]+ms rank=[\d.]+ms ids={doc}:3,{doc}:2,{doc}:6\n")
+        self.assertRegex(log, r"query=previous\+message index=kept ")
+
+    def test_tools_and_instructions_per_mode_and_the_book_is_never_searched_by_keywords(self):
+        book, doc = self.book()
+        requests, _, _ = self.ask(book, "Where do cats sit?", replies=[[({"content": "Here."}, "stop")]])
+        tools = {tool["function"]["name"]: tool["function"] for tool in requests[0]["tools"]}
+        # search_document is gone; search_help reaches Hilde Reader's documents (and stored pages) alone.
+        self.assertEqual(set(tools), {"search_help", "read_paragraphs", "write_file", "list_files", "delete_file"})
+        self.assertIn("Never the open document", tools["search_help"]["description"])
+        self.assertEqual(requests[0]["tools"], [{"type": "function", "function": tool} for tool in web.ASK_SIMILAR_TOOLS])
+        system = requests[0]["messages"][0]["content"]
+        self.assertIn(web.ASK_SIMILAR_READING, system)
+        self.assertIn("give your best answer and say in a sentence what remains uncertain", system)
+        self.assertNotIn(web.ASK_KEYWORD_READING, system)
+        self.assertNotIn("search_document", system)
+        # The help paragraph is the same in both modes but for the tool's name.
+        self.assertIn(web.ASK_APP_PROMPT.replace("with search_document", "with search_help"), system)
+        shelf = web.AskShelf(self.storage, web.ask_book_document(book, {}, web.chat_book(self.storage, book)[2]))
+        shelf.similar = True
+        items, label, _ = web.chat_tool(None, shelf, {"name": "search_help",
+                                                      "arguments": {"document_id": doc, "keywords": "cat"}})
+        self.assertEqual((items[0]["kind"], label), ("note", "Searched nothing"))
+        self.assertIn("read_paragraphs", items[0]["text"])
+        self.assertEqual(web.chat_tool(None, shelf, {"name": "search_document", "arguments": {
+            "document_id": doc, "keywords": "cat"}})[:2], ([{"kind": "note", "text": "There is no tool named search_document."}],
+                                                           "Unknown tool search_document"))
+        shelf.help = web.AskDocument("help", "help", "Help", [{"title": "Cats", "body": "Cat help.", "text": "Cat help."}])
+        self.assertEqual(web.chat_tool(None, shelf, {"name": "search_help", "arguments": {
+            "document_id": "help", "keywords": "cat"}})[0][0]["id"], "help:1")
+        # With web search, a stored page is found with search_help too.
+        self.assertNotIn("search_document", json.dumps(web.ASK_SIMILAR_WEB_TOOLS))
+        self.assertIn("search_help", web.ASK_SIMILAR_WEB_TOOLS[1]["description"])
+        # Turned off: today's tools and instructions, byte for byte, and no embedding.
+        self.configure(enabled=False)
+        calls = len(self.embedder.calls)
+        requests, log, _ = self.ask(book, "Where do cats sit?", replies=[[({"content": "Here."}, "stop")]])
+        self.assertEqual(requests[0]["tools"], [{"type": "function", "function": tool} for tool in web.CHAT_TOOLS])
+        self.assertIn(web.ASK_KEYWORD_READING, requests[0]["messages"][0]["content"])
+        self.assertEqual(len(self.embedder.calls), calls)
+        self.assertIn("mode=keyword why=the similarity search is turned off in ask.yaml", log)
+
+    def test_without_the_embedding_model_ask_searches_by_keywords_and_says_so(self):
+        book, _ = self.book()
+        (self.home / "models" / "embed.gguf").unlink()
+        reading = web.ask_reading(web.ask_config())
+        self.assertEqual(reading, {"mode": "keyword",
+                                   "why": f"there is no embedding model at {self.home / 'models' / 'embed.gguf'}"})
+        text = web.ask_reading_text(reading)
+        self.assertTrue(text.startswith("Hilde finds the book's paragraphs by keyword search, because there is no "
+                                        "embedding model at "), text)
+        requests, log, chats = self.ask(book, "Where do cats sit?", replies=[[({"content": "Here."}, "stop")]])
+        self.assertEqual(requests[0]["tools"], [{"type": "function", "function": tool} for tool in web.CHAT_TOOLS])
+        self.assertNotIn("retrieved", web.read_chat(web.read_book(self.storage, book)[0])[0])
+        self.assertIn("mode=keyword why=there is no embedding model at", log)
+        self.assertEqual(web.chat_payload(self.storage, chats, book)["reading"], {"mode": "keyword", "text": text})
+        # Other reasons, said as plainly.
+        for retrieval, why in (({"model": ""}, "no embedding model is set in ask.yaml"),
+                               ({"server": "no-such-llama-server"}, "llama.cpp's server (no-such-llama-server) is not found")):
+            (self.home / "models" / "embed.gguf").write_bytes(b"GGUF")
+            self.configure(**retrieval)
+            self.assertIn(why, web.ask_reading(web.ask_config())["why"])
+        # An embedding model that fails while a turn starts: that turn searches by keywords, and the log says why.
+        self.configure(k=3)
+        with mock.patch.object(web, "ASK_EMBEDDER", FakeEmbedder("the embedding model failed: refused")):
+            requests, log, _ = self.ask(book, "Where do cats sit?", replies=[[({"content": "Here."}, "stop")]])
+        self.assertEqual(requests[0]["tools"], [{"type": "function", "function": tool} for tool in web.CHAT_TOOLS])
+        self.assertIn("mode=keyword why=the embedding model failed: refused", log)
+        self.assertEqual(web.ask_reading(web.ask_config()), {"mode": "similarity", "model": "embed", "k": 3})
+        self.assertEqual(web.chat_payload(self.storage, chats, book)["reading"]["mode"], "similarity")
+
+    def test_the_index_is_kept_in_the_librarys_cache_and_rebuilt_when_the_text_changes(self):
+        settings = web.ask_config()["retrieval"]
+        (vectors, numbers, _), built = web.ask_index(self.storage, self.document(), settings)
+        path = self.storage.root / ".cache" / "ask-index" / f"{ASK_DOC}.npz"
+        self.assertTrue(path.is_file())
+        self.assertEqual((vectors.shape[0], numbers, self.embedder.calls[-1]), (6, [1, 2, 3, 4, 5, 6], (False, list(self.PASSAGES))))
+        self.assertIsNotNone(built)
+        # Kept in memory, then on disk: no embedding either time.
+        self.assertIsNone(web.ask_index(self.storage, self.document(), settings)[1])
+        web._ASK_INDEXES.clear()
+        self.assertIsNone(web.ask_index(self.storage, self.document(), settings)[1])
+        self.assertEqual(len(self.embedder.calls), 1)
+        # A changed text (a book made again) or prefix builds it again.
+        changed = list(self.PASSAGES[:-1]) + ["Rivers carry sand."]
+        self.assertIsNotNone(web.ask_index(self.storage, self.document(changed), settings)[1])
+        self.assertIsNotNone(web.ask_index(self.storage, self.document(changed), {**settings, "document_prefix": "d: "})[1])
+        self.assertEqual(len(self.embedder.calls), 3)
+        # Never in a book's folder.
+        book, _ = self.book()
+        self.ask(book, "Where do cats sit?", replies=[[({"content": "Here."}, "stop")]])
+        folder = web.read_book(self.storage, book)[0]
+        self.assertEqual([p for p in folder.rglob("*.npz")], [])
+        self.assertTrue((self.storage.root / ".cache" / "ask-index" / f"{web.document_id(book)}.npz").is_file())
+
+    def test_the_stream_guard_stops_an_answer_at_the_fourth_time_a_line_comes(self):
+        book, _ = self.book()
+        loop = "Hmm, but the question asks for a single answer among the named checks."
+        lines = ["Looking at the paragraphs.\n"] + [f"{loop}\n", "- yes\n"] * 5 + ["Final answer.\n"]
+        _, log, _ = self.ask(book, "Which check has no place?", replies=[[({"content": line}, None) for line in lines]
+                                                                          + [({"content": ""}, "stop")]])
+        entries = web.read_chat(web.read_book(self.storage, book)[0])
+        answer, notice = entries[-2], entries[-1]
+        self.assertEqual(answer["text"], ("Looking at the paragraphs.\n" + f"{loop}\n- yes\n" * 3).strip())
+        self.assertEqual((answer["stopped"], answer["repeated"]), (True, True))
+        self.assertEqual((notice["role"], notice["text"]), ("notice", web.ASK_REPEAT_NOTE))
+        self.assertIn("Ask: stream guard turn=", log)
+        self.assertRegex(log, r"Ask: model=lm-studio/fake turn=\w+ question=1 round=1 ")
+        # Three times, or short lines any number of times, are an answer's own.
+        lines = [f"{loop}\n"] * 3 + ["- yes\n"] * 9 + ["Done."]
+        self.ask(book, "Again?", replies=[[({"content": line}, None) for line in lines] + [({"content": ""}, "stop")]])
+        self.assertEqual(web.read_chat(web.read_book(self.storage, book)[0])[-1]["text"], "".join(lines))
+
+    def test_help_mode_is_untouched(self):
+        FakeChatModel.requests = []
+        loop = "Hmm, but the question asks for a single answer among the named checks.\n"
+        FakeChatModel.replies = [[({"content": loop * 5}, "stop")]]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatModel)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        turn = web.HelpTurn(self.storage, "How do I add a document?", "lm-studio/fake", local_servers_at(server))
+        self.assertTrue(web.ChatRegistry().start(turn))
+        self.assertTrue(turn.wait_done(10))
+        request = FakeChatModel.requests[0]
+        self.assertEqual(request["tools"], [{"type": "function", "function": tool} for tool in web.HELP_TOOLS])
+        self.assertEqual(request["messages"][0]["content"], web.ask_help_system_prompt(web.ask_help()))
+        self.assertEqual(request["messages"][-1]["content"], "How do I add a document?")
+        self.assertEqual(self.embedder.calls, [])
+        # No stream guard: the help's answer comes whole.
+        self.assertEqual(json.loads(web.help_chat_path(self.storage).read_text())["entries"][-1]["text"],
+                         (loop * 5).strip())
+
+    def test_retrieval_settings_are_checked(self):
+        self.assertEqual(web.ask_config()["retrieval"]["k"], 3)
+        for given, problem in (({"k": 0}, "retrieval.k must be a positive whole number"),
+                               ({"k": True}, "retrieval.k must be a positive whole number"),
+                               ({"enabled": "yes"}, "retrieval.enabled must be true or false"),
+                               ({"model": 3}, "retrieval.model must be text"),
+                               ({"colour": 1}, "unknown setting retrieval.colour")):
+            with self.subTest(given), self.assertRaisesRegex(ValueError, re.escape(problem)):
+                web._ask_merge(web.ASK_DEFAULTS, {"retrieval": given})
+        self.assertEqual(web.ASK_DEFAULTS["retrieval"]["model"], "models/nomic-embed-text-v2-moe.f16.gguf")
+
+    def test_the_embedder_runs_llama_server_on_a_free_port_cuts_long_texts_and_stops_it(self):
+        script = self.home / "llama-server"
+        script.write_text(FAKE_LLAMA_SERVER.format(python=sys.executable))
+        script.chmod(0o755)
+        self.configure(server=str(script))
+        settings = web.ask_config()["retrieval"]
+        embedder = web.AskEmbedder()
+        self.addCleanup(embedder.stop)
+        with redirect_stdout(io.StringIO()) as log:
+            vectors = embedder.embed(settings, ["a b", "one two three four five"])
+        process = embedder.process
+        self.assertIsNone(process.poll())
+        self.assertRegex(log.getvalue(), r"Ask embedding: started embed\.gguf with llama-server on http://127\.0\.0\.1:\d+ ")
+        # Rows in input order, normalized; the long text cut to 512 tokens, keeping the closing one.
+        # "search_document: a b" is 3 words, so 5 tokens with the opening and closing ones.
+        expected = np.array([[5, 2, 1], [512, 2, 1]], dtype=np.float32)
+        np.testing.assert_allclose(vectors, expected / np.linalg.norm(expected, axis=1, keepdims=True), rtol=1e-6)
+        with redirect_stdout(io.StringIO()):
+            embedder.stop()
+        self.assertIsNotNone(process.poll())
+        self.assertIsNone(embedder.process)
+        # A server that can't load the model: said, and not tried again for a while.
+        (self.home / "models" / "embed.gguf").write_text("--fail")
+        with redirect_stdout(io.StringIO()), mock.patch.object(web, "ASK_EMBEDDER", embedder):
+            with self.assertRaisesRegex(web.AskEmbedderUnavailable, "exit 3: boom: no such architecture"):
+                embedder.embed(settings, ["a"])
+            reading = web.ask_reading(web.ask_config())
+        self.assertEqual(reading["mode"], "keyword")
+        self.assertIn("did not start (llama-server exit 3: boom", reading["why"])
+
+
 _TEST_HOME = None
 
 

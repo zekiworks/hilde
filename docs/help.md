@@ -75,7 +75,7 @@ While a book plays, the paragraph being read has a thin blue line at its left, t
 
 What you asked about shows as a card above the question box. **Context details** lists exactly what goes with your question. **Word | Sentence | Paragraph** widens the selection. Press **Explain this part**, or type your own question.
 
-Hilde looks up the paragraphs it needs and cites them, such as ¶12; click one to jump there. Ask follow-ups, such as "give an example". Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
+Hilde finds the paragraphs it needs (**⋯** says how) and cites them, such as ¶12; click one to jump there. Ask follow-ups, such as "give an example". Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
 
 On other pages it answers questions about Hilde Reader, apart from book conversations, with nothing of a book. It uses this help, or else the developer docs or the code, saying so and linking the place; otherwise it says it isn't sure. It only explains, never changes settings.
 
@@ -86,6 +86,7 @@ Pick the model in the panel's header; this browser keeps it, apart from the book
 The narration can be wrong; when it differs from the document, Hilde says so and goes by the document.
 
 <!-- more: docs/web-ui.md › Ask Hilde on every page -->
+<!-- checked (27 Oct): ask-rag, how Hilde finds paragraphs (similarity search or keyword search) is a line of the ⋯ menu, and a note under the header when it is keyword search (docs/configuration.md "Similarity search"); words cut for the cap -->
 <!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation; "A book being made": Being made · N% card, reading view without player, conversation kept and moved into the book, model per browser in player.chat_model); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()); making_passages(), ASK_NOT_READY. -->
 
 ## Local and Cloud: what data leaves your computer

@@ -6527,6 +6527,8 @@ def _chat_completion_stream(response, label, on_text=None, usage=None):
             details = counts.get("prompt_tokens_details")
             cached = details.get("cached_tokens") if isinstance(details, dict) else counts.get("prompt_cache_hit_tokens")
             _note_usage(usage, counts.get("prompt_tokens"), cached)
+            if usage is not None and isinstance(counts.get("completion_tokens"), int):
+                usage["completion"] = counts["completion_tokens"]
         for choice in event.get("choices") or ():
             if not isinstance(choice, dict):
                 continue
@@ -12271,6 +12273,27 @@ HELP_TOOLS = (
         },
     },
 )
+# With the similarity search (ask_reading()), the open book's paragraphs come
+# with the listener's message and search_document is gone: search_help finds
+# paragraphs of the help, the developer docs, the code, and stored web pages
+# alone (search_document() as before), so a question about Hilde Reader is
+# found as it was; read_paragraphs reads the book's other paragraphs by id.
+# (The RAG test's DeepSeek searched the book again in most turns when a
+# search_document that refused the book was offered: one wasted round each.)
+ASK_SIMILAR_SEARCH = "search_help"
+ASK_SIMILAR_TOOLS = (
+    {
+        "name": ASK_SIMILAR_SEARCH,
+        "description": (
+            "Find paragraphs of Hilde Reader's own documents by keywords: \"help\" for its help, \"docs\" and "
+            "\"code\" for its developer docs and code, or a stored web page's id. Never the open document: its "
+            "paragraphs most similar to each message come with it. The best matches come back whole, weaker ones "
+            "by their place with their ids."
+        ),
+        "parameters": CHAT_TOOLS[0]["parameters"],
+    },
+    *CHAT_TOOLS[1:],
+)
 # With --search-server, Chat may also search the web and read public pages.
 CHAT_WEB_TOOLS = (
     {
@@ -12299,6 +12322,11 @@ CHAT_WEB_TOOLS = (
         },
     },
 )
+# The web tools with the similarity search: a stored page is found with search_help.
+ASK_SIMILAR_WEB_TOOLS = tuple(
+    {**tool, "description": tool["description"].replace("search_document", ASK_SIMILAR_SEARCH)}
+    for tool in CHAT_WEB_TOOLS
+)
 CHAT_SEARCH_RESULTS = 8
 CHAT_WEB_TIMEOUT = 20
 CHAT_PAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -12316,6 +12344,11 @@ HTML_BLOCK_ELEMENTS = frozenset((
 
 class ChatUnavailable(ValueError):
     """Chat cannot answer about this book; the message says why."""
+
+
+class ChatRepeating(Exception):
+    """The stream guard stopped an answer (ChatTurn.repeated_line()): where
+    the repeated line starts in the text written, and the line."""
 
 
 class ChatTooLong(RuntimeError):
@@ -12370,6 +12403,17 @@ ASK_DEFAULTS = {
     # Per model (a selector, or a pattern such as "lm-studio/qwen*"): any of
     # ASK_MODEL_FIELDS.
     "models": {},
+    # How Ask finds the open book's paragraphs: with its embedding model
+    # (a GGUF that llama.cpp's server runs on the CPU, AskEmbedder), the k
+    # paragraphs most similar to the listener's message come with it
+    # (ask_retrieve()); turned off, or without the model or the server, the
+    # model searches the book by keywords (search_document), and Settings and
+    # Ask say so. A relative `model` is under Hilde's config dir; `server` is
+    # a path or a name on PATH; the prefixes are the model's own.
+    "retrieval": {
+        "enabled": True, "model": "models/nomic-embed-text-v2-moe.f16.gguf", "server": "llama-server",
+        "k": 8, "threads": 8, "query_prefix": "search_query: ", "document_prefix": "search_document: ",
+    },
 }
 ASK_MODEL_FIELDS = ("prefill_tokens_per_second", "cache_lifetime_seconds", "reliable_up_to", "expiry_multiplier")
 # The last problem with ask.yaml logged, so a bad file is said once.
@@ -12384,6 +12428,43 @@ HELP_DOCUMENT = "help"
 ASK_WEB_DOCUMENTS = "chat-docs"
 # What Hilde has measured of each chat model, beside the stored pages.
 ASK_STATS_FILE = "ask-models.json"
+# The retrieval settings' types (ask.yaml's `retrieval`, _ask_retrieval()).
+ASK_RETRIEVAL_TYPES = {"enabled": bool, "model": str, "server": str, "k": int, "threads": int,
+                       "query_prefix": str, "document_prefix": str}
+# The open book's paragraph vectors: <root>/.cache/ask-index/<document id>.npz,
+# never in a book's folder; keyed by its text and the model, so a book made
+# again (Recreate) or another model rebuilds it.
+ASK_INDEX_FOLDER = "ask-index"
+# The embedding model's server (AskEmbedder): started on first use, stopped
+# after this long unused and when Hilde stops. A start that failed is not
+# tried again for ASK_EMBED_RETRY_AFTER seconds; Ask searches by keywords
+# meanwhile, and says why.
+ASK_EMBED_IDLE = 15 * 60
+ASK_EMBED_START_TIMEOUT = 60
+ASK_EMBED_RETRY_AFTER = 120
+# nomic-embed-text-v2-moe reads 512 tokens: a longer paragraph is cut there
+# (as its reference code cuts it). Paragraphs go to the server 16 at a time.
+ASK_EMBED_MAX_TOKENS = 512
+ASK_EMBED_BATCH = 16
+# The retrieval's mix: the keyword ranking's (BM25) best this many first,
+# then the similarity ranking, without repeats (identifiers stay found).
+ASK_RETRIEVAL_KEYWORD_FIRST = 2
+# What the listener's message carries above the paragraphs found for it.
+ASK_RETRIEVED_HEAD = (
+    "Paragraphs of the open document most similar to this message, found by a similarity search, best first:"
+)
+# The stream guard (ChatTurn.repeated_line()): an answer that gives the same
+# line ASK_REPEAT_LIMIT times (a line of at least ASK_REPEAT_MIN_CHARS
+# letters or digits, case and spacing aside) is stopped there, keeping what
+# came before it. In 2,584 answers of the RAG test no line came 4 times
+# (2 came 3 times: list items); its 5 runaways reached a 4th time after
+# 6,000 to 18,000 characters, of the 31,000 to 39,000 they ran to.
+ASK_REPEAT_LIMIT = 4
+ASK_REPEAT_MIN_CHARS = 30
+ASK_REPEAT_NOTE = (
+    "Hilde stopped this answer because it kept repeating the same line. Ask again, more narrowly, or with "
+    "another model."
+)
 
 
 def ask_config_path():
@@ -12420,10 +12501,30 @@ def _ask_merge(defaults, given, where=""):
                 merged["models"][str(pattern)] = {
                     field: _ask_number(number, f"models.{pattern}.{field}") for field, number in fields.items()
                 }
+        elif key == "retrieval" and not where:
+            merged[key] = _ask_retrieval(value)
         elif isinstance(defaults[key], dict):
             merged[key] = _ask_merge(defaults[key], value, f"{where}{key}.")
         else:
             merged[key] = _ask_number(value, f"{where}{key}", allow_none=key == "reliable_up_to")
+    return merged
+
+
+def _ask_retrieval(given):
+    """ask.yaml's `retrieval` over its defaults; an unknown key or a value
+    of the wrong type raises ValueError naming it."""
+    if not isinstance(given, dict):
+        raise ValueError("retrieval must be a mapping")
+    merged = dict(ASK_DEFAULTS["retrieval"])
+    for key, value in given.items():
+        kind = ASK_RETRIEVAL_TYPES.get(key)
+        if kind is None:
+            raise ValueError(f"unknown setting retrieval.{key}")
+        if kind is int and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            raise ValueError(f"retrieval.{key} must be a positive whole number")
+        if kind is not int and not isinstance(value, kind):
+            raise ValueError(f"retrieval.{key} must be {'true or false' if kind is bool else 'text'}")
+        merged[key] = value
     return merged
 
 
@@ -13159,10 +13260,37 @@ ASK_MAKING_NOTE = (
 )
 
 
-def ask_system_prompt(document, abstract, help_document, web=False):
+# How the model reaches the open book's paragraphs, by the way Ask reads it
+# (ask_reading()): by searching with keywords, or given the paragraphs most
+# similar to each message, with the line that keeps an uncertain answer short
+# (the RAG test's runaways deliberated over an ill-posed question until the
+# output cap).
+ASK_KEYWORD_READING = (
+    "You see the document's abstract, not the document: find its paragraphs with search_document and read them "
+    "with read_paragraphs, which gives the paper's own text, labelled \"From the paper\" (version \"narration\" "
+    "gives Hilde's narration instead, \"both\" gives both; a figure, table, or equation comes with Hilde's "
+    "description). A search gives the best matches as the paper prints them and weaker ones as Hilde's "
+    "summaries; summaries are not the text, so read a paragraph before quoting it or answering about its "
+    "details. When a search misses, search again with other words."
+)
+ASK_SIMILAR_READING = (
+    "You see the document's abstract, not the document; with each of the listener's messages come the "
+    "paragraphs of the document most similar to it (on a follow-up, to it and their previous message), found by "
+    "a similarity search, best first: the paper's own text, labelled \"From the paper\" (a figure, table, or "
+    "equation comes with Hilde's description). They are not always the ones that answer: when they do not hold "
+    "what you need, read other paragraphs by their ids with read_paragraphs, which gives the paper's own text "
+    "(version \"narration\" gives Hilde's narration instead, \"both\" gives both); the open document is not "
+    "searched by keywords. When what you have leaves the answer uncertain, give your best answer and say in a "
+    "sentence what remains uncertain; do not deliberate at length."
+)
+
+
+def ask_system_prompt(document, abstract, help_document, web=False, similar=False):
     """Hilde's instructions: what stays the same for every book first (so a
     server's prompt cache serves it to every conversation), then the help's
-    contents, then the open document's id and abstract."""
+    contents, then the open document's id and abstract. `similar`: the
+    paragraphs found by the similarity search come with each message
+    (ASK_SIMILAR_READING), else the model searches (ASK_KEYWORD_READING)."""
     doc = document.id
     span = f"{doc}:{abstract['first']}" + (f"–{abstract['last']}" if abstract["last"] != abstract["first"] else "")
     what = "Its abstract" if abstract["found"] else "It has no abstract marked as one; its opening"
@@ -13171,9 +13299,9 @@ def ask_system_prompt(document, abstract, help_document, web=False):
 
 You are Hilde, the reading companion in Hilde Reader. The listener is listening to one document and asks you about it, or about using Hilde Reader.
 
-You see the document's abstract, not the document: find its paragraphs with search_document and read them with read_paragraphs, which gives the paper's own text, labelled "From the paper" (version "narration" gives Hilde's narration instead, "both" gives both; a figure, table, or equation comes with Hilde's description). A search gives the best matches as the paper prints them and weaker ones as Hilde's summaries; summaries are not the text, so read a paragraph before quoting it or answering about its details. When a search misses, search again with other words. Cite every paragraph you use by its full id, such as 0a1b2c3d:12, or 0a1b2c3d:12–14 for a run; the listener sees them as links into the book.
+{ASK_SIMILAR_READING if similar else ASK_KEYWORD_READING} Cite every paragraph you use by its full id, such as 0a1b2c3d:12, or 0a1b2c3d:12–14 for a run; the listener sees them as links into the book.
 
-{ASK_APP_PROMPT}
+{ASK_APP_PROMPT.replace("with search_document", f"with {ASK_SIMILAR_SEARCH}") if similar else ASK_APP_PROMPT}
 
 For a question about neither the document nor Hilde Reader, answer in one friendly line that you are here for this document and Hilde Reader, and suggest one related question the listener could ask about the document.
 
@@ -13184,7 +13312,7 @@ A listener's message may come with what they attached from the book: the part th
 When "Hilde's narration" or "Hilde's description" and "From the paper" differ on a fact (a number, a name, a negation, what a figure shows), say so plainly: what the listener heard and what the paper prints, citing the paragraph id of each, and that the paper is the source; never quietly pick one. When the paper contradicts itself, such as one number in a table and another in the text, name both places. When the listener asks about what they heard, or questions the narration, read it with read_paragraphs version "narration" or "both" before answering.
 
 You can write Markdown files the listener downloads, such as a summary or the conversation, with write_file, see them with list_files, and delete one with delete_file when the listener asks. Say that a file was written or deleted only when the tool says so. Answer in the language the listener writes in.
-{WEB_PROMPT if web else ""}
+{(WEB_PROMPT.replace("with search_document", f"with {ASK_SIMILAR_SEARCH}") if similar else WEB_PROMPT) if web else ""}
 The help's sections:
 {ask_help_contents(help_document) or "(none)"}
 
@@ -13273,6 +13401,322 @@ def search_document(document, keywords, settings=ASK_DEFAULTS["search"]):
                       "text": head + "\n" + "\n".join(f"{document.id}:{number} {document.summary(number)}"
                                                       for _, number in weak)})
     return items, label
+
+
+class AskEmbedderUnavailable(RuntimeError):
+    """The embedding model can't be used now; the message says why, to
+    follow "because"."""
+
+
+def ask_embedding_files(settings):
+    """The embedding model's GGUF and llama.cpp's server for ask.yaml's
+    `retrieval`, or AskEmbedderUnavailable saying why not."""
+    if not settings["enabled"]:
+        raise AskEmbedderUnavailable("the similarity search is turned off in ask.yaml (retrieval: enabled: false)")
+    if not settings["model"].strip():
+        raise AskEmbedderUnavailable("no embedding model is set in ask.yaml (retrieval: model)")
+    model = Path(settings["model"].strip()).expanduser()
+    model = model if model.is_absolute() else HILDE_HOME / model
+    if not model.is_file():
+        raise AskEmbedderUnavailable(f"there is no embedding model at {model}")
+    server = shutil.which(settings["server"].strip() or "llama-server")
+    if server is None:
+        raise AskEmbedderUnavailable(f"llama.cpp's server ({settings['server']}) is not found")
+    return model, server
+
+
+def _ask_end_with_hilde():
+    """In the embedding server's process before it runs, on Linux: it gets
+    SIGKILL when the thread that started it ends (AskEmbedder starts it from
+    a thread that lasts as long as Hilde), so it never outlives Hilde. KILL,
+    not TERM: a llama-server orphaned while it shut down was seen to hang
+    there, and it keeps nothing that needs a clean exit."""
+    import ctypes
+    ctypes.CDLL(None, use_errno=True).prctl(1, 9)  # PR_SET_PDEATHSIG, SIGKILL
+
+
+class AskEmbedder:
+    """The embedding model in a process of its own: llama.cpp's server in
+    embedding mode (`llama-server --embedding --pooling mean`) with a GGUF of
+    the model, on the CPU, at a free port of 127.0.0.1; no model code runs in
+    Hilde. Started on first use, stopped after ASK_EMBED_IDLE seconds unused,
+    when the settings change, and when Hilde stops (stop()). One request at a
+    time. A start that failed is said for ASK_EMBED_RETRY_AFTER seconds
+    (check()) before it is tried again."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.process = self.url = self.key = None
+        self.used = 0.0
+        # The last start that failed: (key, why, when).
+        self.failure = None
+        # The server's last lines of output, read by `reader`, for saying why it did not start.
+        self.output, self.reader = collections.deque(maxlen=20), None
+        # The thread every start runs on, lasting as long as Hilde (_ask_end_with_hilde()).
+        self.starter = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ask-embedder")
+        self.watching = False
+
+    @staticmethod
+    def settings_key(model, server, settings):
+        return str(model), server, settings["threads"]
+
+    def check(self, key):
+        """Raise AskEmbedderUnavailable while a start with these settings failed lately."""
+        failure = self.failure
+        if failure and failure[0] == key and time.monotonic() - failure[2] < ASK_EMBED_RETRY_AFTER:
+            raise AskEmbedderUnavailable(failure[1])
+
+    def _read_output(self, process):
+        for line in process.stdout:
+            self.output.append(line.rstrip())
+        process.stdout.close()
+
+    def _start(self, model, server, settings):
+        """Start the server and wait until it answers; the caller holds the lock."""
+        self._stop()
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        command = [
+            server, "-m", str(model), "--embedding", "--pooling", "mean", "--host", "127.0.0.1", "--port", str(port),
+            "-t", str(settings["threads"]), "-c", str(4 * ASK_EMBED_MAX_TOKENS), "-b", str(ASK_EMBED_MAX_TOKENS),
+            "-ub", str(ASK_EMBED_MAX_TOKENS), "-np", "1",
+        ]
+        started = time.monotonic()
+        self.output.clear()
+        try:
+            self.process = self.starter.submit(
+                subprocess.Popen, command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, errors="replace",
+                preexec_fn=_ask_end_with_hilde if sys.platform.startswith("linux") else None,
+            ).result()
+        except OSError as exc:
+            raise AskEmbedderUnavailable(f"the embedding model did not start: {exc}") from exc
+        self.reader = threading.Thread(target=self._read_output, args=(self.process,), name="ask-embedder-output",
+                                       daemon=True)
+        self.reader.start()
+        self.url = f"http://127.0.0.1:{port}"
+        while True:
+            code = self.process.poll()
+            if code is not None:
+                self.process = None
+                self.reader.join(5)  # its last words, and the pipe closed
+                last = next((line for line in reversed(self.output) if line.strip()), "")
+                raise AskEmbedderUnavailable(
+                    f"the embedding model did not start ({Path(server).name} exit {code}{': ' + last if last else ''})"
+                )
+            try:
+                with urllib.request.urlopen(self.url + "/health", timeout=2) as response:
+                    if response.status == 200:
+                        break
+            except (OSError, http.client.HTTPException):
+                pass  # still loading (503) or not listening yet
+            if time.monotonic() - started > ASK_EMBED_START_TIMEOUT:
+                self._stop()
+                raise AskEmbedderUnavailable(
+                    f"the embedding model did not start within {ASK_EMBED_START_TIMEOUT} seconds"
+                )
+            time.sleep(0.2)
+        print(f"Ask embedding: started {model.name} with {Path(server).name} on {self.url} "
+              f"({settings['threads']} threads, pid {self.process.pid}) in {time.monotonic() - started:.1f} s",
+              flush=True)
+        if not self.watching:
+            self.watching = True
+            threading.Thread(target=self._stop_when_idle, name="ask-embedder-idle", daemon=True).start()
+
+    def _stop(self, why=""):
+        process, self.process, self.key = self.process, None, None
+        if process is None:
+            return
+        if why:
+            print(f"Ask embedding: stopping the embedding model ({why})", flush=True)
+        process.terminate()
+        try:
+            process.wait(5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        self.reader.join(5)
+
+    def stop(self):
+        with self.lock:
+            self._stop("Hilde is stopping" if self.process is not None else "")
+
+    def _stop_when_idle(self):
+        while True:
+            time.sleep(30)
+            with self.lock:
+                if self.process is not None and time.monotonic() - self.used > ASK_EMBED_IDLE:
+                    self._stop(f"unused for {ASK_EMBED_IDLE // 60} minutes")
+
+    def _post(self, route, body):
+        request = urllib.request.Request(self.url + route, json.dumps(body).encode("utf-8"),
+                                         {"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+
+    def _tokens(self, text):
+        """A text as the model's tokens, its special tokens added, cut to
+        ASK_EMBED_MAX_TOKENS keeping the closing one."""
+        tokens = self._post("/tokenize", {"content": text, "add_special": True})["tokens"]
+        return tokens if len(tokens) <= ASK_EMBED_MAX_TOKENS else tokens[:ASK_EMBED_MAX_TOKENS - 1] + tokens[-1:]
+
+    def embed(self, settings, texts, query=False):
+        """The texts' vectors (rows of a float32 array, length 1), each a
+        query's or a paragraph's by its prefix in `settings`."""
+        import numpy
+
+        model, server = ask_embedding_files(settings)
+        key = self.settings_key(model, server, settings)
+        prefix = settings["query_prefix" if query else "document_prefix"]
+        with self.lock:
+            self.check(key)
+            if self.process is None or self.process.poll() is not None or self.key != key:
+                try:
+                    self._start(model, server, settings)
+                except AskEmbedderUnavailable as exc:
+                    self.failure = (key, str(exc), time.monotonic())
+                    print(f"Ask embedding: {exc}", flush=True)
+                    raise
+                self.key, self.failure = key, None
+            vectors = []
+            try:
+                for start in range(0, len(texts), ASK_EMBED_BATCH):
+                    batch = [self._tokens(prefix + text) for text in texts[start:start + ASK_EMBED_BATCH]]
+                    rows = self._post("/v1/embeddings", {"input": batch})["data"]
+                    vectors += [row["embedding"] for row in sorted(rows, key=lambda row: row["index"])]
+            except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:
+                self._stop()
+                raise AskEmbedderUnavailable(f"the embedding model failed: {exc}") from exc
+            self.used = time.monotonic()
+        matrix = numpy.asarray(vectors, dtype=numpy.float32).reshape(len(texts), -1)
+        return matrix / numpy.maximum(numpy.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+
+
+ASK_EMBEDDER = AskEmbedder()
+
+
+def ask_reading(config):
+    """How Ask reads the open book now: {"mode": "similarity", "model", "k"}
+    when the embedding model is on, found, and did not just fail to start;
+    else {"mode": "keyword", "why"}."""
+    settings = config["retrieval"]
+    try:
+        model, server = ask_embedding_files(settings)
+        ASK_EMBEDDER.check(AskEmbedder.settings_key(model, server, settings))
+    except AskEmbedderUnavailable as exc:
+        return {"mode": "keyword", "why": str(exc)}
+    return {"mode": "similarity", "model": model.stem, "k": settings["k"]}
+
+
+def ask_reading_text(reading):
+    """How Ask reads the book, as Settings and the Ask panel say it."""
+    if reading["mode"] == "similarity":
+        return (f"Hilde finds the book's paragraphs by similarity search: the {reading['k']} most similar to each "
+                f"question come with it ({reading['model']}).")
+    return f"Hilde finds the book's paragraphs by keyword search, because {reading['why']}."
+
+
+def ask_reading_payload():
+    """How Ask reads a book now, for the page: {"mode", "text"}."""
+    reading = ask_reading(ask_config())
+    return {"mode": reading["mode"], "text": ask_reading_text(reading)}
+
+
+class AskBM25:
+    """Okapi BM25 (k1 1.2, b 0.75) over paragraph texts, words as \\w+
+    lowercased: the keyword half of the retrieval's mix."""
+
+    def __init__(self, texts, k1=1.2, b=0.75):
+        self.numbers, self.k1 = [number for number, _ in texts], k1
+        counts = [collections.Counter(re.findall(r"\w+", text.lower())) for _, text in texts]
+        lengths = [sum(count.values()) for count in counts]
+        average = (sum(lengths) / len(lengths) if lengths else 0) or 1
+        self.postings = {}
+        for index, count in enumerate(counts):
+            for word, frequency in count.items():
+                self.postings.setdefault(word, []).append((index, frequency))
+        total = len(texts)
+        self.idf = {word: math.log(1 + (total - len(found) + 0.5) / (len(found) + 0.5))
+                    for word, found in self.postings.items()}
+        self.norm = [k1 * (1 - b + b * length / average) for length in lengths]
+
+    def rank(self, query):
+        """The paragraph numbers holding any of the query's words, best first
+        (ties by number)."""
+        scores = collections.defaultdict(float)
+        for word in set(re.findall(r"\w+", query.lower())):
+            for index, frequency in self.postings.get(word, ()):
+                scores[index] += self.idf[word] * frequency * (self.k1 + 1) / (frequency + self.norm[index])
+        return [self.numbers[index] for index, _ in sorted(scores.items(),
+                                                           key=lambda item: (-item[1], self.numbers[item[0]]))]
+
+
+# Each book's index as last used, by document id: (key, vectors, numbers, BM25).
+_ASK_INDEXES = {}
+_ASK_INDEX_LOCK = threading.Lock()
+
+
+def ask_index_path(storage, doc):
+    return storage.root / ".cache" / ASK_INDEX_FOLDER / f"{doc}.npz"
+
+
+def ask_index(storage, document, settings):
+    """The open book's index: its paragraphs' vectors (each paragraph as
+    read_paragraphs gives it, version "paper"), their numbers, and a BM25
+    over the same texts; and the seconds it took to build, None when it was
+    kept. Kept in memory and in ask_index_path(), under a key of the texts,
+    the model, and its prefix: a book whose text changed (Recreate) or
+    another model builds it again."""
+    import numpy
+
+    texts = [(number, "\n\n".join(item["text"] for item in document.items(number)))
+             for number in range(1, len(document.paragraphs) + 1)]
+    model, _ = ask_embedding_files(settings)
+    key = hashlib.sha256(json.dumps(
+        [model.name, model.stat().st_size, settings["document_prefix"], ASK_EMBED_MAX_TOKENS, texts],
+        ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()[:24]
+    with _ASK_INDEX_LOCK:
+        held = _ASK_INDEXES.get(document.id)
+        if held is not None and held[0] == key:
+            return held[1:], None
+        path, built, vectors = ask_index_path(storage, document.id), None, None
+        try:
+            with numpy.load(path) as data:
+                if str(data["key"]) == key and len(data["vectors"]) == len(texts):
+                    vectors = data["vectors"]
+        except (OSError, ValueError, KeyError):
+            pass
+        if vectors is None:
+            started = time.monotonic()
+            vectors = ASK_EMBEDDER.embed(settings, [text for _, text in texts])
+            built = time.monotonic() - started
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            with open(temporary, "wb") as handle:
+                numpy.savez(handle, key=numpy.array(key), vectors=vectors)
+            os.replace(temporary, path)
+        held = _ASK_INDEXES[document.id] = (key, vectors, [number for number, _ in texts], AskBM25(texts))
+    return held[1:], built
+
+
+def ask_retrieve(storage, document, query, settings):
+    """The `k` paragraph numbers of the open book for `query`: the keyword
+    ranking's best ASK_RETRIEVAL_KEYWORD_FIRST, then by cosine to the
+    query's vector, without repeats; and what it took: `index_s` (seconds to
+    build the index, None when kept), `embed_ms`, `rank_ms`."""
+    import numpy
+
+    (vectors, numbers, lexical), built = ask_index(storage, document, settings)
+    started = time.monotonic()
+    vector = ASK_EMBEDDER.embed(settings, [query], query=True)[0]
+    embedded = time.monotonic()
+    head = lexical.rank(query)[:ASK_RETRIEVAL_KEYWORD_FIRST]
+    best = numpy.argsort(-(vectors @ vector), kind="stable")[:settings["k"] + len(head)]
+    ranked = head + [number for number in (numbers[index] for index in best) if number not in head]
+    return ranked[:settings["k"]], {"index_s": built, "embed_ms": (embedded - started) * 1000,
+                                    "rank_ms": (time.monotonic() - embedded) * 1000}
 
 
 ASK_PARAGRAPH_ID = re.compile(
@@ -13370,6 +13814,8 @@ class AskShelf:
         self.storage, self.book = storage, book
         self.help = help_document if help_document is not None else ask_help()
         self.sources = sources
+        # The open book's paragraphs come by the similarity search (ChatTurn.setting()): search_help, never the book.
+        self.similar = False
 
     def get(self, doc):
         if self.book is not None and doc == self.book.id:
@@ -13956,7 +14402,8 @@ def chat_tool(path, shelf, call, search_server="", config=ASK_DEFAULTS):
         return note("The arguments were not valid JSON.", f"{name}: invalid arguments")
     if name == "read_paragraphs":
         return (*ask_read(shelf, arguments.get("ids"), arguments.get("version")), False)
-    if name == "search_document":
+    # With the similarity search, search_help instead of search_document (ASK_SIMILAR_TOOLS).
+    if name == (ASK_SIMILAR_SEARCH if shelf.similar else "search_document"):
         doc = str(arguments.get("document_id") or "").strip()
         document = shelf.get(doc)
         if document is None:
@@ -13964,6 +14411,11 @@ def chat_tool(path, shelf, call, search_server="", config=ASK_DEFAULTS):
                 HELP_DOCUMENT, *APP_KINDS] + (["a stored web page's id"] if shelf.book is not None else [])
             return note(f"There is no document {doc or 'without an id'}: use {', '.join(documents)}.",
                         "Searched nothing")
+        if document is shelf.book and shelf.similar:
+            return note(
+                f"{doc} is not searched by keywords: its paragraphs most similar to the listener's message came "
+                "with it. Read others by their ids with read_paragraphs.", "Searched nothing",
+            )
         return (*search_document(document, arguments.get("keywords"), config["search"]), False)
     if search_server and name == "web_search":
         text, label = web_search(search_server, arguments.get("query"))
@@ -14185,6 +14637,9 @@ class AskLedger:
                                    "label": item.get("label"), "text": clean_paper_text(text) if paper else text})
                 else:
                     pieces.append({"kind": "question", "text": str(item.get("text") or "")})
+            # The paragraphs the similarity search found for it (ChatTurn.retrieve()), as a read gives them.
+            pieces += [{**item, "text": str(item.get("text") or ""), "kind": str(item.get("kind") or "paper"),
+                        "retrieved": True} for item in entry.get("retrieved") or () if isinstance(item, dict)]
             return pieces + [{"kind": "question", "text": str(entry.get("text") or "")}]
         if role == "tool":
             if isinstance(entry.get("items"), list):
@@ -14245,7 +14700,13 @@ class AskLedger:
                     texts = [shown(item) for item in attached_pieces]
                     for item, text in zip(attached_pieces, texts):
                         cost[item["kind"]] += ask_tokens(text) + 8
-                    attached = chat_attachment_text(context, self.document, texts) if context else ""
+                    attached = chat_attachment_text(context, self.document, [
+                        text for item, text in zip(attached_pieces, texts) if not item.get("retrieved")
+                    ]) if context else ""
+                    found = [ask_item_text(item, text) for item, text in zip(attached_pieces, texts)
+                             if item.get("retrieved")]
+                    if found:
+                        attached = "\n\n".join(part for part in (attached, ASK_RETRIEVED_HEAD, *found) if part)
                     cost["question"] += ask_tokens(str(entry.get("text") or "")) + 8
                     messages.append({"role": "user", "attached": attached, "text": str(entry.get("text") or "")})
                 elif role == "assistant":
@@ -14471,7 +14932,8 @@ def ask_log(selector, turn, question, round_, plan, fixed_tokens, usage, ttft, s
         f"cached={'unknown' if cached is None else f'{cached:,}'} "
         f"first token={'?' if ttft is None else f'{ttft:.2f}s'} total={seconds:.2f}s "
         f"cache={'warm' if plan['warm'] else 'cold'} (predicted uncached {plan['miss']:,}) "
-        f"decision={plan['decision']}",
+        f"decision={plan['decision']}"
+        + (f" completion={usage['completion']:,}" if isinstance(usage.get("completion"), int) else ""),
         flush=True,
     )
 
@@ -14833,6 +15295,9 @@ class ChatTurn:
     published as events while they happen, until the model answers without
     a tool, CHAT_MAX_TOOL_CALLS is reached, or the listener stops it."""
 
+    # The stream guard's limit (repeated_line()).
+    repeat_limit = ASK_REPEAT_LIMIT
+
     def __init__(self, storage, book, text, selector, local_servers, attachment=None, search_server=""):
         self.storage = storage
         self.book = book
@@ -14858,6 +15323,9 @@ class ChatTurn:
         # Set aside (set_aside()): the next message came while this stopped
         # turn still waited on its model; whatever it does later is dropped.
         self.set_aside_ = False
+        # The stream guard's count of the lines this request has written, and
+        # where the line being written starts (repeated_line()).
+        self.lines, self.line_start = collections.Counter(), 0
 
     def publish(self, event):
         with self.condition:
@@ -14902,10 +15370,34 @@ class ChatTurn:
                 return
             if delta is None:
                 self.partial = ""
+                self.lines, self.line_start = collections.Counter(), 0
                 self.publish({"type": "reset"})
                 return
             self.partial += delta
             self.publish({"type": "text", "delta": delta})
+            repeated = self.repeated_line()
+        if repeated is not None:
+            raise ChatRepeating(*repeated)
+
+    def repeated_line(self):
+        """The stream guard: (where it starts in the text, the line) of a line
+        the text being written has now given `repeat_limit` times (a line of
+        ASK_REPEAT_MIN_CHARS letters or digits at least, case and spacing
+        aside), else None. A model deliberating in a loop stops there, long
+        before the output cap."""
+        if not self.repeat_limit:
+            return None
+        while True:
+            end = self.partial.find("\n", self.line_start)
+            if end < 0:
+                return None
+            start, self.line_start = self.line_start, end + 1
+            line = " ".join(self.partial[start:end].split()).lower()
+            if len(re.sub(r"[\W_]+", "", line)) < ASK_REPEAT_MIN_CHARS:
+                continue
+            self.lines[line] += 1
+            if self.lines[line] >= self.repeat_limit:
+                return start, line
 
     def save(self, path, entries):
         """chat.json: the entries, and the context state (ask_state()) of the
@@ -14955,11 +15447,51 @@ class ChatTurn:
 
     def setting(self, config, web):
         """The open document's id, the documents the model reaches (AskShelf),
-        the instructions, and the tools: the book's."""
+        the instructions, and the tools: the book's. When the similarity
+        search found the paragraphs for this message (retrieve()), the
+        instructions say they come with it and search_document gives way to
+        search_help, which never searches the book (ASK_SIMILAR_TOOLS)."""
         document = ask_book_document(self.book, self.record, self.passages)
         shelf = AskShelf(self.storage, document)
-        system = ask_system_prompt(document, chat_abstract(self.passages, config["abstract_tokens"]), shelf.help, web)
+        shelf.similar = self.retrieve(document, config)
+        system = ask_system_prompt(document, chat_abstract(self.passages, config["abstract_tokens"]), shelf.help, web,
+                                   shelf.similar)
+        if shelf.similar:
+            return document.id, shelf, system, ASK_SIMILAR_TOOLS + ASK_SIMILAR_WEB_TOOLS if web else ASK_SIMILAR_TOOLS
         return document.id, shelf, system, CHAT_TOOLS + CHAT_WEB_TOOLS if web else CHAT_TOOLS
+
+    def retrieve(self, document, config):
+        """With the similarity search on and working (ask_reading()), before
+        the first request: the book's k paragraphs for the listener's message
+        (on a follow-up, for their previous message and this one;
+        ask_retrieve()), kept with the message as `retrieved`, each as
+        read_paragraphs gives it. Whether the turn reads the book so; the
+        server log says how each turn reads it, and why by keywords."""
+        reading = ask_reading(config)
+        earlier = [entry for entry in self.entries[:-1] if entry.get("role") == "user"]
+        query = f"{earlier[-1].get('text') or ''}\n{self.text}" if earlier else self.text
+        if reading["mode"] == "similarity":
+            try:
+                numbers, took = ask_retrieve(self.storage, document, query, config["retrieval"])
+            except AskEmbedderUnavailable as exc:
+                reading = {"mode": "keyword", "why": str(exc)}
+            except OSError as exc:
+                reading = {"mode": "keyword", "why": f"the book's index could not be kept: {exc}"}
+        if reading["mode"] != "similarity":
+            print(f"Ask reading: turn={self.id} mode=keyword why={reading['why']}", flush=True)
+            return False
+        with self.condition:
+            self.asked["retrieved"] = [item for number in numbers for item in document.items(number)]
+            self.save(self.path, self.entries)
+        built = took["index_s"]
+        print(
+            f"Ask reading: turn={self.id} mode=similarity model={reading['model']} k={reading['k']} "
+            f"query={'previous+message' if earlier else 'message'} "
+            f"index={'kept' if built is None else f'built {built:.1f}s'} embed={took['embed_ms']:.1f}ms "
+            f"rank={took['rank_ms']:.2f}ms ids={','.join(f'{document.id}:{number}' for number in numbers)}",
+            flush=True,
+        )
+        return True
 
     def run(self):
         try:
@@ -15009,7 +15541,7 @@ class ChatTurn:
                         force = window - CHAT_MAX_OUTPUT_TOKENS - CHAT_TOKEN_MARGIN - CHAT_IMAGE_TOKENS * len(images)
                         continue
                     raise ChatTooLong(f"{counted:,} input tokens leave no room to answer in a {window:,}-token window")
-                self.partial = ""
+                self.partial, self.lines, self.line_start = "", collections.Counter(), 0
                 rounds += 1
                 usage, started = {}, time.monotonic()
                 try:
@@ -15017,6 +15549,12 @@ class ChatTurn:
                         self.selector, self.local_servers, system, messages, tools,
                         self.on_text, self.model_stream, self.stop_requested.wait, max_tokens, usage,
                     )
+                except ChatRepeating as exc:
+                    ttft = usage["first"] - getattr(self, "sent_at", started) if "first" in usage else None
+                    ask_log(self.selector, self.id, ledger.current, rounds, plan, fixed["tokens"], usage, ttft,
+                            time.monotonic() - started)
+                    self.keep_repeated(*exc.args)
+                    return
                 except RuntimeError as exc:
                     if not CHAT_CONTEXT_ERROR.search(str(exc)):
                         raise
@@ -15123,6 +15661,21 @@ class ChatTurn:
         except (OSError, ValueError):
             self.notice("Stopped.")
 
+    def keep_repeated(self, start, line):
+        """The stream guard stopped the answer (repeated_line()): what came
+        before the repeated line is kept as the answer, marked stopped, and a
+        notice says why."""
+        with self.condition:
+            written, text = len(self.partial), self.partial[:start].strip()
+        print(f"Ask: stream guard turn={self.id} stopped the answer after {written:,} characters: "
+              f"a line came {self.repeat_limit} times: {line[:120]}", flush=True)
+        if text:
+            entry = {"role": "assistant", "text": text, "at": utc_timestamp(), "stopped": True, "repeated": True,
+                     "model": self.selector}
+            entry["ids"], entry["links"] = ask_cited(text, document_id(self.book))
+            self.keep(self.path, self.entries, entry)
+        self.notice(ASK_REPEAT_NOTE)
+
     def notice(self, text, failed=False):
         """Tell the listener what ended the turn; kept, never sent to a model.
         A failure names the model asked, and the page says what to do."""
@@ -15167,6 +15720,9 @@ class HelpTurn(ChatTurn):
     Settings, the Library): kept in the help conversation (help_chat_path()),
     never a book's; the model reaches the help, the developer docs, and the
     code with the reading tools only (HELP_TOOLS), and nothing else."""
+
+    # Help mode stays as it was: no stream guard.
+    repeat_limit = None
 
     def __init__(self, storage, text, selector, local_servers):
         super().__init__(storage, HELP_DOCUMENT, text, selector, local_servers)
@@ -15360,6 +15916,9 @@ def chat_payload(storage, chats, book, search_server=""):
         "running_model_name": chat_model_name(turn.selector) if running else "",
         "files": chat_file_listing(path, entries),
         "web_search": bool(search_server),
+        # How Ask reads the book now (ask_reading()): by similarity search, or
+        # by keywords and why; the panel says it.
+        "reading": ask_reading_payload(),
         # Where each paragraph starts in the reader, for ¶ links.
         "passages": {
             str(number): passage["paragraphs"][0]
@@ -19176,6 +19735,8 @@ class Handler(BaseHTTPRequestHandler):
                         # Hilde's own certificate authority, to install on a device.
                         "certificate": self.authority() is not None,
                     },
+                    # Settings › Models and connection: how Ask Hilde reads a book (ask_reading()).
+                    "ask_reading": ask_reading_payload()["text"],
                 },
                 extra=(("Cache-Control", "no-store"),),
             )
@@ -21798,6 +22359,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .chat-problem { display:grid; flex:0 1 auto; gap:8px; min-height:0; overflow:auto; padding:10px 16px;
                 border-bottom:1px solid var(--line); }
 .chat-problem p { margin:0; }
+/* How Ask reads the book, said under the header when it is by keyword search (no embedding model, or it failed). */
+.chat-reading-note { flex:0 0 auto; margin:0; padding:8px 16px; border-bottom:1px solid var(--line);
+                     color:var(--dim); font-size:13px; }
 .chat-log { display:grid; flex:1; align-content:start; gap:14px; min-height:0; overflow:auto;
             overscroll-behavior:contain; padding:16px; }
 /* Help mode: at the top of the conversation, the heading, what the panel is for, and three example questions as
@@ -22417,6 +22981,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             each device you browse from, and its browser stops warning.</span>
           <a id="certificate-download" class="hidden" href="/api/certificate"
             download="hilde-certificate.crt">Download Hilde's certificate</a></div></div>
+      <div class="row"><span class="row-label">Ask Hilde reading</span>
+        <div class="setting"><span id="ask-reading-note"></span></div></div>
     </fieldset>
   </section>
 
@@ -22948,6 +23514,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                   id="chat-section" class="chat-section"></span></p>
                 <p id="chat-web" class="menu-note hidden">Web search on: Hilde may search the web and read public
                   pages for an answer.</p>
+                <p id="chat-reading" class="menu-note hidden"></p>
               </div>
               <button id="chat-speak" class="hidden" type="button" role="menuitemcheckbox"
                 aria-checked="false">Read answers aloud</button>
@@ -22968,6 +23535,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <button type="button" class="link" onclick="openProvidersPanel()">Providers…</button>
             </div>
           </div>
+          <!-- A book's conversation read by keyword search (no embedding model, or it failed): said here, plainly. -->
+          <p id="chat-reading-note" class="chat-reading-note hidden" role="status"></p>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
           <!-- Help mode only: what the panel is for and three questions to start with; a click puts one in the
                box and sends nothing. Kept at the top of the conversation (applyChat()), scrolling with it. -->
@@ -23630,6 +24199,7 @@ function load(data) {
   configuration = data.configuration || configuration;
   machine = data.machine || machine;
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
+  $("ask-reading-note").textContent = data.ask_reading || "";
   for (const [id, path] of FIELDS) $(id).value = at(path);
   for (const [id, path] of FLAGS) $(id).checked = !!at(path);
   populateAssets();
@@ -26064,6 +26634,12 @@ function renderChatControls() {
   $("chat-speak").setAttribute("aria-checked", String(!!state.player.chat_speak));
   // With the server's web search, a question's searches go out to the web too.
   $("chat-web").classList.toggle("hidden", !(chatData && chatData.web_search));
+  // How Hilde reads the book: in the menu always, under the header when it is by keyword search.
+  const reading = chatData && chatData.reading;
+  $("chat-reading").textContent = reading ? reading.text : "";
+  $("chat-reading").classList.toggle("hidden", !reading);
+  $("chat-reading-note").textContent = reading && reading.mode === "keyword" ? reading.text : "";
+  $("chat-reading-note").classList.toggle("hidden", !(reading && reading.mode === "keyword"));
 }
 // Send says what a press does: waits for the part being attached, sends,
 // or, with a part attached and nothing typed, asks to explain it.
@@ -32366,6 +32942,7 @@ def main():
         server.xai_login.stop()
         renewal_stop.set()
         server.server_close()
+        ASK_EMBEDDER.stop()
 
 
 if __name__ == "__main__":
