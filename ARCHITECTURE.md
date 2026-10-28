@@ -2929,10 +2929,15 @@ never asks.
 - **Similarity** (`ChatTurn.retrieve()`, before the first request): the query
   is the listener's message, on a follow-up (an earlier user entry in the
   conversation) their previous message, a newline, and this one.
-  `ask_retrieve()` ranks the open book: the BM25 (`AskBM25`: k1 1.2, b 0.75,
-  `\w+` words lowercased) best `ASK_RETRIEVAL_KEYWORD_FIRST` (2) first, then
-  by cosine to the query's vector, without repeats, the first `retrieval.k`
-  kept. Those paragraphs, each as `read_paragraphs` gives it (`AskDocument.items()`,
+  `ask_retrieve()` ranks the open book: by cosine to the query's vector the
+  best `ASK_RETRIEVAL_SIMILAR_FIRST` (2), then the BM25 (`AskBM25`: k1 1.2,
+  b 0.75, `\w+` words lowercased) best `ASK_RETRIEVAL_KEYWORD_NEXT` (2), then
+  the rest by cosine (k + 2 cosine candidates, so k is filled after repeats
+  drop), without repeats, the first `retrieval.k` kept. A paraphrased
+  question's BM25 best are mostly wrong, so similarity's pick stays in the top
+  3; an identifier only BM25 finds still comes, at rank 3 or 4 (rag-eval, 306
+  questions: R@3 67 → 71% against BM25 first, paraphrased 40 → 53%; the top 8
+  hold the same paragraphs either way). Those paragraphs, each as `read_paragraphs` gives it (`AskDocument.items()`,
   version paper), are saved on the user entry as `retrieved`; the ledger
   makes them items of kind `paper`/`narration` (no age expiry, compacted and
   "(already above)" like a read) and renders them after any attachment,

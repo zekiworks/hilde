@@ -314,9 +314,10 @@ links, and the answer says it comes from the running code.
 ### Similarity search
 
 With an embedding model, Hilde finds the paragraphs of the open book that are
-most similar to a question before asking the chat model: the two best by
-keyword ranking (BM25), so names and identifiers are found, then the rest by
-similarity, `k` in all. On a follow-up question the previous question counts
+most similar to a question before asking the chat model: the two most similar,
+then the two best by keyword ranking (BM25), so names and identifiers are
+found even when similarity misses them, then the rest by similarity, `k` in
+all, never one twice. On a follow-up question the previous question counts
 too. They go with the question, labelled like a read; the chat model can read
 other paragraphs by id, and searches by keywords only the help, the developer
 docs, and the code. Help mode is unchanged.

@@ -13966,19 +13966,30 @@ class AskRetrievalTests(unittest.TestCase):
                 self.assertTrue(turn.wait_done(10))
         return FakeChatModel.requests, log.getvalue(), chats
 
-    def test_the_mix_puts_the_keyword_rankings_best_two_first_then_the_similarity_ranking(self):
+    def test_the_mix_puts_similaritys_best_two_first_then_the_keyword_rankings_best_two(self):
         settings = web.ask_config()["retrieval"]
         document = self.document()
-        # BM25 on "ZQ-9 cat": ¶5 holds both rare words; then the cat paragraphs.
-        self.assertEqual(web.AskBM25([(n, t) for n, t in enumerate(self.PASSAGES, 1)]).rank("ZQ-9 cat")[:3], [5, 2, 3])
-        numbers, took = web.ask_retrieve(self.storage, document, "ZQ-9 cat", {**settings, "k": 4})
-        # Similarity alone ranks ¶3 and ¶2 (cats) first, then ¶6 (no word at all), and would miss the identifier's ¶5.
-        self.assertEqual(numbers, [5, 2, 3, 6])
+        bm25 = web.AskBM25([(n, t) for n, t in enumerate(self.PASSAGES, 1)])
+        # BM25 is wrong for "the dog" ("dogs" is another word; "the" is in ¶5 and ¶2); similarity finds ¶4.
+        self.assertEqual(bm25.rank("the dog"), [5, 2])
+        numbers, took = web.ask_retrieve(self.storage, document, "the dog", {**settings, "k": 4})
         self.assertIsNotNone(took["index_s"])
-        self.assertEqual(web.ask_retrieve(self.storage, document, "ZQ-9 cat", settings)[0], [5, 2, 3])
-        # Repeats are dropped: here both halves rank ¶2 and ¶3 first.
-        self.assertEqual(web.ask_retrieve(self.storage, document, "cat", settings)[0], [2, 3, 6])
-        self.assertEqual(self.embedder.calls[-1], (True, ["cat"]))
+        # Similarity's best 2 (¶4, then ¶6, which holds none of the words) first, then BM25's 2.
+        self.assertEqual(numbers, [4, 6, 5, 2])
+        self.assertEqual(self.embedder.calls[-1], (True, ["the dog"]))
+        # An identifier only BM25 finds: similarity ranks ¶3, ¶2 (cats), ¶6, and never ¶5 near the top; BM25's ¶5
+        # still comes, at rank 3.
+        self.assertEqual(bm25.rank("ZQ-9 cat")[:3], [5, 2, 3])
+        self.assertEqual(web.ask_retrieve(self.storage, document, "ZQ-9 cat", {**settings, "k": 4})[0], [3, 2, 5, 6])
+        self.assertEqual(web.ask_retrieve(self.storage, document, "ZQ-9 cat", settings)[0], [3, 2, 5])
+        # Repeats are dropped and k is still filled: here BM25's 2 are similarity's 2.
+        for k in (1, 3, 5, 6):
+            with self.subTest(k=k):
+                numbers = web.ask_retrieve(self.storage, document, "cat", {**settings, "k": k})[0]
+                self.assertEqual((len(numbers), len(set(numbers))), (k, k))
+                self.assertEqual(numbers[:3], [3, 2, 6][:k])
+        # Never more than the book has.
+        self.assertEqual(sorted(web.ask_retrieve(self.storage, document, "cat", {**settings, "k": 20})[0]), [1, 2, 3, 4, 5, 6])
 
     def test_the_paragraphs_found_come_with_the_message_and_a_follow_up_adds_the_previous_message(self):
         book, doc = self.book()

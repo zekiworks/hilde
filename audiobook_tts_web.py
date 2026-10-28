@@ -12446,9 +12446,15 @@ ASK_EMBED_RETRY_AFTER = 120
 # (as its reference code cuts it). Paragraphs go to the server 16 at a time.
 ASK_EMBED_MAX_TOKENS = 512
 ASK_EMBED_BATCH = 16
-# The retrieval's mix: the keyword ranking's (BM25) best this many first,
-# then the similarity ranking, without repeats (identifiers stay found).
-ASK_RETRIEVAL_KEYWORD_FIRST = 2
+# The retrieval's mix: the similarity ranking's best ASK_RETRIEVAL_SIMILAR_FIRST,
+# then the keyword ranking's (BM25) best ASK_RETRIEVAL_KEYWORD_NEXT, then the
+# rest of the similarity ranking, without repeats. A paraphrased question's
+# BM25 best are mostly wrong (RAG test: gold's median BM25 rank 17.5), so they
+# never push similarity's right pick out of the top 3; an identifier that only
+# BM25 finds still comes, at rank 3 or 4 (rag-eval, 306 questions: R@3 67 → 71%,
+# paraphrased 40 → 53%; the top 8 hold the same paragraphs either way).
+ASK_RETRIEVAL_SIMILAR_FIRST = 2
+ASK_RETRIEVAL_KEYWORD_NEXT = 2
 # What the listener's message carries above the paragraphs found for it.
 ASK_RETRIEVED_HEAD = (
     "Paragraphs of the open document most similar to this message, found by a similarity search, best first:"
@@ -13702,19 +13708,23 @@ def ask_index(storage, document, settings):
 
 
 def ask_retrieve(storage, document, query, settings):
-    """The `k` paragraph numbers of the open book for `query`: the keyword
-    ranking's best ASK_RETRIEVAL_KEYWORD_FIRST, then by cosine to the
-    query's vector, without repeats; and what it took: `index_s` (seconds to
-    build the index, None when kept), `embed_ms`, `rank_ms`."""
+    """The `k` paragraph numbers of the open book for `query`: by cosine to
+    the query's vector the best ASK_RETRIEVAL_SIMILAR_FIRST, then the keyword
+    ranking's best ASK_RETRIEVAL_KEYWORD_NEXT, then the rest by cosine,
+    without repeats; and what it took: `index_s` (seconds to build the index,
+    None when kept), `embed_ms`, `rank_ms`."""
     import numpy
 
     (vectors, numbers, lexical), built = ask_index(storage, document, settings)
     started = time.monotonic()
     vector = ASK_EMBEDDER.embed(settings, [query], query=True)[0]
     embedded = time.monotonic()
-    head = lexical.rank(query)[:ASK_RETRIEVAL_KEYWORD_FIRST]
-    best = numpy.argsort(-(vectors @ vector), kind="stable")[:settings["k"] + len(head)]
-    ranked = head + [number for number in (numbers[index] for index in best) if number not in head]
+    keyword = lexical.rank(query)[:ASK_RETRIEVAL_KEYWORD_NEXT]
+    # Enough similar ones to fill k whatever the keyword ones repeat.
+    best = numpy.argsort(-(vectors @ vector), kind="stable")[:settings["k"] + len(keyword)]
+    similar = [numbers[index] for index in best]
+    first = similar[:ASK_RETRIEVAL_SIMILAR_FIRST]
+    ranked = list(dict.fromkeys(first + keyword + similar[ASK_RETRIEVAL_SIMILAR_FIRST:]))
     return ranked[:settings["k"]], {"index_s": built, "embed_ms": (embedded - started) * 1000,
                                     "rank_ms": (time.monotonic() - embedded) * 1000}
 
