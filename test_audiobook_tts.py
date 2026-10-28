@@ -14009,7 +14009,7 @@ class AskRetrievalTests(unittest.TestCase):
         second = requests[1]["messages"][-1]["content"]
         self.assertIn(f'<paragraph id="{doc}:4" label="Hilde\'s narration">', second)
         self.assertIn(web.ASK_ALREADY, second)
-        self.assertRegex(log, rf"Ask reading: turn=\w+ mode=similarity model=embed k=3 query=message index=built "
+        self.assertRegex(log, rf"Ask reading: turn=\w+ mode=similarity model=embed k=3 margin=[\d.]+ query=message index=built "
                               rf"[\d.]+s embed=[\d.]+ms rank=[\d.]+ms ids={doc}:3,{doc}:2,{doc}:6\n")
         self.assertRegex(log, r"query=previous\+message index=kept ")
 
@@ -14149,10 +14149,46 @@ class AskRetrievalTests(unittest.TestCase):
                                ({"k": True}, "retrieval.k must be a positive whole number"),
                                ({"enabled": "yes"}, "retrieval.enabled must be true or false"),
                                ({"model": 3}, "retrieval.model must be text"),
-                               ({"colour": 1}, "unknown setting retrieval.colour")):
+                               ({"colour": 1}, "unknown setting retrieval.colour"),
+                               ({"k_confident": 0}, "retrieval.k_confident must be a positive whole number or null"),
+                               ({"k_confident": 2.5}, "retrieval.k_confident must be a positive whole number or null"),
+                               ({"confident_margin": "high"}, "retrieval.confident_margin must be a number from 0 to 2"),
+                               ({"confident_margin": -0.1}, "retrieval.confident_margin must be a number from 0 to 2"),
+                               ({"k": None}, "retrieval.k must be a positive whole number")):
             with self.subTest(given), self.assertRaisesRegex(ValueError, re.escape(problem)):
                 web._ask_merge(web.ASK_DEFAULTS, {"retrieval": given})
         self.assertEqual(web.ASK_DEFAULTS["retrieval"]["model"], "models/nomic-embed-text-v2-moe.f16.gguf")
+        # Adaptive k is off by default; null, a whole number and a margin are taken.
+        self.assertEqual((web.ASK_DEFAULTS["retrieval"]["k_confident"], web.ASK_DEFAULTS["retrieval"]["confident_margin"]),
+                         (None, 0.184))
+        merged = web._ask_merge(web.ASK_DEFAULTS, {"retrieval": {"k_confident": 3, "confident_margin": 0.2}})["retrieval"]
+        self.assertEqual((merged["k_confident"], merged["confident_margin"]), (3, 0.2))
+        self.assertIsNone(web._ask_merge(web.ASK_DEFAULTS, {"retrieval": {"k_confident": None}})["retrieval"]["k_confident"])
+
+    def test_adaptive_k_gives_k_confident_paragraphs_only_when_the_similarity_margin_is_high(self):
+        settings = {**web.ask_config()["retrieval"], "k": 5, "confident_margin": 0.9}
+        document = self.document()
+        # "cat": ¶3 and ¶2 match fully, the book's last (6th of 6, short of rank 8) not at all: margin about 1.
+        # "the dog": ¶4 matches at cosine 0.71 only: margin about 0.7.
+        numbers, took = web.ask_retrieve(self.storage, document, "cat", {**settings, "k_confident": 2})
+        self.assertGreater(took["margin"], 0.9)
+        self.assertEqual((numbers, took["k"]), ([3, 2], 2))
+        numbers, took = web.ask_retrieve(self.storage, document, "the dog", {**settings, "k_confident": 2})
+        self.assertLess(took["margin"], 0.9)
+        self.assertEqual((len(numbers), took["k"]), (5, 5))
+        self.assertEqual(numbers[:4], [4, 6, 5, 2])
+        # Off (k_confident null, the default): always k, whatever the margin.
+        numbers, took = web.ask_retrieve(self.storage, document, "cat", settings)
+        self.assertEqual((len(numbers), took["k"]), (5, 5))
+        # The margin is the best cosine minus the 8th best (here the book's last).
+        scores = sorted((self.embedder.embed(settings, list(self.PASSAGES)) @
+                         self.embedder.embed(settings, ["cat"], query=True)[0]).tolist(), reverse=True)
+        self.assertAlmostEqual(took["margin"], scores[0] - scores[-1], places=5)
+        # The turn's log line says the margin and the k used.
+        self.configure(k=5, k_confident=2, confident_margin=0.9)
+        book, doc = self.book()
+        _, log, _ = self.ask(book, "cat", replies=[[({"content": "Here."}, "stop")]])
+        self.assertRegex(log, rf"mode=similarity model=embed k=2 margin=(0\.9\d\d|1\.000) query=message .* ids={doc}:3,{doc}:2\n")
 
     def test_the_embedder_runs_llama_server_on_a_free_port_cuts_long_texts_and_stops_it(self):
         script = self.home / "llama-server"

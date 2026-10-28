@@ -12409,10 +12409,14 @@ ASK_DEFAULTS = {
     # (ask_retrieve()); turned off, or without the model or the server, the
     # model searches the book by keywords (search_document), and Settings and
     # Ask say so. A relative `model` is under Hilde's config dir; `server` is
-    # a path or a name on PATH; the prefixes are the model's own.
+    # a path or a name on PATH; the prefixes are the model's own. Adaptive k
+    # (off while k_confident is null): when the similarity margin (cosine of
+    # the book's best paragraph minus its 8th best) is at least
+    # confident_margin, only k_confident paragraphs come (ask_retrieve()).
     "retrieval": {
         "enabled": True, "model": "models/nomic-embed-text-v2-moe.f16.gguf", "server": "llama-server",
         "k": 8, "threads": 8, "query_prefix": "search_query: ", "document_prefix": "search_document: ",
+        "k_confident": None, "confident_margin": 0.184,
     },
 }
 ASK_MODEL_FIELDS = ("prefill_tokens_per_second", "cache_lifetime_seconds", "reliable_up_to", "expiry_multiplier")
@@ -12430,7 +12434,16 @@ ASK_WEB_DOCUMENTS = "chat-docs"
 ASK_STATS_FILE = "ask-models.json"
 # The retrieval settings' types (ask.yaml's `retrieval`, _ask_retrieval()).
 ASK_RETRIEVAL_TYPES = {"enabled": bool, "model": str, "server": str, "k": int, "threads": int,
-                       "query_prefix": str, "document_prefix": str}
+                       "query_prefix": str, "document_prefix": str, "k_confident": int, "confident_margin": float}
+# Settings that may be null (off).
+ASK_RETRIEVAL_NULLABLE = frozenset({"k_confident"})
+# Adaptive k's confidence: the cosine of the best paragraph minus that of this
+# rank (or the book's last, for a shorter book). The default confident_margin,
+# 0.184, was frozen on the RAG test's 306 questions (rag-eval/chunk-gate,
+# similarity 2 first): the lowest margin whose bucket, and every stricter
+# one, loses at most 3 pp of recall from k 8 to k 3 (92 questions, 30%:
+# R@8 100%, R@3 97.8%).
+ASK_CONFIDENT_MARGIN_RANK = 8
 # The open book's paragraph vectors: <root>/.cache/ask-index/<document id>.npz,
 # never in a book's folder; keyed by its text and the model, so a book made
 # again (Recreate) or another model rebuilds it.
@@ -12526,9 +12539,14 @@ def _ask_retrieval(given):
         kind = ASK_RETRIEVAL_TYPES.get(key)
         if kind is None:
             raise ValueError(f"unknown setting retrieval.{key}")
-        if kind is int and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
-            raise ValueError(f"retrieval.{key} must be a positive whole number")
-        if kind is not int and not isinstance(value, kind):
+        if value is None and key in ASK_RETRIEVAL_NULLABLE:
+            pass
+        elif kind is int and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            raise ValueError(f"retrieval.{key} must be a positive whole number"
+                             + (" or null" if key in ASK_RETRIEVAL_NULLABLE else ""))
+        elif kind is float and (isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 2):
+            raise ValueError(f"retrieval.{key} must be a number from 0 to 2")
+        elif kind in (bool, str) and not isinstance(value, kind):
             raise ValueError(f"retrieval.{key} must be {'true or false' if kind is bool else 'text'}")
         merged[key] = value
     return merged
@@ -13708,25 +13726,33 @@ def ask_index(storage, document, settings):
 
 
 def ask_retrieve(storage, document, query, settings):
-    """The `k` paragraph numbers of the open book for `query`: by cosine to
-    the query's vector the best ASK_RETRIEVAL_SIMILAR_FIRST, then the keyword
+    """The paragraph numbers of the open book for `query`: by cosine to the
+    query's vector the best ASK_RETRIEVAL_SIMILAR_FIRST, then the keyword
     ranking's best ASK_RETRIEVAL_KEYWORD_NEXT, then the rest by cosine,
-    without repeats; and what it took: `index_s` (seconds to build the index,
-    None when kept), `embed_ms`, `rank_ms`."""
+    without repeats, `k` of them, or `k_confident` when that is set and the
+    margin (the best cosine minus the ASK_CONFIDENT_MARGIN_RANKth) is at
+    least `confident_margin`; and what it took: `index_s` (seconds to build
+    the index, None when kept), `embed_ms`, `rank_ms`, `margin`, and `k`
+    (the number used)."""
     import numpy
 
     (vectors, numbers, lexical), built = ask_index(storage, document, settings)
     started = time.monotonic()
     vector = ASK_EMBEDDER.embed(settings, [query], query=True)[0]
     embedded = time.monotonic()
+    scores = vectors @ vector
+    order = numpy.argsort(-scores, kind="stable")
+    margin = float(scores[order[0]] - scores[order[min(ASK_CONFIDENT_MARGIN_RANK, len(order)) - 1]]) if len(
+        order) else 0.0
+    confident = settings["k_confident"] is not None and margin >= settings["confident_margin"]
+    k = settings["k_confident"] if confident else settings["k"]
     keyword = lexical.rank(query)[:ASK_RETRIEVAL_KEYWORD_NEXT]
     # Enough similar ones to fill k whatever the keyword ones repeat.
-    best = numpy.argsort(-(vectors @ vector), kind="stable")[:settings["k"] + len(keyword)]
-    similar = [numbers[index] for index in best]
+    similar = [numbers[index] for index in order[:k + len(keyword)]]
     first = similar[:ASK_RETRIEVAL_SIMILAR_FIRST]
     ranked = list(dict.fromkeys(first + keyword + similar[ASK_RETRIEVAL_SIMILAR_FIRST:]))
-    return ranked[:settings["k"]], {"index_s": built, "embed_ms": (embedded - started) * 1000,
-                                    "rank_ms": (time.monotonic() - embedded) * 1000}
+    return ranked[:k], {"index_s": built, "embed_ms": (embedded - started) * 1000,
+                        "rank_ms": (time.monotonic() - embedded) * 1000, "margin": margin, "k": k}
 
 
 ASK_PARAGRAPH_ID = re.compile(
@@ -15495,7 +15521,8 @@ class ChatTurn:
             self.save(self.path, self.entries)
         built = took["index_s"]
         print(
-            f"Ask reading: turn={self.id} mode=similarity model={reading['model']} k={reading['k']} "
+            f"Ask reading: turn={self.id} mode=similarity model={reading['model']} k={took['k']} "
+            f"margin={took['margin']:.3f} "
             f"query={'previous+message' if earlier else 'message'} "
             f"index={'kept' if built is None else f'built {built:.1f}s'} embed={took['embed_ms']:.1f}ms "
             f"rank={took['rank_ms']:.2f}ms ids={','.join(f'{document.id}:{number}' for number in numbers)}",

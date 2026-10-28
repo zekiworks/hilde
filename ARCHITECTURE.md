@@ -2937,7 +2937,16 @@ never asks.
   question's BM25 best are mostly wrong, so similarity's pick stays in the top
   3; an identifier only BM25 finds still comes, at rank 3 or 4 (rag-eval, 306
   questions: R@3 67 → 71% against BM25 first, paraphrased 40 → 53%; the top 8
-  hold the same paragraphs either way). Those paragraphs, each as `read_paragraphs` gives it (`AskDocument.items()`,
+  hold the same paragraphs either way). **Adaptive k** (off by default:
+  `retrieval.k_confident` null): the margin is the best cosine minus the
+  `ASK_CONFIDENT_MARGIN_RANK`th (8th; a shorter book's last) over the whole
+  book; at or over `retrieval.confident_margin` the turn takes `k_confident`
+  paragraphs, else `k`, in the same order. The default margin, 0.184, was
+  frozen on the RAG test's 306 questions (`workspace/rag-eval/chunk-gate`,
+  this order): the lowest margin whose bucket, and every stricter one, loses
+  at most 3 pp of recall from k 8 to k 3 (30% of questions; R@8 100%, R@3
+  97.8%). The GGUF's margins match the transformers model's within 0.005
+  (303/306 on the same side of 0.184). Those paragraphs, each as `read_paragraphs` gives it (`AskDocument.items()`,
   version paper), are saved on the user entry as `retrieved`; the ledger
   makes them items of kind `paper`/`narration` (no age expiry, compacted and
   "(already above)" like a read) and renders them after any attachment,
@@ -2960,7 +2969,7 @@ never asks.
   `CHAT_TOOLS`). An embedding failure while a turn retrieves (or an index that
   can't be written) makes that turn keyword too.
 - The server log has one line per turn: `Ask reading: turn=<id>
-  mode=similarity model=<GGUF stem> k=<k> query=message|previous+message
+  mode=similarity model=<GGUF stem> k=<k used> margin=<margin> query=message|previous+message
   index=kept|built <s>s embed=<ms>ms rank=<ms>ms ids=<id>:<n>,…`, or `Ask
   reading: turn=<id> mode=keyword why=<why>`. The page says it too:
   `chat_payload()`'s `reading` (`{mode, text}`, `ask_reading_text()`) is a
@@ -3147,7 +3156,8 @@ then ` completion=N` when the server reported the completion's tokens.
 that is not a positive number makes the whole file be ignored, said once in the
 log. `retrieval` is checked by its own types (`_ask_retrieval()`,
 `ASK_RETRIEVAL_TYPES`: `enabled` true/false, `model`, `server`, and the two
-prefixes text, `k` and `threads` positive whole numbers).
+prefixes text, `k` and `threads` positive whole numbers, `k_confident` one
+or null (`ASK_RETRIEVAL_NULLABLE`), `confident_margin` a number from 0 to 2).
 `ask_model_settings()` takes the kind's (`local` or `cloud`:
 `prefill_tokens_per_second`, `cache_lifetime_seconds`, `reliable_up_to`, 16,384
 local and the window for cloud) and then each `models` entry whose pattern
