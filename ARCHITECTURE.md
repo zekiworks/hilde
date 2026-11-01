@@ -2814,19 +2814,25 @@ the four colour dots · Add note · Ask Hilde · Copy) where `#selection-ask`
 would be (`selectionButton()`, `placeSelectionAsk()`). `placeSelectionAsk()`
 uses the selection's visible client rects: above them (`box.top - h - 8`)
 when that is at least 4 px under the reading viewport's top, else below,
-else on the side with more room; clamped vertically to `readingViewport()`
-and horizontally to `#reader-content`'s box within the screen (8 px in).
+else on the side with more room; clamped by `selBarClamp(want, size, area,
+screenWidth, view)` (pure): vertically to `readingViewport()` (4 px in) and
+horizontally to `#reader-content`'s box within the screen (8 px in), the
+screen alone when the bar is wider than that column.
 `placeSelectionSoon()` (one `requestAnimationFrame`) places it again from a
 `ResizeObserver` on `#reader-content`, the window's `resize`, and
 `setPanel()`. The handle (`button.sel-handle`, `data-act="move"`, six dots,
 `touch-action: none`) moves the bar: a pointer drag with
 `setPointerCapture()` (the bar's `pointerdown` `preventDefault()` keeps the
 selection), or the arrow keys, 16 px (64 with Shift), through
-`moveSelectionBar(left, top)`, which keeps it on the screen and inside
-`readingViewport()`. A moved bar (`selBarMoved`, for `selBarFor`) stays where
-it was put, also on scroll, until the target changes (`selBarTarget()`: the
-range's boundary points, or `markMenuId`; `sameSelBarTarget()`) or a
-`pointerdown` lands outside the bar; Escape on a moved bar returns it
+`moveSelectionBar(left, top)`, which clamps it with the same `selBarClamp()`
+(inside the reading area and the screen, and inside `readingViewport()`) and
+keeps that as its chosen place. A moved bar (`selBarMoved`, for `selBarFor`)
+stays there, also on scroll; when a resize or the panel narrows the column,
+`showMovedSelectionBar()` clamps where it is shown and keeps the chosen place
+for when the room comes back. It returns beside the selection when the target
+changes (`selBarTarget()`: the range's boundary points, or `markMenuId`;
+`sameSelBarTarget()`) or a `pointerdown` lands outside the bar; Escape on a
+moved bar returns it
 (`selectionBarHome()`, stopping propagation). The bar's click handler
 ignores `data-act=move`. WebKit drops the page's selection when a button takes
 the keyboard focus: the bar keeps a copy (`selBarRange`, set by

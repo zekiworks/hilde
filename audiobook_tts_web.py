@@ -100,10 +100,15 @@ SCRIPT = ROOT / "audiobook_tts.py"
 # Hilde Reader's copper leaf, each file served at its own name: the header's
 # bare leaf (no tile), the emblem (the leaf on its navy tile), the favicons
 # (16, 32), the Apple touch icon (180), and the web app manifest's icons (192,
-# 512), which all keep the tile.
+# 512), which all keep the tile. B (dark-only): the supplied transparent leaf
+# (hilde-leaf-transparent.png, byte for byte) is the header mark, and the
+# hilde-*.png icons are scaled-only copies of it (alpha and the whole canvas
+# kept, no tile); the older files stay served, unchanged.
 APP_ICONS = {f"/{name}": ROOT / "assets" / name for name in (
     "reader-leaf.svg", "reader-emblem.svg", "favicon-16.png", "favicon-32.png",
     "apple-touch-icon-180.png", "icon-192.png", "icon-512.png",
+    "hilde-leaf-transparent.png", "hilde-favicon-16.png", "hilde-favicon-32.png",
+    "hilde-apple-touch-180.png", "hilde-icon-192.png", "hilde-icon-512.png",
 )}
 # /manifest.webmanifest: the name and icon a phone's home screen shows. Its
 # colours are the page's ground (--bg); it opens in the browser, as before.
@@ -115,8 +120,8 @@ APP_MANIFEST = {
     "background_color": "#1b1b1b",
     "theme_color": "#1b1b1b",
     "icons": [
-        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
-        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        {"src": "/hilde-icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/hilde-icon-512.png", "sizes": "512x512", "type": "image/png"},
     ],
 }
 PAPER_PROMPT_PATH = ROOT / "prompts" / "PAPER-AUDIO-BOOK.md"
@@ -3466,17 +3471,36 @@ def save_mark(storage, book, item):
     return saved
 
 
-def delete_mark(storage, book, mark_id):
+def delete_mark(storage, book, mark_id, precondition=None):
     """Delete a mark: it stays as a tombstone (its id, kind and times), so a
-    device's older copy never brings it back. An id never saved gets one too."""
+    device's older copy never brings it back. An id never saved gets one too.
+
+    `precondition` (optional; the page's Undo of a highlight it just made and
+    its retries send one): {"if_updated_at": the copy's updated_at,
+    "if_bare_highlight": true}, checked under the lock against the stored
+    mark. MarkConflict (with the stored mark, nothing changed) when the mark is
+    gone, has changed since that copy, or is no longer a highlight alone. A
+    delete without it (the user's own Delete) is as before."""
     if not isinstance(mark_id, str) or not MARK_ID_PATTERN.fullmatch(mark_id):
         raise ValueError("A note's id is a UUID (version 4).")
     if not BOOK_ID_PATTERN.fullmatch(str(book)):
         raise ValueError("Select a valid audiobook.")
+    if precondition is not None and not (
+        isinstance(precondition, dict) and precondition and set(precondition) <= {"if_updated_at", "if_bare_highlight"}
+        and isinstance(precondition.get("if_updated_at", ""), str) and precondition.get("if_bare_highlight", True) is True
+    ):
+        raise ValueError("A delete's condition is if_updated_at (text) and/or if_bare_highlight (true).")
     with marks_lock(storage, book) as folder:
         marks_book(storage, book)
         items = read_marks(storage, book)
         stored = items.get(mark_id) or {}
+        if precondition is not None and (
+            not stored or stored.get("deleted")
+            or "if_updated_at" in precondition and stored.get("updated_at") != precondition["if_updated_at"]
+            or precondition.get("if_bare_highlight") and not (
+                stored.get("kind") == "highlight" and stored.get("highlight") and not (stored.get("note") or "").strip())
+        ):
+            raise MarkConflict(stored or {"id": mark_id, "kind": None, "deleted": True})
         if stored.get("deleted"):
             return stored
         now = mark_time(stored.get("updated_at"))
@@ -20256,7 +20280,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
             storage, book = self.server.storage, str(body.get("book") or "")
             if route == "/api/marks/delete":
-                return self.marks_reply(lambda: {"item": delete_mark(storage, book, body.get("id"))}, book)
+                # Optional, as the page's Undo sends it: delete only that copy of a highlight alone.
+                condition = {key: body[key] for key in ("if_updated_at", "if_bare_highlight") if key in body} or None
+                return self.marks_reply(
+                    lambda: {"item": delete_mark(storage, book, body.get("id"), condition)}, book)
             return self.marks_reply(lambda: {"item": marks_with_places(
                 storage, book, [save_mark(storage, book, body.get("item"))])[0]}, book)
         if route == "/api/chat/speak":
@@ -21361,43 +21388,44 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Hilde Reader</title>
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/hilde-favicon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/hilde-favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/hilde-apple-touch-180.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <style>
 :root { color-scheme:dark;
-        /* One charcoal ground, one neutral gray family, one interface accent
-           (blue), and a few colours each in one role only, used through these
-           tokens:
-           blue: --accent, the fill of a screen's main action and Play/Pause,
-           white ink on it (5.5:1); --accent-light, selected items (a tab's
-           line, a chosen tag's border), links, the LED dot of a selected tab
-           or a switch that is on, the quiet blue buttons' text, icon and
-           border (Change, and Library with a book open), and the reading
-           highlight (6.6:1 on the ground), never a button's fill;
-           teal --ask: a marker of Ask Hilde only, never an area: the
+        /* Dark only (B; light deferred). One charcoal ground, one neutral gray
+           family, one interface accent (plum, mürdüm), and a few colours each
+           in one role only, used through these tokens:
+           plum: --accent, the fill of a screen's main action and Play/Pause,
+           white ink on it; --accent-light (rose), selected items (a tab's
+           line, a chosen tag's border), links, the focus ring, the LED dot of
+           a selected tab or a switch that is on, the quiet buttons' text, icon
+           and border (Change, and Library with a book open), and the reading
+           highlight, never a button's fill;
+           pale rose --ask: a marker of Ask Hilde only, never an area: the
            player's Ask Hilde button (a 12% tint, its border, text and
            sparkle), the selection bar's Ask Hilde, Ask Hilde for a touch
            selection above the player bar, and the ✦ sparkle wherever it
            stands (the header's button, the panel tab, a saved answer's marker
            and label). The panel's header, its cards (Selected text, a
            passage), the help examples and the question box are neutral;
-           green --local: the Local badge (with a chip) and Runs on Local, and
-           a finished step of Create;
-           purple --cloud: the Cloud badge (with a cloud) and Runs on Cloud;
-           gray --off: disabled and "not running" items (the selection
+           status, restrained, each state with its own label and icon:
+           dusty pink --local: the Local badge (with a chip) and Runs on
+           Local, and a finished step of Create (with its tick);
+           plum-lavender --cloud: the Cloud badge (with a cloud) and Runs on
+           Cloud; gray --off: disabled and "not running" items (the selection
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
-           and text. No orange anywhere; no glow stays lit. The Voices list
-           (#page-voice: --play) sets its own; its tags are neutral, a chosen
-           one blue (--accent-light) with a tick. */
+           and text. No blue, green or teal brand colour; no orange; no glow
+           stays lit. The Voices list (#page-voice: --play) sets its own; its
+           tags are neutral, a chosen one rose (--accent-light) with a tick. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
-        --hover:#383838; --line:#3a3a3a; --text:#f1eee9; --dim:#a7a29b;
-        --accent:#2a5fe0; --accent-ink:#ffffff; --accent-light:#5aa2ff;
+        --hover:#383838; --line:#3a3a3a; --text:#faf8f5; --dim:#bdb8b1;
+        --accent:#8e2f6d; --accent-ink:#ffffff; --accent-light:#eeaad0;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
-        --ask:#2bb3a3; /* light mode: #127a6e */
-        --local:#3fb950; --cloud:#c678dd; --off:#8b8f98;
+        --ask:#f6cfe0;
+        --local:#e2aacb; --cloud:#c195d6; --off:#8b8f98;
         --bad:#e5534b; --radius:12px;
         /* Create's step rows: their own darker ground; the open step's number
            in a filled blue circle (white on --accent, 5.5:1), a finished
@@ -21433,9 +21461,10 @@ a { color:var(--accent-light); }
 /* While the server does not answer, what needs it is inert (setServerDown()). */
 body.server-down [inert] { opacity:.5; }
 .app-header { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; }
-/* The mark: the bare copper leaf (reader-leaf.svg, its viewBox cropped to the leaf, no navy tile; the tile stays
-   the app icon's and the favicons'), 36 px tall (32 px on a phone), centred on the name and tagline. */
-.brand-logo { width:auto; height:36px; flex:0 0 auto; }
+/* The mark: the supplied transparent copper leaf (hilde-leaf-transparent.png, unchanged bytes, its full square canvas
+   with its transparent margin), contained in the old mark's 31 x 36 px box (32 px tall on a phone), centred on the
+   name and tagline; never cropped or stretched. */
+.brand-logo { width:31px; height:36px; object-fit:contain; flex:0 0 auto; }
 .brand { flex:1 1 200px; min-width:0; }
 /* "Hilde" white semibold, then " Reader" regular in a light gray, one line. */
 .brand-name { font-size:24px; font-weight:600; white-space:nowrap; }
@@ -21716,7 +21745,7 @@ button.trash:hover:not(:disabled) { background:color-mix(in srgb, var(--bad) 14%
             border:1px solid var(--popover-line); border-radius:10px; box-shadow:0 12px 32px rgba(0,0,0,.5); }
 .doc-row { display:flex; align-items:center; gap:4px; min-width:0; padding-right:6px; border-radius:8px; }
 .doc-row:hover { background:#24262b; }
-.doc-row.is-chosen { background:#26303f; }
+.doc-row.is-chosen { background:#3a2633; }
 button.doc-pick { display:flex; align-items:center; gap:12px; flex:1 1 auto; min-width:0; min-height:40px;
                   padding:8px 6px 8px 10px; background:transparent; border:0; box-shadow:none; color:var(--text);
                   text-align:left; }
@@ -21991,12 +22020,12 @@ legend ~ * { clear:both; }
 .data-table td { padding:10px 12px; border-bottom:1px solid var(--surface);
                  vertical-align:middle; }
 .data-table tbody tr:hover { background:var(--surface); }
-/* Voices (Part C, 20 Oct; one accent, 26 Oct): white names; green (#3fb950) play circles, the selected voice's
-   faint green row and its solid "✓ Selected"; each voice's tags as neutral chips (light gray text, a gray border)
-   that fill the search box; a chosen tag (a pressed one in the list, a kept one in Review tags, a picked one in New
-   voice) blue: a faint blue fill, a blue border and a tick, never colour alone. Select, ⋯ and the search box gray.
-   The chips' text keeps 4.5:1 on any row, their gray border (#7a7a7a) 3:1. */
-#page-voice, #selected-voice, #tag-review { --play:#3fb950; --play-ink:#0d1117; --tag:#d8d4ce; --tag-ink:var(--text);
+/* Voices (Part C, 20 Oct; one accent, 26 Oct; B plum): white names; plum (#c76a9f) play circles, the selected
+   voice's faint plum row and its solid "✓ Selected"; each voice's tags as neutral chips (light gray text, a gray
+   border) that fill the search box; a chosen tag (a pressed one in the list, a kept one in Review tags, a picked one
+   in New voice) rose: a faint rose fill, a rose border and a tick, never colour alone. Select, ⋯ and the search box
+   gray. The chips' text keeps 4.5:1 on any row, their gray border (#7a7a7a) 3:1. */
+#page-voice, #selected-voice, #tag-review { --play:#d276ab; --play-ink:#0d1117; --tag:#e2ded8; --tag-ink:var(--text);
               --tag-line:#7a7a7a; --gray-line:#707070;
               --tag-on:color-mix(in srgb, var(--accent-light) 18%, var(--bg)); }
 .voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
@@ -22058,7 +22087,7 @@ legend ~ * { clear:both; }
 .voice-table button.voice-tag:hover:not(:disabled) { background:color-mix(in srgb, var(--tag) 20%, #111); }
 .voice-table button.voice-tag[aria-pressed=true],
 .voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled) {
-  background:var(--tag-on); border-color:var(--accent-light); color:var(--text); font-weight:600; }
+  background:var(--accent-light); border-color:var(--accent-light); color:var(--bg); font-weight:600; }
 .voice-table button.voice-tag[aria-pressed=true]::before, .tag-picker button.tag-option[aria-pressed=true]::before {
   content:"✓\00a0"; }
 .voice-no-description { display:block; margin-top:2px; color:var(--dim); font-size:13px; line-height:20px; }
@@ -22512,7 +22541,7 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 /* Ask Hilde for a touch selection: filled with Ask Hilde's teal, dark ink on it (6.9:1), the sparkle; 44px tall. Here,
    not beside the selection, where a phone puts its own text menu (Copy, Look Up). */
 .dock-ask { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0 22px; border:0;
-            border-radius:999px; background:var(--ask); color:#0e1a18; font-size:15px; font-weight:650;
+            border-radius:999px; background:var(--ask); color:#1b1b1b; font-size:15px; font-weight:650;
             box-shadow:0 6px 20px rgba(0,0,0,.5); }
 .dock-ask:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
 /* The side panel: beside the text on a wide screen, a bottom sheet below 900px. On a wide screen its top is the
@@ -22978,10 +23007,11 @@ html.notes-on .dock-slot { flex-direction:column; align-items:center; gap:8px; }
 .mark-bar.tapped .mark-dots { flex-basis:100%; justify-content:center; }
 /* One Ask Hilde while text is selected on a phone: the player's (it acts on the selection); the header's hides. */
 html.notes-selecting #header-ask { visibility:hidden; }
-/* With the phone sheet open (Save to notes under an answer) only Saved to Notes shows, over the sheet's foot. */
+/* With the phone sheet open only Saved to Notes (Save to notes under an answer) and the Highlighted bar show, over
+   the sheet's foot. */
 @media (max-width:899.98px) {
-  html.sheet-open .dock-slot:has(> #saved-bar:not(.hidden)) { z-index:21; }
-  html.sheet-open .dock-slot > :not(#saved-bar) { display:none !important; }
+  html.sheet-open .dock-slot:has(> :is(#saved-bar, #mark-bar):not(.hidden)) { z-index:21; }
+  html.sheet-open .dock-slot > :not(#saved-bar, #mark-bar) { display:none !important; }
 }
 /* The shrunk Notes sheet (Back to note), or choosing a note's place: a small bar just above the player. */
 .notes-mini { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
@@ -23235,7 +23265,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 @media (max-width:640px) {
   main { padding:14px 14px 4px; }
   .brand-tagline { font-size:12px; line-height:1.3; }
-  .brand-logo { height:32px; }
+  .brand-logo { width:calc(32px * 31 / 36); height:32px; }
   .tabs { gap:6px; margin-top:12px; padding:0 2px; }
   .page { padding-top:18px; }
   .card, fieldset, .queue-panel, .job-section .job-queue:not(:empty) { padding:16px; }
@@ -23372,7 +23402,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 <body>
 <main>
   <header class="app-header">
-    <img class="brand-logo" src="/reader-leaf.svg" width="31" height="36" alt="">
+    <img class="brand-logo" src="/hilde-leaf-transparent.png" width="31" height="36" alt="">
     <div class="brand">
       <h1 class="brand-name">Hilde<span> Reader</span></h1>
       <p class="brand-tagline">Listen to your documents. Follow the text. Ask to understand.</p>
@@ -28650,8 +28680,9 @@ function queueSelectionAsk() {
 // the reading area and the screen; placed again on scroll, resize and as the
 // panel opens, closes or is resized (the text's box changes). Moved by its
 // handle (selBarMoved: a drag, or the arrow keys), it stays where it was put,
-// on scroll too, until a new selection (selBarFor: what it was placed for) or
-// Escape on the handle brings it back beside the selection.
+// on scroll too, still inside the reading area and the screen (selBarClamp()),
+// until a new selection (selBarFor: what it was placed for) or Escape on the
+// handle brings it back beside the selection.
 let selBarMoved = null, selBarFor = null, selBarFrame = 0;
 // The selection the bar was opened for (a copy): WebKit clears the page's selection when a button takes the keyboard
 // focus, so the focus moving into the bar (Tab, the handle) puts that selection back (keepSelBarSelection()); while
@@ -28710,7 +28741,7 @@ function placeSelectionAsk() {
   const target = selBarTarget();
   if (!sameSelBarTarget(selBarFor, target)) { selBarFor = target; selBarMoved = null; }
   const view = readingViewport(), height = button.offsetHeight, width = button.offsetWidth;
-  if (selBarMoved) { moveSelectionBar(selBarMoved.left, selBarMoved.top); return; }
+  if (selBarMoved) { showMovedSelectionBar(); return; }
   // The part of the selection in sight (a long one scrolled partly away), else all of it.
   const rects = [...range.getClientRects()].filter((rect) => rect.width || rect.height);
   const seen = rects.filter((rect) => rect.bottom > view.top && rect.top < view.bottom);
@@ -28725,22 +28756,35 @@ function placeSelectionAsk() {
   else top = box.top - view.top >= view.bottom - box.bottom ? view.top + 4 : view.bottom - height - 4;
   top = Math.min(Math.max(top, view.top + 4), view.bottom - height - 4);
   // Centred on the selection, inside the reading area (the text's column) and the screen.
-  const area = $("reader-content").getBoundingClientRect();
-  let least = Math.max(8, area.left), most = Math.min(window.innerWidth - 8, area.right) - width;
-  if (most < least) { least = 8; most = window.innerWidth - width - 8; }
-  const left = Math.min(most, Math.max(least, (box.left + box.right) / 2 - width / 2));
-  button.style.top = `${Math.round(top)}px`;
-  button.style.left = `${Math.round(left)}px`;
+  const spot = selBarClamp({ left:(box.left + box.right) / 2 - width / 2, top }, { width, height },
+                           $("reader-content").getBoundingClientRect(), window.innerWidth, view);
+  button.style.top = `${Math.round(spot.top)}px`;
+  button.style.left = `${Math.round(spot.left)}px`;
 }
-// Puts the moved bar at left/top, kept whole on the screen and between the top bars and the player.
+// Where the selection bar goes for a wanted left/top (pure: rectangles in, a place out). Across, inside the reading
+// area (the text's column) and the screen, 8 px in; a bar wider than that column, inside the screen. Down, between
+// the top bars and the player, 4 px in. Both the bar beside its selection and a moved bar are placed by it.
+function selBarClamp(want, size, area, screenWidth, view) {
+  let least = Math.max(8, area.left), most = Math.min(screenWidth - 8, area.right) - size.width;
+  if (most < least) { least = 8; most = screenWidth - size.width - 8; }
+  return { left:Math.min(most, Math.max(least, want.left)),
+           top:Math.min(Math.max(want.top, view.top + 4), view.bottom - size.height - 4) };
+}
+// The moved bar where it was put (selBarMoved), clamped as the layout now allows: a scroll, a resize or the panel
+// changing the column moves it only as far as needed, and its chosen place is kept for when the room comes back.
+function showMovedSelectionBar() {
+  const bar = $("selection-actions");
+  const spot = selBarClamp(selBarMoved, { width:bar.offsetWidth, height:bar.offsetHeight },
+                           $("reader-content").getBoundingClientRect(), window.innerWidth, readingViewport());
+  bar.style.left = `${Math.round(spot.left)}px`;
+  bar.style.top = `${Math.round(spot.top)}px`;
+}
+// Moves the bar to left/top (its handle dragged, or the arrow keys): the clamped place becomes its chosen place.
 function moveSelectionBar(left, top) {
-  const bar = $("selection-actions"), view = readingViewport();
-  const width = bar.offsetWidth, height = bar.offsetHeight;
-  left = Math.min(Math.max(4, left), window.innerWidth - width - 4);
-  top = Math.min(Math.max(view.top + 4, top), view.bottom - height - 4);
-  selBarMoved = { left, top };
-  bar.style.left = `${Math.round(left)}px`;
-  bar.style.top = `${Math.round(top)}px`;
+  const bar = $("selection-actions");
+  selBarMoved = selBarClamp({ left, top }, { width:bar.offsetWidth, height:bar.offsetHeight },
+                            $("reader-content").getBoundingClientRect(), window.innerWidth, readingViewport());
+  showMovedSelectionBar();
 }
 function selectionBarHome() {
   selBarMoved = null;
@@ -29091,14 +29135,28 @@ function markPayload(item, changes = {}) {
   if (item.kind === "answer") sent.answer = item.answer;
   return { ...sent, ...changes };
 }
+// The marks of the book open now, as one load of them (marksEpoch): a reply or a Retry that comes after the book
+// changed or was opened again is not applied to them.
+function marksContext() { return { book:marksBook || state.player.book, epoch:marksEpoch }; }
+function sameMarksContext(context) {
+  return context.epoch === marksEpoch && context.book === (marksBook || state.player.book);
+}
 async function saveMark(item) {
+  const context = marksContext();
   const answer = await jsonRequest("/api/marks/save", {
     method:"POST", headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ book:marksBook || state.player.book, item }),
+    body:JSON.stringify({ book:context.book, item }),
   });
+  if (!sameMarksContext(context)) return answer.item;
   marks.set(answer.item.id, answer.item);
   renderMarks(); renderNotes(); renderChatSaves();
   return answer.item;
+}
+// The server's copy of a mark after a conflict (409): it replaces the page's; a deleted one goes.
+function takeServerMark(id, item) {
+  if (!item || item.deleted) { marks.delete(id); noteEdits.delete(id); }
+  else marks.set(id, item);
+  renderMarks(); renderNotes(); renderChatSaves();
 }
 function selectionTooLong(found) {
   if (found.anchor.quote.length <= QUOTE_MAX) return false;
@@ -29117,12 +29175,21 @@ function highlightSelection(picked, color = markColor()) {
 }
 // A new highlight in a colour (which becomes the one Highlight uses); once the
 // server has it, the Highlighted bar: its dots recolour it, Undo removes it.
+// A reply after the book changed (or was opened again) shows nothing.
 function saveHighlight(anchor, color) {
   setMarkColor(color);
   const item = { id:markId(), kind:"highlight", anchor, highlight:true, note:null, confirmed_place:false, color };
+  const context = marksContext();
   const run = async () => {
-    try { showMarkBar((await saveMark(markPayload(item))).id, false); }
-    catch (error) { showToast(`Highlight not saved: ${error.message}`, { label:"Retry", run }); }
+    if (!sameMarksContext(context)) return;
+    try {
+      const saved = await saveMark(markPayload(item));
+      if (!sameMarksContext(context)) return;
+      markBarFresh = { ...context, id:saved.id, updated_at:saved.updated_at };
+      showMarkBar(saved.id, false);
+    } catch (error) {
+      if (sameMarksContext(context)) showToast(`Highlight not saved: ${error.message}`, { label:"Retry", run });
+    }
   };
   run();
 }
@@ -29157,7 +29224,11 @@ function renderMarkColor() {
 }
 // markMenuId: the highlight whose own menu #selection-actions shows (mark
 // mode, a mouse); markBarId: the one #mark-bar is about (just made, or tapped).
-let markMenuId = "", markBarId = "", markBarTimer = 0, savedBarId = "", savedBarTimer = 0;
+// markBarFresh: the highlight just made that the bar's Undo is for ({book, epoch, id, updated_at});
+// markBarPointer / markBarFocus / markBarPressing: a pointer over the bar, the focus in it (from any source), a
+// press that began on it and has not ended (pointerup or pointercancel, wherever): each holds it (timeMarkBar).
+let markMenuId = "", markBarId = "", markBarTimer = 0, savedBarId = "", savedBarTimer = 0, markBarFresh = null;
+let markBarPointer = false, markBarFocus = false, markBarPressing = false;
 const MARK_BAR_FOR = 6000, SAVED_BAR_FOR = 5000;
 // The four dots of the selection menu and of the bar: ringed, the colour a new
 // highlight takes, or the colour of the highlight they are about.
@@ -29199,49 +29270,105 @@ function openMarkChoices(id, mouse) {
 }
 function showMarkBar(id, tapped) {
   markBarId = id;
+  if (tapped || markBarFresh?.id !== id) markBarFresh = null;
   const bar = $("mark-bar");
   bar.classList.toggle("tapped", tapped);
   bar.setAttribute("aria-label", tapped ? "This highlight" : "Highlighted");
   renderMarkDots();
   bar.classList.remove("hidden");
   clearTimeout(markBarTimer);
-  if (!tapped) markBarTimer = setTimeout(hideMarkBar, MARK_BAR_FOR);
   layoutStack();
+  if (!tapped) requestAnimationFrame(timeMarkBar);
+}
+// The Highlighted bar's 6 s start once it is on screen; they wait while a pointer is over it, the focus is in it or
+// a press on it lasts, and start again, in full, when all of those have ended; choosing a dot starts them again.
+function timeMarkBar() {
+  clearTimeout(markBarTimer);
+  const bar = $("mark-bar");
+  if (bar.classList.contains("hidden") || bar.classList.contains("tapped")
+      || markBarPointer || markBarFocus || markBarPressing) return;
+  markBarTimer = setTimeout(hideMarkBar, MARK_BAR_FOR);
+}
+function releaseMarkBarPress() {
+  if (!markBarPressing) return;
+  markBarPressing = false;
+  timeMarkBar();
 }
 function hideMarkBar() {
   clearTimeout(markBarTimer);
-  markBarId = "";
+  markBarId = ""; markBarFresh = null; markBarPointer = false; markBarFocus = false; markBarPressing = false;
   if ($("mark-bar").classList.contains("hidden")) return;
   $("mark-bar").classList.add("hidden");
   layoutStack();
 }
+// A new colour; after a conflict (409) the server's copy is taken: deleted, or without its fill now, the colour is
+// not changed and there is no Retry; still highlighted, Retry sends the colour on that copy (its note and answer
+// kept) if it is still highlighted then.
 async function recolorMark(id, color) {
-  const item = marks.get(id);
+  const item = marks.get(id), context = marksContext();
   if (!item || !MARK_COLORS.includes(color)) return;
   setMarkColor(color);
   if (itemColor(item) === color) return;
-  try { await saveMark(markPayload(item, { color, base_updated_at:item.updated_at })); }
-  catch (error) { showToast(`Colour not changed: ${error.message}`); }
-  renderMarkDots();
+  const attempt = async (copy) => {
+    if (!sameMarksContext(context)) return;
+    try {
+      const saved = await saveMark(markPayload(copy, { color, base_updated_at:copy.updated_at }));
+      if (markBarFresh?.id === id && sameMarksContext(context)) markBarFresh.updated_at = saved.updated_at;
+    } catch (error) {
+      if (!sameMarksContext(context)) return;
+      if (error.status !== 409) { showToast(`Colour not changed: ${error.message}`); return; }
+      const fresh = error.body && error.body.item;
+      takeServerMark(id, fresh);
+      if (!fresh || fresh.deleted) { showToast("Colour not changed: already removed on another device."); return; }
+      if (!fresh.highlight) { showToast("Colour not changed: the highlight was removed on another device."); return; }
+      showToast(`Colour not changed: ${error.message}`, { label:"Retry", run:() => {
+        const now = marks.get(id);
+        if (sameMarksContext(context) && now?.highlight && !now.deleted) attempt(now);
+      } });
+    }
+    renderMarkDots();
+  };
+  await attempt(item);
 }
-async function deleteMarkNow(id) {
+// A highlight alone deleted, only that copy and only while it is still a highlight alone: the server checks, under
+// its lock, and answers 409 with its copy otherwise.
+async function deleteMarkNow(id, copy) {
+  const context = marksContext();
   await jsonRequest("/api/marks/delete", { method:"POST", headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ book:marksBook || state.player.book, id }) });
+    body:JSON.stringify({ book:context.book, id, if_updated_at:copy.updated_at, if_bare_highlight:true }) });
+  if (!sameMarksContext(context)) return;
   marks.delete(id); noteEdits.delete(id);
   renderMarks(); renderNotes(); renderChatSaves();
 }
-// Undo (just highlighted): the mark is deleted. Remove highlight: a highlight
-// alone is deleted; one with a note or an answer keeps those, without the fill.
+// Undo (the highlight just made, while its bar is about it) and Remove highlight: a highlight alone is deleted;
+// one with a note or an answer keeps those, without the fill. After a conflict (409) the page takes the server's
+// copy and decides again: already removed (deleted, or no fill) says so with no Retry; still highlighted offers
+// Retry, which acts on the copy as it is then. Nothing is retried by itself.
 async function removeHighlight(id, undo = false) {
-  const item = marks.get(id);
+  const item = marks.get(id), context = marksContext();
+  const fresh = undo && markBarFresh?.id === id && sameMarksContext(markBarFresh) ? markBarFresh : null;
   hideMarkBar(); hideSelectionAsk();
-  if (!item) return;
-  try {
-    if (undo || (item.kind === "highlight" && !(item.note || "").trim())) await deleteMarkNow(id);
-    else await saveMark(markPayload(item, { highlight:false, base_updated_at:item.updated_at }));
-  } catch (error) {
-    showToast(`Highlight not removed: ${error.message}`, { label:"Retry", run:() => removeHighlight(id, undo) });
-  }
+  if (!item || (undo && !fresh)) return;
+  const attempt = async (copy) => {
+    if (!sameMarksContext(context)) return;
+    try {
+      if (copy.kind === "highlight" && !(copy.note || "").trim()) await deleteMarkNow(id, copy);
+      else await saveMark(markPayload(copy, { highlight:false, base_updated_at:copy.updated_at }));
+    } catch (error) {
+      if (!sameMarksContext(context)) return;
+      const retry = { label:"Retry", run:() => {
+        const now = marks.get(id);
+        if (sameMarksContext(context) && now?.highlight) attempt(now);
+      } };
+      if (error.status !== 409) { showToast(`Highlight not removed: ${error.message}`, retry); return; }
+      const server = error.body && error.body.item;
+      takeServerMark(id, server);
+      if (!server || server.deleted) showToast("Already removed: it was deleted on another device.");
+      else if (!server.highlight) showToast("Highlight already removed on another device.");
+      else showToast(`Highlight not removed: ${error.message}`, retry);
+    }
+  };
+  attempt(fresh ? { ...item, updated_at:fresh.updated_at } : item);
 }
 // Add note on a highlight: the note goes on that highlight (openNoteEditor's picked.mark).
 function noteOnHighlight(id) {
@@ -29275,7 +29402,7 @@ function playerHighlight() {
   if (selectionTooLong(found)) return;
   const same = [...marks.values()].find((item) => item.highlight && item.anchor.view === found.anchor.view
     && item.anchor.paragraph === found.anchor.paragraph && item.anchor.quote === found.anchor.quote);
-  if (same) { showMarkBar(same.id, false); return; }
+  if (same) { showMarkBar(same.id, true); return; }
   saveHighlight(found.anchor, markColor());
 }
 // Note: the book pauses, then the note box for the selection or the sentence being read.
@@ -29583,7 +29710,8 @@ function renderNotes() {
 // a saved answer's question and Hilde's answer (labelled Hilde and the model that wrote it); then, calmer, the
 // passage (its side bar the highlight's colour) and where it is (section · Narration text or Source text) with
 // Show in text. The date and the card's actions are in its ⋯ menu: a note's Edit (a bare highlight's Add a note,
-// a saved answer's Add your comment, then Edit comment) and Delete. No standing "Saved" line: a save says
+// a saved answer's Add your comment, then Edit comment), Remove highlight while it has its fill (removeHighlight:
+// a note or an answer keeps everything else) and Delete. No standing "Saved" line: a save says
 // "✓ Saved" for a moment (NOTE_SAVED_FOR); saving and a failed save stay in sight, the text kept, with Retry.
 const NOTE_SAVED_FOR = 2500;
 let noteSavedFlash = "", noteSavedTimer = 0;
@@ -29604,6 +29732,7 @@ function noteCard(item) {
   const more = rowMoreButton(`More for this ${what}: ${cutText(own || item.anchor.quote, 40)}`, () => [
     ...(edit ? [] : [{ label:editLabel, act:"edit",
       run:() => { noteEdits.set(item.id, { text:item.note || "", state:"editing" }); renderNotes(); focusNoteEdit(item.id); } }]),
+    ...(item.highlight ? [{ label:"Remove highlight", act:"remove-highlight", run:() => removeHighlight(item.id) }] : []),
     { label:"Delete", act:"delete", run:() => deleteMark(item.id) },
   ], `Saved ${noteTime(item.updated_at)}`);
   more.classList.add("note-more");
@@ -32061,7 +32190,7 @@ function renderPicker(name) {
   const kindBox = $(`${name}-kind`);
   kindBox.classList.toggle("kind-local", kind === "local");
   kindBox.classList.toggle("kind-cloud", kind === "cloud");
-  $(`${name}-kind-value`).replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
+  renderKindValue($(`${name}-kind-value`), kind);
   const label = $(`${name}-model-name`);
   label.textContent = text;
   const title = shown && shown.selector ? `${shown.selector} · ${picker.why}` : picker.why;
@@ -32166,6 +32295,15 @@ function kindIcon(kind) {
   icon.className = "kind-icon";
   icon.innerHTML = kind === "local" ? CHIP_ICON : CLOUD_ICON;
   return icon;
+}
+// Runs on's value keeps its icon and label while its kind stays the same, so a
+// press on it that closes another list (and redraws this picker) does not lose
+// the nodes under the pointer. Remembered per mounted value node, not per name.
+const KIND_VALUE_SHOWN = new WeakMap();
+function renderKindValue(value, kind) {
+  if (KIND_VALUE_SHOWN.get(value) === kind && value.childNodes.length === 2) return;
+  value.replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
+  KIND_VALUE_SHOWN.set(value, kind);
 }
 // Under a model's name in the list: its local server's address, or how this
 // server reaches its cloud provider.
@@ -34939,17 +35077,28 @@ for (const id of ["player-highlight", "player-note"]) {
 $("player-highlight").addEventListener("click", playerHighlight);
 $("player-note").addEventListener("click", playerNote);
 $("selection-pill-clear").addEventListener("click", clearReaderSelection);
-$("mark-bar").addEventListener("pointerdown", (event) => { if (event.pointerType === "mouse") event.preventDefault(); });
+$("mark-bar").addEventListener("pointerdown", (event) => {
+  markBarPressing = true;
+  clearTimeout(markBarTimer);
+  if (event.pointerType === "mouse") event.preventDefault();
+});
+// A press on the bar ends wherever the pointer is then, also outside it after pointerleave.
+document.addEventListener("pointerup", releaseMarkBarPress, true);
+document.addEventListener("pointercancel", releaseMarkBarPress, true);
+$("mark-bar").addEventListener("pointerenter", () => { markBarPointer = true; clearTimeout(markBarTimer); });
+$("mark-bar").addEventListener("pointerleave", () => { markBarPointer = false; timeMarkBar(); });
+$("mark-bar").addEventListener("focusin", () => { markBarFocus = true; clearTimeout(markBarTimer); });
+$("mark-bar").addEventListener("focusout", (event) => {
+  if ($("mark-bar").contains(event.relatedTarget)) return;
+  markBarFocus = false;
+  timeMarkBar();
+});
 $("mark-bar").addEventListener("click", (event) => {
   const id = markBarId, dot = event.target.closest(".mark-dot");
   if (!id) return;
   if (dot) {
     recolorMark(id, dot.dataset.color);
-    // Choosing keeps the bar a while longer.
-    if (!$("mark-bar").classList.contains("tapped")) {
-      clearTimeout(markBarTimer);
-      markBarTimer = setTimeout(hideMarkBar, MARK_BAR_FOR);
-    }
+    timeMarkBar();  // choosing keeps the bar a while longer
   } else if (event.target.closest("#mark-bar-undo")) removeHighlight(id, true);
   else if (event.target.closest("#mark-bar-note")) noteOnHighlight(id);
   else if (event.target.closest("#mark-bar-remove")) removeHighlight(id);

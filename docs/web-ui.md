@@ -906,8 +906,10 @@ are on:
   when you scroll, resize the window or open, close or resize the side panel;
   a new selection brings it beside that one. The six dots at its left move
   it: drag them, or focus them and use the arrow keys (Shift for bigger
-  steps). It stays where you put it, also while you scroll, until you select
-  something else; **Escape** on the dots puts it back beside the selection.
+  steps), within the text's column and the screen. It stays where you put
+  it, also while you scroll (a narrower column moves it in only as far as
+  needed), until you select something else; **Escape** on the dots puts it
+  back beside the selection.
   Moving it never changes the selection, and its buttons act on that same
   selection. On a phone Hilde puts nothing next to the selection
   (your phone's own Copy and Look Up stay there); instead **Paused ·
