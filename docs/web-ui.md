@@ -678,7 +678,7 @@ and **Ask Hilde** in the text's colour, then the chat's model box, **⋯**, and 
 right. With more than one tab (**Ask Hilde | Notes**, a figure, a page) or in a
 panel under 420 px wide (a phone, a narrow window) the header has two rows: the
 tabs, **⋯** and **×** on the first, and the whole model box on the second (the
-**Runs on** icon, then the model's badge and its full name, wrapping rather than
+**Runs on** box with **Local** or **Cloud**, then the model's full name, wrapping rather than
 cut). Under an answer, **Read aloud** and **Save to notes** sit side by side in
 one row, and the conversation keeps its end in sight when the card or the
 keyboard takes room, so neither is cut off.
@@ -701,11 +701,11 @@ search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's **⋯** menu says **Web
 search on**. Its answer streams in as it writes. The model is one of yours:
 pick it in the model box in the chat's header, with the same model picker as on
-**Create** (see above), in a compact form (a **Runs on** box showing Local or
-Cloud, and the **Model** box with the model's name and badge; the model box
+**Create** (see above), in a compact form (a **Runs on** box that says Local or
+Cloud, and the **Model** box with the model's name; the model box
 opens the list); a local model answers from the server that offers it. The
-badge shows **Local** or **Cloud**, so you see where your question goes before
-you send it (screen readers hear the server or the provider and how it is
+**Runs on** box shows **Local** or **Cloud** in words, so you see where your
+question goes before you send it and can switch to the other (screen readers hear the server or the provider and how it is
 reached too, as the list shows them), and the picker remembers the model you
 used last; it never starts on a cloud model by itself. That choice is this
 browser's, kept apart from the model that makes books (Create's **Model for
@@ -1286,7 +1286,10 @@ change it. The groups:
   check, or left out of the current book because it could not start. The
   devices are those found by the last check, at startup or at a book's
   narration; a narration worker's GPU it did not find follows them as
-  "(not found)". On the server's own machine
+  "(not found)". When the list may lack GPUs the machine has, a line under
+  it says why: "GPUs unknown: …" when the device check failed, or that the
+  server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
+  On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
   again (applies now). **Other machines** lists the nodes that narrate over
   SSH, each with its devices as `workers.yaml` names them (Hilde does not know

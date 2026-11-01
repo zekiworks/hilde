@@ -356,6 +356,28 @@ class PaperWorkflowTests(unittest.TestCase):
             ["cpu", "cuda:0", "cuda:1", "cuda:2"],
         )
 
+    def test_a_device_list_without_gpus_says_why_rather_than_reading_as_a_cpu_only_machine(self):
+        previous = (web._DEVICE_OPTIONS, web._DEVICE_PROBLEM)
+        self.addCleanup(lambda: (setattr(web, "_DEVICE_OPTIONS", previous[0]),
+                                 setattr(web, "_DEVICE_PROBLEM", previous[1])))
+        web._DEVICE_OPTIONS = None
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(web, "probe_devices", side_effect=RuntimeError("the device check failed: no torch")):
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            # The probe failed: CPU stays choosable, and Settings says the GPUs are unknown.
+            self.assertEqual([device["value"] for device in web.available_devices()], ["cpu"])
+            self.assertEqual(web.devices_note(), "GPUs unknown: the device check failed: no torch.")
+        with mock.patch.dict(os.environ), \
+                mock.patch.object(web, "probe_devices", return_value=[{"value": "cpu", "label": "CPU"}]):
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            # A check that ran replaces the failure; nothing hides GPUs, so nothing is said.
+            web.refresh_devices()
+            self.assertIsNone(web.devices_note())
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            self.assertIn("CUDA_VISIBLE_DEVICES empty, so it sees no GPU", web.devices_note())
+            os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
+            self.assertIn("CUDA_VISIBLE_DEVICES=1,2, so it sees only those GPUs", web.devices_note())
+
     def test_browser_sees_worker_devices_and_models_but_no_hosts_or_paths(self):
         clone = {
             "source": "local",
@@ -12270,6 +12292,7 @@ class WorkerNodeTests(unittest.TestCase):
         }]
         with mock.patch.object(web, "is_loopback_address", return_value=False), \
                 mock.patch.object(web, "_DEVICE_OPTIONS", devices), \
+                mock.patch.object(web, "devices_note", return_value=None), \
                 mock.patch.object(web, "machine_name", return_value="studio"), \
                 mock.patch.object(web, "probe_worker_node") as probe:
             self.assertEqual(self.request(origin, "/api/workers")[0], 403)
@@ -12288,7 +12311,7 @@ class WorkerNodeTests(unittest.TestCase):
         self.assertEqual(state["machine"], {"name": "studio", "devices": [
             {"device": "cpu", "kind": "cpu", "name": "", "memory": "", "id": ""},
             {"device": "cuda:0", "kind": "cuda", "name": "Accelerator", "memory": "96 GiB", "id": "GPU-5c0ffee1"},
-        ]})
+        ], "devices_note": None})
         self.assertEqual(
             [(worker["label"], worker.get("machine")) for worker in state["consumers"] if worker["kind"] == "node"],
             [(f"Machine 1 · GPU {device[5:]}", 1) for device in self.NODE["devices"]],

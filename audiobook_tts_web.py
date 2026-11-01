@@ -1328,6 +1328,9 @@ output.write_text(markdown, encoding="utf-8")
 print(f"Extracted PDF page {page + 1} ({len(markdown)} Markdown characters).")
 """
 _DEVICE_OPTIONS = None
+# Why the last device check found no GPU it could tell about: the probe's
+# failure, or None after a probe that ran (devices_note() says it on Settings).
+_DEVICE_PROBLEM = None
 _DEVICE_OPTIONS_LOCK = threading.Lock()
 # How long the device check (torch's import and CUDA's start, in a child) may take.
 DEVICE_PROBE_SECONDS = 60
@@ -1383,26 +1386,45 @@ def probe_devices():
 def available_devices():
     """This machine's devices as Settings shows them: the server's first
     probe, then each narration start's (refresh_devices()). A display list:
-    narration checks its GPUs again when it starts."""
-    global _DEVICE_OPTIONS
+    narration checks its GPUs again when it starts. A probe that fails leaves
+    CPU to choose and keeps why (devices_note())."""
+    global _DEVICE_OPTIONS, _DEVICE_PROBLEM
     with _DEVICE_OPTIONS_LOCK:
         if _DEVICE_OPTIONS is not None:
             return _DEVICE_OPTIONS
         try:
             _DEVICE_OPTIONS = probe_devices()
-        except RuntimeError:
+            _DEVICE_PROBLEM = None
+        except RuntimeError as exc:
             _DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
+            _DEVICE_PROBLEM = str(exc)
         return _DEVICE_OPTIONS
 
 
 def refresh_devices():
     """Probe this machine's devices again, show them in Settings, and return
     them; raises RuntimeError as probe_devices() does."""
-    global _DEVICE_OPTIONS
+    global _DEVICE_OPTIONS, _DEVICE_PROBLEM
     devices = probe_devices()
     with _DEVICE_OPTIONS_LOCK:
         _DEVICE_OPTIONS = devices
+        _DEVICE_PROBLEM = None
     return devices
+
+
+def devices_note():
+    """What Settings says under this server's devices when they may not be all
+    the machine has: the device check's failure (its GPUs are then unknown),
+    or CUDA_VISIBLE_DEVICES in the server's environment, which hides GPUs from
+    it. None otherwise."""
+    if _DEVICE_PROBLEM:
+        return f"GPUs unknown: {_DEVICE_PROBLEM.rstrip('.')}."
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return None
+    if not visible.strip():
+        return "This server is started with CUDA_VISIBLE_DEVICES empty, so it sees no GPU of this machine."
+    return f"This server is started with CUDA_VISIBLE_DEVICES={visible}, so it sees only those GPUs of this machine."
 
 
 def resolve_device(requested, devices=None):
@@ -19855,6 +19877,7 @@ class Handler(BaseHTTPRequestHandler):
                     "machine": {
                         "name": machine_name(),
                         "devices": [machine_device(choice) for choice in available_devices()],
+                        "devices_note": devices_note(),
                     },
                     "capabilities": {
                         "airdrop": airdrop_available(),
@@ -22581,22 +22604,22 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .panel-view { display:flex; flex:1; flex-direction:column; min-height:0; }
 .panel-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; padding:14px 16px; }
 /* Ask Hilde's model box in the header: the shared picker, small, its labels for screen readers only. Runs on shows
-   its icon (Local or Cloud) and the model box the model's name, cut with … when long, then its badge: the kind
-   (Local, Cloud) in sight, without the icon Runs on already shows, and the rest (the server, the provider and how
-   it is reached) in its accessible name. The model's notes (red when unreachable, other models, Add local) show
-   under the header. */
+   its icon and its kind written (Local or Cloud), so the switch to the other kind is in sight, and the model box the
+   model's name, cut with … when long; its badge, which would only repeat the kind, stays in the box's accessible
+   name with the rest (the server, the provider and how it is reached). The model's notes (red when unreachable,
+   other models, Add local) show under the header. */
 .chat-model-pick { display:flex; flex:0 1 auto; align-items:center; min-width:0; margin-left:auto; }
 .chat-model-pick .picker-boxes { flex-wrap:nowrap; align-items:center; gap:4px; }
 .chat-model-pick .picker-field { display:flex; }
-.chat-model-pick .picker-label, .chat-model-pick .badge-detail { position:absolute; width:1px; height:1px;
+.chat-model-pick .picker-label { position:absolute; width:1px; height:1px;
   overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .chat-model-pick .picker-box { min-height:32px; padding:2px 6px 2px 8px; gap:4px; font-size:13px;
                                border-color:var(--line); }
-.chat-model-pick .picker-kind .kind-value { gap:0; font-size:0; }
+.chat-model-pick .picker-kind { flex:none; }
+.chat-model-pick .picker-kind .kind-value { gap:4px; white-space:nowrap; }
 .chat-model-pick .picker-box .picker-name { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-model-pick .picker-change { display:none; }
-.chat-model-pick .badge { padding:1px 6px; font-size:12px; }
-.chat-model-pick .badge svg { display:none; }
+.chat-model-pick .badge { display:none; }
 .chat-model-pick .chevron { width:12px; height:12px; }
 /* The header is neutral: the box hovered or open shows a light gray border. */
 .chat-model-pick button.picker-box:hover:not(:disabled),
@@ -22616,7 +22639,6 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-boxes { width:100%; }
 .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-field-model { flex:1; min-width:0; }
 .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-field-model .picker-box { width:100%; }
-.panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-box .badge { order:-1; }
 .panel-head:is(.has-tabs, .narrow-head) .chat-model-pick .picker-box .picker-name { flex:1; white-space:normal;
   overflow-wrap:anywhere; text-align:left; }
 /* The first row stays one line at any width (a 320 px panel too): the tabs take what ⋯ and × leave, and scroll
@@ -34355,7 +34377,7 @@ function renderMachines(force = false) {
   // (another GPU may have its old one): it is listed after the devices found.
   const missing = consumers.filter((worker) => worker.kind === "local" && worker.status === "missing");
   const ownOf = (worker) => own.find((entry) => entry.missing && entry.label === worker.label);
-  $("machine-here").replaceChildren(machineBlock(machine.name || "Name not reported", "",
+  const here = machineBlock(machine.name || "Name not reported", "",
     [...machine.devices.map((device) => deviceItem(device,
       workers.find((worker) => worker.device === device.device),
       own.find((entry) => entry.device === device.device), true)),
@@ -34363,7 +34385,14 @@ function renderMachines(force = false) {
       { device:"", kind:"cuda", name:`${worker.label} (not found)`,
         id:ownOf(worker) ? ownOf(worker).id.slice(0, 12) : "" },
       worker, ownOf(worker), true))],
-    [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]));
+    [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]);
+  // Why the list may lack this machine's GPUs (devices_note()): a failed device check, or CUDA_VISIBLE_DEVICES.
+  const note = document.createElement("p");
+  note.id = "machine-devices-note";
+  note.className = "note";
+  note.textContent = machine.devices_note || "";
+  note.hidden = !machine.devices_note;
+  $("machine-here").replaceChildren(here, note);
   // Other machines: by host for a browser that may manage them, else by number.
   const nodes = manage && workerNodes
     ? workerNodes.nodes.map((node, index) => ({ ...node, number:index + 1 }))

@@ -2170,7 +2170,11 @@ browser not on the server's machine groups node workers without hosts
 one's narration worker state (`idle`, `narrating`, `held while a voice is
 designed`, or `off, excluded in settings`; a device that is no narration
 worker says so) and, for a browser on the server's machine, its box (`POST
-/api/workers/local`, applies now). **Other machines** lists the nodes by host
+/api/workers/local`, applies now). Under it, `machine.devices_note`
+(`devices_note()`) says why the list may lack GPUs the machine has: a device
+check that failed (`_DEVICE_PROBLEM`, "GPUs unknown: …", the list then only
+CPU to choose) or `CUDA_VISIBLE_DEVICES` in the server's environment (empty: it
+sees no GPU), so a CPU-only list never reads as a CPU-only machine. **Other machines** lists the nodes by host
 there (by number elsewhere), with their `workers.yaml` devices (no model or
 ID is known) and **Remove**. Each machine shows **Text preparation**,
 **Narration**, and **Voice design** separately as `available`, `not
@@ -3077,15 +3081,16 @@ row. In a panel narrower than 420 px (`.narrow-head`, set by a
 more than one tab shown (`.has-tabs`, `fitPanelHead()` from `renderPanel()` and
 `renderNotes()`: Notes counts as a figure or page tab does), the header takes
 two rows: the tabs, **⋯** and **×**, then the model box on a line of its own,
-still in the header: Runs on as its icon, then the model box the full width
-with the badge first and the whole name, wrapping rather than cut. The model
+still in the header: Runs on with its icon and kind, then the model box the
+full width with the whole name, wrapping rather than cut. The model
 box is the shared model
 picker in a small form (the `chat` picker of Create step 3's component, its
 **Runs on** and **Model** labels visually hidden, its **Change** left out as
-the model box opens the same list; Runs on shows only its icon; the
-badge shows its kind, Local or Cloud, and keeps the rest of its text, the
-server or the provider and how it is reached, in `.badge-detail`, visually
-hidden but in the box's accessible name; `chatModel()` is its usable choice,
+the model box opens the same list); Runs on shows its icon and its kind
+written, **Local** or **Cloud**, so the other kind is a visible choice even
+while it has no model (Cloud then offers Connect a provider); the badge, which
+would only repeat the kind, is not shown, and its text (the kind, the server or
+the provider and how it is reached) stays in the box's accessible name; `chatModel()` is its usable choice,
 kept as `player.chat_model` once used; first use follows the same rules as the
 text model, and an unreachable model is never replaced silently). Its red
 line, alternatives, and Add local / Connect a provider (the picker's own
