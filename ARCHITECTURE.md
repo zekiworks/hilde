@@ -1960,7 +1960,9 @@ from the files listing's `section` (else "No section"), "In this book's files
 on the server" with its size, **Copy text**, and **Download .md**. A chat
 tool row that wrote a note gains "· Saved" only after the server's confirmed
 tool result. The chat's ⋯ menu (`#chat-web`) says "Web search on" when
-`chat_payload`'s `web_search` is true.
+`chat_payload`'s `web_search` is true, and `#chat-reading` how Hilde finds the
+book's paragraphs (`reading.text`); in keyword mode the same sentence shows
+under the panel's header too (`#chat-reading-note`), never in help mode.
 
 Document names and book titles wrap to at most two lines, the second ending in
 an ellipsis when cut (the `.clamp` class, which also breaks a name with no
@@ -2205,7 +2207,9 @@ this server" note under both, and **Connection to Hilde**
 (`renderConnection()`): "local (this computer)" on localhost, "HTTPS", or,
 when `window.isSecureContext` is false, the plain-HTTP warning linking to the
 README's HTTPS section, plus **Download Hilde's certificate** when the server
-has its own authority.
+has its own authority; then **Ask Hilde reading** (`#ask-reading-note`,
+`/api/state`'s `ask_reading`): how Ask reads a book, by similarity search or
+by keyword search and why.
 
 **Other machines** lists the nodes of `workers.yaml` with **Remove**, and
 **Add narration workers** opens a dialog: the machine's address, **Connect**, then the
@@ -3211,7 +3215,9 @@ never writes over the next turn's conversation). `begin()` loads the book throug
 saves the listener's message, with the manifest of what it is about as
 `context`; `run()` asks the model and runs its tool calls
 until it answers without one; `setting()` gives it the open document's id,
-its `AskShelf`, the instructions, and the tools.
+its `AskShelf`, the instructions, and the tools, after `retrieve()` found the
+book's paragraphs for the message when the similarity search is on (see
+**Reading the book** below).
 
 **The help conversation.** A `HelpTurn` (a `ChatTurn` keyed `HELP_DOCUMENT`
 in the same `ChatRegistry`, so one help answer at a time, as per book; the
@@ -3383,6 +3389,109 @@ Tools (`CHAT_TOOLS`, run by `chat_tool()`, which returns context items
   paragraph's id with its first two sentences, as many as that many tokens
   hold.
 
+**Reading the book: similarity search, or keywords** (Can, 27 Oct; the
+evidence is `workspace/rag-eval/E2E.md` and `RETRIEVAL.md`). How a book turn
+reads the book is `ask_reading()`: `similarity` when ask.yaml's `retrieval`
+is on, its `model` (a GGUF; relative to `HILDE_HOME`) is a file, its `server`
+(llama.cpp's `llama-server`, a path or a name on `PATH`) is found
+(`ask_embedding_files()`), and a start with these settings did not fail in
+the last `ASK_EMBED_RETRY_AFTER` seconds; else `keyword`, with why
+(`AskEmbedderUnavailable`'s message, written to follow "because"). Help mode
+never asks.
+
+- **Similarity** (`ChatTurn.retrieve()`, before the first request): the query
+  is the listener's message, on a follow-up (an earlier user entry in the
+  conversation) their previous message, a newline, and this one.
+  `ask_retrieve()` ranks the open book: by cosine to the query's vector the
+  best `ASK_RETRIEVAL_SIMILAR_FIRST` (2), then the BM25 (`AskBM25`: k1 1.2,
+  b 0.75, `\w+` words lowercased) best `ASK_RETRIEVAL_KEYWORD_NEXT` (2), then
+  the rest by cosine (k + 2 cosine candidates, so k is filled after repeats
+  drop), without repeats, the first `retrieval.k` kept. A paraphrased
+  question's BM25 best are mostly wrong, so similarity's pick stays in the top
+  3; an identifier only BM25 finds still comes, at rank 3 or 4 (rag-eval, 306
+  questions: R@3 67 → 71% against BM25 first, paraphrased 40 → 53%; the top 8
+  hold the same paragraphs either way). **Adaptive k** (off by default:
+  `retrieval.k_confident` null): the margin is the best cosine minus the
+  `ASK_CONFIDENT_MARGIN_RANK`th (8th; a shorter book's last) over the whole
+  book; at or over `retrieval.confident_margin` the turn takes `k_confident`
+  paragraphs, else `k`, in the same order. The default margin, 0.184, was
+  frozen on the RAG test's 306 questions (`workspace/rag-eval/chunk-gate`,
+  this order): the lowest margin whose bucket, and every stricter one, loses
+  at most 3 pp of recall from k 8 to k 3 (30% of questions; R@8 100%, R@3
+  97.8%). The GGUF's margins match the transformers model's within 0.005
+  (303/306 on the same side of 0.184). Those paragraphs, each as `read_paragraphs` gives it (`AskDocument.items()`,
+  version paper), are saved on the user entry as `retrieved`; the ledger
+  makes them items of kind `paper`/`narration` (no age expiry, compacted and
+  "(already above)" like a read) and renders them after any attachment,
+  under `ASK_RETRIEVED_HEAD`, inside that message. An earlier turn's stay.
+  The instructions' reading paragraph is `ASK_SIMILAR_READING` (they come
+  with each message, best first; when they do not hold the answer, read
+  others by id; the book is not searched by keywords; an uncertain answer is
+  the best answer and one sentence on what remains uncertain, without long
+  deliberation) instead of `ASK_KEYWORD_READING`; `ASK_APP_PROMPT` (and
+  `WEB_PROMPT`) are the same but for the search tool's name. The tools are
+  `ASK_SIMILAR_TOOLS` (and `ASK_SIMILAR_WEB_TOOLS`): `search_document` is
+  gone, and `search_help` (`ASK_SIMILAR_SEARCH`) runs `search_document()` over
+  the help, the docs, the code, and stored pages only, so questions about
+  Hilde Reader are found as before; `chat_tool()` answers a `search_help` of
+  the open book (`AskShelf.similar`) with a note to read by id, and a
+  `search_document` call as an unknown tool. (With a `search_document` that
+  refused the book, the replay's DeepSeek searched the book 1–3 times a turn,
+  a wasted round each.)
+- **Keyword**: today's flow, byte for byte (`ASK_KEYWORD_READING`,
+  `CHAT_TOOLS`). An embedding failure while a turn retrieves (or an index that
+  can't be written) makes that turn keyword too.
+- The server log has one line per turn: `Ask reading: turn=<id>
+  mode=similarity model=<GGUF stem> k=<k used> margin=<margin> query=message|previous+message
+  index=kept|built <s>s embed=<ms>ms rank=<ms>ms ids=<id>:<n>,…`, or `Ask
+  reading: turn=<id> mode=keyword why=<why>`. The page says it too:
+  `chat_payload()`'s `reading` (`{mode, text}`, `ask_reading_text()`) is a
+  line of the Ask panel's ⋯ menu (`#chat-reading`) and, in keyword mode, a
+  note under the panel's header (`#chat-reading-note`); `/api/state`'s
+  `ask_reading` is Settings › Models and connection › Ask Hilde reading.
+
+**The embedding model** (`AskEmbedder`, one per server, `ASK_EMBEDDER`): the
+model runs in llama.cpp's server in embedding mode, a process of its own on
+the CPU (`llama-server -m <gguf> --embedding --pooling mean --host 127.0.0.1
+--port <free> -t <threads> -c 2048 -b 512 -ub 512 -np 1`), so no model code
+runs in Hilde and nothing listens beyond loopback. It starts on first use
+(waiting for `/health` at most `ASK_EMBED_START_TIMEOUT`), from one
+long-lived thread with `PR_SET_PDEATHSIG` (SIGKILL: an orphaned llama-server
+was seen to hang in its SIGTERM shutdown) on Linux so it ends with Hilde
+however Hilde ends; it stops (SIGTERM, then SIGKILL after 5 s) after
+`ASK_EMBED_IDLE` (15 min) unused, when the
+model, server, or threads change, and in `main()`'s `finally`. A text is
+tokenized by the server (`/tokenize`, special tokens added) and cut to
+`ASK_EMBED_MAX_TOKENS` (512, the model's) keeping the closing token, then
+embedded `ASK_EMBED_BATCH` at a time (`/v1/embeddings` with token arrays) and
+L2-normalized; a query takes `retrieval.query_prefix`, a paragraph
+`document_prefix` (nomic's `search_query: `/`search_document: `). One request
+at a time. A failed start is remembered (`failure`) and said by
+`ask_reading()` until `ASK_EMBED_RETRY_AFTER`.
+
+**The index** (`ask_index()`): each paragraph's text as `read_paragraphs`
+gives it (version paper, parts joined by a blank line), embedded once and kept
+in `<root>/.cache/ask-index/<document id>.npz` (`key`, `vectors`; written to a
+temporary file and renamed), never in a book's folder, and in memory
+(`_ASK_INDEXES`) with its BM25. The key is a hash of the texts, the GGUF's name
+and size, the document prefix, and `ASK_EMBED_MAX_TOKENS`: a book made again
+(Recreate), a book still being made whose text grew, or another model builds
+it again on its next question. The first question of a book waits for it
+(about 5 s for 100–150 paragraphs on 8 threads).
+
+**The stream guard** (`ChatTurn.repeated_line()`, book turns only;
+`HelpTurn.repeat_limit` is None): as text streams, each completed line of at
+least `ASK_REPEAT_MIN_CHARS` (30) letters or digits is counted, case and
+spacing aside; the `ASK_REPEAT_LIMIT`th (4th) time one comes, `on_text()`
+raises `ChatRepeating`, which ends the request, and `keep_repeated()` keeps
+the text before that line as the answer (`stopped` and `repeated` true, its
+ids cited) and adds the notice `ASK_REPEAT_NOTE`; the log has `Ask: stream
+guard turn=<id> stopped the answer after N characters: a line came 4 times:
+<line>`. In the RAG test's 2,584 answers no such line came 4 times (two came
+3 times, as list items); its five runaways reached the 4th time after 6,000
+to 18,000 characters, of the 31,000 to 39,000 they wrote before the 8,000-token
+cap.
+
 `chat_file_path()` takes one name of letters, digits, spaces, dots, dashes,
 and parentheses ending in `.md` (adding it to a bare name), so a tool reaches
 nothing outside the book's `files/`. After `CHAT_MAX_TOOL_CALLS` calls the
@@ -3512,12 +3621,17 @@ input plus cache read plus cache creation, the read cached), and
 `ask_log()` prints one line per request: `Ask: model=… turn=<turn id>
 question=<n> round=<n> prompt=<reported> tokens (estimated N: fixed, questions,
 answers, calls, paper, narration, help, source (docs and code), web, hits, files, notes) cached=… first token=…s
-total=…s cache=warm|cold (predicted uncached N) decision=append|prune: …|compact: …`.
+total=…s cache=warm|cold (predicted uncached N) decision=append|prune: …|compact: …`,
+then ` completion=N` when the server reported the completion's tokens.
 
 **Settings** (`ask_config()`): `~/.hilde/ask.yaml` (`ASK_CONFIG_FILE` in
 `HILDE_HOME`) over `ASK_DEFAULTS`, read at each turn; an unknown key or a value
 that is not a positive number makes the whole file be ignored, said once in the
-log. `ask_model_settings()` takes the kind's (`local` or `cloud`:
+log. `retrieval` is checked by its own types (`_ask_retrieval()`,
+`ASK_RETRIEVAL_TYPES`: `enabled` true/false, `model`, `server`, and the two
+prefixes text, `k` and `threads` positive whole numbers, `k_confident` one
+or null (`ASK_RETRIEVAL_NULLABLE`), `confident_margin` a number from 0 to 2).
+`ask_model_settings()` takes the kind's (`local` or `cloud`:
 `prefill_tokens_per_second`, `cache_lifetime_seconds`, `reliable_up_to`, 16,384
 local and the window for cloud) and then each `models` entry whose pattern
 (`fnmatch`) matches the selector.
@@ -3708,7 +3822,7 @@ read aloud by **Read answers aloud**.
 | Route | Behavior |
 | --- | --- |
 | `GET /` | Embedded HTML/CSS/JS page served with `Cache-Control: no-store` so a refresh cannot retain an obsolete player implementation. |
-| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install), and `notes_enabled` (`--enable-notes`). |
+| `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, non-sensitive capabilities (`airdrop`, `manage_workers`, and `certificate`: the server has its own certificate authority to install), `notes_enabled` (`--enable-notes`), and `ask_reading` (how Ask Hilde reads a book now, `ask_reading_text()`, for Settings). |
 | `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; never a host); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Text tab, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
@@ -3745,7 +3859,7 @@ read aloud by **Read answers aloud**.
 | `GET /api/workers` | For a browser on the server's machine only (else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
 | `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser on the server's machine only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser on the server's machine only (else HTTP 403). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off`, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, or web search. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), `reading` (`{mode, text}`: `similarity` or `keyword` and the sentence saying so and why, `ask_reading()`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, reading, or web search. |
 | `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. `help=1` instead of `book` follows the help conversation's turn. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
@@ -3789,10 +3903,11 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 - Shared source and local voice assets are snapshotted before work.
 - Deletion removes only the named asset inside its library folder, never a link's target. Jobs already queued keep their snapshots.
 - A book's marks live only in `<root>/Marks/<book id>.json`, outside its folder: Recreate and new voices never touch them, deleting the book deletes them, and nothing of them is kept in browser storage. Every change rereads the file under the book's lock (thread lock and `flock`) and changes one item; a deleted mark stays a tombstone; an unreadable marks file is never written over. A mark's place is never decided by order: a quote that occurs several times without words around it to tell them apart stays `unclear` until the listener chooses its place.
-- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages, model measurements, and index of Hilde Reader's docs and code live in `<root>/.cache/chat-docs/`, `<root>/.cache/ask-models.json`, and `<root>/.cache/app-index/`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
+- Nothing made for display is written into a book's folder: the Library's thumbnails live in `<root>/.cache/thumbnails/`, keyed by the PDF's hash, and a book's place is the browser's (`localStorage`). Ask Hilde's stored web pages, model measurements, index of Hilde Reader's docs and code, and books' paragraph vectors live in `<root>/.cache/chat-docs/`, `<root>/.cache/ask-models.json`, `<root>/.cache/app-index/`, and `<root>/.cache/ask-index/`, never in a book's folder; only `chat.json` and `files/` are Ask Hilde's there.
 - The help conversation lives in `<root>/help-chat/chat.json` alone: never in a book's folder, and nothing of help mode (a question, its New) reads or writes a book's `chat.json` or `files/`. Help mode never carries a book's context: no `about`, selection, part playing, title, or abstract goes with a help question, and its tools (`HELP_TOOLS`) only read the help, the docs, and the code.
 - Answers link Hilde Reader's code only at the commit the server runs (`app_source()`, read once at start): a dirty tree or no git gives no link, and the pieces say "the running code". The `docs` and `code` documents hold only files git tracks at that commit, never tests or `workspace/`.
-- Ask Hilde never sends a book's paragraph map or the paper whole: the model gets the abstract and reads paragraphs by id.
+- Ask Hilde never sends a book's paragraph map or the paper whole: the model gets the abstract, with the similarity search the `retrieval.k` paragraphs found for each message, and reads others by id.
+- Without a usable embedding model Ask reads the book by keyword search, and says so in Settings and in the Ask panel with the reason, and in the server log per turn: never a silent switch. The embedding model runs only in its own llama.cpp process on 127.0.0.1, never in Hilde, and ends with Hilde.
 - Prepared narration reads staged content, not a mutable shared copy.
 - Book and voice publication is atomic: everything is written into a hidden build folder and renamed into place, so a failed, stopped, or crashed run never leaves a partial book or voice visible.
 - An `in_progress` stage is removed only after its book or voice is published, or when its book being made is deleted on purpose (`delete_making()`).

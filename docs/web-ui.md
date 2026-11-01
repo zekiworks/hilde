@@ -688,8 +688,15 @@ player bar (the chat has no play button for the book); closing the chat never
 starts it. Ask
 about the book, or ask Hilde to write a Markdown file, such as a summary or
 notes on a section. Hilde sees the book's abstract (or, without one, its
-first paragraphs), never the whole book: it searches the book and reads the
-paragraphs it needs before answering, however long the book is. It can also
+first paragraphs), never the whole book: with each question come the
+paragraphs most similar to it (and, on a follow-up, to your previous
+question), found by a similarity search, and Hilde reads others it needs by
+their number before answering, however long the book is (see
+[Similarity search](configuration.md#similarity-search)). The chat's **⋯** menu
+says how Hilde finds the paragraphs; without the embedding model it searches
+the book by keywords instead, and a line under the chat's header says so and
+why. An answer that starts repeating the same line is stopped at its fourth
+time, keeping what came before, with a note that it was stopped. It can also
 answer questions about Hilde Reader itself, from the [help](help.md), and
 when the help does not say how something works, from the developer docs and
 the code, linking the place (see [Ask Hilde on every page](#ask-hilde-on-every-page));
@@ -1368,7 +1375,11 @@ change it. The groups:
   plain HTTP from another device, that browsers may warn about or block
   downloads such as audiobook exports, with a link to
   [HTTPS](../README.md#https); when the server runs with `--https`, it offers
-  **Download Hilde's certificate** to install once on this device.
+  **Download Hilde's certificate** to install once on this device. **Ask
+  Hilde reading** says how Ask Hilde finds a book's paragraphs: by similarity
+  search (how many come with each question, and the model), or by keyword
+  search and why (no embedding model, no llama.cpp server, turned off in
+  `ask.yaml`, or it failed to start).
 
 Only a browser on the server's own machine sees the nodes' hosts and may change
 the devices and machines, unless Hilde started with `--manage-from-network`

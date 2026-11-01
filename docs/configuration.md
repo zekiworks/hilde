@@ -258,10 +258,22 @@ local network, also when a page redirects there. A long page (over
 Ask Hilde works without settings. To change how much it keeps in mind, put an
 `ask.yaml` beside `providers.yaml` in Hilde's config folder (`~/.hilde/`). It
 is read at every question; a file with an unknown setting, or a value that is
-not a positive number, is ignored as a whole and the server log says why once.
-Every key is optional; these are the defaults:
+not a positive number (or, under `retrieval`, of the wrong kind), is ignored as
+a whole and the server log says why once. Every key is optional; these are the
+defaults:
 
 ```yaml
+# How Hilde finds the book's paragraphs for a question (see "Similarity search"
+# below): with this embedding model, the k paragraphs most similar to each
+# question come with it. Without it (or with enabled: false) Hilde searches the
+# book by keywords, and Settings and Ask Hilde say so. A relative model path is
+# under ~/.hilde/; server is llama.cpp's llama-server, a path or a name on PATH.
+# k_confident (null: off) is adaptive k: when the question's best paragraph is
+# clearly ahead (its similarity minus the 8th best's at least confident_margin),
+# only k_confident paragraphs come.
+retrieval: {enabled: true, model: models/nomic-embed-text-v2-moe.f16.gguf, server: llama-server,
+            k: 8, threads: 8, query_prefix: "search_query: ", document_prefix: "search_document: ",
+            k_confident: null, confident_margin: 0.184}
 # What a search of the book returns: the best matches whole (at most good_max,
 # each scoring at least good_share of the best), the next weak_max as summaries.
 search: {good_max: 5, good_share: 0.5, weak_max: 10}
@@ -304,6 +316,52 @@ repository's address is fixed in the code (`HILDE_REPOSITORY_URL`); there is
 no setting for it. A checkout with changed files, or without git, gives no
 links, and the answer says it comes from the running code.
 
+### Similarity search
+
+With an embedding model, Hilde finds the paragraphs of the open book that are
+most similar to a question before asking the chat model: the two most similar,
+then the two best by keyword ranking (BM25), so names and identifiers are
+found even when similarity misses them, then the rest by similarity, `k` in
+all, never one twice. On a follow-up question the previous question counts
+too. They go with the question, labelled like a read; the chat model can read
+other paragraphs by id, and searches by keywords only the help, the developer
+docs, and the code. Help mode is unchanged.
+
+Adaptive k is off by default. With `k_confident: 3`, a question whose best
+paragraph is far ahead of the rest (its similarity minus the 8th best's is at
+least `confident_margin`) gets only 3 paragraphs, a shorter prompt; the others
+get `k`. The default margin, 0.184, holds about the most confident third of
+questions; on Hilde's test questions those lost almost nothing from 8 to 3.
+The server log's `Ask reading:` line gives each question's margin and the
+number of paragraphs it got.
+
+The model is nomic-embed-text-v2-moe, run on the CPU by llama.cpp's server
+(`llama-server`, embedding mode; no GPU). Hilde starts it on the first
+question, on a free port of 127.0.0.1, stops it after 15 minutes unused and
+when Hilde stops; it takes about 1.1 GB of memory and 15 to 20 ms a question.
+It needs a GGUF of the model, made once from the model's files (as the Hugging
+Face cache keeps them, at revision 1066b6599d09) with llama.cpp's converter,
+in a Python that has its `gguf-py`, `torch`, and `sentencepiece`, for example:
+
+```bash
+python llama.cpp/convert_hf_to_gguf.py \
+  ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v2-moe/snapshots/<revision> \
+  --outfile ~/.hilde/models/nomic-embed-text-v2-moe.f16.gguf --outtype f16
+```
+
+and `server:` set to the path of llama.cpp's `build/bin/llama-server` when it is
+not on `PATH`. Each book's paragraph vectors are made on its first question
+(a few seconds) and kept in the library's `.cache/ask-index/`; a book made
+again gets new ones. Without the model, the server, or with `enabled: false`,
+Ask Hilde searches by keywords as before, and Settings › Models and connection
+and the Ask Hilde panel say so and why. The server log has one `Ask reading:`
+line per question: the mode, the paragraphs found and the time it took, or why
+it searched by keywords.
+
+An answer that starts repeating itself (the same line a fourth time) is
+stopped there: what Hilde wrote before it stays, with a note that it was
+stopped for repeating.
+
 ## Storage
 
 `--storage-root` defaults to `~/.hilde/library`, outside the project folder, so
@@ -316,6 +374,7 @@ alone. The server creates and owns this fixed layout:
 │   ├── thumbnails/
 │   ├── chat-docs/
 │   ├── app-index/
+│   ├── ask-index/
 │   └── ask-models.json
 ├── help-chat/
 │   └── chat.json
@@ -346,8 +405,10 @@ alone. The server creates and owns this fixed layout:
   long web pages Ask Hilde read (`chat-docs/<id>.json`, by the page's link),
   the index of Hilde Reader's own developer docs and code that Ask Hilde
   searches (`app-index/<commit>.json`, made once per commit the server runs),
-  and what Hilde measured of each chat model (`ask-models.json`). Nothing in
-  it is ever written into a book's folder; deleting it costs only a redo.
+  and what Hilde measured of each chat model (`ask-models.json`), and each
+  book's paragraph vectors for the similarity search (`ask-index/<id>.npz`).
+  Nothing in it is ever written into a book's folder; deleting it costs only a
+  redo.
 - **help-chat** holds the help conversation: what you asked Ask Hilde on
   Create, Voices, Settings, or the Library, kept apart from every book's
   `chat.json`. **New conversation** there clears this file alone.
