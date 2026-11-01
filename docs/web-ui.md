@@ -1257,6 +1257,11 @@ change it. The groups:
   (underlined, with a faint fill behind it), applies now and is remembered by
   this browser. It is a temporary test: one style will stay and the choice
   will go.
+  **Theme**: **Hilde** (rose and copper, the default: play/pause, voice
+  previews and the selected voice in the logo's copper; Ask Hilde and
+  creating in rose) or **Classic** (the earlier plum and pink). It applies
+  now and only in this browser, so everyone keeps their own; your saved
+  highlights keep their colours in both.
 - **Speech tuning**: language on top; under **Advanced**, precision (**auto
   (recommended)**; "Change only if narration fails or runs out of memory on
   your GPU."), attention (**sdpa (recommended)**; "Change only if narration

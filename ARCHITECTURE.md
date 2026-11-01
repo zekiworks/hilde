@@ -1213,7 +1213,7 @@ model box's hover border is `--dim`. Green `--local`
 only the Cloud badge and Runs on Cloud, gray `--off` (#8b8f98) disabled and "not
 running" items and the played part of the seek bar, red `--bad` (#e5534b) errors and destructive actions, always
 with an icon and text. Like Create's steps, the Voices list sets its own colours on `#page-voice` (Part C):
-`--play` (#3fb950) for its play circles and the selected voice, a neutral `--tag` (#d8d4ce text, `--tag-line`
+`--play` (the theme's `--voice-play`: copper #d89068 in Hilde, #d276ab in Classic) for its play circles and the selected voice, a neutral `--tag` (#d8d4ce text, `--tag-line`
 #7a7a7a, 3:1 on the chip's tint) for description tags, `--tag-on` (18% `--accent-light` over `--bg`) for chosen tags, and
 `--gray-line` (#707070, 3.5:1) for the search box and Select outlines (see **Voices** below). Contrast of `--ask`, dark: the Ask Hilde button's teal
 text and sparkle 4.9:1 on its tint (4.6:1 on the 16% hover tint), its border
@@ -2052,6 +2052,10 @@ the server:
 - `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
   Settings → Reading (`setHighlightStyle()`, applied at startup as
   `<html data-highlight>`; anything else is A).
+- `hilde.theme`: `"hilde"` (the default) or `"classic"`, chosen under
+  Settings → Reading (`setTheme()`, applied at startup; `"classic"` sets
+  `<html data-theme=classic>`, anything else is the default and removes it).
+  Per browser: one person's choice never changes another's.
 - `hilde.submittedDrafts`: `[[draft, job id], …]`, newest first, at most 50:
   Create drafts whose start the server confirmed (`noteSubmitted()`), so their
   history entries open the job.
@@ -2140,9 +2144,15 @@ that note in a collapsed `<details class="advanced">` named **Advanced**
 everyday options above it; under each advanced option one grey line (`.note`,
 its `aria-describedby`) says when to change it. Moving them changed no id,
 value, default, or rule: `FIELDS`, `collect()`, and the disabled rules in
-`render()` read the same elements, open or closed. **Reading** (temporary, for the highlight
-test): **Highlight style** A / B (`#highlight-style`, a radio switch), applies
-now, this browser only (`hilde.highlightStyle`). **Speech tuning**: language on
+`render()` read the same elements, open or closed. **Reading**: **Highlight style** A / B (temporary, for the
+highlight test; `#highlight-style`, a radio switch), applies now, this browser only (`hilde.highlightStyle`);
+**Theme** Hilde / Classic (`#theme`, a radio switch), applies now, this browser only (`hilde.theme`). The theme
+sets only the role tokens `--transport` / `--transport-ink` (the player's play/pause) and `--voice-play` (the
+Voices page's `--play`: preview circles, the selected voice's row and "✓ Selected"): Hilde (default) copper
+from the logo, `--copper` #c57c57 (the opaque mean of `hilde-leaf-transparent.png`) with dark `--copper-ink` and
+`--copper-light` #d89068 (its light tone) for the Voices page; Classic the earlier `--accent` plum and #d276ab.
+Ask Hilde and creating stay rose, the reading grounds and the saved highlight colours (`--mark-*`) are the same
+in both. **Speech tuning**: language on
 top; precision (`auto (recommended)`), attention (`sdpa (recommended)`), and
 seed under Advanced. All four
 reach narration and voice design through `shared_arguments()`, so they

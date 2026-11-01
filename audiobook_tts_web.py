@@ -22051,6 +22051,14 @@ PAGE = r"""<!doctype html>
         --accent:#8e2f6d; --accent-ink:#ffffff; --accent-light:#eeaad0;
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
         --ask:#f6cfe0;
+        /* Copper, from the logo (hilde-leaf-transparent.png: hue 18-23°, its opaque pixels average #c57c57, its
+           light tone #d89068): the theme "Hilde" (the default) gives play/pause, voice previews and the selected
+           voice copper; Ask Hilde and creating stay rose. Dark ink on copper (5.2:1 and 6.7:1), never white
+           (3.3:1). The theme "Classic" (:root[data-theme=classic]) keeps the earlier plum and pink. A theme is
+           chosen per browser (Settings › Reading, hilde.theme); the saved highlight colours never follow it. */
+        --copper:#c57c57; --copper-light:#d89068; --copper-ink:#1b1b1b;
+        --transport:var(--copper); --transport-ink:var(--copper-ink);
+        --voice-play:var(--copper-light); --voice-play-ink:#0d1117;
         --local:#e2aacb; --cloud:#c195d6; --off:#8b8f98;
         --bad:#e5534b; --radius:12px;
         /* Create's step rows: their own darker ground; the open step's number
@@ -22064,6 +22072,7 @@ PAGE = r"""<!doctype html>
         --mark-yellow:#ddd040; --mark-green:#3fb950; --mark-pink:#d66bc6; --mark-purple:#c678dd;
         --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
         --popover:#1d1f23; --popover-line:#3a3d44; }
+:root[data-theme=classic] { --transport:var(--accent); --transport-ink:var(--accent-ink); --voice-play:#d276ab; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
        font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; }
@@ -22646,12 +22655,13 @@ legend ~ * { clear:both; }
 .data-table td { padding:10px 12px; border-bottom:1px solid var(--surface);
                  vertical-align:middle; }
 .data-table tbody tr:hover { background:var(--surface); }
-/* Voices (Part C, 20 Oct; one accent, 26 Oct; B plum): white names; plum (#c76a9f) play circles, the selected
-   voice's faint plum row and its solid "✓ Selected"; each voice's tags as neutral chips (light gray text, a gray
+/* Voices (Part C, 20 Oct; one accent, 26 Oct; copper, 1 Nov): white names; the theme's --voice-play (copper
+   #d89068 in "Hilde", the earlier pink #d276ab in "Classic") for play circles, the selected voice's faint row and its
+   solid "✓ Selected" (dark ink on it); each voice's tags as neutral chips (light gray text, a gray
    border) that fill the search box; a chosen tag (a pressed one in the list, a kept one in Review tags, a picked one
    in New voice) rose: a faint rose fill, a rose border and a tick, never colour alone. Select, ⋯ and the search box
    gray. The chips' text keeps 4.5:1 on any row, their gray border (#7a7a7a) 3:1. */
-#page-voice, #selected-voice, #tag-review { --play:#d276ab; --play-ink:#0d1117; --tag:#e2ded8; --tag-ink:var(--text);
+#page-voice, #selected-voice, #tag-review { --play:var(--voice-play); --play-ink:var(--voice-play-ink); --tag:#e2ded8; --tag-ink:var(--text);
               --tag-line:#7a7a7a; --gray-line:#707070;
               --tag-on:color-mix(in srgb, var(--accent-light) 18%, var(--bg)); }
 .voice-table th { color:var(--dim); font-size:14px; font-weight:400; letter-spacing:0;
@@ -23094,9 +23104,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .player-bar > * { font-size:15px; }
 .player-controls { display:flex; align-items:center; gap:12px; min-width:0; }
 .player-play { display:grid; flex:none; place-items:center; width:44px; height:44px; min-height:0; padding:0;
-               border-radius:50%; background:var(--accent); border-color:var(--accent);
-               color:var(--accent-ink); }
-.player-play:hover:not(:disabled) { background:var(--accent); filter:brightness(1.08); }
+               border-radius:50%; background:var(--transport); border-color:var(--transport);
+               color:var(--transport-ink); }
+.player-play:hover:not(:disabled) { background:var(--transport); filter:brightness(1.08); }
 .player-play svg { width:18px; height:18px; fill:currentColor; }
 /* Ask Hilde: small, just the sparkle and "Ask Hilde", in Ask Hilde's own teal (--ask): a faint teal tint, teal
    text (at least 4.5:1 on the tint) and a teal border (65% --ask: at least 3:1 on the bar). */
@@ -24072,13 +24082,21 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div>
     <fieldset id="settings-reading">
       <legend>Reading</legend>
-      <p class="note">A test for now: listen with each, then keep the one you prefer.</p>
+      <p class="note">Highlight style is a test for now: listen with each, then keep the one you prefer.</p>
       <div class="row"><span id="highlight-style-label" class="row-label">Highlight style</span><div class="setting">
         <div id="highlight-style" class="text-switch" role="radiogroup" aria-labelledby="highlight-style-label">
           <button type="button" role="radio" aria-checked="true" data-style="A"
             onclick="setHighlightStyle('A')"><span>A</span><small>underline</small></button>
           <button type="button" role="radio" aria-checked="false" data-style="B"
             onclick="setHighlightStyle('B')"><span>B</span><small>underline and a faint fill</small></button>
+        </div>
+        <span class="applies">Applies now, in this browser</span></div></div>
+      <div class="row"><span id="theme-label" class="row-label">Theme</span><div class="setting">
+        <div id="theme" class="text-switch" role="radiogroup" aria-labelledby="theme-label">
+          <button type="button" role="radio" aria-checked="true" data-theme="hilde"
+            onclick="setTheme('hilde')"><span>Hilde</span><small>rose and copper</small></button>
+          <button type="button" role="radio" aria-checked="false" data-theme="classic"
+            onclick="setTheme('classic')"><span>Classic</span><small>plum and pink, as before</small></button>
         </div>
         <span class="applies">Applies now, in this browser</span></div></div>
     </fieldset>
@@ -27293,6 +27311,17 @@ function setHighlightStyle(style, save = true) {
   for (const button of $("highlight-style").querySelectorAll("[role=radio]"))
     button.setAttribute("aria-checked", String(button.dataset.style === style));
   if (save) store("highlightStyle", style);
+}
+// The theme (Settings › Reading): "hilde", the default (rose and copper), or
+// "classic" (the earlier plum and pink). Per browser (hilde.theme), on
+// <html data-theme>; the saved highlight colours never follow it.
+function setTheme(theme, save = true) {
+  theme = theme === "classic" ? "classic" : "hilde";
+  if (theme === "classic") document.documentElement.dataset.theme = "classic";
+  else delete document.documentElement.dataset.theme;
+  for (const button of $("theme").querySelectorAll("[role=radio]"))
+    button.setAttribute("aria-checked", String(button.dataset.theme === theme));
+  if (save) store("theme", theme);
 }
 function bookPlace(book) { return stored(`book.${book}`) || {}; }
 // The place is saved about every second while the book plays, and as it
@@ -35927,6 +35956,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) saveB
 fitVisualViewport();
 fitPanelWidth();
 setHighlightStyle(stored("highlightStyle"), false);
+setTheme(stored("theme"), false);
 renderPlayer();
 
 
