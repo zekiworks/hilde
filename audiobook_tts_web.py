@@ -22822,18 +22822,21 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 /* The text: a reading column; the paragraph being read has a rail, the
    sentence being read a tint (kept while paused: a tap on it pauses and
    resumes, so it must be easy to find and hit), the word being read a mark;
-   the text keeps its color. A double tap on it does not zoom
-   (touch-action: manipulation); a pinch still does. */
+   the text keeps its color. The rail and the word's underline carry the
+   accent; the paragraph's and the sentence's grounds stay a neutral gray, so
+   no part of reading looks like a saved highlight (which has a colour). A
+   double tap on it does not zoom (touch-action: manipulation); a pinch still
+   does. */
 .reader-content { font-size:18px; line-height:1.6; touch-action:manipulation; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
-  border-left-color:var(--accent-light); background:color-mix(in srgb, var(--accent-light) 5%, transparent);
+  border-left-color:var(--accent-light); background:color-mix(in srgb, var(--text) 3%, transparent);
 }
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
 .reader-sentence, .reader-block, .reader-original { cursor:pointer; }
 .reader-sentence { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
-.reader-sentence.active { background:color-mix(in srgb, var(--accent-light) 16%, transparent);
+.reader-sentence.active { background:color-mix(in srgb, var(--text) 8%, transparent);
                           border-radius:3px; }
 .reader-word { border-radius:2px; }
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
@@ -22890,23 +22893,14 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
                  box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 var(--lift) 0 rgba(0,0,0,.55),
                    0 10px 30px rgba(0,0,0,.5); }
 /* Notes (Listen Part 2): only with the server's notes_enabled (html.notes-on); nothing here shows otherwise. A highlight
-   is a CSS highlight (no element in the text), so the sentence tint, the word's blue underline and the paragraph bar
-   all show over it as before. */
-/* One CSS highlight per colour (notes-mark-<color>, renderMarks()): its token at 22% over the ground. */
-::highlight(notes-mark-yellow) { background-color:color-mix(in srgb, var(--mark-yellow) 22%, transparent); }
-::highlight(notes-mark-green) { background-color:color-mix(in srgb, var(--mark-green) 22%, transparent); }
-::highlight(notes-mark-pink) { background-color:color-mix(in srgb, var(--mark-pink) 22%, transparent); }
-::highlight(notes-mark-purple) { background-color:color-mix(in srgb, var(--mark-purple) 22%, transparent); }
-/* In the sentence being read the fill is the same colour it shows on the ground (22% over --bg, opaque), so the
-   sentence's blue tint shows around it, not mixed into it (hilde-listen-reading-a-highlight.png). */
-.reader-sentence.active::highlight(notes-mark-yellow), .reader-sentence.active *::highlight(notes-mark-yellow) {
-  background-color:color-mix(in srgb, var(--mark-yellow) 22%, var(--bg)); }
-.reader-sentence.active::highlight(notes-mark-green), .reader-sentence.active *::highlight(notes-mark-green) {
-  background-color:color-mix(in srgb, var(--mark-green) 22%, var(--bg)); }
-.reader-sentence.active::highlight(notes-mark-pink), .reader-sentence.active *::highlight(notes-mark-pink) {
-  background-color:color-mix(in srgb, var(--mark-pink) 22%, var(--bg)); }
-.reader-sentence.active::highlight(notes-mark-purple), .reader-sentence.active *::highlight(notes-mark-purple) {
-  background-color:color-mix(in srgb, var(--mark-purple) 22%, var(--bg)); }
+   is a CSS highlight (no element in the text), so the word's underline and the paragraph's rail show over it as before. */
+/* One CSS highlight per colour (notes-mark-<color>, renderMarks()): its token at 34% over the reading panel's ground,
+   opaque, so a highlight is the same fill on any ground (the paragraph or the sentence being read, whose neutral tint
+   shows around it, not mixed into it) and stands apart from both by its colour. */
+::highlight(notes-mark-yellow) { background-color:color-mix(in srgb, var(--mark-yellow) 34%, var(--surface)); }
+::highlight(notes-mark-green) { background-color:color-mix(in srgb, var(--mark-green) 34%, var(--surface)); }
+::highlight(notes-mark-pink) { background-color:color-mix(in srgb, var(--mark-pink) 34%, var(--surface)); }
+::highlight(notes-mark-purple) { background-color:color-mix(in srgb, var(--mark-purple) 34%, var(--surface)); }
 /* A highlight repaints the text decorations under it in its own text color (Chromium: the word's white), so the word
    being read inside a highlight (in-mark, set by renderMarks()) draws its blue underline as a bar, which no highlight
    repaints, where the underline was. */

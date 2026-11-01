@@ -2408,12 +2408,13 @@ attached to their sentence. New sidecars record each block's paragraph in a
 `paragraphs` array; paragraph-era sidecars derive it from their original
 paragraph blocks; sentence sidecars written before the array existed show one
 sentence per paragraph. The paragraph being read carries a 2 px
-`--accent-light` rail and a 5% background of it; the word being read a 2 px
+`--accent-light` rail and a neutral 3% `--text` background; the word being read a 2 px
 `--accent-light` underline (`text-decoration`, 4 px offset) and white text
 (slightly brighter than `--text`), with no fill in style A and a 12%
 `--accent-light` fill in style B (`:root[data-highlight=B]`); the sentence being
-read (`.reader-sentence.active`) gets a 16% `--accent-light` tint, kept while
-paused, since a tap on it pauses and resumes. The word switches without a fade, since a fade
+read (`.reader-sentence.active`) gets a neutral 8% `--text` tint, kept while
+paused, since a tap on it pauses and resumes. The grounds of reading stay
+gray so that only saved highlights have a colour. The word switches without a fade, since a fade
 passes through colors in which the text all but disappears.
 
 An adapted book's Source text comes from its `narration.json`
@@ -2904,9 +2905,10 @@ the quote alone, which the server reports as unclear or missing. A place
 walking the same nodes (`placeRange()`, `textRange()`).
 
 **Drawing.** `renderMarks()` puts every highlight's range in the CSS Custom
-Highlight of its colour, `notes-mark-<color>` (`--mark-<color>` at 22%, never
-an underline), so the
-sentence tint and the paragraph bar paint as before over it. A highlight
+Highlight of its colour, `notes-mark-<color>` (34% `--mark-<color>` mixed into
+`--surface`, the reading panel's ground: opaque, so the same fill on any ground,
+never an underline), so the sentence's gray tint shows around it and the
+paragraph's rail beside it. A highlight
 repaints the text decorations under it in its own text color (Chromium: the
 word's white), so `renderMarks()` also gives the words under a fill the class
 `in-mark`, and the word being read there draws its blue underline as a 2 px

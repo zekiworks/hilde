@@ -267,7 +267,8 @@ class PaperWorkflowTests(unittest.TestCase):
                 # Each icon is served byte for byte from assets/, under its own name.
                 for name, kind in (("reader-emblem.svg", "image/svg+xml"), ("favicon-16.png", "image/png"),
                                    ("favicon-32.png", "image/png"), ("apple-touch-icon-180.png", "image/png"),
-                                   ("icon-192.png", "image/png"), ("icon-512.png", "image/png")):
+                                   ("icon-192.png", "image/png"), ("icon-512.png", "image/png"),
+                                   ("hilde-icon-192.png", "image/png"), ("hilde-icon-512.png", "image/png")):
                     with urllib.request.urlopen(f"{origin}/{name}") as response:
                         self.assertEqual(response.headers["Content-Type"], kind, name)
                         self.assertEqual(response.read(), (assets / name).read_bytes(), name)
@@ -276,7 +277,7 @@ class PaperWorkflowTests(unittest.TestCase):
                     manifest = json.loads(response.read())
                 self.assertEqual((manifest["name"], manifest["short_name"]), ("Hilde Reader", "Hilde"))
                 self.assertEqual([(icon["src"], icon["sizes"]) for icon in manifest["icons"]],
-                                 [("/icon-192.png", "192x192"), ("/icon-512.png", "512x512")])
+                                 [("/hilde-icon-192.png", "192x192"), ("/hilde-icon-512.png", "512x512")])
                 # The old logo stays in assets/ but is no longer shown or served.
                 self.assertTrue((assets / "hilde-dark.png").is_file())
                 with self.assertRaises(urllib.error.HTTPError) as missing:

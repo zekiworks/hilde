@@ -580,12 +580,12 @@ book again, or reloading the page, finds it paused at that sentence. This is
 kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
-Text keeps its paragraphs: the paragraph being read is marked by a thin blue
-line at its left and a faint blue tint, the sentence being read by a stronger
-blue tint (it stays while paused, so it is easy to tap to pause and resume),
-and the word being read by a 2 px blue
+Text keeps its paragraphs: the paragraph being read is marked by a thin pink
+line at its left and a faint gray tint, the sentence being read by a light
+gray tint (it stays while paused, so it is easy to tap to pause and resume),
+and the word being read by a 2 px pink
 underline and slightly brighter text; with **Highlight style B** (Settings,
-**Reading**; a test for now) the word also gets a faint blue fill. Text you
+**Reading**; a test for now) the word also gets a faint pink fill. Text you
 select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically.
@@ -925,8 +925,8 @@ are on:
   yellow at first. Afterwards **Highlighted ● ● ● ● Undo** shows above the
   player for a few seconds: a dot changes the colour, **Undo** removes it.
   Clicking (tapping) a highlight offers its dots, **Add note** and **Remove
-  highlight**. The blue marks of the paragraph, sentence and word being read
-  show over every colour as usual.
+  highlight**. A highlight keeps its colour inside the sentence being read; the
+  pink line of the paragraph and the word's underline show with every colour.
 - After a note or a saved answer is saved, **Saved to Notes · Show** shows
   above the player for about five seconds; **Show** opens the Notes tab at it.
 - Everything above the player (Paused, Highlighted, Saved to Notes, **Back to

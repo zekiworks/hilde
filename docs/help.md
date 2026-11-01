@@ -64,7 +64,7 @@ Keyboard: Space or K plays or pauses, J and L skip 10 seconds, ← and → 5, < 
 
 ## Follow-along highlighting
 
-While a book plays, the paragraph being read has a thin blue line at its left, the sentence a blue tint, and the word a blue underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops and never pulls the page back; press **↓ Back to reading position** to return.
+While a book plays, the paragraph being read has a thin pink line at its left, the sentence a gray tint, and the word a pink underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops and never pulls the page back; press **↓ Back to reading position** to return.
 
 **Narration text** shows what Hilde reads aloud. **Source text** shows the document's own words, with the page each passage starts on and a label: **Original**, **Unchanged** or **Not narrated**. Descriptions the model wrote of figures and tables are labelled **Hilde's description**. Books made without adapting the text have no **Source text**.
 
