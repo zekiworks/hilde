@@ -361,12 +361,21 @@ class PaperWorkflowTests(unittest.TestCase):
         self.addCleanup(lambda: (setattr(web, "_DEVICE_OPTIONS", previous[0]),
                                  setattr(web, "_DEVICE_PROBLEM", previous[1])))
         web._DEVICE_OPTIONS = None
-        with mock.patch.dict(os.environ), \
-                mock.patch.object(web, "probe_devices", side_effect=RuntimeError("the device check failed: no torch")):
+        reason = "the device check failed: [Errno 2] No such file or directory: '/srv/private/venv/bin/python'"
+        log = io.StringIO()
+        with mock.patch.dict(os.environ), redirect_stdout(log), \
+                mock.patch.object(web, "probe_devices", side_effect=RuntimeError(reason)) as probe:
             os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-            # The probe failed: CPU stays choosable, and Settings says the GPUs are unknown.
+            # The probe failed: CPU stays choosable, and Settings says the GPUs are unknown, but not why.
             self.assertEqual([device["value"] for device in web.available_devices()], ["cpu"])
-            self.assertEqual(web.devices_note(), "GPUs unknown: the device check failed: no torch.")
+            note = web.devices_note()
+            self.assertEqual(note, "GPUs unknown: the device check failed on this server; its log says why.")
+            self.assertNotIn("/srv/private", note)
+            # The reason is in the server's log once, for the one probe; cached reads add nothing.
+            web.available_devices(), web.devices_note(), web.available_devices()
+            self.assertEqual(probe.call_count, 1)
+        self.assertEqual(log.getvalue().count("Device check failed:"), 1)
+        self.assertIn(reason, log.getvalue())
         with mock.patch.dict(os.environ), \
                 mock.patch.object(web, "probe_devices", return_value=[{"value": "cpu", "label": "CPU"}]):
             os.environ.pop("CUDA_VISIBLE_DEVICES", None)
@@ -375,8 +384,11 @@ class PaperWorkflowTests(unittest.TestCase):
             self.assertIsNone(web.devices_note())
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
             self.assertIn("CUDA_VISIBLE_DEVICES empty, so it sees no GPU", web.devices_note())
-            os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
-            self.assertIn("CUDA_VISIBLE_DEVICES=1,2, so it sees only those GPUs", web.devices_note())
+            # Set, it is named but its value is not (it may hold GPU UUIDs).
+            for value in ("1,2", "GPU-5c0ffee1-0000-4000-8000-000000000001"):
+                os.environ["CUDA_VISIBLE_DEVICES"] = value
+                self.assertIn("CUDA_VISIBLE_DEVICES set, so it may see only some", web.devices_note())
+                self.assertNotIn(value, web.devices_note())
 
     def test_browser_sees_worker_devices_and_models_but_no_hosts_or_paths(self):
         clone = {

@@ -707,7 +707,9 @@ opens the list); a local model answers from the server that offers it. The
 **Runs on** box shows **Local** or **Cloud** in words, so you see where your
 question goes before you send it and can switch to the other (screen readers hear the server or the provider and how it is
 reached too, as the list shows them), and the picker remembers the model you
-used last; it never starts on a cloud model by itself. That choice is this
+used last; it never starts on a cloud model by itself. With **Runs on** set to Cloud and no cloud
+provider connected, nothing is sent: **Send** says to connect a provider or switch back to Local,
+and switching back finds your local model still chosen. That choice is this
 browser's, kept apart from the model that makes books (Create's **Model for
 this book**); no setting ties the two together. Using the same local model for
 both makes answers slower while a book is being made, since the server then
@@ -1287,7 +1289,8 @@ change it. The groups:
   devices are those found by the last check, at startup or at a book's
   narration; a narration worker's GPU it did not find follows them as
   "(not found)". When the list may lack GPUs the machine has, a line under
-  it says why: "GPUs unknown: …" when the device check failed, or that the
+  it says why: "GPUs unknown: the device check failed on this server; its
+  log says why." (the reason itself stays in the server's log), or that the
   server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
   On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked

@@ -1328,8 +1328,8 @@ output.write_text(markdown, encoding="utf-8")
 print(f"Extracted PDF page {page + 1} ({len(markdown)} Markdown characters).")
 """
 _DEVICE_OPTIONS = None
-# Why the last device check found no GPU it could tell about: the probe's
-# failure, or None after a probe that ran (devices_note() says it on Settings).
+# Whether the last device check failed (True; its reason is only in the
+# server's log) or ran (False); None before the first. devices_note() says it.
 _DEVICE_PROBLEM = None
 _DEVICE_OPTIONS_LOCK = threading.Lock()
 # How long the device check (torch's import and CUDA's start, in a child) may take.
@@ -1387,17 +1387,21 @@ def available_devices():
     """This machine's devices as Settings shows them: the server's first
     probe, then each narration start's (refresh_devices()). A display list:
     narration checks its GPUs again when it starts. A probe that fails leaves
-    CPU to choose and keeps why (devices_note())."""
+    CPU to choose, says why in the server log (once, for that probe), and
+    marks the GPUs unknown (devices_note())."""
     global _DEVICE_OPTIONS, _DEVICE_PROBLEM
     with _DEVICE_OPTIONS_LOCK:
         if _DEVICE_OPTIONS is not None:
             return _DEVICE_OPTIONS
         try:
             _DEVICE_OPTIONS = probe_devices()
-            _DEVICE_PROBLEM = None
+            _DEVICE_PROBLEM = False
         except RuntimeError as exc:
             _DEVICE_OPTIONS = [{"value": "cpu", "label": "CPU"}]
-            _DEVICE_PROBLEM = str(exc)
+            # The reason (a path, the child's last error line) stays in the
+            # server's log; every browser only learns that the check failed.
+            _DEVICE_PROBLEM = True
+            print(f"Device check failed: {exc}", flush=True)
         return _DEVICE_OPTIONS
 
 
@@ -1408,23 +1412,24 @@ def refresh_devices():
     devices = probe_devices()
     with _DEVICE_OPTIONS_LOCK:
         _DEVICE_OPTIONS = devices
-        _DEVICE_PROBLEM = None
+        _DEVICE_PROBLEM = False
     return devices
 
 
 def devices_note():
     """What Settings says under this server's devices when they may not be all
-    the machine has: the device check's failure (its GPUs are then unknown),
-    or CUDA_VISIBLE_DEVICES in the server's environment, which hides GPUs from
-    it. None otherwise."""
+    the machine has: that the device check failed (its GPUs are then unknown;
+    the server's log says why), or that CUDA_VISIBLE_DEVICES in the server's
+    environment hides GPUs from it (never its value, which may name GPUs by
+    UUID). None otherwise."""
     if _DEVICE_PROBLEM:
-        return f"GPUs unknown: {_DEVICE_PROBLEM.rstrip('.')}."
+        return "GPUs unknown: the device check failed on this server; its log says why."
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible is None:
         return None
     if not visible.strip():
         return "This server is started with CUDA_VISIBLE_DEVICES empty, so it sees no GPU of this machine."
-    return f"This server is started with CUDA_VISIBLE_DEVICES={visible}, so it sees only those GPUs of this machine."
+    return "This server is started with CUDA_VISIBLE_DEVICES set, so it may see only some of this machine's GPUs."
 
 
 def resolve_device(requested, devices=None):
@@ -28011,10 +28016,13 @@ function speakLatestAnswer() {
 }
 
 // Ask Hilde's model: the shared picker's choice (pickerChoice()), "" while
-// none can be used.
+// none can be used, and while Runs on shows the other kind than the chosen
+// model's (Cloud with no provider connected, say): the choice stays stored,
+// and switching Runs on back uses it again, but nothing goes to it meanwhile.
 function chatModel() {
   const { model, problem } = pickerChoice("chat");
-  return model && !problem ? model.selector : "";
+  if (!model || problem || !model.selector || pickerKind("chat") !== modelKind(model.selector)) return "";
+  return model.selector;
 }
 // The panel's head: the book, the section the question is about (else the
 // one playing), and where the chosen model runs, before anything is sent. In
@@ -28091,9 +28099,13 @@ async function sendChat(event) {
     if (!paperCatalog.loaded || paperCatalogLoading)
       chatHint("The models are still loading. Your question stays here; send it again in a moment.");
     else {
-      const { problem } = pickerChoice("chat");
-      chatHint(problem || `No model is available${paperCatalog.error ? `: ${paperCatalog.error}`
-        : ": connect a provider, or add your local server."}`, true);
+      const { problem, model:chosen } = pickerChoice("chat");
+      const kind = pickerKind("chat"), other = !!(chosen && chosen.selector && modelKind(chosen.selector) !== kind);
+      chatHint(problem || (needsProvider("chat")
+        ? "Runs on is Cloud and no cloud provider is connected: connect one, or switch Runs on back to Local."
+        : other ? `Choose a ${MODEL_KINDS[kind].label} model, or switch Runs on back.`
+        : `No model is available${paperCatalog.error ? `: ${paperCatalog.error}`
+        : ": connect a provider, or add your local server."}`), true);
       refreshPaperModels();
     }
     renderChatControls();
@@ -28314,6 +28326,9 @@ async function attachAbout(about, focus) {
   try {
     // Only while the model list has not loaded: an unreachable or unchosen
     // model still gets the card (as text), and choosing one builds it again.
+    // Without a model (none chosen, the chosen one unreachable, or Runs on
+    // showing the other kind: chatModel() is "") the text context is kept and
+    // no model-dependent image attachment is prepared.
     if (!paperCatalog.loaded) await Promise.race([refreshPaperModels(), stopped]);
     const manifest = await Promise.race([jsonRequest("/api/chat/context", {
       method:"POST", headers:{ "Content-Type":"application/json" }, signal:controller.signal,
