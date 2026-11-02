@@ -907,9 +907,9 @@ are on:
   as for any selection.
 - Selecting text (a double-click, a drag, a long press) pauses the book where
   it is; only **Play** resumes it. A double-click selects the word and shows
-  the menu below; it does not open Ask Hilde by itself. On a computer the
-  selection gets a small floating menu: **Highlight**, the four colour dots,
-  **Add note**, **Ask Hilde**, **Copy**. It opens just above the selection
+  the menu below; it does not open Ask Hilde by itself. The selection gets a
+  small floating menu: **Highlight**, the four colour dots, **Add note**, **Ask
+  Hilde**, **Copy** and **×**. On a computer it opens just above the selection
   (below it when there is no room above), never over it and never pushing the
   text, inside the text's column and the screen, and it follows the selection
   when you scroll, resize the window or open, close or resize the side panel;
@@ -920,10 +920,11 @@ are on:
   needed), until you select something else; **Escape** on the dots puts it
   back beside the selection.
   Moving it never changes the selection, and its buttons act on that same
-  selection. On a phone Hilde puts nothing next to the selection
-  (your phone's own Copy and Look Up stay there); instead **Paused ·
-  “selected text” ×** shows just above the player, and **×** clears the
-  selection.
+  selection. **×** closes the menu and clears the selection; your saved
+  highlights stay. On a phone the menu opens just below the selection (your
+  phone's own Copy and Look Up stay above it), without Copy and the six dots,
+  on two rows if one doesn't fit; **Paused · “selected text” ×** also shows
+  just above the player, and its **×** clears the selection too.
 - The player bar has **Highlight** and **Note** between the speed and **Ask
   Hilde**, on a computer and a phone. With text selected they (and Ask Hilde)
   act on it and look pressed. With nothing selected, **Highlight** marks the

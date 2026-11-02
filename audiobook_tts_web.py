@@ -23597,6 +23597,12 @@ button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:va
 .selection-actions .sel-handle-sep { width:1px; align-self:stretch; margin:6px 2px 6px 0; background:var(--line); }
 .selection-actions.mark-mode :is([data-act=highlight], [data-act=ask], [data-act=copy], .sel-sep),
 .selection-actions:not(.mark-mode) [data-act=remove] { display:none; }
+/* ×: closes the bar (and clears the selection); never touches a saved highlight. */
+.selection-actions button.sel-close { width:34px; padding:0; justify-content:center; font-size:18px; color:var(--dim); }
+/* A touch selection's bar (below it): no Copy (the phone's own is there) and no handle; two rows where one is too
+   narrow, never wider than the screen. */
+.selection-actions.touch :is(.sel-handle, .sel-handle-sep, [data-act=copy], .sel-sep) { display:none; }
+.selection-actions.touch { flex-wrap:wrap; justify-content:center; white-space:normal; max-width:calc(100vw - 16px); }
 /* The pen's underline in the colour Highlight uses now (the last one used, --mark-last on <html>). */
 .mark-pen .mark-pen-line { stroke:var(--mark-last, var(--mark-yellow)); stroke-width:2; }
 /* The colour dots: a filled circle each, the colour in use ringed. */
@@ -24010,6 +24016,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .player-bar .ask-hilde { height:44px; }
   .player-bar .player-mark { width:44px; height:44px; }
   .selection-actions .mark-dots button { width:40px; height:44px; }
+  .selection-actions button { min-height:44px; }
+  .selection-actions button.sel-close { width:44px; }
   /* The speed pill keeps its small look; an invisible frame around it makes the target at least 44 × 44. */
   .player-bar .player-speed { min-width:0; min-height:0; }
   .player-bar .player-speed::before { content:""; position:absolute; inset:-11px -4px; }
@@ -24766,7 +24774,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
             /></svg>Ask Hilde</button>
           <!-- With notes on (notes_enabled), text selected by touch: the book paused and what is selected; the
-               player's Highlight, Note and Ask Hilde act on it. Never beside the selection (the phone's Copy, Look Up). -->
+               player's Highlight, Note and Ask Hilde act on it, as does the selection's own bar (below it). -->
           <div id="selection-pill" class="stack-bar selection-pill hidden" role="status">
             <span class="stack-label">Paused ·</span><span id="selection-pill-quote" class="stack-quote"></span>
             <button id="selection-pill-clear" class="stack-close" type="button" aria-label="Clear the selection">×</button>
@@ -24820,9 +24828,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         </div>
       </div>
       <button id="selection-ask" class="primary selection-ask hidden" type="button">Ask about this</button>
-      <!-- With notes on: a mouse selection's actions beside it (Highlight in the colour last used, the colour dots,
-           Add note, Ask Hilde | Copy); for a highlight clicked, its own: the dots, Add note, Remove highlight. At its
-           left a handle moves it (a drag, or the arrow keys; Escape puts it back beside the selection). -->
+      <!-- With notes on: a selection's actions beside it (Highlight in the colour last used, the colour dots, Add note,
+           Ask Hilde | Copy, ×); for a highlight clicked, its own: the dots, Add note, Remove highlight, ×. At its left
+           a handle moves it (a drag, or the arrow keys; Escape puts it back beside the selection). A touch selection
+           (.touch) gets it below the selection, where the phone's own Copy menu is not, without Copy and the handle,
+           on two rows where one is too narrow. × closes it and clears the selection; saved highlights stay. -->
       <div id="selection-actions" class="selection-actions hidden" role="toolbar" aria-label="Selected text">
         <button type="button" id="sel-handle" class="sel-handle" data-act="move"
           aria-label="Move these actions: drag, or use the arrow keys; Escape puts them back"><svg viewBox="0 0 16 16"
@@ -24844,6 +24854,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <span class="sel-sep" aria-hidden="true"></span>
         <button type="button" data-act="copy"><svg viewBox="0 0 16 16" aria-hidden="true"><path
           d="M5.5 5.5h8v8.75h-8zM10.5 5.5V1.75h-8.75v8.75H5.5"/></svg><span>Copy</span></button>
+        <button type="button" class="sel-close" data-act="close" aria-label="Close these actions">×</button>
       </div>
     </div>
   </section>
@@ -29332,11 +29343,19 @@ let pointerHeld = false, selectionTimer = 0, lastPointerType = "";
 function touchSelecting() {
   return lastPointerType ? lastPointerType !== "mouse" : window.matchMedia("(hover: none)").matches;
 }
-// With notes on, a mouse selection gets the actions menu instead (Highlight ·
-// the colour dots · Add note · Ask Hilde · Copy), and a touch selection the
-// Paused pill above the player instead of the one Ask Hilde (dockBar()); the
+// With notes on, a selection gets the actions menu beside it (Highlight · the
+// colour dots · Add note · Ask Hilde · Copy · ×): a mouse's above it, a
+// finger's below it (.touch: the phone's own Copy menu is above it), and a
+// touch selection also the Paused pill above the player (dockBar()); the
 // player's Highlight, Note and Ask Hilde act on either (playerPicked()).
+// Notes off, a mouse gets Ask about this beside it and a finger the slot's Ask Hilde.
 function selectionButton() { return $(notesEnabled ? "selection-actions" : "selection-ask"); }
+function barBySelection() { return notesEnabled || !touchSelecting(); }
+// A finger on the bar: iOS clears the page's selection as a button is touched, before its click, so while the bar
+// is pressed (and BAR_PRESS_LINGER after) it stays and acts on the copy it was opened for (selBarRange).
+const BAR_PRESS_LINGER = 600;
+let barPressedUntil = 0;
+function barPressed() { return performance.now() < barPressedUntil; }
 function hideSelectionAsk() {
   $("selection-ask").classList.add("hidden");
   $("selection-actions").classList.add("hidden");
@@ -29372,7 +29391,7 @@ function barFocused() { return $("selection-actions").contains(document.activeEl
 // The selection the bar acts on: the page's, else (the focus in the bar) the copy it was opened for.
 function barSelection() {
   const live = readerSelection();
-  if (live || !selBarRange || !barFocused() || !selBarRange.startContainer.isConnected) return live;
+  if (live || !selBarRange || !(barFocused() || barPressed()) || !selBarRange.startContainer.isConnected) return live;
   const text = selBarRange.toString().replace(/\s+/g, " ").trim(), passages = selectedPassages(selBarRange);
   return text ? { text, range:selBarRange.cloneRange(),
                   first:passages.length ? Math.min(...passages) : null, last:passages.length ? Math.max(...passages) : null } : null;
@@ -29397,8 +29416,12 @@ function sameSelBarTarget(a, b) {
 function showSelectionAsk() {
   // The focus in the bar (keyboard): its selection stays, even where the browser dropped it on focusing.
   if (barFocused()) keepSelBarSelection();
-  const picked = !pointerHeld && state && state.tab === "player" && !touchSelecting() && readerSelection();
-  if (!picked) { if (!markMenuId && !(barFocused() && selBarRange)) hideSelectionAsk(); return; }
+  const picked = !pointerHeld && state && state.tab === "player" && barBySelection() && readerSelection();
+  if (!picked) {
+    if (!markMenuId && !((barFocused() || barPressed()) && selBarRange)) hideSelectionAsk();
+    return;
+  }
+  $("selection-actions").classList.toggle("touch", touchSelecting());
   $("selection-actions").classList.remove("mark-mode");
   markMenuId = "";
   selBarRange = picked.range.cloneRange();
@@ -29421,10 +29444,14 @@ function placeSelectionAsk() {
   const parts = seen.length ? seen : rects.length ? rects : [range.getBoundingClientRect()];
   const box = { top:Math.min(...parts.map((rect) => rect.top)), bottom:Math.max(...parts.map((rect) => rect.bottom)),
                 left:Math.min(...parts.map((rect) => rect.left)), right:Math.max(...parts.map((rect) => rect.right)) };
-  const above = box.top - height - 8, below = box.bottom + 8;
+  // A finger's selection: below it first (the phone puts its own Copy menu above, its handles just under the
+  // text, hence the wider gap); a mouse's: above it first.
+  const touch = touchSelecting(), gap = touch ? 30 : 8;
+  const above = box.top - height - gap, below = box.bottom + gap;
+  const fitsAbove = above >= view.top + 4, fitsBelow = below + height <= view.bottom - 4;
   let top;
-  if (above >= view.top + 4) top = above;
-  else if (below + height <= view.bottom - 4) top = below;
+  if (touch ? fitsBelow : fitsAbove) top = touch ? below : above;
+  else if (touch ? fitsAbove : fitsBelow) top = touch ? above : below;
   // No room on either side (a selection taller than the screen): the side with more room, kept on screen.
   else top = box.top - view.top >= view.bottom - box.bottom ? view.top + 4 : view.bottom - height - 4;
   top = Math.min(Math.max(top, view.top + 4), view.bottom - height - 4);
@@ -29492,7 +29519,7 @@ function noteSelection() {
   if (!touchSelecting()) { hideDockAsk(); renderPlayerMarks(); return; }
   clearTimeout(dockHideTimer);
   dockPicked = { ...picked, range:picked.range.cloneRange() };
-  hideSelectionAsk();
+  if (!notesEnabled) hideSelectionAsk();
   if (notesEnabled) $("selection-pill-quote").textContent = `“${cutText(picked.text, 80)}”`;
   if (dockBar().classList.contains("hidden")) {
     dockBar().classList.remove("hidden");
@@ -29937,6 +29964,7 @@ function openMarkChoices(id, mouse) {
   if (!mouse) { showMarkBar(id, true); return; }
   markMenuId = id;
   $("selection-actions").classList.add("mark-mode");
+  $("selection-actions").classList.remove("touch");
   renderMarkDots();
   $("selection-actions").classList.remove("hidden");
   placeSelectionAsk();
@@ -35685,7 +35713,24 @@ $("selection-ask").addEventListener("click", () => {
   askAboutSelection(picked);
 });
 // Notes (notes_enabled): the selection's actions (or a clicked highlight's), the markers, the editor, the small bar.
-$("selection-actions").addEventListener("pointerdown", (event) => event.preventDefault());
+// A mouse press is cancelled so the selection stays; a finger press never is (WebKit then sends no click): the bar
+// remembers it instead, and acts on its copy of the selection if iOS cleared the live one (barPressed()).
+$("selection-actions").addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse") event.preventDefault();
+  else barPressedUntil = performance.now() + 60000;
+});
+for (const type of ["pointerup", "pointercancel"])
+  $("selection-actions").addEventListener(type, () => {
+    if (barPressedUntil > performance.now() + BAR_PRESS_LINGER) barPressedUntil = performance.now() + BAR_PRESS_LINGER;
+  });
+// ×: closes the bar and clears the selection (the book stays paused); a clicked highlight's menu just closes.
+function closeSelectionBar() {
+  const wasMark = !!markMenuId;
+  barPressedUntil = 0;
+  hideSelectionAsk();
+  selBarMoved = null;
+  if (!wasMark) clearReaderSelection();
+}
 // The keyboard focus moving into the bar keeps its selection (WebKit drops it as a button takes the focus).
 $("selection-actions").addEventListener("focusin", () => { keepSelBarSelection(); setTimeout(keepSelBarSelection, 0); });
 // The handle: a drag moves the bar (the selection stays, the press being cancelled), and where it is let go it
@@ -35725,6 +35770,7 @@ $("sel-handle").addEventListener("keydown", (event) => {
 $("selection-actions").addEventListener("click", (event) => {
   const dot = event.target.closest(".mark-dot"), button = event.target.closest("button[data-act]");
   if (button && button.dataset.act === "move") return;
+  if (button && button.dataset.act === "close") { closeSelectionBar(); return; }
   if (markMenuId) {
     const id = markMenuId;
     if (dot) recolorMark(id, dot.dataset.color);

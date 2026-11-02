@@ -2661,7 +2661,7 @@ selected yet selects its word (`selectPressedWord()`): a phone's own long
 press selects first and this then does nothing; Chromium's touch emulation
 has no long press, so there this selects.
 
-A finished selection in the text (a drag, a long press, the browser's
+With notes off, a finished selection in the text (a drag, a long press, the browser's
 double-click, Shift+click extending it) gets a button by the input that
 made it (`touchSelecting()`: the `pointerType` of the last `pointerdown`,
 so a laptop with a touch screen gives the mouse one and a finger the
@@ -2861,11 +2861,20 @@ the keyboard focus: the bar keeps a copy (`selBarRange`, set by
 `showSelectionAsk()`), a `focusin` on the bar puts it back
 (`keepSelBarSelection()`), a caret left by that drop is no new target, the bar
 stays while it has the focus, and its buttons act on `barSelection()` (the live
-selection, else that copy while the bar has the focus). A touch selection gets
-no menu of Hilde's beside it (the phone's own Copy, Look Up stay alone there)
-but the **Paused · “…” ×** pill (`#selection-pill`, `dockBar()`) in
+selection, else that copy while the bar has the focus or, after a finger
+pressed it, for `BAR_PRESS_LINGER` (600 ms) after the press: `barPressed()`,
+since iOS clears the selection as a button is touched, before its click; a
+finger's `pointerdown` on the bar is not cancelled, WebKit then sending no
+click). The bar's **×** (`data-act=close`, `closeSelectionBar()`) closes it and
+clears the selection (`clearReaderSelection()`); a mouse's highlight menu just
+closes; no mark changes. With notes on, a touch selection gets the same bar
+(`barBySelection()`; `.touch`: below the selection first, 30 px from it, where
+the phone's own Copy menu and handles are not; no Copy or handle; two rows
+where one is too narrow, never wider than the screen; 44 px targets), and also
+the **Paused · “…” ×** pill (`#selection-pill`, `dockBar()`) in
 `#dock-slot`, × clearing the selection (`clearReaderSelection()`), with the
-same stored `dockPicked` and `dockPressed` rules as `#dock-ask`. The player
+same stored `dockPicked` and `dockPressed` rules as `#dock-ask`. Notes off, a
+touch selection gets only `#dock-ask`. The player
 bar has **Highlight** and **Note** (`#player-marks`: `#player-highlight`, its
 pen underlined in the colour last used, and `#player-note`) between speed and
 Ask Hilde; with a selection (`playerPicked()`: the live one, else
