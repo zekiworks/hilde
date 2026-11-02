@@ -5594,7 +5594,7 @@ class LocalPaperProviderTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=text):
                 web.read_providers(path)
 
-    def test_a_local_server_turned_off_is_neither_asked_nor_sent_text_and_stays_off(self):
+    def test_a_model_server_one_browser_turned_off_is_neither_asked_nor_sent_its_text_and_others_keep_it(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         home = Path(temporary.name) / ".hilde"
@@ -5614,28 +5614,31 @@ class LocalPaperProviderTests(unittest.TestCase):
             self.addCleanup(patch.stop)
         web.save_local_endpoint("", "Spark2", gemma)
         web.save_local_endpoint("", "Spark3", other)
-        web.use_local_endpoint("Spark2", False)
+        saved = (home / "providers.yaml").read_text(encoding="utf-8")
+        # A browser's state keeps the names it turned off, cleaned; another browser's is its own.
+        mine = web.normalize({"runtime": {"servers_off": ["spark2", "Spark2", "", 3, "x" * 33]}})
+        self.assertEqual(mine["runtime"]["servers_off"], ["spark2"])
+        self.assertEqual(web.normalize({})["runtime"]["servers_off"], [])
+        servers = web.with_servers_off(web.local_endpoints(), mine["runtime"]["servers_off"])
         gemma_requests.clear()
-        catalog = web.paper_model_catalog(web.local_endpoints())
-        # Off: never asked, listed once as off, and the same model is routed to the server that is on.
+        catalog = web.paper_model_catalog(servers)
+        # For that browser: never asked, listed once as off, its text routed to the server it uses.
         self.assertEqual(gemma_requests, [])
         self.assertEqual([(e["name"], e["running"], e.get("off", False)) for e in catalog["endpoints"]],
                          [("Spark2", False, True), ("Spark3", True, False)])
         self.assertEqual([(m["selector"], m["endpoint"]) for m in catalog["models"]], [("lm-studio/gemma", "Spark3")])
-        self.assertEqual(web.local_route("lm-studio/gemma", web.local_endpoints())["name"], "Spark3")
-        # Kept in providers.yaml, over a restart and over a rename; on again, it is asked again.
-        web.LOCAL_ENDPOINTS[:] = []
-        web.load_providers([])
-        web.save_local_endpoint("Spark2", "Spark2 box", gemma)
-        self.assertEqual([(e["name"], e.get("off", False)) for e in web.local_endpoints()],
-                         [("Spark2 box", True), ("Spark3", False)])
-        web.use_local_endpoint("Spark2 box", True)
-        catalog = web.paper_model_catalog(web.local_endpoints())
-        self.assertEqual([(m["selector"], m["endpoint"]) for m in catalog["models"]], [("lm-studio/gemma", "Spark2 box")])
-        self.assertEqual(web.local_route("lm-studio/gemma", web.local_endpoints())["name"], "Spark2 box")
-        self.assertNotIn("off:", (home / "providers.yaml").read_text(encoding="utf-8"))
-        with self.assertRaises(ValueError):
-            web.use_local_endpoint("Nope", False)
+        self.assertEqual(web.local_route("lm-studio/gemma", servers)["name"], "Spark3")
+        temporary_storage = web.SharedStorage(Path(temporary.name) / "library")
+        temporary_storage.ensure()
+        values = web.values_of(mine, web.unconfigured_tts_models(), temporary_storage)
+        self.assertEqual([(e["name"], e["off"]) for e in values["local_servers"]], [("Spark2", True), ("Spark3", False)])
+        # Every server off for it: its job is refused before it starts.
+        with self.assertRaisesRegex(RuntimeError, "No model server you use offers gemma"):
+            web.local_route("lm-studio/gemma", web.with_servers_off(web.local_endpoints(), ["Spark2", "Spark3"]))
+        # For every other browser, both servers as before; nothing is written to the server's files.
+        everyone = web.paper_model_catalog(web.with_servers_off(web.local_endpoints(), []))
+        self.assertEqual([(m["selector"], m["endpoint"]) for m in everyone["models"]], [("lm-studio/gemma", "Spark2")])
+        self.assertEqual((home / "providers.yaml").read_text(encoding="utf-8"), saved)
 
     def test_models_of_several_local_servers_are_listed_together_and_each_asked_on_its_own(self):
         temporary = tempfile.TemporaryDirectory()

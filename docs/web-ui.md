@@ -1351,11 +1351,12 @@ change it. The groups:
   a cloud model, that it runs at the provider on none of these machines. Under
   it are the model servers added under **Providers**, grouped by the machine
   of their address, each answering or not, how many models it lists, and
-  which of those jobs it is chosen for. On the server's machine, or a device
-  it approved, each has **Use for text**: untick it and, for every browser,
-  Hilde neither asks that server nor sends it text; it shows as "off in
-  Settings" in **Providers** and in every **Runs on** list until ticked again
-  (a model two servers offer then runs on the other). You choose where text runs in each
+  which of those jobs it is chosen for. Each has **Use for text on this
+  device**, for every browser: untick it and, for this browser only, Hilde
+  neither asks that server nor sends it your text; it shows as "off on this
+  device" in **Providers** and in every **Runs on** list until ticked again (a
+  model two servers offer then runs on the other). Other people's browsers keep
+  their own choice. You choose where text runs in each
   model picker: its **Runs on** lists every model server by name, **All local
   servers**, and **Cloud**. **Other narration machines** lists the nodes
   that narrate over SSH, each with its devices as `workers.yaml` names them
