@@ -36,8 +36,8 @@ other workers narrate it; see
 ## Web server
 
 Open **Settings** in a browser on the server's own machine, at
-`http://127.0.0.1:8800/` (or on any device, when Hilde started with
-`--manage-from-network`). **Other narration machines**, under **Machines and devices**,
+`http://127.0.0.1:8800/` (or on a device it approved, or on any device when Hilde
+started with `--manage-from-network`). **Other narration machines**, under **Machines and devices**,
 lists the nodes, and **Add narration workers** adds one:
 
 1. Enter the machine as an IP address, a host name, or `user@host`, and press
@@ -91,13 +91,13 @@ To edit the file by hand, stop the server first; it reads
 the file when it starts and refuses to start if a node is invalid or no worker
 would be left.
 
-The server has no sign-in, so only a browser on its own machine sees the hosts
-and paths or changes the nodes. A browser on another device sees each node as
-`Machine 1` and so on, its GPUs as `Machine 1 · GPU 2`, and the server refuses
-its requests to change them. `--manage-from-network` lifts this for every
-browser that reaches the server; anyone there can then add SSH machines that
-run programs as this user (see
-[Manage from other devices](configuration.md#manage-from-other-devices)).
+The server has no sign-in, so only a browser on its own machine, or a device
+it approved, sees the hosts and paths or changes the nodes. A browser on
+another device sees each node as `Machine 1` and so on, its GPUs as
+`Machine 1 · GPU 2`, and the server refuses its requests to change them.
+`--manage-from-network` lifts this for every browser that reaches the
+server; anyone there can then add SSH machines that run programs as this
+user (see [Manage from other devices](configuration.md#manage-from-other-devices)).
 
 ## Command line
 

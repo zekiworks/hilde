@@ -12356,7 +12356,7 @@ class WorkerNodeTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(server.worker_nodes, [])
 
-    def test_an_approved_device_turns_narration_workers_on_or_off_and_nothing_more(self):
+    def test_an_approved_device_manages_like_the_servers_own_browser_but_approves_no_one(self):
         server, origin = self.serve([self.NODE])
         grants = server.storage.root / web.DEVICE_GRANTS_FILE
         cookies = {}
@@ -12382,14 +12382,22 @@ class WorkerNodeTests(unittest.TestCase):
             return status, answer
 
         devices = [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}]
+        home = server.storage.root / "home"
         with mock.patch.object(web, "_DEVICE_OPTIONS", devices), \
                 mock.patch.object(web, "devices_note", return_value=None), \
-                mock.patch.object(web, "machine_name", return_value="studio"):
+                mock.patch.object(web, "machine_name", return_value="studio"), \
+                mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []), \
+                mock.patch.object(web, "paper_model_catalog", return_value={"models": [], "defaults": {}}):
             # Before asking: the page reads, and nothing it may change.
             state = phone("/api/state")[1]
-            self.assertEqual((state["capabilities"]["manage_devices"], state["devices"]), (False, {"access": "none"}))
+            self.assertEqual((state["capabilities"]["manage_workers"], state["capabilities"]["manage_providers"],
+                              state["devices"]), (False, False, {"access": "none"}))
             self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": False}),
-                             (403, {"error": web.DEVICES_APPROVED_ONLY}))
+                             (403, {"error": web.WORKERS_LOCAL_ONLY}))
+            self.assertEqual(phone("/api/providers/local/remove", {"name": "nope"}),
+                             (403, {"error": web.PROVIDERS_LOCAL_ONLY}))
+            self.assertEqual(phone("/api/models/defaults", {"text": "lm-studio/none"}),
+                             (403, {"error": web.DEFAULTS_LOCAL_ONLY}))
             # It asks, and may not approve itself.
             status, asked = phone("/api/devices/request", {"name": "Ümit's phone\n"})
             self.assertEqual((status, asked["access"], asked["name"]), (200, "pending", "Ümit's phone"))
@@ -12406,25 +12414,27 @@ class WorkerNodeTests(unittest.TestCase):
                              (200, [], ["Ümit's phone"]))
             self.assertEqual(stat.S_IMODE(grants.stat().st_mode), 0o600)
             self.assertNotIn(cookies["token"], grants.read_text(encoding="utf-8"))
-            # The approval outlives a restart; an unreadable file approves no one.
+            # The approval outlives a restart.
             self.assertEqual(web.DeviceGrants(grants).access(cookies["token"])["access"], "granted")
-            capabilities = phone("/api/state")[1]["capabilities"]
-            self.assertEqual((capabilities["manage_devices"], capabilities["manage_workers"]), (True, False))
-            # Approved: it turns this machine's GPU off, saved, and learns no node's host.
+            state = phone("/api/state")[1]
+            self.assertEqual((state["capabilities"]["manage_workers"], state["capabilities"]["manage_providers"],
+                              state["devices"]["access"]), (True, True, "granted"))
+            self.assertNotIn("pending", state["devices"])
+            # Approved: each section's routes answer it as they answer the server's own browser.
             status, workers = phone("/api/workers")
-            self.assertEqual((status, "nodes" in workers, "setup" in workers), (200, False, False))
+            self.assertEqual((status, [node["host"] for node in workers["nodes"]]), (200, [self.NODE["host"]]))
             status, workers = phone("/api/workers/local", {"device": self.GPU, "narrates": False})
             self.assertEqual((status, [entry["narrates"] for entry in workers["local"]]), (200, [False]))
             self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], [self.GPU]))
-            # And nothing more.
-            for path, body in (
-                ("/api/workers/remove", {"host": self.NODE["host"]}),
-                ("/api/workers/probe", {"host": "spark"}),
-                ("/api/providers/local/remove", {"name": "nope"}),
-                ("/api/models/defaults", {"text": ""}),
-                ("/api/devices/approve", {"code": "ZZZZZZ"}),
-            ):
-                self.assertEqual(phone(path, body)[0], 403, path)
+            self.assertEqual(phone("/api/providers/local/remove", {"name": "nope"}),
+                             (400, {"error": "No local server is named 'nope'."}))
+            self.assertEqual(phone("/api/models/defaults", {"text": "lm-studio/none"})[0], 400)
+            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": True})[0], 200)
+            self.assertEqual(phone("/api/workers/remove", {"host": self.NODE["host"]})[0], 200)
+            self.assertEqual(web.read_workers(server.workers_path), ([], []))
+            # But it approves no one, not even another request.
+            self.assertEqual(phone("/api/devices/approve", {"code": "ZZZZZZ"}),
+                             (403, {"error": web.DEVICES_APPROVE_LOCAL_ONLY}))
             # Another token is no one.
             token = cookies["token"]
             cookies["token"] = token[:-1] + ("A" if token[-1] != "A" else "B")
@@ -12433,10 +12443,10 @@ class WorkerNodeTests(unittest.TestCase):
             # Removed on the server's machine: the device reads only again.
             grant = self.request(origin, "/api/state")[1]["devices"]["granted"][0]
             self.assertEqual(self.request(origin, "/api/devices/revoke", {"id": grant["id"]})[0], 200)
-            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": True}),
-                             (403, {"error": web.DEVICES_APPROVED_ONLY}))
-        self.assertEqual(server.worker_nodes, [self.NODE])
-        self.assertEqual(web.read_workers(server.workers_path)[1], [self.GPU])
+            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": False}),
+                             (403, {"error": web.WORKERS_LOCAL_ONLY}))
+        self.assertEqual(web.read_workers(server.workers_path), ([], []))
+        self.assertFalse((home / "providers.yaml").exists())
         grants.write_text("{", encoding="utf-8")
         with redirect_stderr(io.StringIO()) as said:
             broken = web.DeviceGrants(grants)

@@ -1904,23 +1904,19 @@ exec "$found" - "$MODEL" <<'HILDE_PROBE'
 
 
 WORKERS_LOCAL_ONLY = (
-    "Narration workers on other machines are added and removed in a browser on the "
-    "server's own machine, or from any device when Hilde starts with --manage-from-network."
-)
-DEVICES_APPROVED_ONLY = (
-    "Only a browser on the server's own machine, or a device it approved, turns this "
-    "server's narration workers on or off."
+    "Narration workers are changed in a browser on the server's own machine, on a device it "
+    "approved, or from any device when Hilde starts with --manage-from-network."
 )
 DEVICES_APPROVE_LOCAL_ONLY = "Devices are approved in a browser on the server's own machine."
 
-# Settings › Machines and devices from another device, without
-# --manage-from-network: a device asks (POST /api/devices/request) and keeps a
-# random token in an HttpOnly cookie; a browser that may manage approves it by
-# the code the device shows. An approved device may then turn this server's
-# narration workers on or off, and nothing more: narration machines, providers,
-# and the default models stay with Handler.may_manage(). device-grants.json, in
-# the storage root and readable only by the server's user, keeps each approved
-# token's SHA-256 only; requests live in memory for DEVICE_REQUEST_SECONDS.
+# Settings from another device, without --manage-from-network: a device asks
+# (POST /api/devices/request) and keeps a random token in an HttpOnly cookie;
+# a browser on the server's machine (Handler.may_approve()) approves it by the
+# code the device shows. An approved device then manages as that browser does
+# (Handler.may_manage(): Machines and devices, Providers, the default models),
+# except approving devices. device-grants.json, in the storage root and
+# readable only by the server's user, keeps each approved token's SHA-256
+# only; requests live in memory for DEVICE_REQUEST_SECONDS.
 DEVICE_GRANTS_FILE = "device-grants.json"
 DEVICE_COOKIE = "hilde_devices"
 DEVICE_COOKIE_MAX_AGE = 400 * 24 * 3600
@@ -1938,7 +1934,7 @@ def device_label(value):
 
 
 class DeviceGrants:
-    """The devices approved to turn narration workers on or off, and the
+    """The devices approved to manage this server's settings, and the
     requests waiting for approval. Unreadable device-grants.json approves
     nothing and refuses new approvals until fixed (`problem`)."""
 
@@ -8663,11 +8659,11 @@ LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
 # `images` is a server's flag from earlier versions: read, ignored with a warning, never written.
 LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "reads_images", "images")
 PROVIDERS_LOCAL_ONLY = (
-    "Providers are added, changed, and removed in a browser on the server's own machine, "
-    "or from any device when Hilde starts with --manage-from-network."
+    "Providers are added, changed, and removed in a browser on the server's own machine, on a "
+    "device it approved, or from any device when Hilde starts with --manage-from-network."
 )
 DEFAULTS_LOCAL_ONLY = (
-    "Default models are set in a browser on the server's own machine, "
+    "Default models are set in a browser on the server's own machine, on a device it approved, "
     "or from any device when Hilde starts with --manage-from-network."
 )
 # Each local server's models as it last listed them, by its address, so its
@@ -20557,29 +20553,30 @@ class Handler(BaseHTTPRequestHandler):
         """Whether this request comes from a browser on the server's machine."""
         return is_loopback_address(self.client_address[0])
 
+    def may_approve(self):
+        """Whether this request may approve other devices: a browser on the
+        server's machine, or any browser when Hilde started with
+        --manage-from-network (HildeServer.manage_from_network)."""
+        return self.local_client() or getattr(self.server, "manage_from_network", False)
+
     def may_manage(self):
         """Whether this request may add, change, or remove providers and
-        machines: a browser on the server's machine, or any browser when
-        Hilde started with --manage-from-network (HildeServer.manage_from_network)."""
-        return self.local_client() or getattr(self.server, "manage_from_network", False)
+        machines and set the default models: a browser that may approve, or a
+        device it approved (DeviceGrants)."""
+        return self.may_approve() or self.device_access()["access"] == "granted"
 
     def device_token(self):
         morsel = _state_cookie_jar(self.headers.get("Cookie")).get(DEVICE_COOKIE)
         return morsel.value if morsel else ""
 
     def device_access(self):
-        """This browser's say over this server's narration workers: "server"
-        (may_manage(), with the waiting requests and approved devices), else
+        """This browser's say over the server's settings: "server"
+        (may_approve(), with the waiting requests and approved devices), else
         DeviceGrants.access(): "granted", "pending" with its code, or "none"."""
         grants = getattr(self.server, "device_grants", None)
-        if self.may_manage():
+        if self.may_approve():
             return {"access": "server", **(grants.snapshot() if grants else {"pending": [], "granted": [], "problem": ""})}
         return grants.access(self.device_token()) if grants else {"access": "none"}
-
-    def may_change_devices(self):
-        """Whether this request may turn this server's narration workers on or
-        off: a browser that may manage, or a device it approved."""
-        return self.may_manage() or self.device_access()["access"] == "granted"
 
     def device_cookie(self, token, age):
         return ("Set-Cookie", f"{DEVICE_COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; SameSite=Strict"
@@ -20685,8 +20682,6 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "airdrop": airdrop_available(),
                         "manage_workers": self.may_manage(),
-                        # This server's narration workers on or off: also a device it approved.
-                        "manage_devices": self.may_change_devices(),
                         # Settings › Providers: the same rule as machines.
                         "manage_providers": self.may_manage(),
                         # Hilde's own certificate authority, to install on a device.
@@ -20701,8 +20696,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/workers":
-            if not self.may_change_devices():
-                return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVED_ONLY)
+            if not self.may_manage():
+                return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
             return self.reply(
                 HTTPStatus.OK,
                 self.workers_payload(),
@@ -21153,15 +21148,6 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def workers_payload(self):
-        """/api/workers: for a browser that may manage, the nodes with their
-        hosts and paths and the setup; for an approved device only this
-        machine's narration workers and the public consumers."""
-        if not self.may_manage():
-            return {
-                "available": self.server.tts_models["clone"]["source"] == "local",
-                "consumers": self.server.jobs.public_consumers_snapshot(),
-                "local": self.server.jobs.local_snapshot(),
-            }
         busy = self.server.jobs.busy_consumer_ids()
         return {
             "available": self.server.tts_models["clone"]["source"] == "local",
@@ -21183,13 +21169,13 @@ class Handler(BaseHTTPRequestHandler):
     def change_device_access(self, action, body):
         """/api/devices/request and /forget for any device (its own request or
         approval, by its cookie); /approve, /deny (by code) and /revoke (by ID)
-        for a browser that may manage. Each answers the asker's device_access()."""
+        for a browser that may approve. Each answers the asker's device_access()."""
         grants = getattr(self.server, "device_grants", None)
         if grants is None or action not in ("request", "forget", "approve", "deny", "revoke"):
             return self.fail(HTTPStatus.NOT_FOUND, f"no route for /api/devices/{action}")
         if action == "request":
-            if self.may_manage():
-                return self.fail(HTTPStatus.CONFLICT, "This browser already changes this server's devices.")
+            if self.may_approve():
+                return self.fail(HTTPStatus.CONFLICT, "This browser already changes this server's settings.")
             if grants.access(self.device_token())["access"] == "granted":
                 return self.fail(HTTPStatus.CONFLICT, "This device is already approved.")
             token, code = grants.request(body.get("name"), self.client_address[0], self.device_token())
@@ -21201,7 +21187,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {DEVICE_GRANTS_FILE}: {exc}")
             return self.reply(HTTPStatus.OK, {"access": "none"}, extra=(self.device_cookie("", 0),))
-        if not self.may_manage():
+        if not self.may_approve():
             return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVE_LOCAL_ONLY)
         try:
             if action == "approve":
@@ -21219,12 +21205,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.OK, self.device_access())
 
     def change_workers(self, action, body):
-        """Change workers: this machine's devices on or off for a browser that
-        may change devices (may_change_devices()), anything else only for one
-        that may manage."""
-        if action == "local" and not self.may_change_devices():
-            return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVED_ONLY)
-        if action != "local" and not self.may_manage():
+        """Change workers for a browser that may manage: this machine's devices, or a node."""
+        if not self.may_manage():
             return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
         clone = self.server.tts_models["clone"]
         if clone["source"] != "local":
@@ -24440,12 +24422,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="settings-machines">
       <legend>Machines and devices</legend>
-      <p id="machines-read-only" class="note server-only hidden">Read-only on this device. Only a browser
-        on the machine Hilde runs on, or a device it approved, turns narration workers on or off here; only
-        the server's machine adds narration machines, and model servers under Providers (or any browser, if
-        the server's owner starts Hilde with <code>--manage-from-network</code>). The text model you use is
-        yours to choose in each model picker.</p>
-      <div id="device-access" class="stack"></div>
+      <p id="machines-read-only" class="note server-only hidden">Read-only on this device until the server
+        approves it: then it changes narration workers and machines here, as a browser on the server's
+        machine does. The text model you use is yours to choose in each model picker.</p>
+      <div id="device-access" class="stack" data-access="machines"></div>
       <p class="note">This server, the model servers your text models run on, and the other machines
         that narrate: what each is, what it is chosen for, and what it is doing as far as Hilde knows.</p>
       <section class="machines-part" aria-labelledby="machine-here-title">
@@ -24472,8 +24452,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="settings-providers" tabindex="-1">
       <legend>Providers</legend>
-      <p id="providers-read-only" class="note server-only hidden">Read-only from this device. Manage
-        providers from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
+      <p id="providers-read-only" class="note server-only hidden">Read-only on this device until the server
+        approves it: then it adds, changes, and removes providers here.</p>
+      <div class="stack" data-access="providers"></div>
       <p class="note">The model servers and cloud accounts every browser's model picker offers. This
         server keeps them.</p>
       <div id="provider-rows" class="provider-rows"></div>
@@ -24484,10 +24465,12 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <legend>Models and connection</legend>
       <div class="row"><span class="row-label">Default TTS</span><div id="model-narration" class="model-pick"></div></div>
       <div class="row"><span class="row-label">Voice design</span><div id="model-design" class="model-pick"></div></div>
-      <p class="note group-note">Hilde sets these when it starts. To change them, restart Hilde with
-        different settings.</p>
-      <p id="defaults-read-only" class="note server-only group-note hidden">Read-only from this device. Set the
-        default models from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
+      <p class="note group-note">Hilde sets these when it starts, from its start command: no browser changes
+        them, not even on the server's machine. The server's owner changes them by restarting Hilde with
+        other models.</p>
+      <p id="defaults-read-only" class="note server-only group-note hidden">Read-only on this device until the
+        server approves it: then it sets the default models here.</p>
+      <div class="stack" data-access="defaults"></div>
       <div class="row"><span class="row-label">Default text narration</span>
         <div class="model-pick" data-picker="default-text"></div></div>
       <div class="row"><span class="row-label">Default image narration</span>
@@ -33578,12 +33561,17 @@ function setPickerModel(name, selector) {
 async function saveDefaultModel(name, selector) {
   delete pickerKinds[name];
   try {
-    applyPaperCatalog(await jsonRequest("/api/models/defaults", {
+    const catalog = await jsonRequest("/api/models/defaults", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ [PICKERS[name].server]:selector }),
-    }));
+    });
+    applyPaperCatalog(catalog);
+    // The answer's defaults are what the server saved.
+    const saved = ((catalog.defaults || {})[PICKERS[name].server] || {}).selector || "";
+    if (saved !== selector)
+      throw new Error(`The server kept ${PICKERS[name].label.toLowerCase()}: ${saved ? textModel(saved).short : "Not set"}.`);
     const model = textModel(selector);
-    setStatus(`${PICKERS[name].label}: ${model ? model.short : "Not set"}.`);
+    setStatus(`Saved for every browser: ${PICKERS[name].label}: ${model ? model.short : "Not set"}.`);
   } catch (error) { render(); setStatus(error.message, true); }
 }
 // Narration and voice design in Settings: the picker's look, read-only
@@ -34886,7 +34874,10 @@ async function deleteLocalProvider(name) {
     applyPaperCatalog(await jsonRequest("/api/providers/local/remove", {
       method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ name }),
     }));
-    setStatus(`Removed '${name}'.`);
+    // The answer is the server's saved list: it, not the request, says whether the server is gone.
+    if ((paperCatalog.endpoints || []).some((endpoint) => endpoint.name === name))
+      throw new Error(`The server still lists '${name}'.`);
+    setStatus(`Removed '${name}' for every browser.`);
     await sync();
   } catch (error) { setStatus(error.message, true); }
 }
@@ -35085,8 +35076,10 @@ async function saveLocalProvider() {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ original, name, address:$("provider-local-address").value }),
     }));
+    if (!(paperCatalog.endpoints || []).some((endpoint) => endpoint.name === name))
+      throw new Error(`The server did not keep '${name}'.`);
     closeProviderDialog();
-    setStatus(original ? `Saved '${name}'.` : `Added '${name}'.`);
+    setStatus(`${original ? "Saved" : "Added"} '${name}' for every browser.`);
     // Create's model check reads the server's providers; ask it again.
     await sync();
   } catch (error) {
@@ -35144,7 +35137,7 @@ function deviceName(value) {
     : value === "mps" ? "Apple MPS" : "CPU";
 }
 async function refreshWorkers() {
-  if (!caps.manage_devices) { renderWorkers(); return; }
+  if (!caps.manage_workers) { renderWorkers(); return; }
   try { applyWorkers(await jsonRequest("/api/workers")); }
   catch (error) {
     $("nodes-note").textContent = error.message;
@@ -35369,13 +35362,12 @@ function renderMachines(force = false) {
     paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices, deviceAccess]);
   if (!force && signature === machinesSignature) return;
   machinesSignature = signature;
-  // Only a browser that may manage (caps.manage_workers) changes machines; a
-  // device it approved (caps.manage_devices) turns this server's narration
-  // workers on or off; others read.
-  $("machines-read-only").classList.toggle("hidden", manage || deviceAccess.access === "granted");
+  // Only a browser that may manage (caps.manage_workers: on the server's
+  // machine, or a device it approved) changes machines; others read.
+  $("machines-read-only").classList.toggle("hidden", manage);
   renderDeviceAccess();
   const clone = configuration.clone || {}, design = configuration.design || {};
-  const own = caps.manage_devices && workerNodes ? workerNodes.local || [] : [];
+  const own = manage && workerNodes ? workerNodes.local || [] : [];
   $("local-devices-applies").classList.toggle("hidden", !own.length);
   const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
   // Text preparation runs on the chosen text model's server; this server
@@ -35475,19 +35467,23 @@ async function setLocalDevice(own, narrates) {
     renderWorkers();
   }
 }
-// Who may turn this server's narration workers on or off from here
-// (/api/state and /api/jobs "devices", Handler.device_access()): the server's
-// own browser approves other devices by the code each shows, and removes
-// them; another device asks, waits (the job poll brings the approval), or
-// stops.
+// Who may change this server's settings from here (/api/state and /api/jobs
+// "devices", Handler.device_access()): the server's own browser approves
+// other devices by the code each shows, and removes them; another device
+// asks, waits (the job poll brings the approval), or stops. An approved
+// device manages Machines and devices, Providers, and the default models as
+// the server's own browser does (caps.manage_workers, caps.manage_providers).
 let deviceAccess = { access:"none" };
 function applyDeviceAccess(next) {
-  const before = !!caps.manage_devices;
+  const before = !!caps.manage_workers;
+  const manage = next.access === "server" || next.access === "granted";
   deviceAccess = next;
-  caps.manage_devices = next.access === "server" || next.access === "granted";
-  if (caps.manage_devices !== before) {
-    if (!caps.manage_devices) workerNodes = null;
+  caps.manage_workers = caps.manage_providers = manage;
+  if (manage !== before) {
+    if (!manage) workerNodes = null;
     refreshWorkers();
+    renderPickers();
+    renderProviders();
   } else renderMachines();
 }
 function deviceRequestName() {
@@ -35526,60 +35522,69 @@ function renderDeviceAccess() {
     line.className = "line"; line.append(...children);
     return line;
   };
-  const access = deviceAccess.access, parts = [];
-  if (access === "server") {
-    const title = document.createElement("h3");
-    title.className = "part-title"; title.textContent = "Devices that may turn narration workers on or off";
-    parts.push(title);
-    if (deviceAccess.problem) parts.push(note(deviceAccess.problem));
-    const list = document.createElement("ul");
-    list.className = "device-list";
-    list.setAttribute("aria-label", "Devices that may turn narration workers on or off");
-    for (const item of deviceAccess.pending || []) {
-      const entry = document.createElement("li");
-      entry.className = "device";
-      const head = document.createElement("div");
-      head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
+  const access = deviceAccess.access;
+  // Each section's own place: Machines and devices also lists the requests
+  // (on the server's machine) and says what an approval allows.
+  const sections = [...document.querySelectorAll("[data-access]")];
+  for (const box of sections) {
+    const parts = [], machines = box.dataset.access === "machines";
+    if (access === "server" && machines) {
+      const title = document.createElement("h3");
+      title.className = "part-title"; title.textContent = "Devices approved to change these settings";
+      parts.push(title, note("Approving a device lets it change Machines and devices (including narration "
+        + "machines over SSH, which then run programs as this server's user), Providers (keys and sign-ins), and "
+        + "the default models, for every browser, as this browser can. Only this machine approves devices."));
+      if (deviceAccess.problem) parts.push(note(deviceAccess.problem));
+      const list = document.createElement("ul");
+      list.className = "device-list";
+      list.setAttribute("aria-label", "Devices approved to change these settings");
+      for (const item of deviceAccess.pending || []) {
+        const entry = document.createElement("li");
+        entry.className = "device";
+        const head = document.createElement("div");
+        head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
+        const code = document.createElement("code");
+        code.textContent = item.code;
+        const meta = document.createElement("span");
+        meta.className = "device-meta"; meta.append("Asks with code ", code);
+        entry.append(head, meta, row(
+          button("Approve", `Approve ${item.name} (${item.code})`, () => deviceAction("approve", { code:item.code },
+            `Approved: ${item.name} may change this server's settings.`)),
+          button("Deny", `Deny ${item.name} (${item.code})`, () => deviceAction("deny", { code:item.code },
+            `Denied: ${item.name}.`))));
+        list.append(entry);
+      }
+      for (const item of deviceAccess.granted || []) {
+        const entry = document.createElement("li");
+        entry.className = "device";
+        const head = document.createElement("div");
+        head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
+        entry.append(head, note(`Approved ${item.approved.replace("T", " ").replace("+00:00", " UTC")}`), row(
+          button("Remove", `Remove ${item.name}`, () => deviceAction("revoke", { id:item.id },
+            `Removed: ${item.name} no longer changes this server's settings.`))));
+        list.append(entry);
+      }
+      parts.push(list.children.length ? list : note("None yet. A phone or computer asks in its own Settings; "
+        + "approve it here by the code it shows."));
+    } else if (access === "granted" && machines) {
+      parts.push(note("This device was approved on the server's machine: it changes Machines and devices, "
+        + "Providers, and the default models here, for the whole server and every browser. Approving other "
+        + "devices stays there."),
+        row(button("Stop changing settings from here", "", () => deviceAction("forget", {},
+          "This device no longer changes this server's settings."))));
+    } else if (access === "pending") {
       const code = document.createElement("code");
-      code.textContent = item.code;
-      const meta = document.createElement("span");
-      meta.className = "device-meta"; meta.append("Asks with code ", code);
-      entry.append(head, meta, row(
-        button("Approve", `Approve ${item.name} (${item.code})`, () => deviceAction("approve", { code:item.code },
-          `Approved: ${item.name} may turn narration workers on or off.`)),
-        button("Deny", `Deny ${item.name} (${item.code})`, () => deviceAction("deny", { code:item.code },
-          `Denied: ${item.name}.`))));
-      list.append(entry);
+      code.textContent = deviceAccess.code;
+      const line = note("");
+      line.append("Waiting for approval with code ", code, ". On the server's machine, open Settings › Machines "
+        + "and devices and approve this code; this page follows by itself.");
+      parts.push(line, row(button("Cancel the request", "", () => deviceAction("forget", {}, "Request cancelled."))));
+    } else if (access === "none") {
+      parts.push(row(button("Ask to change settings from this device", "", () => deviceAction("request",
+        { name:deviceRequestName() }, "Asked: approve the code on the server's machine."))));
     }
-    for (const item of deviceAccess.granted || []) {
-      const entry = document.createElement("li");
-      entry.className = "device";
-      const head = document.createElement("div");
-      head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
-      entry.append(head, note(`Approved ${item.approved.replace("T", " ").replace("+00:00", " UTC")}`), row(
-        button("Remove", `Remove ${item.name}`, () => deviceAction("revoke", { id:item.id },
-          `Removed: ${item.name} no longer turns narration workers on or off.`))));
-      list.append(entry);
-    }
-    parts.push(list.children.length ? list : note("No other device may. A phone or computer asks in its own "
-      + "Settings › Machines and devices; approve it here by the code it shows."));
-  } else if (access === "granted") {
-    parts.push(note("This device was approved on the server's machine: it turns this server's narration "
-      + "workers on or off below. Narration machines, model servers, and the default models change only there."),
-      row(button("Stop changing devices from here", "", () => deviceAction("forget", {},
-        "This device no longer turns narration workers on or off."))));
-  } else if (access === "pending") {
-    const code = document.createElement("code");
-    code.textContent = deviceAccess.code;
-    const line = note("");
-    line.append(`Waiting for approval with code `, code, ". On the server's machine, open Settings › Machines "
-      + "and devices and approve this code; this page follows by itself.");
-    parts.push(line, row(button("Cancel the request", "", () => deviceAction("forget", {}, "Request cancelled."))));
-  } else {
-    parts.push(row(button("Ask to turn narration workers on or off here", "", () => deviceAction("request",
-      { name:deviceRequestName() }, "Asked: approve the code on the server's machine."))));
+    box.replaceChildren(...parts);
   }
-  $("device-access").replaceChildren(...parts);
 }
 function workerSetupRunning() {
   return !!(workerNodes && workerNodes.setup && workerNodes.setup.status === "running");
