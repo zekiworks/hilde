@@ -56,22 +56,24 @@ this server." Hilde has no sign-in: with the flag, anyone who reaches the
 server can add API keys, sign it out of a provider, or add SSH machines that
 then run programs as this user, so use it only on a network you trust.
 
-Without the flag, the server's own browser can approve a phone or another
-computer to change these settings as it does (all of Machines and devices,
-Providers, and the default models, for every browser), but not to approve
-other devices: on the device, press **Ask to change settings from this
-device** in any of those sections; it shows a six-letter code. A browser on
-the server's own machine (for example through `ssh -L 8800:127.0.0.1:8800
-server`) lists the request under **Settings › Machines and devices**, with
-what approving allows; **Approve** it if the code matches. Approve only a
-device you trust as you trust that browser: it can add API keys and SSH
-machines that run programs as this user. The device keeps a random token in
-a cookie, and the server keeps only its SHA-256 in
+Without the flag, and only over HTTPS, the server's own browser can approve
+a phone or another computer to change these settings as it does (all of
+Machines and devices, Providers, and the default models, for every browser),
+but not to approve other devices: on the device, open Hilde at its
+`https://` address and press **Ask to change settings from this device** in
+any of those sections; it shows a six-letter code. A browser on the server's
+own machine (for example through `ssh -L 8800:127.0.0.1:8800 server`) lists
+the request under **Settings › Machines and devices**, with what approving
+allows; **Approve** it if the code matches. Approve only a device you trust
+as you trust that browser: it can add API keys and SSH machines that run
+programs as this user. The device keeps a random token in an HTTPS-only
+cookie, and the server keeps only its SHA-256 in
 `<storage-root>/device-grants.json`, readable only by the server's user.
 **Remove** there, or **Stop changing settings from here** on the device,
-ends it. Over plain HTTP the cookie crosses the network unencrypted, so
-anyone who can watch the network could copy it; serve
-[HTTPS](../README.md#https) to keep it private.
+ends it. Over plain HTTP another device can neither ask nor use an approval
+(its settings say why), so the token never crosses the network unencrypted:
+start Hilde with [`--https`](../README.md#https) (or `--tls-cert`) and
+install its certificate on the device first.
 
 ### Start at boot
 

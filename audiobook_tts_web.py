@@ -1908,15 +1908,23 @@ WORKERS_LOCAL_ONLY = (
     "approved, or from any device when Hilde starts with --manage-from-network."
 )
 DEVICES_APPROVE_LOCAL_ONLY = "Devices are approved in a browser on the server's own machine."
+DEVICES_NEED_HTTPS = (
+    "Changing settings from another device needs Hilde over HTTPS, so its approval never crosses the "
+    "network unencrypted: the server's owner starts Hilde with --https (or --tls-cert)."
+)
 
 # Settings from another device, without --manage-from-network: a device asks
-# (POST /api/devices/request) and keeps a random token in an HttpOnly cookie;
-# a browser on the server's machine (Handler.may_approve()) approves it by the
-# code the device shows. An approved device then manages as that browser does
-# (Handler.may_manage(): Machines and devices, Providers, the default models),
-# except approving devices. device-grants.json, in the storage root and
-# readable only by the server's user, keeps each approved token's SHA-256
-# only; requests live in memory for DEVICE_REQUEST_SECONDS.
+# (POST /api/devices/request) and keeps a random token in an HttpOnly, Secure,
+# SameSite=Strict cookie; a browser on the server's machine
+# (Handler.may_approve()) approves it by the code the device shows. An approved
+# device then manages as that browser does (Handler.may_manage(): Machines and
+# devices, Providers, the default models), except approving devices. Only over
+# HTTPS (Handler.secure()): a request over plain HTTP is refused
+# (DEVICES_NEED_HTTPS) and a cookie that comes over it is never read, so an
+# approval is neither given nor used where the network could read it.
+# device-grants.json, in the storage root and readable only by the server's
+# user, keeps each approved token's SHA-256 only; requests live in memory for
+# DEVICE_REQUEST_SECONDS.
 DEVICE_GRANTS_FILE = "device-grants.json"
 DEVICE_COOKIE = "hilde_devices"
 DEVICE_COOKIE_MAX_AGE = 400 * 24 * 3600
@@ -20571,16 +20579,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def device_access(self):
         """This browser's say over the server's settings: "server"
-        (may_approve(), with the waiting requests and approved devices), else
-        DeviceGrants.access(): "granted", "pending" with its code, or "none"."""
+        (may_approve(), with the waiting requests and approved devices);
+        "insecure" over plain HTTP from another device, whose cookie is never
+        read (DEVICES_NEED_HTTPS); else DeviceGrants.access(): "granted",
+        "pending" with its code, or "none"."""
         grants = getattr(self.server, "device_grants", None)
         if self.may_approve():
             return {"access": "server", **(grants.snapshot() if grants else {"pending": [], "granted": [], "problem": ""})}
+        if not self.secure():
+            return {"access": "insecure"}
         return grants.access(self.device_token()) if grants else {"access": "none"}
 
     def device_cookie(self, token, age):
-        return ("Set-Cookie", f"{DEVICE_COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; SameSite=Strict"
-                + ("; Secure" if self.secure() else ""))
+        """The device token's cookie: HTTPS only (device_access() reads it only over HTTPS)."""
+        return ("Set-Cookie", f"{DEVICE_COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; SameSite=Strict; Secure")
 
     def secure(self):
         """Whether this request came over HTTPS."""
@@ -21176,6 +21188,8 @@ class Handler(BaseHTTPRequestHandler):
         if action == "request":
             if self.may_approve():
                 return self.fail(HTTPStatus.CONFLICT, "This browser already changes this server's settings.")
+            if not self.secure():
+                return self.fail(HTTPStatus.FORBIDDEN, DEVICES_NEED_HTTPS)
             if grants.access(self.device_token())["access"] == "granted":
                 return self.fail(HTTPStatus.CONFLICT, "This device is already approved.")
             token, code = grants.request(body.get("name"), self.client_address[0], self.device_token())
@@ -21183,10 +21197,11 @@ class Handler(BaseHTTPRequestHandler):
                               extra=(self.device_cookie(token, DEVICE_COOKIE_MAX_AGE),))
         if action == "forget":
             try:
-                grants.forget(self.device_token())
+                if self.secure():
+                    grants.forget(self.device_token())
             except OSError as exc:
                 return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {DEVICE_GRANTS_FILE}: {exc}")
-            return self.reply(HTTPStatus.OK, {"access": "none"}, extra=(self.device_cookie("", 0),))
+            return self.reply(HTTPStatus.OK, self.device_access(), extra=(self.device_cookie("", 0),))
         if not self.may_approve():
             return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVE_LOCAL_ONLY)
         try:
@@ -35654,6 +35669,11 @@ function renderDeviceAccess() {
     } else if (access === "none") {
       parts.push(row(button("Ask to change settings from this device", "", () => deviceAction("request",
         { name:deviceRequestName() }, "Asked: approve the code on the server's machine."))));
+    } else if (access === "insecure") {
+      // Plain HTTP (Handler.device_access()): no approval is asked for or used here.
+      parts.push(note("Changing settings from this device needs Hilde over HTTPS, so its approval never crosses "
+        + "the network unencrypted. The server's owner starts Hilde with --https; then open "
+        + `https://${location.host}/ here.`));
     }
     box.replaceChildren(...parts);
   }

@@ -222,7 +222,7 @@ deployment needs an authenticated TLS reverse proxy plus request/rate limits;
 with the proxy on the same machine, keep the default host. Cross-origin POST
 rejection is CSRF hardening, not access control. Providers and SSH machines
 change only from a browser on the server's own machine, or a device it
-approved by code, unless you start Hilde with `--manage-from-network`; then
+approved by code over HTTPS, unless you start Hilde with `--manage-from-network`; then
 anyone who reaches it can add keys, sign it out, or add SSH machines that run
 as you (see [Configuration](docs/configuration.md#manage-from-other-devices)).
 

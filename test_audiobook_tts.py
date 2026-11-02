@@ -12133,12 +12133,22 @@ class WorkerNodeTests(unittest.TestCase):
     # A GPU that failed: this machine no longer shows it.
     FAILED = "GPU-dead0000-1111-2222-3333-444444444444"
 
-    def serve(self, nodes=()):
+    def serve(self, nodes=(), tls=False):
+        """A server with this class's one GPU and `nodes`; with `tls`, over HTTPS
+        with a fresh authority that self.trusting trusts (localhost, 127.0.0.1)."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         storage = web.SharedStorage(Path(temporary.name))
         storage.ensure()
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        if tls:
+            cert, key = web.ensure_tls_files(Path(temporary.name) / "tls", (["localhost"], ["127.0.0.1"]))
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            server = web.HildeServer(("127.0.0.1", 0), Handler)
+            server.tls, server.tls_authority = context, Path(temporary.name) / "tls" / "ca.pem"
+            self.trusting = ssl.create_default_context(cafile=str(server.tls_authority))
+        else:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.jobs = web.JobQueue(web.audiobook_consumers(
             self.CLONE, [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}], list(nodes)
@@ -12157,10 +12167,10 @@ class WorkerNodeTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         self.addCleanup(server.jobs.shutdown)
-        return server, f"http://127.0.0.1:{server.server_port}"
+        return server, f"{'https' if tls else 'http'}://127.0.0.1:{server.server_port}"
 
     @staticmethod
-    def request(origin, path, body=None):
+    def request(origin, path, body=None, context=None):
         request = urllib.request.Request(
             origin + path,
             data=None if body is None else json.dumps(body).encode(),
@@ -12168,7 +12178,7 @@ class WorkerNodeTests(unittest.TestCase):
             method="GET" if body is None else "POST",
         )
         try:
-            with urllib.request.urlopen(request) as response:
+            with urllib.request.urlopen(request, context=context) as response:
                 return response.status, json.load(response)
         except urllib.error.HTTPError as error:
             return error.code, json.load(error)
@@ -12357,12 +12367,13 @@ class WorkerNodeTests(unittest.TestCase):
         self.assertEqual(server.worker_nodes, [])
 
     def test_an_approved_device_manages_like_the_servers_own_browser_but_approves_no_one(self):
-        server, origin = self.serve([self.NODE])
+        server, origin = self.serve([self.NODE], tls=True)
         grants = server.storage.root / web.DEVICE_GRANTS_FILE
         cookies = {}
+        local = lambda path, body=None: self.request(origin, path, body, self.trusting)
 
         def phone(path, body=None):
-            """Another device: its own cookie jar, not on the server's machine."""
+            """Another device over HTTPS: its own cookie jar, not on the server's machine."""
             headers = {"Content-Type": "application/json"}
             if cookies.get("token"):
                 headers["Cookie"] = f"{web.DEVICE_COOKIE}={cookies['token']}"
@@ -12371,14 +12382,14 @@ class WorkerNodeTests(unittest.TestCase):
                                              method="GET" if body is None else "POST")
             with mock.patch.object(web, "is_loopback_address", return_value=False):
                 try:
-                    with urllib.request.urlopen(request) as response:
+                    with urllib.request.urlopen(request, context=self.trusting) as response:
                         status, answer, sent = response.status, json.load(response), response.headers
                 except urllib.error.HTTPError as error:
                     status, answer, sent = error.code, json.load(error), error.headers
             for value in sent.get_all("Set-Cookie") or []:
                 name, _, rest = value.partition("=")
                 if name == web.DEVICE_COOKIE:
-                    cookies["token"] = rest.split(";")[0]
+                    cookies["token"], cookies["attributes"] = rest.split(";")[0], rest
             return status, answer
 
         devices = [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}]
@@ -12401,15 +12412,16 @@ class WorkerNodeTests(unittest.TestCase):
             # It asks, and may not approve itself.
             status, asked = phone("/api/devices/request", {"name": "Ümit's phone\n"})
             self.assertEqual((status, asked["access"], asked["name"]), (200, "pending", "Ümit's phone"))
+            self.assertTrue(all(part in cookies["attributes"] for part in ("HttpOnly", "SameSite=Strict", "Secure")))
             self.assertEqual(phone("/api/devices/approve", {"code": asked["code"]}),
                              (403, {"error": web.DEVICES_APPROVE_LOCAL_ONLY}))
             self.assertEqual(phone("/api/workers")[0], 403)
             self.assertFalse(grants.exists())
             # The server's own browser sees the request and approves it by its code.
-            self.assertEqual(self.request(origin, "/api/devices/approve", {"code": "ZZZZZZ"})[0], 404)
-            waiting = self.request(origin, "/api/state")[1]["devices"]["pending"]
+            self.assertEqual(local("/api/devices/approve", {"code": "ZZZZZZ"})[0], 404)
+            waiting = local("/api/state")[1]["devices"]["pending"]
             self.assertEqual([(item["code"], item["name"]) for item in waiting], [(asked["code"], "Ümit's phone")])
-            status, after = self.request(origin, "/api/devices/approve", {"code": asked["code"].lower()})
+            status, after = local("/api/devices/approve", {"code": asked["code"].lower()})
             self.assertEqual((status, after["pending"], [item["name"] for item in after["granted"]]),
                              (200, [], ["Ümit's phone"]))
             self.assertEqual(stat.S_IMODE(grants.stat().st_mode), 0o600)
@@ -12441,8 +12453,8 @@ class WorkerNodeTests(unittest.TestCase):
             self.assertEqual(phone("/api/workers")[0], 403)
             cookies["token"] = token
             # Removed on the server's machine: the device reads only again.
-            grant = self.request(origin, "/api/state")[1]["devices"]["granted"][0]
-            self.assertEqual(self.request(origin, "/api/devices/revoke", {"id": grant["id"]})[0], 200)
+            grant = local("/api/state")[1]["devices"]["granted"][0]
+            self.assertEqual(local("/api/devices/revoke", {"id": grant["id"]})[0], 200)
             self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": False}),
                              (403, {"error": web.WORKERS_LOCAL_ONLY}))
         self.assertEqual(web.read_workers(server.workers_path), ([], []))
@@ -12455,6 +12467,41 @@ class WorkerNodeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             broken.approve(code)
         self.assertEqual(broken.access(token)["access"], "pending")
+
+    def test_over_plain_http_another_device_neither_gets_nor_uses_an_approval(self):
+        server, origin = self.serve([self.NODE])
+        # An approval made over HTTPS, its token then sent over plain HTTP (a copied cookie, or a server
+        # restarted without --https).
+        token, code = server.device_grants.request("Phone", "10.0.0.9")
+        server.device_grants.approve(code)
+
+        def phone(path, body=None, cookie=token):
+            request = urllib.request.Request(origin + path, headers={
+                "Content-Type": "application/json", **({"Cookie": f"{web.DEVICE_COOKIE}={cookie}"} if cookie else {}),
+            }, data=None if body is None else json.dumps(body).encode(), method="GET" if body is None else "POST")
+            with mock.patch.object(web, "is_loopback_address", return_value=False):
+                try:
+                    with urllib.request.urlopen(request) as response:
+                        return response.status, json.load(response)
+                except urllib.error.HTTPError as error:
+                    return error.code, json.load(error)
+
+        with mock.patch.object(web, "_DEVICE_OPTIONS", [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}]), \
+                mock.patch.object(web, "devices_note", return_value=None), \
+                mock.patch.object(web, "machine_name", return_value="studio"):
+            state = phone("/api/state")[1]
+            self.assertEqual((state["capabilities"]["manage_workers"], state["capabilities"]["manage_providers"],
+                              state["devices"]), (False, False, {"access": "insecure"}))
+            self.assertEqual(phone("/api/workers")[0], 403)
+            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": False})[0], 403)
+            self.assertEqual(phone("/api/devices/request", {"name": "Phone"}, cookie=""),
+                             (403, {"error": web.DEVICES_NEED_HTTPS}))
+            # Its forget is not read either: the approval stays until withdrawn over HTTPS or removed.
+            self.assertEqual(phone("/api/devices/forget", {}), (200, {"access": "insecure"}))
+            # The server's own browser still approves and manages over plain HTTP (loopback).
+            self.assertEqual(self.request(origin, "/api/workers")[0], 200)
+        self.assertEqual(server.device_grants.access(token)["access"], "granted")
+        self.assertFalse(server.workers_path.exists())
 
     def test_only_a_browser_that_may_manage_sets_the_default_models(self):
         temporary = tempfile.TemporaryDirectory()
