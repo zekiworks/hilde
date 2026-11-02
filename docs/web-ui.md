@@ -1296,7 +1296,8 @@ change it. The groups:
   read-only, with a note saying so; the text model each browser uses is still
   its own choice in each model picker. **Providers** and the default models
   under **Models and connection** say the same. Under each of the three notes,
-  **Ask to change settings from this device** asks the server: the device
+  **Ask to change settings from this device** asks the server (over HTTPS
+  only; over plain HTTP the note says Hilde needs HTTPS for this): the device
   shows a six-letter code and waits. In a browser on the server's machine,
   **Devices approved to change these settings** says what approving allows
   (Machines and devices, including narration machines over SSH, which then
