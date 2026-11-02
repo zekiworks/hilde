@@ -8665,7 +8665,8 @@ PROVIDERS_HEADER = """\
 # A local server's type as providers.yaml names it, and as model selectors do.
 LOCAL_ENDPOINT_TYPES = {"openai-compatible": "lm-studio", "ollama": "ollama"}
 # `images` is a server's flag from earlier versions: read, ignored with a warning, never written.
-LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "reads_images", "images")
+LOCAL_ENDPOINT_KEYS = ("name", "address", "type", "reads_images", "images", "off")
+LOCAL_ENDPOINT_OFF = "Turned off in Settings: Hilde neither asks it nor sends it text."
 PROVIDERS_LOCAL_ONLY = (
     "Providers are added, changed, and removed in a browser on the server's own machine, on a "
     "device it approved, or from any device when Hilde starts with --manage-from-network."
@@ -9083,11 +9084,13 @@ def read_providers(path):
             if not isinstance(item["images"], bool):
                 raise ValueError(f"{name}: images is true or false")
             old_images.append(name)
+        if not isinstance(item.get("off", False), bool):
+            raise ValueError(f"{name}: off is true or false")
         conflict = local_endpoint_conflict(endpoints, name, server)
         if conflict:
             raise ValueError(conflict)
         endpoints.append({"name": name, "server": server, "provider": LOCAL_ENDPOINT_TYPES[item["type"]],
-                          "reads_images": dict(overrides)})
+                          "reads_images": dict(overrides), "off": item.get("off", False)})
     if old_images:
         print(f"{path}: images: on the local server{'s' if len(old_images) > 1 else ''} {', '.join(old_images)} "
               "is ignored (each model's images are found out by itself) and goes when the file is next saved",
@@ -9115,7 +9118,8 @@ def write_providers(endpoints, claude_code, defaults):
     types = {provider: name for name, provider in LOCAL_ENDPOINT_TYPES.items()}
     data = {"local": [
         {"name": entry["name"], "address": entry["server"], "type": types[entry["provider"]],
-         **({"reads_images": dict(entry["reads_images"])} if entry.get("reads_images") else {})}
+         **({"reads_images": dict(entry["reads_images"])} if entry.get("reads_images") else {}),
+         **({"off": True} if entry.get("off") else {})}
         for entry in endpoints
     ]}
     if not claude_code:
@@ -9211,7 +9215,8 @@ def save_local_endpoint(original, name, address):
         provider = local_server_type(server)
     with LOCAL_ENDPOINTS_LOCK:
         kept = (current.get("reads_images") or {}) if current is not None and current["server"] == server else {}
-        entry = {"name": name, "server": server, "provider": provider, "reads_images": dict(kept)}
+        entry = {"name": name, "server": server, "provider": provider, "reads_images": dict(kept),
+                 "off": bool(current and current.get("off"))}
         endpoints = list(LOCAL_ENDPOINTS)
         index = next((at for at, saved in enumerate(endpoints)
                       if original and saved["name"].casefold() == str(original).casefold()), None)
@@ -9244,6 +9249,23 @@ def remove_local_endpoint(name):
         write_providers(endpoints, CLAUDE_CODE_USED["on"], SERVER_DEFAULT_MODELS)
         LOCAL_ENDPOINTS[:] = endpoints
         forget_local_models({entry["server"] for entry in endpoints})
+
+
+def use_local_endpoint(name, on):
+    """Turn the local server of this name on or off for every browser (Settings ›
+    Machines and devices, Ümit 2 Nov): off, Hilde neither asks it nor routes
+    text to it, and pickers list it as off. Kept in providers.yaml's off."""
+    if not isinstance(on, bool):
+        raise ValueError("Choose on or off.")
+    with LOCAL_ENDPOINTS_LOCK:
+        index = next((at for at, entry in enumerate(LOCAL_ENDPOINTS)
+                      if entry["name"].casefold() == str(name).casefold()), None)
+        if index is None:
+            raise ValueError(f"No local server is named '{name}'.")
+        endpoints = list(LOCAL_ENDPOINTS)
+        endpoints[index] = {**endpoints[index], "off": not on}
+        write_providers(endpoints, CLAUDE_CODE_USED["on"], SERVER_DEFAULT_MODELS)
+        LOCAL_ENDPOINTS[:] = endpoints
 
 
 def use_claude_code(on):
@@ -9362,7 +9384,7 @@ def local_route(selector, local_servers):
     choice, else what was found out; not known yet counts as text only)."""
     provider, _, model = selector.partition("/")
     for entry in local_servers:
-        if entry["provider"] != provider:
+        if entry["provider"] != provider or entry.get("off"):
             continue
         try:
             if model in local_model_names(entry["server"], provider):
@@ -9398,6 +9420,10 @@ def paper_model_catalog(local_servers=(), refresh=False):
                   "from_flag": entry.get("from_flag") is True, "running": True, "error": "",
                   "reads_images": dict(entry.get("reads_images") or {})}
         local_status.append(status)
+        if entry.get("off"):
+            # Turned off in Settings (use_local_endpoint()): never asked.
+            status.update(running=False, off=True, error=LOCAL_ENDPOINT_OFF)
+            continue
         try:
             names = local_model_names(entry["server"], entry["provider"])
         except RuntimeError as exc:
@@ -9932,6 +9958,12 @@ def offline_local_rows(local_status, listed, defaults):
     rows, shown = [], set(listed)
     remembered = read_remembered_models() if any(not status["running"] for status in local_status) else {}
     for status in local_status:
+        if status.get("off"):
+            # Turned off in Settings: one row, none of its models.
+            rows.append({"kind": "local", "row": "not-running", "label": status["name"], "address": status["label"],
+                         "server": status["server"], "provider": status["provider"], "note": status["error"],
+                         "off": True})
+            continue
         if status["running"]:
             continue
         entry = remembered.get(status["server"])
@@ -21008,6 +21040,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/providers/local/remove":
             try:
                 remove_local_endpoint(str(body.get("name") or ""))
+            except ValueError as exc:
+                return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
+            return self.reply_paper_catalog()
+        # Settings › Machines and devices: a local server on or off for every browser.
+        if route == "/api/providers/local/use":
+            try:
+                use_local_endpoint(str(body.get("name") or ""), body.get("on"))
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
             return self.reply_paper_catalog()
@@ -33026,7 +33065,8 @@ function inPlace(item, place) {
 // not, then every local model, then Cloud.
 function placeOptions() {
   const servers = (paperCatalog.endpoints || []).map((endpoint) => ({ value:`local:${endpoint.name}`,
-    label:endpoint.name, detail:`${localServerLabel(endpoint.server)} · ${endpoint.running ? "answering" : "not answering"}` }));
+    label:endpoint.name, disabled:!!endpoint.off, detail:`${localServerLabel(endpoint.server)} · ${endpoint.off
+      ? "off in Settings" : endpoint.running ? "answering" : "not answering"}` }));
   return [...servers,
     { value:"local", label:servers.length ? "All local servers" : MODEL_KINDS.local.label, detail:MODEL_KINDS.local.detail },
     { value:"cloud", label:MODEL_KINDS.cloud.label, detail:MODEL_KINDS.cloud.detail }];
@@ -33524,9 +33564,9 @@ function renderPickerList(name, typed = false) {
   let index = 0;
   if (mode === "kind") {
     renderSuggestFoot(name, null);
-    for (const { value, label, detail } of placeOptions())
+    for (const { value, label, detail, disabled } of placeOptions())
       nodes.push(pickerOption(name, index++, { key:`kind:${value}`, kind:value, icon:value, text:label, sub:detail,
-                                               selected:value === kind }));
+                                               disabled:!!disabled && value !== kind, selected:value === kind }));
   } else {
     const matches = (...texts) => !query || texts.some((text) => String(text || "").toLowerCase().includes(query));
     // No model of this kind known to read images: the list says so.
@@ -33597,7 +33637,7 @@ function renderPickerList(name, typed = false) {
         continue;
       }
       nodes.push(row.row === "not-running"
-        ? pickerOption(name, index++, { key:`down:${row.server}`, text:`${row.label} — server unreachable`,
+        ? pickerOption(name, index++, { key:`down:${row.server}`, text:`${row.label} — ${row.off ? "off in Settings" : "server unreachable"}`,
             sub:row.address, title:row.note, disabled:true })
         : pickerOption(name, index++, { key:`connect:${row.provider}`, action:"connect", provider:row.provider,
             text:row.label, sub:row.note, offer:true, problem:!!row.problem,
@@ -35010,7 +35050,8 @@ function renderProviders() {
     key:`local:${endpoint.name}`, title:endpoint.name, kind:"Local",
     tags:[{ text:endpoint.label },
           ...(endpoint.from_flag ? [{ text:"set at startup" }] : []),
-          endpoint.running ? { text:"reachable", state:"reachable" }
+          endpoint.off ? { text:"off in Settings", state:"unreachable", title:endpoint.error }
+          : endpoint.running ? { text:"reachable", state:"reachable" }
             : { text:"unreachable", state:"unreachable", title:endpoint.error }],
     edit:() => openProviderDialog({ kind:"local", endpoint }),
     // A server set at startup stays while Hilde starts with it.
@@ -35033,6 +35074,19 @@ function renderProviders() {
     rows.push(none);
   }
   $("provider-rows").replaceChildren(...rows);
+}
+// Settings › Machines and devices: a model server on or off for every browser
+// (POST /api/providers/local/use); the answer's endpoints say what was saved.
+async function useModelServer(name, on) {
+  try {
+    applyPaperCatalog(await jsonRequest("/api/providers/local/use", {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify({ name, on }),
+    }));
+    const saved = (paperCatalog.endpoints || []).find((endpoint) => endpoint.name === name);
+    if (!saved || !!saved.off === on) throw new Error(`The server kept ${name} ${saved && saved.off ? "off" : "on"}.`);
+    setStatus(`Saved for every browser: ${name} ${on ? "is used again" : "is off: Hilde sends it no text"}.`);
+    await sync();
+  } catch (error) { setStatus(error.message, true); renderMachines(true); }
 }
 async function deleteLocalProvider(name) {
   if (!(await askConfirm({
@@ -35568,9 +35622,21 @@ function renderModelServers(choices) {
         .map(([label]) => label);
       const meta = document.createElement("span");
       meta.className = "device-meta";
-      meta.textContent = [endpoint.running ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering",
+      meta.textContent = [endpoint.off ? "off: not used" : endpoint.running
+                            ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering",
                           jobs.length ? `chosen for ${jobs.join("; ")}` : ""].filter(Boolean).join(" · ");
       item.append(head, meta);
+      // On the server's machine, or a device it approved: whether Hilde uses this server at all.
+      if (caps.manage_providers) {
+        const label = document.createElement("label");
+        label.className = "check";
+        const box = document.createElement("input");
+        box.type = "checkbox"; box.checked = !endpoint.off;
+        box.setAttribute("aria-label", `Use ${endpoint.name}`);
+        box.addEventListener("change", () => useModelServer(endpoint.name, box.checked));
+        label.append(box, " Use for text");
+        item.append(label);
+      }
       return item;
     }), []));
   summary.textContent = !paperCatalog.loaded ? "The model servers have not been checked yet."

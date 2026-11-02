@@ -629,6 +629,7 @@ local:
   type: openai-compatible         # or ollama (detected when added)
   reads_images:                   # only models set by hand (Edit): the others are found out
     my-vision-model: true
+  off: true                       # only while Use for text is unticked (Settings › Machines and devices)
 claude_code: false                # only after Claude Code was removed
 defaults:                         # only the defaults set
   text: lm-studio/my-big-model    # Default text narration

@@ -5594,6 +5594,49 @@ class LocalPaperProviderTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=text):
                 web.read_providers(path)
 
+    def test_a_local_server_turned_off_is_neither_asked_nor_sent_text_and_stays_off(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name) / ".hilde"
+        gemma_requests, other_requests = [], []
+        gemma = fake_local_server(self, ["gemma"], gemma_requests)
+        other = fake_local_server(self, ["gemma"], other_requests)
+        patches = (mock.patch.object(web, "HILDE_HOME", home), mock.patch.object(web, "LOCAL_ENDPOINTS", []),
+                   mock.patch.object(web, "STARTUP_LOCAL_SERVERS", set()),
+                   mock.patch.dict(web.CLAUDE_CODE_USED, {"on": False}),
+                   mock.patch.dict(web.SERVER_DEFAULT_MODELS, {"text": "", "image": ""}),
+                   mock.patch.object(web, "read_openai_credentials", return_value=None),
+                   mock.patch.object(web, "read_anthropic_key", return_value=None),
+                   mock.patch.object(web, "read_openai_api_key", return_value=None),
+                   mock.patch.object(web, "read_gemini_key", return_value=None))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        web.save_local_endpoint("", "Spark2", gemma)
+        web.save_local_endpoint("", "Spark3", other)
+        web.use_local_endpoint("Spark2", False)
+        gemma_requests.clear()
+        catalog = web.paper_model_catalog(web.local_endpoints())
+        # Off: never asked, listed once as off, and the same model is routed to the server that is on.
+        self.assertEqual(gemma_requests, [])
+        self.assertEqual([(e["name"], e["running"], e.get("off", False)) for e in catalog["endpoints"]],
+                         [("Spark2", False, True), ("Spark3", True, False)])
+        self.assertEqual([(m["selector"], m["endpoint"]) for m in catalog["models"]], [("lm-studio/gemma", "Spark3")])
+        self.assertEqual(web.local_route("lm-studio/gemma", web.local_endpoints())["name"], "Spark3")
+        # Kept in providers.yaml, over a restart and over a rename; on again, it is asked again.
+        web.LOCAL_ENDPOINTS[:] = []
+        web.load_providers([])
+        web.save_local_endpoint("Spark2", "Spark2 box", gemma)
+        self.assertEqual([(e["name"], e.get("off", False)) for e in web.local_endpoints()],
+                         [("Spark2 box", True), ("Spark3", False)])
+        web.use_local_endpoint("Spark2 box", True)
+        catalog = web.paper_model_catalog(web.local_endpoints())
+        self.assertEqual([(m["selector"], m["endpoint"]) for m in catalog["models"]], [("lm-studio/gemma", "Spark2 box")])
+        self.assertEqual(web.local_route("lm-studio/gemma", web.local_endpoints())["name"], "Spark2 box")
+        self.assertNotIn("off:", (home / "providers.yaml").read_text(encoding="utf-8"))
+        with self.assertRaises(ValueError):
+            web.use_local_endpoint("Nope", False)
+
     def test_models_of_several_local_servers_are_listed_together_and_each_asked_on_its_own(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
