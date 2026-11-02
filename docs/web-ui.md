@@ -1347,19 +1347,20 @@ change it. The groups:
   with what it is doing now (free, narrating, designing a voice, off in
   Settings), a GPU that is off not choosable and one you chose that is turned
   off later saying so under the menu; and **Design my voices on**, **The GPU
-  with the most free memory** or one GPU. **Text models** says where each text job's model
-  runs: **Text** and **Ask Hilde** (this browser's choices) and the server's
-  **Default text** and **Default images**, each by model name and "On
-  <model server>", "which is not answering" when that server is down, or, for
-  a cloud model, that it runs at the provider on none of these machines. Under
-  it are the model servers added under **Providers**, grouped by the machine
-  of their address, each answering or not, how many models it lists, and
-  which of those jobs it is chosen for. Each has **Use for text on this
-  device**, for every browser: untick it and, for this browser only, Hilde
-  neither asks that server nor sends it your text; it shows as "off on this
-  device" in **Providers** and in every **Runs on** list until ticked again (a
-  model two servers offer then runs on the other). Other people's browsers keep
-  their own choice. You choose where text runs in each
+  with the most free memory** or one GPU. **Text models** lists the model
+  servers added under **Providers**, one line each: its name (the address
+  shows when you point at it), whether it answers, and **Use**: untick it and,
+  for this browser only, Hilde neither asks that server nor sends it your text;
+  it shows as "off on this device" in **Providers** and in every **Runs on**
+  list until ticked again (a model two servers offer then runs on the other).
+  Other people's browsers keep their own choice. Only when a model chosen for
+  your books, for Ask Hilde, or as the server's default can't be used (its
+  server doesn't answer or is off here, or its provider isn't connected) does a
+  red card above the list say so once per model, with what it is chosen for,
+  a **Use instead** menu of the models that answer, **Use for …** (this
+  browser's choices) and, on a device that may change settings, **Use as the
+  server's default (every browser)** (image narration takes only a model that
+  reads images). You choose where text runs in each
   model picker: its **Runs on** lists every model server by name, **All local
   servers**, and **Cloud**. **Other narration machines** lists the nodes
   that narrate over SSH, each with its devices as `workers.yaml` names them

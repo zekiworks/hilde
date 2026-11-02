@@ -2212,16 +2212,22 @@ the reason, which may name paths, is printed to the server's log once for
 that probe and never sent to a browser) or `CUDA_VISIBLE_DEVICES` in the
 server's environment (empty: it sees no GPU; set: it may see only some; its
 value, which may hold GPU UUIDs, is never shown), so a CPU-only list never reads as a CPU-only machine.
-**Text models** (`renderModelServers()`) separates the chosen model from the
-machine: for this browser's `book` and `chat` pickers and the server's
-`default-text` and `default-image`, `modelHome()` places the model
-`pickerChoice()` gives on the catalog model's `endpoint` (the first server
-listing it, as `local_route()` routes), else on an offline row's `endpoint`
-("which is not answering"), else nowhere; a cloud model "runs at the provider".
-Then `paperCatalog.endpoints` grouped by the host of their address (one
-address is one machine), each by name (its address in the tooltip), answering
-or not, its model count, and the jobs it is chosen for; one line says where
-text runs is chosen: in each model picker's **Runs on**. **Other narration machines** lists the nodes by host
+**Text models** (`renderModelServers()`) lists `paperCatalog.endpoints`, one
+`.server-row` each: name (address in the tooltip), answering, not answering,
+or off on this device, and **Use** (`useModelServer()`,
+`state.runtime.servers_off`). Above it, only for a chosen model that can't be
+reached, one `.model-problem` card per model: for this browser's `book` and
+`chat` pickers and the server's `default-text` and `default-image`,
+`modelHome()` places the model `pickerChoice()` gives on the catalog model's
+`endpoint` (the first server listing it, as `local_route()` routes), else on
+an offline row's `endpoint`, else nowhere; uses of one model share a card. The
+card says why (server not answering, off on this device, no server lists it,
+provider not connected) and what it is chosen for, with a menu of
+`paperCatalog.models`: **Use for …** calls `setPickerModel()` for this
+browser's pickers; **Use as the server's default (every browser)**, only with
+`caps.manage_providers`, calls `saveDefaultModel()` for each default that
+accepts the model (image narration only one with `images`). A note says each
+job's model is chosen in its picker's **Runs on**. **Other narration machines** lists the nodes by host
 there (by number elsewhere), with their `workers.yaml` devices (no model or
 ID is known) and **Remove**. Each node shows **Text preparation**,
 **Narration**, and **Voice design** separately as `available`, `not

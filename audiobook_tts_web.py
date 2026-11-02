@@ -22993,6 +22993,21 @@ legend ~ * { clear:both; }
 .machine-jobs .job-availability { font-weight:600; }
 .machine-jobs .job-availability:not([data-state=available]) { color:var(--dim); font-weight:400; }
 .machine-jobs .note { display:block; }
+/* Text models: one line per model server (name, whether it answers, Use), and a card only for a chosen model that can't be reached. */
+.server-list { display:grid; gap:0; margin:0; padding:0; list-style:none; border:1px solid var(--line); border-radius:10px; }
+.server-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; min-width:0; padding:10px 14px; }
+.server-row + .server-row { border-top:1px solid var(--line); }
+.server-name { font-weight:600; overflow-wrap:anywhere; }
+.server-state { flex:1 1 auto; color:var(--dim); font-size:13px; }
+.server-state::before { content:"●"; margin-right:6px; color:var(--off); }
+.server-state[data-state=on]::before { color:var(--accent-light); }
+.server-row label.check { font-size:13px; }
+.model-problem { display:grid; gap:6px; padding:12px 14px; border:1px solid var(--bad); border-radius:10px; }
+.model-problem p { margin:0; }
+.model-problem-head { font-weight:600; }
+.model-problem-actions { flex-wrap:wrap; align-items:center; gap:8px 10px; }
+.model-problem-actions label { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; min-width:0; }
+.model-problem-actions select { max-width:100%; }
 .search { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:12px; }
 .search input { flex:1 1 280px; }
 .data-table { width:100%; border-collapse:collapse; table-layout:auto; }
@@ -35565,10 +35580,11 @@ function machineBlock(name, aside, devices, work, action) {
   block.append(head, list, table);
   return block;
 }
-// The text-model jobs whose model Settings › Machines and devices places: this
-// browser's two (PICKERS book and chat) and the server's two defaults.
-const MODEL_CHOICES = [["Text, this browser", "book"], ["Ask Hilde, this browser", "chat"],
-                       ["Server default text", "default-text"], ["Server default images", "default-image"]];
+// The text-model jobs Settings › Machines and devices checks: this browser's
+// two (PICKERS book and chat) and the server's two defaults, each named as the
+// problem card says it.
+const MODEL_CHOICES = [["your books", "book"], ["Ask Hilde", "chat"],
+                       ["the server's default text", "default-text"], ["the server's default images", "default-image"]];
 // Where a picker's model runs, as far as the catalog says: the model server
 // that lists it (a model two servers list runs on the first, local_route()),
 // the server that listed it before it stopped answering (an offline row's
@@ -35582,86 +35598,118 @@ function modelHome(choice) {
            local:["ollama", "lm-studio"].includes(model.selector.split("/")[0]),
            endpoint:(listed ? listed.endpoint : offline && offline.endpoint) || "" };
 }
-function endpointHost(endpoint) {
-  try { return new URL(endpoint.server).hostname || endpoint.server; } catch { return endpoint.server; }
-}
-// Text models: each job's chosen model and where it runs, then the model
-// servers of Settings › Providers grouped by the host of their address (one
-// address is one machine; Hilde is told no Spark name, GPU, or load), each
-// answering or not and what it is chosen for. Cloud models run at their
-// provider, on none of these machines.
+// Text models (Ümit, 2 Nov: "bu iyi bir dizayn mı?"): one line per model
+// server of Settings › Providers, its name (address in the tooltip), whether it
+// answers, and this browser's Use box (state.runtime.servers_off). Above them,
+// only when a chosen model can't be reached, one card per such model: what it
+// is chosen for, and a menu of the models that answer to use instead, for this
+// browser (setPickerModel()) and, for a browser that may manage, as the
+// server's default (every browser). Which model a job uses is chosen in each
+// model picker (Runs on, Model), not here.
 function renderModelServers(choices) {
   const endpoints = paperCatalog.endpoints || [];
-  const table = document.createElement("dl");
-  table.className = "machine-jobs";
-  table.setAttribute("aria-label", "Chosen text models");
-  for (const [label, home] of choices) {
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const value = document.createElement("dd");
-    const word = document.createElement("span");
-    word.className = "job-availability";
-    word.dataset.state = home && home.reachable ? "available" : "unset";
-    word.textContent = home ? home.name : "Not set";
-    value.append(word);
-    const where = !home ? ""
-      : !paperCatalog.loaded ? "The text model list has not loaded."
-      : !home.local ? `${home.badge}: runs at the provider, on none of these machines.`
-      : home.endpoint ? `On ${home.endpoint}${home.reachable ? "" : ", which is not answering"}.`
-      : "Not answering, and no model server lists it.";
-    if (where) {
-      const note = document.createElement("span");
-      note.className = "note"; note.textContent = where;
-      value.append(note);
-    }
-    table.append(term, value);
+  const usable = paperCatalog.models || [];
+  const problems = new Map();
+  const button = (text, action) => {
+    const element = document.createElement("button");
+    element.type = "button"; element.textContent = text;
+    element.addEventListener("click", action);
+    return element;
+  };
+  for (const [label, home, name] of choices) {
+    if (!home || home.reachable || !paperCatalog.loaded) continue;
+    const key = `${home.name}\n${home.endpoint}`;
+    if (!problems.has(key)) problems.set(key, { home, uses:[] });
+    problems.get(key).uses.push([label, name]);
   }
-  const hosts = new Map();
+  const cards = [...problems.values()].map(({ home, uses }) => {
+    const card = document.createElement("div");
+    card.className = "model-problem";
+    card.setAttribute("role", "group");
+    const server = endpoints.find((endpoint) => endpoint.name === home.endpoint);
+    const why = !home.local ? `${home.badge} is not connected`
+      : !home.endpoint ? "no model server lists it"
+      : server && server.off ? `${home.endpoint} is off on this device`
+      : `${home.endpoint} is not answering`;
+    const head = document.createElement("p");
+    head.className = "model-problem-head";
+    head.textContent = `⚠ ${home.name} can't be used: ${why}.`;
+    const used = document.createElement("p");
+    used.className = "note";
+    used.textContent = `Chosen for ${uses.map(([label]) => label).join(", ")}.`;
+    card.append(head, used);
+    if (!usable.length) {
+      const none = document.createElement("p");
+      none.className = "note";
+      none.textContent = "No other model answers now: add a model server or connect a provider under Providers.";
+      card.append(none);
+      return card;
+    }
+    const mine = uses.filter(([, name]) => !PICKERS[name].server);
+    const shared = caps.manage_providers ? uses.filter(([, name]) => PICKERS[name].server) : [];
+    const pick = document.createElement("select");
+    pick.setAttribute("aria-label", `A model to use instead of ${home.name}`);
+    for (const model of usable) {
+      const where = model.endpoint || model.badge;
+      pick.append(new Option(`${model.name}${where ? ` · ${where}` : ""}`, model.selector));
+    }
+    const row = document.createElement("div");
+    row.className = "row model-problem-actions";
+    const label = document.createElement("label");
+    label.textContent = "Use instead";
+    label.append(pick);
+    row.append(label);
+    if (mine.length) {
+      row.append(button(`Use for ${mine.map(([text]) => text).join(" and ")}`, () => {
+        for (const [, name] of mine) setPickerModel(name, pick.value);
+        setStatus(`Saved on this device: ${mine.map(([text]) => text).join(" and ")} now ${mine.length > 1 ? "use" : "uses"} ${textModel(pick.value).short}.`);
+      }));
+    }
+    if (shared.length) {
+      row.append(button("Use as the server's default (every browser)", async () => {
+        const model = usable.find((item) => item.selector === pick.value);
+        const fits = shared.filter(([, name]) => !PICKERS[name].images || (model && model.images === true));
+        if (!fits.length) { setStatus(`${model ? model.name : "That model"} doesn't read images: choose one that does.`, true); return; }
+        for (const [, name] of fits) await saveDefaultModel(name, pick.value);
+      }));
+    }
+    card.append(row);
+    return card;
+  });
+  const list = document.createElement("ul");
+  list.className = "server-list";
+  list.setAttribute("aria-label", "Model servers");
   for (const endpoint of endpoints) {
-    const host = endpointHost(endpoint);
-    hosts.set(host, [...(hosts.get(host) || []), endpoint]);
+    const item = document.createElement("li");
+    item.className = "server-row";
+    const name = document.createElement("span");
+    name.className = "server-name"; name.textContent = endpoint.name;
+    name.title = localServerLabel(endpoint.server);
+    const status = endpoint.off ? "off" : endpoint.running ? "on" : "down";
+    const state = document.createElement("span");
+    state.className = "server-state"; state.dataset.state = status;
+    state.textContent = status === "off" ? "off on this device" : status === "on" ? "answering" : "not answering";
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = !endpoint.off;
+    box.setAttribute("aria-label", `Use ${endpoint.name}`);
+    box.addEventListener("change", () => useModelServer(endpoint.name, box.checked));
+    label.append(box, " Use");
+    item.append(name, state, label);
+    list.append(item);
   }
   const summary = document.createElement("p");
   summary.className = "note";
-  // Each model server by its name, whether it answers, and what it is chosen
-  // for; grouped by address (one address is one machine). Where text runs is
-  // chosen in each model picker (Runs on), not here.
-  const blocks = [...hosts].map(([host, list]) => machineBlock(host, "",
-    list.map((endpoint) => {
-      const item = document.createElement("li");
-      item.className = "device";
-      const head = document.createElement("div");
-      head.className = "device-name"; head.textContent = endpoint.name;
-      head.title = localServerLabel(endpoint.server);
-      const count = (paperCatalog.models || []).filter((model) => model.endpoint === endpoint.name).length;
-      const jobs = choices.filter(([, home]) => home && home.local && home.endpoint === endpoint.name)
-        .map(([label]) => label);
-      const meta = document.createElement("span");
-      meta.className = "device-meta";
-      meta.textContent = [endpoint.off ? "off on this device" : endpoint.running
-                            ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering",
-                          jobs.length ? `chosen for ${jobs.join("; ")}` : ""].filter(Boolean).join(" · ");
-      item.append(head, meta);
-      // Whether this browser uses this server: its own choice, for every browser.
-      const label = document.createElement("label");
-      label.className = "check";
-      const box = document.createElement("input");
-      box.type = "checkbox"; box.checked = !endpoint.off;
-      box.setAttribute("aria-label", `Use ${endpoint.name}`);
-      box.addEventListener("change", () => useModelServer(endpoint.name, box.checked));
-      label.append(box, " Use for text on this device");
-      item.append(label);
-      return item;
-    }), []));
   summary.textContent = !paperCatalog.loaded ? "The model servers have not been checked yet."
-    : endpoints.length ? "Choose where text runs in each model picker (Runs on): a model server, all of them, or Cloud."
+    : endpoints.length ? "Untick Use to keep your text away from a server. Each job's model is chosen in its model picker (Runs on)."
     : "No model server is added under Providers.";
-  $("model-servers").replaceChildren(table, summary, ...blocks);
+  $("model-servers").replaceChildren(...cards, ...(endpoints.length ? [list] : []), summary);
 }
 function renderMachines(force = false) {
   const manage = !!caps.manage_workers;
   const models = (paperCatalog.models || []).length;
-  const choices = MODEL_CHOICES.map(([label, name]) => [label, modelHome(pickerChoice(name))]);
+  const choices = MODEL_CHOICES.map(([label, name]) => [label, modelHome(pickerChoice(name)), name]);
   const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes,
     paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices, deviceAccess]);
   if (!force && signature === machinesSignature) return;
