@@ -5633,7 +5633,8 @@ class LocalPaperProviderTests(unittest.TestCase):
         values = web.values_of(mine, web.unconfigured_tts_models(), temporary_storage)
         self.assertEqual([(e["name"], e["off"]) for e in values["local_servers"]], [("Spark2", True), ("Spark3", False)])
         # Every server off for it: its job is refused before it starts.
-        with self.assertRaisesRegex(RuntimeError, "No model server you use offers gemma"):
+        with self.assertRaisesRegex(RuntimeError, r"offers gemma\. Off on this device \(Settings › Machines and devices\): "
+                                                  r"Spark2, Spark3\."):
             web.local_route("lm-studio/gemma", web.with_servers_off(web.local_endpoints(), ["Spark2", "Spark3"]))
         # For every other browser, both servers as before; nothing is written to the server's files.
         everyone = web.paper_model_catalog(web.with_servers_off(web.local_endpoints(), []))

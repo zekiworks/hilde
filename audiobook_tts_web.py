@@ -9386,8 +9386,10 @@ def local_route(selector, local_servers):
                         "provider": provider, "vision": images is True}
         except RuntimeError:
             continue
-    raise RuntimeError(f"No model server you use offers {model}: see Settings › Providers, and Use for text under "
-                       "Settings › Machines and devices.")
+    off = [entry.get("name") or local_server_label(entry["server"]) for entry in local_servers
+           if entry["provider"] == provider and entry.get("off")]
+    raise RuntimeError(f"No local server under Settings › Providers offers {model}."
+                       + (f" Off on this device (Settings › Machines and devices): {', '.join(off)}." if off else ""))
 
 
 def paper_model_catalog(local_servers=(), refresh=False):
