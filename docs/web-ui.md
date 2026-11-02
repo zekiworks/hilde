@@ -1290,11 +1290,18 @@ change it. The groups:
   changed): the format of the reference recording saved with a new voice,
   which local voice cloning reads ("Change only to save disk space; FLOAT keeps
   a new voice's reference recording exactly as designed.").
-- **Machines and devices**: only what the server reports. **This server** is
-  the machine Hilde runs on, by its short host name, with every device its
-  probe found: a CUDA GPU by its name, memory, and a stable ID (the start of
-  its UUID, such as `GPU-7a85a208`, which stays when GPUs are added or
-  hidden), an Apple GPU (MPS), or the CPU, each saying whether it is a
+- **Machines and devices**: only what the server reports. A device that may
+  not change machines (any browser not on the server's machine, unless Hilde
+  started with `--manage-from-network`) sees it read-only, with a note saying
+  so: only a browser on the server's machine turns narration workers on or
+  off here and adds model servers under **Providers**; the text model each
+  browser uses is still its own choice in each model picker. **This server**
+  is the machine Hilde runs on, by its short host name and how many GPUs the
+  last device check found, with every device the probe found: a CUDA GPU by
+  its number (**GPU 0**, **GPU 1**, the numbers narration statuses use), name,
+  memory, and a stable ID (the start of its UUID, such as `GPU-7a85a208`, which
+  stays when GPUs are added or hidden), an Apple GPU (MPS), or the CPU, each
+  saying whether it is a
   narration worker and whether that worker is idle, narrating, held while a
   voice is designed, off, excluded in settings, not found by the last device
   check, or left out of the current book because it could not start. The
@@ -1306,15 +1313,25 @@ change it. The groups:
   server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
   On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
-  again (applies now). **Other machines** lists the nodes that narrate over
-  SSH, each with its devices as `workers.yaml` names them (Hilde does not know
-  their model or ID) and, on the server's own machine, **Remove** (after a
-  confirmation naming it) and **Add narration workers**: enter its address,
-  **Connect**, **Set up** if it lacks Hilde's Python or the speech model,
-  untick any GPU to leave alone, **Add node**; see
+  again (applies now). **Text models** says where each text job's model
+  runs: **Text** and **Ask Hilde** (this browser's choices) and the server's
+  **Default text** and **Default images**, each by model name and "On
+  <model server>", "which is not answering" when that server is down, or, for
+  a cloud model, that it runs at the provider on none of these machines. Under
+  it are the model servers added under **Providers**, grouped by the machine
+  of their address (two servers on one address are one machine), each
+  answering or not, how many models it lists, and which of those jobs it is
+  chosen for. Hilde knows a model server only by its address: it is not told
+  which Spark or which GPU runs it, nor whether it is busy, so each machine
+  says "GPUs: not reported". **Other narration machines** lists the nodes
+  that narrate over SSH, each with its devices as `workers.yaml` names them
+  (Hilde does not know their model or ID) and, on the server's own machine,
+  **Remove** (after a confirmation naming it) and **Add narration workers**:
+  enter its address, **Connect**, **Set up** if it lacks Hilde's Python or the
+  speech model, untick any GPU to leave alone, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a
-  running audiobook keeps its narration workers. With none: "No other
-  machines connected." Each machine lists each job on its own: **Text
+  running audiobook keeps its narration workers. With none: "No other machine
+  narrates." This server and each narration machine list each job on its own: **Text
   preparation**, **Narration**, and **Voice design**, each "available", "not
   available" (with the reason), or "not tested". This server can prepare
   text when the model list has a model it can reach (the model itself runs

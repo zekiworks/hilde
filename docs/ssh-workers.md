@@ -37,7 +37,7 @@ other workers narrate it; see
 
 Open **Settings** in a browser on the server's own machine, at
 `http://127.0.0.1:8800/` (or on any device, when Hilde started with
-`--manage-from-network`). **Other machines**, under **Machines and devices**,
+`--manage-from-network`). **Other narration machines**, under **Machines and devices**,
 lists the nodes, and **Add narration workers** adds one:
 
 1. Enter the machine as an IP address, a host name, or `user@host`, and press

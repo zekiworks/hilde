@@ -24182,18 +24182,24 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </fieldset>
     <fieldset id="settings-machines">
       <legend>Machines and devices</legend>
-      <p id="machines-read-only" class="note server-only hidden">Read-only from this device. Manage
-        machines from a browser on the Hilde server, or start Hilde with <code>--manage-from-network</code>.</p>
-      <p class="note">Text models are chosen in the model picker. This section shows the machines that do the
-        work.</p>
+      <p id="machines-read-only" class="note server-only hidden">Read-only on this device. Only a browser
+        on the machine Hilde runs on turns narration workers on or off here and adds model servers under
+        Providers (or any browser, if the server's owner starts Hilde with
+        <code>--manage-from-network</code>). The text model you use is yours to choose in each model picker.</p>
+      <p class="note">This server, the model servers your text models run on, and the other machines
+        that narrate: what each is, what it is chosen for, and what it is doing as far as Hilde knows.</p>
       <section class="machines-part" aria-labelledby="machine-here-title">
         <h3 id="machine-here-title" class="part-title">This server</h3>
         <div id="machine-here"></div>
         <p id="local-devices-applies" class="applies hidden">Applies now: to queued and new
           audiobooks</p>
       </section>
+      <section class="machines-part" aria-labelledby="model-servers-title">
+        <h3 id="model-servers-title" class="part-title">Text models</h3>
+        <div id="model-servers" class="stack"></div>
+      </section>
       <section class="machines-part" aria-labelledby="machine-others-title">
-        <h3 id="machine-others-title" class="part-title">Other machines</h3>
+        <h3 id="machine-others-title" class="part-title">Other narration machines</h3>
         <div id="node-list" class="stack"></div>
         <div id="nodes-actions" class="line hidden">
           <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add narration
@@ -34918,7 +34924,8 @@ function deviceText(device) {
   const id = deviceId(device);
   return `${device.name || DEVICE_KINDS[device.kind] || device.device}${id ? ` (${id})` : ""}`;
 }
-// One device: its name and identifier, what it is, and whether it narrates;
+// One device: its number (a probed GPU's "GPU 2", the number narration
+// statuses use), name and identifier, what it is, and whether it narrates;
 // `own` (this server's device, for a browser that may manage machines) adds
 // the box that takes it out of narration.
 function deviceItem(device, worker, own, reported) {
@@ -34926,7 +34933,8 @@ function deviceItem(device, worker, own, reported) {
   item.className = "device";
   const head = document.createElement("div");
   head.className = "device-name";
-  head.textContent = device.name || DEVICE_KINDS[device.kind] || device.device;
+  const number = device.name && device.kind === "cuda" && device.device ? `${deviceName(device.device)} · ` : "";
+  head.textContent = number + (device.name || DEVICE_KINDS[device.kind] || device.device);
   const id = deviceId(device);
   if (id) {
     const tag = document.createElement("span");
@@ -35003,11 +35011,100 @@ function machineBlock(name, aside, devices, work, action) {
   block.append(head, list, table);
   return block;
 }
+// The text-model jobs whose model Settings › Machines and devices places: this
+// browser's two (PICKERS book and chat) and the server's two defaults.
+const MODEL_CHOICES = [["Text, this browser", "book"], ["Ask Hilde, this browser", "chat"],
+                       ["Server default text", "default-text"], ["Server default images", "default-image"]];
+// Where a picker's model runs, as far as the catalog says: the model server
+// that lists it (a model two servers list runs on the first, local_route()),
+// the server that listed it before it stopped answering (an offline row's
+// endpoint), or its cloud provider. Null when nothing is chosen.
+function modelHome(choice) {
+  const model = choice.model || choice.unreachable;
+  if (!model || !model.selector) return null;
+  const listed = (paperCatalog.models || []).find((item) => item.selector === model.selector);
+  const offline = (paperCatalog.rows || []).find((row) => row.row === "offline" && row.selector === model.selector);
+  return { name:model.short, badge:model.badge, reachable:!!listed,
+           local:["ollama", "lm-studio"].includes(model.selector.split("/")[0]),
+           endpoint:(listed ? listed.endpoint : offline && offline.endpoint) || "" };
+}
+function endpointHost(endpoint) {
+  try { return new URL(endpoint.server).hostname || endpoint.server; } catch { return endpoint.server; }
+}
+// Text models: each job's chosen model and where it runs, then the model
+// servers of Settings › Providers grouped by the host of their address (one
+// address is one machine; Hilde is told no Spark name, GPU, or load), each
+// answering or not and what it is chosen for. Cloud models run at their
+// provider, on none of these machines.
+function renderModelServers(choices) {
+  const endpoints = paperCatalog.endpoints || [];
+  const table = document.createElement("dl");
+  table.className = "machine-jobs";
+  table.setAttribute("aria-label", "Chosen text models");
+  for (const [label, home] of choices) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const value = document.createElement("dd");
+    const word = document.createElement("span");
+    word.className = "job-availability";
+    word.dataset.state = home && home.reachable ? "available" : "unset";
+    word.textContent = home ? home.name : "Not set";
+    value.append(word);
+    const where = !home ? ""
+      : !paperCatalog.loaded ? "The text model list has not loaded."
+      : !home.local ? `${home.badge}: runs at the provider, on none of these machines.`
+      : home.endpoint ? `On ${home.endpoint}${home.reachable ? "" : ", which is not answering"}.`
+      : "Not answering, and no model server lists it.";
+    if (where) {
+      const note = document.createElement("span");
+      note.className = "note"; note.textContent = where;
+      value.append(note);
+    }
+    table.append(term, value);
+  }
+  const hosts = new Map();
+  for (const endpoint of endpoints) {
+    const host = endpointHost(endpoint);
+    hosts.set(host, [...(hosts.get(host) || []), endpoint]);
+  }
+  const summary = document.createElement("p");
+  summary.className = "note";
+  summary.textContent = !paperCatalog.loaded ? "The model servers have not been checked yet."
+    : endpoints.length ? `${endpoints.length} model server${endpoints.length === 1 ? "" : "s"} at `
+      + `${hosts.size} address${hosts.size === 1 ? "" : "es"}, as added under Providers. Hilde knows each by `
+      + "its address: it is not told which Spark or which GPU runs it, nor whether it is busy."
+    : "No model server is added under Providers.";
+  const blocks = [...hosts].map(([host, list]) => machineBlock(host,
+    list.length > 1 ? `${list.length} model servers at this address` : "",
+    list.map((endpoint) => {
+      const item = document.createElement("li");
+      item.className = "device";
+      const head = document.createElement("div");
+      head.className = "device-name"; head.textContent = endpoint.name;
+      const tag = document.createElement("span");
+      tag.className = "device-id"; tag.textContent = localServerLabel(endpoint.server);
+      head.append(" ", tag);
+      const count = (paperCatalog.models || []).filter((model) => model.endpoint === endpoint.name).length;
+      const meta = document.createElement("span");
+      meta.className = "device-meta";
+      meta.textContent = endpoint.running ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering";
+      const jobs = choices.filter(([, home]) => home && home.local && home.endpoint === endpoint.name)
+        .map(([label]) => label);
+      const chosen = document.createElement("span");
+      chosen.className = "device-meta";
+      chosen.textContent = jobs.length ? `Chosen for: ${jobs.join("; ")}` : "Not chosen for these jobs";
+      item.append(head, meta, chosen);
+      return item;
+    }),
+    [["GPUs", "not reported", "A model server does not tell Hilde its machine's hardware."]]));
+  $("model-servers").replaceChildren(table, summary, ...blocks);
+}
 function renderMachines(force = false) {
   const manage = !!caps.manage_workers;
   const models = (paperCatalog.models || []).length;
+  const choices = MODEL_CHOICES.map(([label, name]) => [label, modelHome(pickerChoice(name))]);
   const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes,
-    paperCatalog.loaded, paperCatalog.error, models]);
+    paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices]);
   if (!force && signature === machinesSignature) return;
   machinesSignature = signature;
   // Only a browser that may manage (caps.manage_workers) changes machines; others read.
@@ -35020,7 +35117,7 @@ function renderMachines(force = false) {
   // sends it the text, so it can when the catalog lists a model it reaches.
   const text = !paperCatalog.loaded || paperCatalog.error
     ? ["not tested", "The text model list has not loaded."]
-    : models ? ["available", "Runs on the chosen text model's server; Hilde sends it the text."]
+    : models ? ["available", "Runs on the chosen text model's server (Text models, below); Hilde sends it the text."]
     : ["not available", "No text model is reachable: add a local server or connect a provider."];
   const narration = clone.source === "local"
     ? workers.some((worker) => worker.status !== "off") ? ["available", ""]
@@ -35034,7 +35131,9 @@ function renderMachines(force = false) {
   // (another GPU may have its old one): it is listed after the devices found.
   const missing = consumers.filter((worker) => worker.kind === "local" && worker.status === "missing");
   const ownOf = (worker) => own.find((entry) => entry.missing && entry.label === worker.label);
-  const here = machineBlock(machine.name || "Name not reported", "",
+  const gpus = machine.devices.filter((device) => device.kind === "cuda").length;
+  const here = machineBlock(machine.name || "Name not reported",
+    gpus ? `${gpus} GPU${gpus === 1 ? "" : "s"} found by the last device check` : "",
     [...machine.devices.map((device) => deviceItem(device,
       workers.find((worker) => worker.device === device.device),
       own.find((entry) => entry.device === device.device), true)),
@@ -35050,7 +35149,8 @@ function renderMachines(force = false) {
   note.textContent = machine.devices_note || "";
   note.hidden = !machine.devices_note;
   $("machine-here").replaceChildren(here, note);
-  // Other machines: by host for a browser that may manage them, else by number.
+  renderModelServers(choices);
+  // Other narration machines: by host for a browser that may manage them, else by number.
   const nodes = manage && workerNodes
     ? workerNodes.nodes.map((node, index) => ({ ...node, number:index + 1 }))
     : [];
@@ -35083,7 +35183,7 @@ function renderMachines(force = false) {
   });
   if (!blocks.length) {
     const none = document.createElement("p");
-    none.className = "note"; none.textContent = "No other machines connected.";
+    none.className = "note"; none.textContent = "No other machine narrates.";
     blocks.push(none);
   }
   $("node-list").replaceChildren(...blocks);

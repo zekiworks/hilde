@@ -2178,8 +2178,10 @@ server reports. `/api/state` adds `machine`: this server's short host name
 `GPU-` and the first 8 hex digits of its UUID). The public consumer snapshot
 adds each worker's `device` and, for a node, its `machine` number, so a
 browser not on the server's machine groups node workers without hosts
-(`Machine 1 · GPU 2`). **This server** lists the probed devices with each
-one's narration worker state (`idle`, `narrating`, `held while a voice is
+(`Machine 1 · GPU 2`). **This server** heads with how many CUDA devices the
+probe found and lists them, a CUDA one as `deviceName()` numbers it (`GPU 2`,
+torch's index, the number narration statuses use) before its name and ID,
+each with its narration worker state (`idle`, `narrating`, `held while a voice is
 designed`, or `off, excluded in settings`; a device that is no narration
 worker says so) and, for a browser on the server's machine, its box (`POST
 /api/workers/local`, applies now). Under it, `machine.devices_note`
@@ -2189,18 +2191,29 @@ failed on this server; its log says why.", the list then only CPU to choose;
 the reason, which may name paths, is printed to the server's log once for
 that probe and never sent to a browser) or `CUDA_VISIBLE_DEVICES` in the
 server's environment (empty: it sees no GPU; set: it may see only some; its
-value, which may hold GPU UUIDs, is never shown), so a CPU-only list never reads as a CPU-only machine. **Other machines** lists the nodes by host
+value, which may hold GPU UUIDs, is never shown), so a CPU-only list never reads as a CPU-only machine.
+**Text models** (`renderModelServers()`) separates the chosen model from the
+machine: for this browser's `book` and `chat` pickers and the server's
+`default-text` and `default-image`, `modelHome()` places the model
+`pickerChoice()` gives on the catalog model's `endpoint` (the first server
+listing it, as `local_route()` routes), else on an offline row's `endpoint`
+("which is not answering"), else nowhere; a cloud model "runs at the provider".
+Then `paperCatalog.endpoints` grouped by the host of their address (one
+address is one machine; no Spark name, GPU, or load is reported by a model
+server, so each says "GPUs: not reported"), each answering or not, its model
+count, and the jobs it is chosen for. **Other narration machines** lists the nodes by host
 there (by number elsewhere), with their `workers.yaml` devices (no model or
-ID is known) and **Remove**. Each machine shows **Text preparation**,
+ID is known) and **Remove**. This server and each node show **Text preparation**,
 **Narration**, and **Voice design** separately as `available`, `not
 available` with the reason, or `not tested`: text preparation is available on
 this server when the model catalog lists a model (`not tested` until it
 loads), never on a node; narration when the machine has a narration worker
 that is not off; voice design on this server with a local voice-design model,
 never on a node. A browser that may not manage (`caps.manage_workers` false)
-sees one note at the top, "Read-only from this device. Manage machines from a
-browser on the Hilde server, or start Hilde with --manage-from-network.", and
-no controls.
+sees one note at the top saying only a browser on the server's machine (or
+any, with --manage-from-network) turns narration workers on or off and adds
+model servers under Providers, and that its text model stays its own choice
+in each picker; it has no controls.
 
 **Models and connection** only assigns models to their jobs (adding is under
 **Providers**: no Add local, Connect, or Providers… link here). It shows, read-only, **Default TTS** (the narration
@@ -2221,7 +2234,7 @@ has its own authority; then **Ask Hilde reading** (`#ask-reading-note`,
 `/api/state`'s `ask_reading`): how Ask reads a book, by similarity search or
 by keyword search and why.
 
-**Other machines** lists the nodes of `workers.yaml` with **Remove**, and
+**Other narration machines** lists the nodes of `workers.yaml` with **Remove**, and
 **Add narration workers** opens a dialog: the machine's address, **Connect**, then the
 Python, model, and devices it found, then **Add node**. Connect runs
 `probe_worker_node()`: `ssh` with `BatchMode=yes` and `StrictHostKeyChecking=yes`
