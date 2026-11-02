@@ -1483,14 +1483,9 @@ Each page:
      (below) starts at most one job per draft.
   2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
      state Voices' **Select** sets) and a card previewing the chosen voice. A
-     narration speech server takes a server voice ID instead. With two GPUs or
-     more and local narration, **Narrate on** (`#narration-device`,
-     `state.audiobook.device`, `renderDeviceChoices()`): "Any GPU that is on
-     (n of m)" (`auto`) or one GPU by number with what it is doing now (free,
-     narrating, designing a voice, off in Settings, not found), from
-     `machine.devices` and the consumer snapshot; a GPU that does not narrate
-     can't be newly chosen, and a chosen one that stops narrating says so under
-     the menu. The job poll keeps it current but never rebuilds an open menu.
+     narration speech server takes a server voice ID instead. The GPU a book
+     narrates on is chosen in Settings (see Settings and devices); the summary
+     above **Create audiobook** names a chosen one.
   3. **How Hilde prepares the text**: first `#book-model`, **Model for this
      book** (the `book` picker, `state.audiobook.model`), which all three
      options use; **Use different models per option** (`togglePerOption()`)
@@ -2318,8 +2313,11 @@ started with `--manage-from-network`, `HildeServer.manage_from_network`) sees
 the hosts and paths (`capabilities.manage_workers`, `GET /api/workers`) or may
 probe, set up, add, or remove; others get HTTP 403 and see only the chips.
 
-Browser state holds each browser's device choice: `audiobook.device` (Create's
-**Narrate on**) and `voice.device` (New voice's **Design on**), each `auto` or
+Browser state holds each browser's device choice, set in Settings › Machines and devices › This server
+(`renderDeviceChoices()`, shown with two GPUs or more): `audiobook.device` (**Narrate my books on**: "Any GPU that is
+on (n of m)" or one GPU by number with what it is doing now, from `machine.devices` and the consumer snapshot; a GPU
+that does not narrate can't be newly chosen, and a chosen one that stops narrating says so under the menu) and
+`voice.device` (**Design my voices on**), each `auto` or
 `cuda:N` (`stored_device()`; anything else is `auto`). `values_of()` passes
 `audiobook.device` as the job's `requested_device`: `auto` claims all currently
 idle local CUDA and node workers; `cuda:N` only that GPU's local worker, and

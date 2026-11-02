@@ -12678,8 +12678,8 @@ def stored_text(mapping, key, fallback=""):
     return value if isinstance(value, str) else fallback
 
 
-# Where a browser asks its jobs to run (Create's "Narrate on", New voice's
-# "Design on"): "auto" (narration: every narration worker that is on; voice
+# Where a browser asks its jobs to run (Settings' "Narrate my books on" and
+# "Design my voices on"): "auto" (narration: every narration worker that is on; voice
 # design: the GPU with the most free memory), or one GPU of this server.
 DEVICE_CHOICE_PATTERN = re.compile(r"auto|cuda:\d{1,2}")
 
@@ -12819,7 +12819,7 @@ def normalize(state):
                 else stored_text(audiobook, "batch_size", "2")
             ),
             "mp3_level": stored_text(audiobook, "mp3_level", "0.5"),
-            # Narrate on: this browser's GPU for its books (stored_device()).
+            # Narrate my books on (Settings): this browser's GPU for its books (stored_device()).
             "device": stored_device(audiobook),
         },
         # The book open on the Listen page survives a refresh.
@@ -17775,7 +17775,7 @@ class JobQueue:
             eligible = self._eligible_consumers(requested_device)
             requested = (requested_device or "auto").strip()
             if requested.startswith("cuda:"):
-                # A GPU this browser chose (Narrate on): only while it narrates;
+                # A GPU this browser chose (Narrate my books on): only while it narrates;
                 # never a job left waiting on one that is off or not found.
                 gpu = f"GPU {requested[5:]}"
                 if not eligible:
@@ -24580,6 +24580,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <section class="machines-part" aria-labelledby="machine-here-title">
         <h3 id="machine-here-title" class="part-title">This server</h3>
         <div id="machine-here"></div>
+        <div class="field hidden" id="narration-device-row">
+          <label for="narration-device">Narrate my books on</label>
+          <select id="narration-device" onchange="chooseDevice('audiobook', this)"></select>
+          <span id="narration-device-note" class="note hidden"></span>
+        </div>
+        <div class="field hidden" id="design-device-row">
+          <label for="design-device">Design my voices on</label>
+          <select id="design-device" onchange="chooseDevice('voice', this)"></select>
+          <span id="design-device-note" class="note hidden"></span>
+        </div>
+        <p id="device-choice-note" class="note hidden">This device's choice; everyone chooses their own.</p>
         <p id="local-devices-applies" class="applies hidden">Applies now: to queued and new
           audiobooks</p>
       </section>
@@ -24790,11 +24801,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               placeholder="Preset or server voice ID">
           </div>
           <div id="selected-voice" class="voice-card hidden"></div>
-          <div class="field hidden" id="narration-device-row">
-            <label for="narration-device">Narrate on</label>
-            <select id="narration-device" onchange="chooseDevice('audiobook', this)"></select>
-            <span id="narration-device-note" class="note hidden"></span>
-          </div>
           <div class="actions step-actions">
             <button id="voice-back" class="back" type="button" onclick="backStep()"><svg viewBox="0 0 16 16"
               aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -24982,11 +24988,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <label for="voice-name">Name</label>
           <input id="voice-name" type="text" autocomplete="off" placeholder="For example Rebecca">
           <span id="voice-exists" class="note"></span>
-        </div>
-        <div class="field hidden" id="design-device-row">
-          <label for="design-device">Design on</label>
-          <select id="design-device" onchange="chooseDevice('voice', this)"></select>
-          <span id="design-device-note" class="note hidden"></span>
         </div>
         <p id="voice-problem" class="problem hidden"></p>
         <div id="voice-progress" class="progress-meter hidden">
@@ -33816,7 +33817,7 @@ function staticPicker(node, role) {
     // A design runs on New voice's Design on, else the GPU with the most free memory.
     const gpus = machine.devices.filter((device) => device.kind === "cuda").length;
     const text = !model.device ? "Device chosen on first use"
-      : gpus > 1 ? "The last design's GPU: New voice › Design on chooses it, else the one with the most free memory." : "";
+      : gpus > 1 ? "The last design's GPU: Settings › Design my voices on chooses it, else the one with the most free memory." : "";
     if (text) {
       const note = document.createElement("span");
       note.className = "note"; note.textContent = text;
@@ -33861,7 +33862,7 @@ function renderSummary(voiceOnly) {
   if (narration && narration.source === "server")
     add("Narration", badgeElement(`Speech server: ${narration.model}`, "Where the text is sent to be spoken"));
   else if (narration && narration.source === "local" && state.audiobook.device !== "auto")
-    add("Narration", `On ${deviceName(state.audiobook.device)} (Narrate on)`);
+    add("Narration", `On ${deviceName(state.audiobook.device)} (Settings › Narrate my books on)`);
   $("create-summary").replaceChildren(...rows);
 }
 
@@ -35371,12 +35372,14 @@ function deviceName(value) {
   return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
     : value === "mps" ? "Apple MPS" : "CPU";
 }
-// Create's "Narrate on" and New voice's "Design on" (state.audiobook.device,
-// state.voice.device, stored_device() on the server): Any GPU that is on / the
-// GPU with the most free memory, or one GPU this server found, each with what
-// it is doing now. For narration a GPU that is off in Settings or not found is
-// listed but can't be chosen. Shown with two GPUs or more; the job poll keeps
-// it current, but never rebuilds a menu that is open.
+// Settings › Machines and devices › This server: "Narrate my books on" and
+// "Design my voices on" (Ümit, 2 Nov: chosen in Settings, not in Create), this
+// browser's own (state.audiobook.device, state.voice.device, stored_device()
+// on the server): Any GPU that is on / the GPU with the most free memory, or
+// one GPU this server found, each with what it is doing now. For narration a
+// GPU that is off in Settings or not found is listed but can't be chosen.
+// Shown with two GPUs or more; the job poll keeps it current, but never
+// rebuilds a menu that is open. Create's summary names a chosen GPU.
 const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
                        left_out:"left out of the current book", missing:"not found" };
 let deviceChoicesSignature = "";
@@ -35423,6 +35426,8 @@ function renderDeviceChoices() {
        `Any GPU that is on (${on} of ${gpus.length})`, (gpu) => !usable(gpu));
   fill("voice", "design-device", gpus.length > 1 && (configuration.design || {}).source === "local",
        "The GPU with the most free memory", () => false);
+  $("device-choice-note").classList.toggle("hidden", $("narration-device-row").classList.contains("hidden")
+    && $("design-device-row").classList.contains("hidden"));
 }
 function chooseDevice(group, select) {
   state[group].device = select.value;
