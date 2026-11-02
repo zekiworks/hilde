@@ -580,12 +580,13 @@ book again, or reloading the page, finds it paused at that sentence. This is
 kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
-Text keeps its paragraphs: the paragraph being read is marked by a thin pink
-line at its left and a faint gray tint, the sentence being read by a light
+Text keeps its paragraphs: the paragraph being read is marked by a thin line
+in the theme's accent (copper; pink in Classic) at its left and a faint gray
+tint, the sentence being read by a light
 gray tint (it stays while paused, so it is easy to tap to pause and resume),
-and the word being read by a 2 px pink
+and the word being read by a 2 px accent
 underline and slightly brighter text; with **Highlight style B** (Settings,
-**Reading**; a test for now) the word also gets a faint pink fill. Text you
+**Reading**; a test for now) the word also gets a faint accent fill. Text you
 select is marked in neutral gray. Sentence-era readers created before paragraph
 grouping was recorded still show one sentence per paragraph; paragraph-era
 readers regain their paragraphs automatically.
@@ -935,7 +936,7 @@ are on:
   player for a few seconds: a dot changes the colour, **Undo** removes it.
   Clicking (tapping) a highlight offers its dots, **Add note** and **Remove
   highlight**. A highlight keeps its colour inside the sentence being read; the
-  pink line of the paragraph and the word's underline show with every colour.
+  accent line of the paragraph and the word's underline show with every colour.
 - After a note or a saved answer is saved, **Saved to Notes · Show** shows
   above the player for about five seconds; **Show** opens the Notes tab at it.
 - Everything above the player (Paused, Highlighted, Saved to Notes, **Back to
@@ -1257,11 +1258,13 @@ change it. The groups:
   (underlined, with a faint fill behind it), applies now and is remembered by
   this browser. It is a temporary test: one style will stay and the choice
   will go.
-  **Theme**: **Hilde** (rose and copper, the default: play/pause, voice
-  previews and the selected voice in the logo's copper; Ask Hilde and
-  creating in rose) or **Classic** (the earlier plum and pink). It applies
-  now and only in this browser, so everyone keeps their own; your saved
-  highlights keep their colours in both.
+  **Theme**: **Hilde** (one copper accent, the default: the light copper of
+  the logo and of the Voices page's "✓ Selected" marks selected items, links,
+  main buttons, play/pause, voice previews and Ask Hilde in Create, Voices,
+  Listen, Settings and Ask Hilde alike, with dark text on it) or **Classic**
+  (the earlier plum and pink). It applies now and only in this browser, so
+  everyone keeps their own; your saved highlights and the Local, Cloud, and
+  error colours keep their colours in both.
 - **Speech tuning**: language on top; under **Advanced**, precision (**auto
   (recommended)**; "Change only if narration fails or runs out of memory on
   your GPU."), attention (**sdpa (recommended)**; "Change only if narration

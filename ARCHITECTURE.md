@@ -2147,12 +2147,15 @@ value, default, or rule: `FIELDS`, `collect()`, and the disabled rules in
 `render()` read the same elements, open or closed. **Reading**: **Highlight style** A / B (temporary, for the
 highlight test; `#highlight-style`, a radio switch), applies now, this browser only (`hilde.highlightStyle`);
 **Theme** Hilde / Classic (`#theme`, a radio switch), applies now, this browser only (`hilde.theme`). The theme
-sets only the role tokens `--transport` / `--transport-ink` (the player's play/pause) and `--voice-play` (the
-Voices page's `--play`: preview circles, the selected voice's row and "✓ Selected"): Hilde (default) copper
-from the logo, `--copper` #c57c57 (the opaque mean of `hilde-leaf-transparent.png`) with dark `--copper-ink` and
-`--copper-light` #d89068 (its light tone) for the Voices page; Classic the earlier `--accent` plum and #d276ab.
-Ask Hilde and creating stay rose, the reading grounds and the saved highlight colours (`--mark-*`) are the same
-in both. **Speech tuning**: language on
+sets only the accent role tokens: `--accent` / `--accent-ink` (a main action's fill and its ink), `--accent-light`
+(selected items, links, the focus ring, the reading highlight; `--accent-soft` and the Voices `--tag-on` follow it),
+`--ask` (Ask Hilde's marker), `--transport` / `--transport-ink` (the player's play/pause) and `--voice-play` (the
+Voices page's `--play`: preview circles, the selected voice's row and "✓ Selected"). Hilde (default): every one is
+`--copper-light` #d89068, the light tone of `hilde-leaf-transparent.png` and the "✓ Selected" Ümit chose on 2 Nov
+as the one accent for Create, Voices, Listen, Settings and Ask Hilde, with dark `--copper-ink` on fills (6.7:1).
+Classic: the earlier plum `--accent` #8e2f6d with white ink, rose #eeaad0, pale rose `--ask` #f6cfe0, and #d276ab
+for the Voices page. The status colours (`--local`, `--cloud`, `--off`, `--bad`), the reading grounds and the
+saved highlight colours (`--mark-*`) are the same in both. **Speech tuning**: language on
 top; precision (`auto (recommended)`), attention (`sdpa (recommended)`), and
 seed under Advanced. All four
 reach narration and voice design through `shared_arguments()`, so they

@@ -64,7 +64,7 @@ Keyboard: Space or K plays or pauses, J and L skip 10 seconds, ← and → 5, < 
 
 ## Follow-along highlighting
 
-While a book plays, the paragraph being read has a thin pink line at its left, the sentence a gray tint, and the word a pink underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops and never pulls the page back; press **↓ Back to reading position** to return.
+While a book plays, the paragraph being read has a thin line at its left, the sentence a gray tint, and the word an underline. **Follow along** scrolls the page when the sentence leaves the screen. If you scroll away yourself, it stops and never pulls the page back; press **↓ Back to reading position** to return.
 
 **Narration text** shows what Hilde reads aloud. **Source text** shows the document's own words, with the page each passage starts on and a label: **Original**, **Unchanged** or **Not narrated**. Descriptions the model wrote of figures and tables are labelled **Hilde's description**. Books made without adapting the text have no **Source text**.
 
@@ -73,7 +73,7 @@ While a book plays, the paragraph being read has a thin pink line at its left, t
 
 ## Ask Hilde
 
-**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's. To ask about a passage, select it, then press **Ask about this** (on a phone, the teal **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
+**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's. To ask about a passage, select it, then press **Ask about this** (on a phone, **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
 
 What you asked about shows as a card above the question box. **Context details** lists exactly what goes with your question. **Word | Sentence | Paragraph** widens the selection. Press **Explain this part**, or type your own question.
 
