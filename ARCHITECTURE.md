@@ -2161,20 +2161,25 @@ value, default, or rule: `FIELDS`, `collect()`, and the disabled rules in
 highlight test; `#highlight-style`, a radio switch), applies now, this browser only (`hilde.highlightStyle`);
 **Theme** Hilde / Classic (`#theme`, a radio switch), applies now, this browser only (`hilde.theme`). The theme
 sets only the accent role tokens: `--accent` / `--accent-ink` (a main action's fill and its ink), `--accent-light`
-(selected items, links, the focus ring, the reading highlight; `--accent-soft` and the Voices `--tag-on` follow it),
-`--ask` (Ask Hilde's marker), `--transport` / `--transport-ink` (the player's play/pause) and `--voice-play` (the
-Voices page's `--play`: preview circles, the selected voice's row and "✓ Selected"). Hilde (default): every one is
-`--copper-light` #d89068, the light tone of `hilde-leaf-transparent.png` and the "✓ Selected" Ümit chose on 2 Nov
-as the one accent for Create, Voices, Listen, Settings and Ask Hilde, with dark `--copper-ink` on fills (6.7:1).
-Hilde uses it sparingly ("abartısız", 2 Nov): one block at the end of the stylesheet, every rule prefixed
+(selected items, links, the focus ring, a checked box; `--accent-soft` and the Voices `--tag-on` follow it), `--here`
+(where you are: the paragraph and word being read, progress bars, the running stage), `--on` (the LED of a switch
+that is on, the selected tab, a model server that answers), `--ask` (Ask Hilde's marker), `--transport` /
+`--transport-ink` (the player's play/pause) and `--voice-play` (the Voices page's `--play`: preview circles, the
+selected voice's row and "✓ Selected"). Hilde (default) is an autumn palette (Ümit, 2 Nov, after a photo of autumn
+leaves: "turuncu değil bakır; soluk mürdüm/leylak, pembeye dönen açık mor; tek tük yeşil"): `--copper-light`
+#d89068 (the light tone of `hilde-leaf-transparent.png` and the "✓ Selected" Ümit chose) for `--accent`, `--here`,
+`--transport` and `--voice-play`, with dark `--copper-ink` on fills (6.7:1); `--lilac` #b8a6dc for `--accent-light`;
+`--mauve` #d49ac0 for `--ask`; `--leaf` #9cc48a for `--on` only.
+Hilde uses them sparingly ("abartısız", 2 Nov): one block at the end of the stylesheet, every rule prefixed
 `:where(:root:not([data-theme=classic]))` so it is exactly as specific as the rule it quiets (a selected, hover or
 playing state still wins), sets secondary controls neutral: links and link-like buttons (`button.browse`, picker
-link rows, `.chat-cite`, `.stack-link`) in `--text` with a copper underline where they had one; `.change`,
+link rows, `.chat-cite`, `.stack-link`) in `--text` with a lilac underline where they had one; `.change`,
 `button.picker-change`, `button.library-button`, `button.secondary`, `.picker-action` and each `.book-play` a
 #5a5a5a border with `--text`; the player's `.ask-hilde` neutral with only its `.ask-icon` in `--ask`; a pressed
-voice tag and `button.tag-review-open` a copper border on `--tag-on` / transparent instead of a solid fill;
-`.applies::before` `--dim`. Classic: the earlier plum `--accent` #8e2f6d with white ink, rose #eeaad0, pale rose
-`--ask` #f6cfe0, and #d276ab for the Voices page, every rule as before. The status colours (`--local`, `--cloud`,
+voice tag and `button.tag-review-open` a lilac border on `--tag-on` / transparent instead of a solid fill;
+`label.check input` lilac instead of `--accent`;
+`.applies::before` `--dim`. Classic: the earlier plum `--accent` #8e2f6d with white ink, rose #eeaad0 (also its
+`--here` and `--on`), pale rose `--ask` #f6cfe0, and #d276ab for the Voices page, every rule as before. The status colours (`--local`, `--cloud`,
 `--off`, `--bad`), the reading grounds and the saved highlight colours (`--mark-*`) are the same in both.
 **Speech tuning**: language on
 top; precision (`auto (recommended)`), attention (`sdpa (recommended)`), and

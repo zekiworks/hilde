@@ -22497,14 +22497,16 @@ PAGE = r"""<!doctype html>
 <style>
 :root { color-scheme:dark;
         /* Dark only (B; light deferred). One charcoal ground, one neutral gray
-           family, one interface accent, and a few colours each in one role
-           only, used through these tokens:
+           family, and a few colours each in one role only, used through these
+           tokens:
            --accent, the fill of a screen's main action, with --accent-ink on
            it; --accent-light, selected items (a tab's line, a chosen tag's
-           border), links, the focus ring, the LED dot of a selected tab or a
-           switch that is on, the quiet buttons' text, icon and border (Change,
-           and Library with a book open), and the reading highlight, never a
-           button's fill;
+           border, a chosen list row), links, the focus ring, a checked box,
+           the quiet buttons' text, icon and border, never a button's fill;
+           --here, where you are: the paragraph and word being read, progress
+           bars, the running stage;
+           --on, the small steady LED (no glow) of what is on: a checked
+           switch, the selected tab, a model server that answers;
            --ask: a marker of Ask Hilde only, never an area: the player's Ask
            Hilde button (a 12% tint, its border, text and sparkle), the
            selection bar's Ask Hilde, Ask Hilde for a touch selection above
@@ -22522,26 +22524,30 @@ PAGE = r"""<!doctype html>
            Cloud; gray --off: disabled and "not running" items (the selection
            fill is a neutral gray too);
            red --bad: errors and destructive actions, always with an icon
-           and text. No blue, green or teal brand colour; no glow stays lit.
+           and text. No blue or teal brand colour; no glow stays lit.
            The Voices list's tags are neutral, a chosen one --accent-light
            with a tick.
-           The theme "Hilde" (the default) gives every one of those accent
-           roles one copper, the logo's light tone --copper-light #d89068
-           (hilde-leaf-transparent.png: hue 18-23°; the Voices page's "✓
-           Selected", which Ümit chose on 2 Nov as the one accent for Create,
-           Voices, Listen, Settings and Ask Hilde), always with dark ink
-           (--copper-ink, 6.7:1), never white (2.6:1). The theme "Classic"
+           The theme "Hilde" (the default) is an autumn palette, used sparingly
+           (Ümit, 2 Nov: "turuncu değil bakır; soluk mürdüm/leylak, pembeye
+           dönen açık mor; tek tük yeşil", after a photo of autumn leaves):
+           copper --copper-light #d89068 (the logo's light tone and the Voices
+           page's "✓ Selected") for the main actions, Play/Pause, "✓ Selected"
+           and --here, always with dark ink (--copper-ink, 6.7:1); a faded
+           lilac #b8a6dc for --accent-light; a mauve that turns pink #d49ac0
+           for --ask; a leaf green #9cc48a for --on only. The theme "Classic"
            (:root[data-theme=classic]) keeps the earlier plum (--accent
-           #8e2f6d, white ink), rose (#eeaad0), pale rose Ask (#f6cfe0) and
-           pink Voices (#d276ab). A theme is chosen per browser (Settings ›
-           Reading, hilde.theme); the saved highlight colours (--mark-*) and
-           the status colours never follow it. */
+           #8e2f6d, white ink), rose (#eeaad0, also its --here and --on), pale
+           rose Ask (#f6cfe0) and pink Voices (#d276ab). A theme is chosen per
+           browser (Settings › Reading, hilde.theme); the saved highlight
+           colours (--mark-*) and the status colours never follow it. */
         --bg:#1b1b1b; --field:#161616; --surface:#242424; --raised:#2e2e2e;
         --hover:#383838; --line:#3a3a3a; --text:#faf8f5; --dim:#bdb8b1;
         --copper-light:#d89068; --copper-ink:#1b1b1b;
-        --accent:var(--copper-light); --accent-ink:var(--copper-ink); --accent-light:var(--copper-light);
+        --lilac:#b8a6dc; --mauve:#d49ac0; --leaf:#9cc48a;
+        --accent:var(--copper-light); --accent-ink:var(--copper-ink); --accent-light:var(--lilac);
         --accent-soft:color-mix(in srgb, var(--accent-light) 16%, transparent);
-        --ask:var(--copper-light);
+        --here:var(--copper-light); --on:var(--leaf);
+        --ask:var(--mauve);
         --transport:var(--copper-light); --transport-ink:var(--copper-ink);
         --voice-play:var(--copper-light); --voice-play-ink:#0d1117;
         --local:#e2aacb; --cloud:#c195d6; --off:#8b8f98;
@@ -22558,6 +22564,7 @@ PAGE = r"""<!doctype html>
         --step-bg:#17181b; --step-card:#141518; --step-line:#2a2c31; --step-off:#6b6f78;
         --popover:#1d1f23; --popover-line:#3a3d44; }
 :root[data-theme=classic] { --accent:#8e2f6d; --accent-ink:#ffffff; --accent-light:#eeaad0; --ask:#f6cfe0;
+                            --here:var(--accent-light); --on:var(--accent-light);
                             --transport:var(--accent); --transport-ink:var(--accent-ink); --voice-play:#d276ab; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text);
@@ -22644,7 +22651,7 @@ label.check input { flex:0 0 auto; width:18px; height:18px; margin:0; accent-col
    tab (Settings too, while open), the chosen highlight style. */
 label.check:has(> input:checked)::after, .tab-list [role=tab][aria-selected=true]::before,
 .tabs .settings-button[aria-pressed=true]::before, #highlight-style [aria-checked=true] span::before {
-  content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent-light); }
+  content:""; flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--on); }
 .tab-list [role=tab][aria-selected=true]::before, .tabs .settings-button[aria-pressed=true]::before,
 #highlight-style [aria-checked=true] span::before {
   display:inline-block; margin-right:8px; vertical-align:2px; }
@@ -23061,13 +23068,13 @@ details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-spac
 .stage.is-skipped { opacity:.6; }
 .stage.is-skipped .stage-name { text-decoration:line-through; text-decoration-color:var(--dim); }
 .stage.is-active { color:var(--text); font-weight:600; }
-.stage.is-active .stage-icon { border-color:var(--accent-light); }
+.stage.is-active .stage-icon { border-color:var(--here); }
 .stage.is-active .stage-icon::after { content:""; width:10px; height:10px;
-                                     border-radius:50%; background:var(--accent-light); }
+                                     border-radius:50%; background:var(--here); }
 .progress-title { margin:0 0 4px; font-size:16px; overflow-wrap:anywhere; }
 .progress-meter { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px;
                   align-items:center; }
-progress { width:100%; height:8px; accent-color:var(--accent-light); }
+progress { width:100%; height:8px; accent-color:var(--here); }
 #progress-count { white-space:nowrap; font-variant-numeric:tabular-nums; }
 #progress-detail, #progress-eta, #progress-workers { margin-top:6px; overflow-wrap:anywhere; }
 #progress-eta:empty, #progress-workers:empty { display:none; }
@@ -23144,7 +23151,7 @@ legend ~ * { clear:both; }
 .server-name { font-weight:600; overflow-wrap:anywhere; }
 .server-state { flex:1 1 auto; color:var(--dim); font-size:13px; }
 .server-state::before { content:"●"; margin-right:6px; color:var(--off); }
-.server-state[data-state=on]::before { color:var(--accent-light); }
+.server-state[data-state=on]::before { color:var(--on); }
 .server-row label.check { font-size:13px; }
 .model-problem { display:grid; gap:6px; padding:12px 14px; border:1px solid var(--bad); border-radius:10px; }
 .model-problem p { margin:0; }
@@ -23165,7 +23172,7 @@ legend ~ * { clear:both; }
    #d89068 in "Hilde", the earlier pink #d276ab in "Classic") for play circles, the selected voice's faint row and its
    solid "✓ Selected" (dark ink on it); each voice's tags as neutral chips (light gray text, a gray
    border) that fill the search box; a chosen tag (a pressed one in the list, a kept one in Review tags, a picked one
-   in New voice) in --accent-light (copper in "Hilde", rose in "Classic"): a faint fill, a border and a tick, never
+   in New voice) in --accent-light (lilac in "Hilde", rose in "Classic"): a faint fill, a border and a tick, never
    colour alone. Select, ⋯ and the search box
    gray. The chips' text keeps 4.5:1 on any row, their gray border (#7a7a7a) 3:1. */
 #page-voice, #selected-voice, #tag-review { --play:var(--voice-play); --play-ink:var(--voice-play-ink); --tag:#e2ded8; --tag-ink:var(--text);
@@ -23428,7 +23435,7 @@ button#voice-search-clear:hover:not(:disabled) { background:none; color:var(--te
 .book-name { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .book-line { overflow:hidden; color:var(--dim); font-size:14px; white-space:nowrap; text-overflow:ellipsis; }
 .book-bar { max-width:420px; height:4px; margin-top:10px; overflow:hidden; border-radius:2px; background:#33363c; }
-.book-bar > span { display:block; height:100%; border-radius:2px; background:var(--accent-light); }
+.book-bar > span { display:block; height:100%; border-radius:2px; background:var(--here); }
 .book-chip { grid-area:chip; justify-self:start; padding:2px 11px; border:1px solid; border-radius:999px;
              font-size:14px; line-height:1.4; white-space:nowrap; }
 .book-card:is(.is-progress, .is-playing) .book-chip {
@@ -23975,7 +23982,7 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 .reader-content { font-size:18px; line-height:1.6; touch-action:manipulation; }
 .reader-paragraph { padding:6px 16px 6px 14px; border-left:2px solid transparent; }
 .reader-paragraph.active, .source-view .reader-original.active {
-  border-left-color:var(--accent-light); background:color-mix(in srgb, var(--text) 3%, transparent);
+  border-left-color:var(--here); background:color-mix(in srgb, var(--text) 3%, transparent);
 }
 .reader-paragraph > * { margin:0; }
 .reader-paragraph > * + * { margin-top:.6em; }
@@ -23987,10 +23994,10 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 .reader-word:hover { text-decoration:underline dotted var(--dim); text-underline-offset:4px; }
 /* Highlight style A (default): a 2 px underline and slightly brighter text;
    B (Settings, temporary) adds a faint fill behind the word. */
-.reader-word.active { color:#ffffff; text-decoration:underline solid var(--accent-light) 2px;
+.reader-word.active { color:#ffffff; text-decoration:underline solid var(--here) 2px;
                       text-underline-offset:4px; text-decoration-skip-ink:none; }
 :root[data-highlight=B] .reader-word.active {
-  background:color-mix(in srgb, var(--accent-light) 12%, transparent); }
+  background:color-mix(in srgb, var(--here) 12%, transparent); }
 .reader-block > :first-child { margin-top:0; }
 .reader-block > :last-child { margin-bottom:0; }
 .reader-block img { display:block; max-width:100%; height:auto; margin:12px auto; border-radius:5px; }
@@ -24544,14 +24551,14 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .keyboard-open .chat-model-notes, .keyboard-open .chat-problem { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
-/* Hilde, the default theme: the one copper used sparingly (Ümit, 2 Nov: "abartısız olsun"). Copper marks only what
-   is selected or on (tab bars and their LEDs, a switch, the open step, the chosen voice, tag, model and note), where
-   you are (the reading line and underline, progress), the focus ring, hover, Ask Hilde's sparkle, and the fill of a
-   few key actions (Create audiobook, play/pause, a book that plays, "✓ Selected", Ask Hilde for a selection, the
-   chat's own action). Everything secondary stays neutral: links and link-like buttons in the text colour with a
-   copper underline; the quiet buttons (Change, Library, secondary) and each book's play circle with a gray border
-   and text-coloured content until hovered or playing; the player's Ask Hilde gray with only its sparkle copper; a
-   pressed voice tag and Review tags a copper border on a faint fill, not a solid block; "Applies now" with a gray
+/* Hilde, the default theme, used sparingly (Ümit, 2 Nov: "abartısız olsun"; then the autumn palette): colour marks
+   only what is selected or on (lilac tab bars and chosen items, leaf-green LEDs), where you are (copper reading line,
+   underline and progress), the focus ring, hover, Ask Hilde's mauve sparkle, and the copper fill of a few key
+   actions (Create audiobook, play/pause, a book that plays, "✓ Selected", Ask Hilde for a selection, the chat's own
+   action). Everything secondary stays neutral: links and link-like buttons in the text colour with a lilac
+   underline; the quiet buttons (Change, Library, secondary) and each book's play circle with a gray border
+   and text-coloured content until hovered or playing; the player's Ask Hilde gray with only its sparkle mauve; a
+   pressed voice tag and Review tags a lilac border on a faint fill, not a solid block; "Applies now" with a gray
    arrow. :where() keeps each rule exactly as specific as the rule it quiets, so a selected, hover or playing state
    still wins. Classic (:root[data-theme=classic]) keeps its plum and pink as before. */
 :where(:root:not([data-theme=classic])) a { color:var(--text); text-decoration-color:var(--accent-light); }
@@ -24577,6 +24584,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   border-color:var(--accent-light); background:transparent; color:var(--text); }
 :where(:root:not([data-theme=classic])) button.tag-review-open:hover:not(:disabled) {
   border-color:var(--accent-light); background:var(--accent-soft); filter:none; }
+/* Autumn palette (Ümit, 2 Nov): a checked box is a selection (lilac), not a main action (copper). */
+:where(:root:not([data-theme=classic])) label.check input { accent-color:var(--accent-light); }
 </style>
 </head>
 <body>
@@ -24642,7 +24651,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <div class="row"><span id="theme-label" class="row-label">Theme</span><div class="setting">
         <div id="theme" class="text-switch" role="radiogroup" aria-labelledby="theme-label">
           <button type="button" role="radio" aria-checked="true" data-theme="hilde"
-            onclick="setTheme('hilde')"><span>Hilde</span><small>one copper accent</small></button>
+            onclick="setTheme('hilde')"><span>Hilde</span><small>copper, lilac and a little green</small></button>
           <button type="button" role="radio" aria-checked="false" data-theme="classic"
             onclick="setTheme('classic')"><span>Classic</span><small>plum and pink, as before</small></button>
         </div>
@@ -27907,7 +27916,7 @@ function setHighlightStyle(style, save = true) {
     button.setAttribute("aria-checked", String(button.dataset.style === style));
   if (save) store("highlightStyle", style);
 }
-// The theme (Settings › Reading): "hilde", the default (one copper accent), or
+// The theme (Settings › Reading): "hilde", the default (the autumn palette), or
 // "classic" (the earlier plum and pink). Per browser (hilde.theme), on
 // <html data-theme>; the saved highlight colours never follow it.
 function setTheme(theme, save = true) {

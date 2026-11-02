@@ -584,7 +584,7 @@ kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
 
 Text keeps its paragraphs: the paragraph being read is marked by a thin line
-in the theme's accent (copper; pink in Classic) at its left and a faint gray
+in copper (the Hilde theme's colour for where you are; pink in Classic) at its left and a faint gray
 tint, the sentence being read by a light
 gray tint (it stays while paused, so it is easy to tap to pause and resume),
 and the word being read by a 2 px accent
@@ -1264,13 +1264,14 @@ change it. The groups:
   (underlined, with a faint fill behind it), applies now and is remembered by
   this browser. It is a temporary test: one style will stay and the choice
   will go.
-  **Theme**: **Hilde** (one copper accent, the default: the light copper of
-  the logo and of the Voices page's "✓ Selected", used sparingly in Create,
-  Voices, Listen, Settings and Ask Hilde alike: it marks what is selected or
-  on and where you are reading, fills only the key actions such as Create
-  audiobook and play/pause, with dark text on it, and colours Ask Hilde's
-  sparkle; links, Change, Library and the other secondary buttons stay in
-  the text colour with gray borders) or **Classic** (the earlier plum and
+  **Theme**: **Hilde** (the default: an autumn palette used sparingly in
+  Create, Voices, Listen, Settings and Ask Hilde alike: the light copper of
+  the logo and of the Voices page's "✓ Selected" fills only the key actions
+  such as Create audiobook and play/pause, with dark text on it, and marks
+  where you are reading; a faded lilac marks what is selected (tabs, chosen
+  items, ticked boxes, links' underlines); a mauve that turns pink marks Ask
+  Hilde; a little leaf green lights what is on; Change, Library and the other
+  secondary buttons stay in the text colour with gray borders) or **Classic** (the earlier plum and
   pink). It applies now and only in this browser, so everyone keeps their
   own; your saved highlights and the Local, Cloud, and error colours keep
   their colours in both.
