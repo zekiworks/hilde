@@ -7,12 +7,15 @@ their GPUs loads its own Base model and pulls chunk batches like a
 
 ## Requirements
 
-The server's machine must already reach the other machine with
+The server's machine must reach the other machine with
 `ssh -o BatchMode=yes TARGET`: a key, not a password, and a host key it has
-accepted before. Turn on the other machine's SSH server first (on a Mac,
-System Settings › General › Sharing › Remote Login). Then, in a terminal on the
-server's machine, `ssh-copy-id TARGET` installs the key, and one `ssh TARGET`
-accepts the host key. The other machine also needs `git` and `curl`.
+accepted. In the web server, **Add narration workers** does both from a
+browser (below), so nobody needs a terminal on the server: turn on the other
+machine's SSH server (on a Mac, System Settings › General › Sharing › Remote
+Login), paste the line the dialog shows into a terminal there, and trust its
+fingerprint when Hilde asks. For the command line, `ssh-copy-id TARGET` and one
+`ssh TARGET` in a terminal on the server's machine do the same. The other
+machine also needs `git` and `curl`.
 
 Narrating there takes a Python environment with PyTorch and Qwen TTS and the
 Base model. The web server's **Set up** installs both (below); for the command
@@ -40,9 +43,19 @@ Open **Settings** in a browser on the server's own machine, at
 started with `--manage-from-network`). **Other narration machines**, under **Machines and devices**,
 lists the nodes, and **Add narration workers** adds one:
 
-1. Enter the machine as an IP address, a host name, or `user@host`, and press
-   **Connect**. Hilde connects over SSH, or says why it could not: SSH does not
-   know the machine yet, it asks for a password, or it does not answer.
+1. The first time, open **First time: let this server in**: it shows a line
+   with this server's public SSH key (the first identity `ssh` offers) to paste
+   into a terminal on the other computer, with **Copy**; it adds the key to
+   that account's `~/.ssh/authorized_keys`. Then enter the machine as an IP
+   address, a host name, or `user@host`, and press **Connect**. Hilde connects
+   over SSH, or says why it could not: it asks for a password (the key is not
+   in yet), it does not answer, or its key changed since this server last
+   connected (Hilde then trusts nothing; check with whoever runs it). A
+   machine this server has never connected to shows its key fingerprints
+   (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there shows the ED25519
+   one to compare) and **Trust … and connect**, which adds its host key to this
+   server's `~/.ssh/known_hosts`, as answering yes to `ssh` would, but only if
+   the key is still the one shown.
 2. Hilde shows the Python it found with PyTorch and Qwen TTS, the Base model it
    found, and every GPU with its free memory, all ticked. It looks for Python in
    `~/hilde/.venv`, `python3`, and pyenv and conda environments, and for the

@@ -1370,7 +1370,10 @@ change it. The groups:
   (Hilde does not know their model or ID), whether everyone's books use it or
   only books that choose it, and, on a device that may change settings,
   **Remove** (after a confirmation naming it) and **Add narration workers**:
-  enter its address, **Connect**, **Set up** if it lacks Hilde's Python or the
+  the first time, **First time: let this server in** (turn on SSH there, paste
+  the line it shows), then enter its address, **Connect**, **Trust … and
+  connect** for a computer this server has not connected to before (after
+  comparing its fingerprint), **Set up** if it lacks Hilde's Python or the
   speech model, untick any GPU to leave alone, tick **Everyone's books may use
   it too** unless it is your own computer, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a

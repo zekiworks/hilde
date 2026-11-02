@@ -2126,18 +2126,105 @@ def is_loopback_address(host):
     return (mapped or address).is_loopback
 
 
+class UnknownHostKey(RuntimeError):
+    """SSH does not know a node's host key yet: Add narration workers shows its
+    fingerprints and asks before trusting it (trust_host_key())."""
+
+    def __init__(self, host, fingerprints):
+        super().__init__(
+            f"This server has not connected to {host} before. Check that the fingerprint below is "
+            f"{host}'s, then press Trust and connect."
+        )
+        self.host, self.fingerprints = host, fingerprints
+
+
+def ssh_endpoint(host):
+    """The host name and port ssh uses for a destination (ssh -G reads ~/.ssh/config)."""
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        raise RuntimeError("This machine has no ssh command.")
+    result = subprocess.run([ssh, "-G", host], capture_output=True, text=True, timeout=10)
+    settings = dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
+    return settings.get("hostname", host.rpartition("@")[2]), settings.get("port", "22")
+
+
+def scan_host_keys(host):
+    """A node's host keys as ssh-keyscan reports them (hashed known_hosts lines),
+    with their SHA256 fingerprints, sorted; RuntimeError when none answers."""
+    keyscan, keygen = shutil.which("ssh-keyscan"), shutil.which("ssh-keygen")
+    if keyscan is None or keygen is None:
+        raise RuntimeError("This machine has no ssh-keyscan or ssh-keygen command.")
+    name, port = ssh_endpoint(host)
+    try:
+        lines = subprocess.run([keyscan, "-H", "-T", "10", "-p", port, "-t", "ed25519,ecdsa,rsa", name],
+                               capture_output=True, text=True, timeout=40).stdout
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{host} did not answer. Check that it is on and on this network.") from None
+    lines = "".join(line + "\n" for line in lines.splitlines() if line and not line.startswith("#"))
+    if not lines:
+        raise RuntimeError(f"{host} sent no SSH key. Check that its SSH server is on (on a Mac: Remote Login).")
+    listed = subprocess.run([keygen, "-l", "-f", "-"], input=lines, capture_output=True, text=True,
+                            timeout=10).stdout
+    fingerprints = sorted({f"{parts[1]} ({parts[-1].strip('()')})" for parts in
+                           (line.split() for line in listed.splitlines()) if len(parts) >= 3})
+    return lines, fingerprints
+
+
+def trust_host_key(host, fingerprints):
+    """Add a node's host keys to this user's ~/.ssh/known_hosts, as answering yes
+    to ssh's first question would, only when they are still the ones the browser
+    was shown (`fingerprints`); otherwise RuntimeError and nothing is written."""
+    lines, found = scan_host_keys(host)
+    if sorted(fingerprints) != found:
+        raise RuntimeError(f"{host}'s key is not the one you were shown. Nothing was trusted; connect again.")
+    folder = Path.home() / ".ssh"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    known = folder / "known_hosts"
+    with open(os.open(known, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as stream:
+        stream.write(lines)
+    return found
+
+
+def ssh_public_key():
+    """This user's public SSH key, the first ssh would offer (ssh -G's identity
+    files with a .pub beside them), for another machine's authorized_keys; ""
+    when it has none."""
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        return ""
+    try:
+        listed = subprocess.run([ssh, "-G", "localhost"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in listed.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "identityfile":
+            public = Path(os.path.expanduser(value) + ".pub")
+            try:
+                return public.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+    return ""
+
+
 def ssh_failure(host, stderr):
     """Say in plain words why ssh could not reach a node."""
     text = stderr.lower()
+    if "remote host identification has changed" in text:
+        return (
+            f"{host}'s SSH key changed since this server last connected. That happens after a "
+            f"reinstall, or when another machine answers in its place: check with whoever runs {host} "
+            "before using it."
+        )
     if "host key verification failed" in text:
         return (
-            f"This machine's SSH does not know {host} yet. In a terminal here, "
-            f"run ssh {host} once and accept its key, then press Connect again."
+            f"This server has not connected to {host} before: in Add narration workers, press "
+            "Connect, check the fingerprint, and trust it."
         )
     if "permission denied" in text:
         return (
-            f"{host} wants a password. Hilde signs in with a key: in a terminal "
-            f"here, run ssh-copy-id {host}, then press Connect again."
+            f"{host} did not accept this server's key. On {host}, add the key shown above "
+            "(This server's key) and press Connect again."
         )
     if "could not resolve hostname" in text:
         return f"No machine is called {host}. Check the name or IP address."
@@ -2174,6 +2261,9 @@ def probe_worker_node(host, python, model):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"{host} took more than two minutes to answer.") from None
     if result.returncode == 255:
+        if "host key verification failed" in result.stderr.lower() and \
+                "remote host identification has changed" not in result.stderr.lower():
+            raise UnknownHostKey(host, scan_host_keys(host)[1])
         raise RuntimeError(ssh_failure(host, result.stderr))
     try:
         found = json.loads(result.stdout.strip().splitlines()[-1])
@@ -21253,7 +21343,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.airdrop(body.get("path", ""))
         if route in (
             "/api/workers/probe", "/api/workers/add", "/api/workers/remove",
-            "/api/workers/setup", "/api/workers/setup/stop", "/api/workers/local",
+            "/api/workers/setup", "/api/workers/setup/stop", "/api/workers/local", "/api/workers/trust",
         ):
             return self.change_workers(route.removeprefix("/api/workers/"), body)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
@@ -21286,6 +21376,8 @@ class Handler(BaseHTTPRequestHandler):
             "consumers": self.server.jobs.public_consumers_snapshot(),
             "local": self.server.jobs.local_snapshot(),
             "setup": self.server.worker_setup and self.server.worker_setup.snapshot(),
+            # For another machine's authorized_keys (Add narration workers › This server's key).
+            "ssh_key": ssh_public_key(),
         }
 
     def change_device_access(self, action, body):
@@ -21370,7 +21462,7 @@ class Handler(BaseHTTPRequestHandler):
                         f"Could not save {WORKERS_FILE}: {exc}",
                     )
             return self.reply(HTTPStatus.OK, self.workers_payload())
-        if action in ("probe", "setup"):
+        if action in ("probe", "setup", "trust"):
             try:
                 host = ssh_target(str(body.get("host") or ""))
             except argparse.ArgumentTypeError:
@@ -21378,6 +21470,17 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "Enter the machine as an IP address, a host name, or user@host.",
                 )
+            if action == "trust":
+                # Add narration workers' Trust and connect: the fingerprints the browser was shown.
+                fingerprints = body.get("fingerprints")
+                if not isinstance(fingerprints, list) or not fingerprints or \
+                        not all(isinstance(item, str) for item in fingerprints):
+                    return self.fail(HTTPStatus.BAD_REQUEST, "Trust takes the fingerprints you were shown.")
+                try:
+                    trusted = trust_host_key(host, fingerprints)
+                except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                    return self.fail(HTTPStatus.CONFLICT, str(exc))
+                return self.reply(HTTPStatus.OK, {"host": host, "trusted": trusted})
             if action == "setup":
                 with self.server.workers_lock:
                     current = self.server.worker_setup
@@ -21393,6 +21496,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(HTTPStatus.BAD_REQUEST, "Python and Model take one line each.")
             try:
                 found = probe_worker_node(host, python, model)
+            except UnknownHostKey as exc:
+                return self.reply(HTTPStatus.CONFLICT, {"error": str(exc), "host_key": {
+                    "host": exc.host, "fingerprints": exc.fingerprints}})
             except RuntimeError as exc:
                 return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
             return self.reply(HTTPStatus.OK, found)
@@ -22923,6 +23029,11 @@ button.picker-box[aria-expanded=true] { border-color:var(--accent-light); }
 details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-space:pre-wrap;
                         overflow-wrap:anywhere;
                         font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+/* Add narration workers' first-time help: the command with this server's key, selectable in full. */
+.worker-key-help { margin:10px 0; }
+.worker-key-help summary { cursor:pointer; }
+.worker-key-help ol { margin:8px 0 0; padding-left:20px; }
+.worker-key-help pre { user-select:all; color:var(--text); }
 .voice-card { display:flex; align-items:center; gap:14px; min-width:0; padding:12px 14px;
               background:var(--raised); border-radius:10px; }
 .voice-meta { display:grid; grid-template-columns:minmax(0,1fr); gap:2px; min-width:0; }
@@ -25774,14 +25885,32 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
 
 <dialog id="workers-dialog">
   <h2>Add narration workers</h2>
-  <p class="note">Another machine narrates with its own GPUs once this server can
-    reach it with ssh and no password. <strong>Set up</strong> installs what it
-    needs there.</p>
+  <p class="note">Another computer (a Linux machine with an NVIDIA GPU, or a Mac) narrates once this
+    server can reach it with ssh and no password. <strong>Set up</strong> installs what it needs there.</p>
+  <details id="worker-key-help" class="worker-key-help">
+    <summary>First time: let this server in</summary>
+    <ol class="note">
+      <li>On the other computer, turn SSH on: on a Mac, System Settings › General › Sharing ›
+        Remote Login; on Linux, an SSH server (for example <code>sudo apt install openssh-server</code>).</li>
+      <li>Open a terminal there (on a Mac: Terminal) and paste this; it lets this server's key in:</li>
+    </ol>
+    <pre id="worker-key-command" class="setup-log"></pre>
+    <div class="row"><button id="worker-key-copy" type="button" onclick="copyWorkerKey()">Copy</button>
+      <span id="worker-key-note" class="note"></span></div>
+    <p class="note">Then enter the computer below as <code>name@address</code> (on a Mac, Remote Login
+      shows both) and press <strong>Connect</strong>.</p>
+  </details>
   <div class="row"><label for="worker-host">Machine:</label><div class="line">
     <input id="worker-host" type="text" autocomplete="off"
       placeholder="IP address, host name, or user@host">
     <button id="worker-connect" type="button" onclick="connectWorker()">Connect</button>
   </div></div>
+  <div id="worker-trust" class="hidden">
+    <ul id="worker-fingerprints" class="note"></ul>
+    <p class="note">To check, run <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on that
+      computer: its SHA256 must match the ED25519 line above.</p>
+    <div class="row"><button id="worker-trust-button" type="button" onclick="trustWorker()">Trust and connect</button></div>
+  </div>
   <div id="worker-found" class="hidden">
     <div class="row"><label for="worker-python">Python:</label><div class="line">
       <input id="worker-python" type="text" autocomplete="off">
@@ -36040,6 +36169,15 @@ function openWorkers() {
   workerProbe = null;
   $("worker-host").value = workerSetupRunning() ? workerNodes.setup.host : "";
   $("worker-python").value = ""; $("worker-model").value = ""; $("worker-shared").checked = false;
+  // This server's public key, as a line the other computer pastes into its terminal.
+  const key = (workerNodes && workerNodes.ssh_key) || "";
+  $("worker-key-command").textContent = key
+    ? `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`
+    : "";
+  $("worker-key-copy").disabled = !key;
+  $("worker-key-note").textContent = key ? ""
+    : "This server has no SSH key yet: its owner runs ssh-keygen -t ed25519 on it once.";
+  workerTrust = null; $("worker-trust").classList.add("hidden");
   $("worker-found").classList.add("hidden");
   $("worker-status").textContent = "";
   renderWorkerSetup();
@@ -36047,6 +36185,45 @@ function openWorkers() {
   $("worker-host").focus();
 }
 function closeWorkers() { $("workers-dialog").close(); }
+async function copyWorkerKey() {
+  try {
+    await navigator.clipboard.writeText($("worker-key-command").textContent);
+    $("worker-key-note").textContent = "Copied: paste it in the other computer's terminal.";
+  } catch {
+    $("worker-key-note").textContent = "Select the line above and copy it.";
+  }
+}
+// A machine this server has not connected to before: its fingerprints, and
+// Trust and connect, which adds its key to this server's known hosts only if
+// it is still the one shown (POST /api/workers/trust), then connects.
+let workerTrust = null;
+function showWorkerTrust(hostKey) {
+  workerTrust = hostKey;
+  $("worker-fingerprints").replaceChildren(...hostKey.fingerprints.map((print) => {
+    const item = document.createElement("li");
+    item.textContent = print;
+    return item;
+  }));
+  $("worker-trust-button").textContent = `Trust ${hostKey.host} and connect`;
+  $("worker-trust").classList.remove("hidden");
+}
+async function trustWorker() {
+  const hostKey = workerTrust;
+  if (!hostKey) return;
+  $("worker-trust-button").disabled = true;
+  try {
+    await jsonRequest("/api/workers/trust", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ host:hostKey.host, fingerprints:hostKey.fingerprints }),
+    });
+    workerTrust = null; $("worker-trust").classList.add("hidden");
+    await connectWorker();
+  } catch (error) {
+    $("worker-status").textContent = error.message;
+  } finally {
+    $("worker-trust-button").disabled = false;
+  }
+}
 function workerDeviceOption(found) {
   const label = document.createElement("label");
   label.className = "check";
@@ -36092,6 +36269,7 @@ async function connectWorker() {
   const again = !!workerProbe && workerProbe.host === host;
   $("worker-connect").disabled = true; $("worker-add").disabled = true;
   $("worker-status").textContent = `Connecting to ${host}…`;
+  workerTrust = null; $("worker-trust").classList.add("hidden");
   try {
     showWorkerProbe(await jsonRequest("/api/workers/probe", {
       method:"POST", headers:{ "Content-Type":"application/json" },
@@ -36105,6 +36283,7 @@ async function connectWorker() {
     workerProbe = null;
     $("worker-found").classList.add("hidden");
     $("worker-status").textContent = error.message;
+    if (error.body && error.body.host_key) showWorkerTrust(error.body.host_key);
   } finally {
     $("worker-connect").disabled = false;
     updateWorkerAdd();

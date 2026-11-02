@@ -12734,6 +12734,53 @@ class WorkerNodeTests(unittest.TestCase):
             ("narrator@10.0.0.5", "stopped", "Setup stopped."),
         )
 
+    def test_a_new_machine_is_trusted_from_the_browser_only_with_the_key_it_was_shown(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        home = Path(temporary.name)
+        lines, prints = "|1|abc= ssh-ed25519 AAAAkey\n", ["SHA256:aaa (ED25519)"]
+        # ssh refuses a host it does not know: the probe asks, with its fingerprints, unless the key changed.
+        refused = lambda stderr: subprocess.CompletedProcess([], 255, "", stderr)
+        with mock.patch.object(web.shutil, "which", return_value="/usr/bin/ssh"), \
+                mock.patch.object(web, "scan_host_keys", return_value=(lines, prints)):
+            with mock.patch.object(web.subprocess, "run", return_value=refused("Host key verification failed.\n")):
+                with self.assertRaises(web.UnknownHostKey) as asked:
+                    web.probe_worker_node("narrator@10.0.0.5", "", "/m")
+            self.assertEqual(asked.exception.fingerprints, prints)
+            with mock.patch.object(web.subprocess, "run", return_value=refused(
+                    "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\nHost key verification failed.\n")):
+                with self.assertRaisesRegex(RuntimeError, "SSH key changed") as changed:
+                    web.probe_worker_node("narrator@10.0.0.5", "", "/m")
+            self.assertNotIsInstance(changed.exception, web.UnknownHostKey)
+        server, origin = self.serve()
+        with mock.patch.object(web.Path, "home", return_value=home), \
+                mock.patch.object(web, "scan_host_keys", return_value=(lines, prints)), \
+                mock.patch.object(web, "probe_worker_node",
+                                  side_effect=web.UnknownHostKey("narrator@10.0.0.5", prints)), \
+                mock.patch.object(web, "ssh_public_key", return_value="ssh-ed25519 AAAAserver hilde@studio"):
+            self.assertEqual(self.request(origin, "/api/workers")[1]["ssh_key"], "ssh-ed25519 AAAAserver hilde@studio")
+            status, answer = self.request(origin, "/api/workers/probe", {"host": "narrator@10.0.0.5"})
+            self.assertEqual((status, answer["host_key"]), (409, {"host": "narrator@10.0.0.5", "fingerprints": prints}))
+            # Another key than the one shown: nothing is trusted.
+            status, _ = self.request(origin, "/api/workers/trust",
+                                     {"host": "narrator@10.0.0.5", "fingerprints": ["SHA256:other (ED25519)"]})
+            self.assertEqual(status, 409)
+            self.assertFalse((home / ".ssh/known_hosts").exists())
+            status, answer = self.request(origin, "/api/workers/trust",
+                                          {"host": "narrator@10.0.0.5", "fingerprints": prints})
+            self.assertEqual((status, answer["trusted"]), (200, prints))
+        known = home / ".ssh/known_hosts"
+        self.assertEqual(known.read_text(encoding="utf-8"), lines)
+        self.assertEqual((stat.S_IMODE((home / ".ssh").stat().st_mode), stat.S_IMODE(known.stat().st_mode)),
+                         (0o700, 0o600))
+        # This server's key for another machine's authorized_keys: the first identity ssh offers that has a .pub.
+        (home / "id_ed25519.pub").write_text("ssh-ed25519 AAAAmine hilde@studio\n", encoding="utf-8")
+        listed = f"identityfile {home}/id_rsa\nidentityfile {home}/id_ed25519\n"
+        with mock.patch.object(web.shutil, "which", return_value="/usr/bin/ssh"), \
+                mock.patch.object(web.subprocess, "run",
+                                  return_value=subprocess.CompletedProcess([], 0, listed, "")):
+            self.assertEqual(web.ssh_public_key(), "ssh-ed25519 AAAAmine hilde@studio")
+
     def test_a_node_added_while_a_book_waits_narrates_it_and_stays_until_the_book_ends(self):
         server, origin = self.serve()
         jobs = server.jobs
