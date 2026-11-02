@@ -2352,6 +2352,36 @@ class JobQueueTests(unittest.TestCase):
              "paused": None, "warnings": [], "part_models": []},
         ])
 
+    def test_a_job_on_a_chosen_gpu_runs_only_there_and_never_waits_on_one_that_is_off(self):
+        gpus = [{"value": f"cuda:{index}", "label": f"CUDA {index}",
+                 "uuid": f"0a0a0a0{index}-1111-2222-3333-44444444444{index}"} for index in range(3)]
+        jobs = web.JobQueue(web.audiobook_consumers({"source": "local", "model": "/m", "allow_downloads": False}, gpus))
+        self.addCleanup(jobs.shutdown)
+        jobs.set_local_off({"GPU-0a0a0a01-1111-2222-3333-444444444441"})
+        with self.assertRaisesRegex(ValueError, "GPU 1 is turned off for narration"):
+            self.reserve(jobs, "off", "cuda:1", "cuda:1")
+        with self.assertRaisesRegex(ValueError, "GPU 7 is not a narration worker"):
+            self.reserve(jobs, "absent", "cuda:7", "cuda:7")
+        record, created = self.reserve(jobs, "chosen", "cuda:2", "cuda:2")
+        run = self.ControlledRun("chosen.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(created and run.started.wait(1))
+        self.assertEqual([worker["device"] for worker in run.assigned_workers], ["cuda:2"])
+        run.close(0)
+
+    def test_a_browsers_device_choice_is_one_gpu_or_auto_and_reaches_the_job(self):
+        for given, kept in (("cuda:3", "cuda:3"), ("cuda:x", "auto"), ("/dev/nvidia0", "auto"), (2, "auto"), (None, "auto")):
+            state = web.normalize({"audiobook": {"device": given}, "voice": {"device": given}})
+            self.assertEqual((state["audiobook"]["device"], state["voice"]["device"]), (kept, kept), given)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        values = web.values_of(web.normalize({"audiobook": {"device": "cuda:2"}, "voice": {"device": "cuda:1"}}),
+                               web.unconfigured_tts_models(), storage)
+        self.assertEqual((values["requested_device"], values["device"], values["design_device"]),
+                         ("cuda:2", "cuda:2", "cuda:1"))
+
     def test_auto_job_claims_all_gpu_workers_before_next_job(self):
         consumers = (
             {"id": "cuda:0", "device": "cuda:0", "label": "CUDA 0"},

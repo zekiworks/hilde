@@ -12652,6 +12652,18 @@ def stored_text(mapping, key, fallback=""):
     return value if isinstance(value, str) else fallback
 
 
+# Where a browser asks its jobs to run (Create's "Narrate on", New voice's
+# "Design on"): "auto" (narration: every narration worker that is on; voice
+# design: the GPU with the most free memory), or one GPU of this server.
+DEVICE_CHOICE_PATTERN = re.compile(r"auto|cuda:\d{1,2}")
+
+
+def stored_device(mapping):
+    """A browser's device choice, or "auto" for anything else."""
+    value = mapping.get("device")
+    return value if isinstance(value, str) and DEVICE_CHOICE_PATTERN.fullmatch(value) else "auto"
+
+
 def stored_voice_tags(voice):
     """The New voice tags a browser chose: the valid ones, without repeats, at
     most VOICE_TAG_MAX_COUNT, in vocabulary order."""
@@ -12711,6 +12723,7 @@ def normalize(state):
             "tags": stored_voice_tags(voice),
             "details": stored_text(voice, "details"),
             "wav_subtype": stored_text(voice, "wav_subtype", "FLOAT"),
+            "device": stored_device(voice),
         },
         "audiobook": {
             "step": step,
@@ -12765,6 +12778,8 @@ def normalize(state):
                 else stored_text(audiobook, "batch_size", "2")
             ),
             "mp3_level": stored_text(audiobook, "mp3_level", "0.5"),
+            # Narrate on: this browser's GPU for its books (stored_device()).
+            "device": stored_device(audiobook),
         },
         # The book open on the Listen page survives a refresh.
         "player": {
@@ -12829,8 +12844,10 @@ def values_of(state, tts_models, storage):
         else audiobook["voice"].strip()
     )
     return {
-        "device": resolve_device("auto"),
-        "requested_device": "auto",
+        "device": resolve_device(audiobook["device"]),
+        "requested_device": audiobook["device"],
+        # New voice's Design on (run(): "auto" takes the roomiest GPU).
+        "design_device": voice["device"],
         "dtype": runtime["dtype"],
         "attn": runtime["attn"],
         "language": runtime["language"].strip(),
@@ -17715,6 +17732,19 @@ class JobQueue:
             ):
                 return existing, False
             eligible = self._eligible_consumers(requested_device)
+            requested = (requested_device or "auto").strip()
+            if requested.startswith("cuda:"):
+                # A GPU this browser chose (Narrate on): only while it narrates;
+                # never a job left waiting on one that is off or not found.
+                gpu = f"GPU {requested[5:]}"
+                if not eligible:
+                    raise ValueError(f"{gpu} is not a narration worker of this server: choose another GPU "
+                                     "or Any GPU that is on.")
+                if all(consumer in self.local_off for consumer in eligible):
+                    raise ValueError(f"{gpu} is turned off for narration in Settings › Machines and devices: "
+                                     "choose another GPU, or turn it on there.")
+                if all(consumer in self.missing for consumer in eligible):
+                    raise ValueError(f"{gpu} was not found by the last device check: choose another GPU.")
             if not eligible:
                 raise ValueError(
                     f"no consumer is available for {requested_device}"
@@ -21888,9 +21918,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(HTTPStatus.BAD_REQUEST, facts["problem"])
         values = values_of(state, self.server.tts_models, storage)
         if state["tab"] == "voice":
+            # Designing runs alone: on the GPU this browser chose (Design on),
+            # else the one with the most room.
+            chosen = values["design_device"]
+            if chosen != "auto" and chosen not in {choice.get("value") for choice in available_devices()}:
+                return self.fail(HTTPStatus.CONFLICT, f"GPU {chosen[5:]} was not found by the last device check: "
+                                 "choose another GPU, or The GPU with the most free memory.")
             draft = new_voice_draft(self.server.storage)
-            # Designing runs alone, so it takes the GPU with the most room.
-            values = {**values, "device": roomiest_cuda_device() or values["device"]}
+            values = {**values, "device": chosen if chosen != "auto" else roomiest_cuda_device() or values["device"]}
             command = create_voice_command(values, draft)
             run = Run(command, "voice", str(draft))
             # The fixed passage stays out of the visible run log.
@@ -24708,6 +24743,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               placeholder="Preset or server voice ID">
           </div>
           <div id="selected-voice" class="voice-card hidden"></div>
+          <div class="field hidden" id="narration-device-row">
+            <label for="narration-device">Narrate on</label>
+            <select id="narration-device" onchange="chooseDevice('audiobook', this)"></select>
+            <span id="narration-device-note" class="note hidden"></span>
+          </div>
           <div class="actions step-actions">
             <button id="voice-back" class="back" type="button" onclick="backStep()"><svg viewBox="0 0 16 16"
               aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -24895,6 +24935,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <label for="voice-name">Name</label>
           <input id="voice-name" type="text" autocomplete="off" placeholder="For example Rebecca">
           <span id="voice-exists" class="note"></span>
+        </div>
+        <div class="field hidden" id="design-device-row">
+          <label for="design-device">Design on</label>
+          <select id="design-device" onchange="chooseDevice('voice', this)"></select>
+          <span id="design-device-note" class="note hidden"></span>
         </div>
         <p id="voice-problem" class="problem hidden"></p>
         <div id="voice-progress" class="progress-meter hidden">
@@ -29062,10 +29107,10 @@ async function sendChat(event) {
       chatHint("The models are still loading. Your question stays here; send it again in a moment.");
     else {
       const { problem, model:chosen } = pickerChoice("chat");
-      const kind = pickerKind("chat"), other = !!(chosen && chosen.selector && modelKind(chosen.selector) !== kind);
+      const kind = pickerKind("chat"), other = !!(chosen && chosen.selector && !selectorIn(chosen.selector, kind));
       chatHint(problem || (needsProvider("chat")
         ? "Runs on is Cloud and no cloud provider is connected: connect one, or switch Runs on back to Local."
-        : other ? `Choose a ${MODEL_KINDS[kind].label} model, or switch Runs on back.`
+        : other ? `Choose a model on ${placeLabel(kind)}, or switch Runs on back.`
         : `No model is available${paperCatalog.error ? `: ${paperCatalog.error}`
         : ": connect a provider, or add your local server."}`), true);
       refreshPaperModels();
@@ -32952,6 +32997,40 @@ function noteRecentModel(selector) {
   } catch (_) { /* private mode: no recent list */ }
 }
 function modelKind(selector) { return ["ollama", "lm-studio"].includes(selector.split("/")[0]) ? "local" : "cloud"; }
+// Runs on, by place (Ümit, 2 Nov: she chooses the Spark): "cloud", "local"
+// (every local server), or one local server by its Providers name
+// ("local:Spark2"). A model's place is the server the catalog routes it to
+// (the first that lists it, local_route()), else the one that listed it
+// before it stopped answering (an offline row's endpoint).
+function placeKind(place) { return place === "cloud" ? "cloud" : "local"; }
+function placeServer(place) { return place.startsWith("local:") ? place.slice(6) : ""; }
+function placeLabel(place) { return placeServer(place) || MODEL_KINDS[placeKind(place)].label; }
+function placeOf(selector) {
+  if (modelKind(selector) === "cloud") return "cloud";
+  const listed = (paperCatalog.models || []).find((model) => model.selector === selector)
+    || (paperCatalog.rows || []).find((row) => row.row === "offline" && row.selector === selector);
+  return listed && listed.endpoint ? `local:${listed.endpoint}` : "local";
+}
+// A model's selector in a place: "local" takes every local model.
+function selectorIn(selector, place) {
+  const own = placeOf(selector);
+  return placeKind(own) === placeKind(place) && (!placeServer(place) || own === place);
+}
+// A catalog model or row in a place (a server that does not answer by its row's label).
+function inPlace(item, place) {
+  if (item.kind !== placeKind(place)) return false;
+  const server = placeServer(place);
+  return !server || item.endpoint === server || (item.row === "not-running" && item.label === server);
+}
+// Runs on's list: each local server of Settings › Providers, answering or
+// not, then every local model, then Cloud.
+function placeOptions() {
+  const servers = (paperCatalog.endpoints || []).map((endpoint) => ({ value:`local:${endpoint.name}`,
+    label:endpoint.name, detail:`${localServerLabel(endpoint.server)} · ${endpoint.running ? "answering" : "not answering"}` }));
+  return [...servers,
+    { value:"local", label:servers.length ? "All local servers" : MODEL_KINDS.local.label, detail:MODEL_KINDS.local.detail },
+    { value:"cloud", label:MODEL_KINDS.cloud.label, detail:MODEL_KINDS.cloud.detail }];
+}
 function pickerValue(name) {
   const picker = PICKERS[name];
   if (picker.server) return ((paperCatalog.defaults || {})[picker.server] || {}).selector || "";
@@ -33024,7 +33103,7 @@ function pickerAlternatives(name, missing) {
 function pickerKind(name) {
   if (pickerKinds[name]) return pickerKinds[name];
   const { model } = pickerChoice(name);
-  return model && model.selector ? modelKind(model.selector) : "local";
+  return model && model.selector ? placeOf(model.selector) : "local";
 }
 function noModelAvailable() { return paperCatalog.loaded && !(paperCatalog.models || []).length; }
 // Runs on is Cloud and no provider is connected: box 2 offers Connect a provider.
@@ -33191,14 +33270,14 @@ function renderPicker(name) {
   const { same, model, problem, unreachable, how } = pickerChoice(name);
   const none = noModelAvailable(), kind = pickerKind(name), connect = !none && needsProvider(name);
   // Runs on switched, no model of that kind chosen yet.
-  const switched = !!(model && model.selector && modelKind(model.selector) !== kind);
+  const switched = !!(model && model.selector && !selectorIn(model.selector, kind));
   const shown = switched || connect ? null : model;
   // A Settings default unset reads "Not set" until Runs on is switched.
   const text = shown ? (same ? `Same as the text model (${shown.short})` : shown.short)
     : picker.server && !pickerKinds[name] ? "Not set"
     : none ? "No model available" : connect ? "Connect a provider" : "Choose a model";
   const kindBox = $(`${name}-kind`);
-  kindBox.classList.toggle("kind-local", kind === "local");
+  kindBox.classList.toggle("kind-local", placeKind(kind) === "local");
   kindBox.classList.toggle("kind-cloud", kind === "cloud");
   renderKindValue($(`${name}-kind-value`), kind);
   const label = $(`${name}-model-name`);
@@ -33303,7 +33382,7 @@ function togglePerOption() {
 function kindIcon(kind) {
   const icon = document.createElement("span");
   icon.className = "kind-icon";
-  icon.innerHTML = kind === "local" ? CHIP_ICON : CLOUD_ICON;
+  icon.innerHTML = placeKind(kind) === "local" ? CHIP_ICON : CLOUD_ICON;
   return icon;
 }
 // Runs on's value keeps its icon and label while its kind stays the same, so a
@@ -33312,7 +33391,7 @@ function kindIcon(kind) {
 const KIND_VALUE_SHOWN = new WeakMap();
 function renderKindValue(value, kind) {
   if (KIND_VALUE_SHOWN.get(value) === kind && value.childNodes.length === 2) return;
-  value.replaceChildren(kindIcon(kind), MODEL_KINDS[kind].label);
+  value.replaceChildren(kindIcon(kind), placeLabel(kind));
   KIND_VALUE_SHOWN.set(value, kind);
 }
 // Under a model's name in the list: its local server's address, or how this
@@ -33428,8 +33507,8 @@ function renderPickerList(name, typed = false) {
   // models of a server that does not answer only those; the rest are left
   // out, not greyed. Its note under the boxes says so (IMAGES_ONLY_NOTE).
   const imagesOnly = !!picker.images;
-  const models = (paperCatalog.models || []).filter((model) => model.kind === kind && !(imagesOnly && model.images !== true));
-  const rows = (paperCatalog.rows || []).filter((row) => row.kind === kind
+  const models = (paperCatalog.models || []).filter((model) => inPlace(model, kind) && !(imagesOnly && model.images !== true));
+  const rows = (paperCatalog.rows || []).filter((row) => inPlace(row, kind)
     && !(imagesOnly && row.row === "offline" && row.images !== true));
   const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
   search.classList.toggle("hidden", !searching);
@@ -33439,13 +33518,13 @@ function renderPickerList(name, typed = false) {
     paperCatalog.first_use, paperCatalog.defaults, paperCatalog.suggestions, perOptionModels, query]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
-  list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${MODEL_KINDS[kind].label} models`);
+  list.setAttribute("aria-label", mode === "kind" ? "Runs on" : `${picker.label}: ${placeLabel(kind)} models`);
   const activeKey = list.querySelector(".picker-option.active")?.dataset.key;
   const nodes = [];
   let index = 0;
   if (mode === "kind") {
     renderSuggestFoot(name, null);
-    for (const [value, { label, detail }] of Object.entries(MODEL_KINDS))
+    for (const { value, label, detail } of placeOptions())
       nodes.push(pickerOption(name, index++, { key:`kind:${value}`, kind:value, icon:value, text:label, sub:detail,
                                                selected:value === kind }));
   } else {
@@ -33466,7 +33545,7 @@ function renderPickerList(name, typed = false) {
     // Suggested for this job on this tab, above the whole list, which still
     // holds them; none while searching. Their keys and IDs are their own, so
     // the list below is as without suggestions.
-    const suggested = query ? [] : pickerSuggestions(name, kind, models);
+    const suggested = query ? [] : pickerSuggestions(name, placeKind(kind), models);
     if (suggested.length) {
       const head = pickerHeading(name, "suggested", `Suggested for ${SUGGESTION_STAGES[picker.stage]}`);
       head.classList.add("suggest-title");
@@ -33483,7 +33562,7 @@ function renderPickerList(name, typed = false) {
     renderSuggestFoot(name, suggested.length ? paperCatalog.suggestions.source : null);
     // "Same as the text model": in a figure list only while the text model reads images.
     const text = picker.same ? pickerChoice("book").model : null;
-    if (text && text.selector && modelKind(text.selector) === kind && (!imagesOnly || text.images === true)
+    if (text && text.selector && selectorIn(text.selector, kind) && (!imagesOnly || text.images === true)
         && matches("Same as the text model", text.short)) {
       // Left open, figures would start with the server's default image
       // narration model: "Same" then names the text model itself.
@@ -33503,7 +33582,8 @@ function renderPickerList(name, typed = false) {
     if (fallback) nodes.push(option(fallback, ["Default"]));
     if (recent.length) nodes.push(pickerHeading(name, "recent", "Recently used"), ...recent.map((model) => option(model)));
     const rest = shown.filter((model) => model !== fallback && !recent.includes(model));
-    if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all", MODEL_KINDS[kind].all));
+    if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all",
+      placeServer(kind) ? `All models on ${placeServer(kind)}` : MODEL_KINDS[placeKind(kind)].all));
     nodes.push(...rest.map((model) => option(model)));
     for (const row of rows) {
       if (!matches(row.label, row.name, row.endpoint, row.selector, row.address, row.note)) continue;
@@ -33523,7 +33603,7 @@ function renderPickerList(name, typed = false) {
             text:row.label, sub:row.note, offer:true, problem:!!row.problem,
             actionText:row.refused ? "Use an API key instead" : "Connect" }));
     }
-    if (kind === "local")
+    if (placeKind(kind) === "local")
       nodes.push(pickerOption(name, index++, { key:"add-local", action:"add-local", text:"Add local",
                                                sub:"A model server on your own machines", link:true }));
   }
@@ -33605,7 +33685,7 @@ function choosePickerOption(name, option) {
     // Runs on: the model list of that kind opens; nothing is chosen yet.
     // Cloud with no provider connected: box 2 says Connect a provider instead.
     const { model } = pickerChoice(name);
-    if (model && model.selector && modelKind(model.selector) === option.dataset.kind) delete pickerKinds[name];
+    if (model && model.selector && placeOf(model.selector) === option.dataset.kind) delete pickerKinds[name];
     else pickerKinds[name] = option.dataset.kind;
     closePicker(false, true);
     if (needsProvider(name)) { render(); $(`${name}-picker`).focus(); return; }
@@ -33685,10 +33765,10 @@ function staticPicker(node, role) {
     model.source === "server" ? "Where the text is sent to be spoken" : "On this server's own workers"));
   const parts = [box];
   if (local && role === "design") {
-    // Each design takes the GPU with the most free memory, so the next may differ.
+    // A design runs on New voice's Design on, else the GPU with the most free memory.
     const gpus = machine.devices.filter((device) => device.kind === "cuda").length;
     const text = !model.device ? "Device chosen on first use"
-      : gpus > 1 ? "The last design's GPU: each design takes the one with the most free memory." : "";
+      : gpus > 1 ? "The last design's GPU: New voice › Design on chooses it, else the one with the most free memory." : "";
     if (text) {
       const note = document.createElement("span");
       note.className = "note"; note.textContent = text;
@@ -33732,6 +33812,8 @@ function renderSummary(voiceOnly) {
   const narration = configuration.clone;
   if (narration && narration.source === "server")
     add("Narration", badgeElement(`Speech server: ${narration.model}`, "Where the text is sent to be spoken"));
+  else if (narration && narration.source === "local" && state.audiobook.device !== "auto")
+    add("Narration", `On ${deviceName(state.audiobook.device)} (Narrate on)`);
   $("create-summary").replaceChildren(...rows);
 }
 
@@ -34205,6 +34287,7 @@ function progressJobRow(job) {
 function renderQueue() {
   renderMachines();
   renderProviders();
+  renderDeviceChoices();
   // The job poll repaints every two seconds; skip identical repaints so
   // keyboard focus on a queue button survives.
   const signature = JSON.stringify([jobs, consumers, configuration, currentJobId, state.tab,
@@ -35223,6 +35306,65 @@ function deviceName(value) {
   return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
     : value === "mps" ? "Apple MPS" : "CPU";
 }
+// Create's "Narrate on" and New voice's "Design on" (state.audiobook.device,
+// state.voice.device, stored_device() on the server): Any GPU that is on / the
+// GPU with the most free memory, or one GPU this server found, each with what
+// it is doing now. For narration a GPU that is off in Settings or not found is
+// listed but can't be chosen. Shown with two GPUs or more; the job poll keeps
+// it current, but never rebuilds a menu that is open.
+const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
+                       left_out:"left out of the current book", missing:"not found" };
+let deviceChoicesSignature = "";
+function renderDeviceChoices() {
+  if (!state) return;
+  const gpus = (machine.devices || []).filter((device) => device.kind === "cuda");
+  const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
+  const signature = JSON.stringify([gpus, workers.map((worker) => [worker.device, worker.status]),
+    state.audiobook.device, state.voice.device, configuration.clone, configuration.design]);
+  if (signature === deviceChoicesSignature) return;
+  deviceChoicesSignature = signature;
+  const doing = (gpu) => {
+    const worker = workers.find((item) => item.device === gpu.device);
+    return worker ? DEVICE_DOING[worker.status] || worker.status : "";
+  };
+  const usable = (gpu) => !["off in Settings", "not found", ""].includes(doing(gpu));
+  const fill = (group, id, show, auto, blocked) => {
+    $(`${id}-row`).classList.toggle("hidden", !show);
+    if (!show) return;
+    const select = $(id), chosen = state[group].device;
+    if (document.activeElement === select) { deviceChoicesSignature = ""; return; }
+    const options = [new Option(auto, "auto")];
+    for (const gpu of gpus) {
+      const now = doing(gpu);
+      const option = new Option(`${deviceName(gpu.device)}${now ? ` · ${now}` : ""}`, gpu.device);
+      option.disabled = blocked(gpu) && gpu.device !== chosen;
+      options.push(option);
+    }
+    if (!options.some((option) => option.value === chosen)) options.push(new Option(`${deviceName(chosen)} · not found`, chosen));
+    select.replaceChildren(...options);
+    select.value = chosen;
+    const gpu = gpus.find((item) => item.device === chosen);
+    const note = chosen === "auto" ? ""
+      : !gpu ? `${deviceName(chosen)} was not found by the last device check: choose another.`
+      : blocked(gpu) ? `${deviceName(chosen)} does not narrate now (${doing(gpu) || "no narration worker"}): `
+        + "choose another GPU, or turn it on in Settings › Machines and devices."
+      : group === "audiobook" && doing(gpu) === "narrating" ? `${deviceName(chosen)} is narrating: your book waits for it.`
+      : "";
+    $(`${id}-note`).textContent = note;
+    $(`${id}-note`).classList.toggle("hidden", !note);
+  };
+  const on = gpus.filter(usable).length;
+  fill("audiobook", "narration-device", gpus.length > 1 && (configuration.clone || {}).source === "local",
+       `Any GPU that is on (${on} of ${gpus.length})`, (gpu) => !usable(gpu));
+  fill("voice", "design-device", gpus.length > 1 && (configuration.design || {}).source === "local",
+       "The GPU with the most free memory", () => false);
+}
+function chooseDevice(group, select) {
+  state[group].device = select.value;
+  deviceChoicesSignature = "";
+  queueSync();
+  renderDeviceChoices();
+}
 async function refreshWorkers() {
   if (!caps.manage_workers) { renderWorkers(); return; }
   try { applyWorkers(await jsonRequest("/api/workers")); }
@@ -35266,29 +35408,29 @@ function deviceText(device) {
   const id = deviceId(device);
   return `${device.name || DEVICE_KINDS[device.kind] || device.device}${id ? ` (${id})` : ""}`;
 }
-// One device: its number (a probed GPU's "GPU 2", the number narration
-// statuses use), name and identifier, what it is, and whether it narrates;
-// `own` (this server's device, for a browser that may manage machines) adds
-// the box that takes it out of narration.
+// One device: a probed GPU by its number ("GPU 2", the number narration
+// statuses use), its model, memory and ID in the tooltip only; another
+// machine's device as workers.yaml names it. Then whether it narrates; `own`
+// (this server's device, for a browser that may manage machines) adds the box
+// that takes it out of narration.
 function deviceItem(device, worker, own, reported) {
   const item = document.createElement("li");
   item.className = "device";
   const head = document.createElement("div");
   head.className = "device-name";
-  const number = device.name && device.kind === "cuda" && device.device ? `${deviceName(device.device)} · ` : "";
-  head.textContent = number + (device.name || DEVICE_KINDS[device.kind] || device.device);
   const id = deviceId(device);
-  if (id) {
+  const probed = device.name && device.kind === "cuda" && device.device;
+  head.textContent = probed ? deviceName(device.device) : device.name || DEVICE_KINDS[device.kind] || device.device;
+  if (probed) head.title = [device.name, device.memory, id].filter(Boolean).join(" · ");
+  else if (id) {
     const tag = document.createElement("span");
     tag.className = "device-id"; tag.textContent = id;
     head.append(" ", tag);
   }
   item.append(head);
-  const meta = [device.name ? DEVICE_KINDS[device.kind] : "", device.memory,
-                reported ? "" : "model and ID not reported"].filter(Boolean);
-  if (meta.length) {
+  if (!reported) {
     const line = document.createElement("span");
-    line.className = "device-meta"; line.textContent = meta.join(" · ");
+    line.className = "device-meta"; line.textContent = "model and ID not reported";
     item.append(line);
   }
   const doing = worker ? WORKER_STATES[worker.status] || worker.status : "";
@@ -35411,34 +35553,29 @@ function renderModelServers(choices) {
   }
   const summary = document.createElement("p");
   summary.className = "note";
-  summary.textContent = !paperCatalog.loaded ? "The model servers have not been checked yet."
-    : endpoints.length ? `${endpoints.length} model server${endpoints.length === 1 ? "" : "s"} at `
-      + `${hosts.size} address${hosts.size === 1 ? "" : "es"}, as added under Providers. Hilde knows each by `
-      + "its address: it is not told which Spark or which GPU runs it, nor whether it is busy."
-    : "No model server is added under Providers.";
-  const blocks = [...hosts].map(([host, list]) => machineBlock(host,
-    list.length > 1 ? `${list.length} model servers at this address` : "",
+  // Each model server by its name, whether it answers, and what it is chosen
+  // for; grouped by address (one address is one machine). Where text runs is
+  // chosen in each model picker (Runs on), not here.
+  const blocks = [...hosts].map(([host, list]) => machineBlock(host, "",
     list.map((endpoint) => {
       const item = document.createElement("li");
       item.className = "device";
       const head = document.createElement("div");
       head.className = "device-name"; head.textContent = endpoint.name;
-      const tag = document.createElement("span");
-      tag.className = "device-id"; tag.textContent = localServerLabel(endpoint.server);
-      head.append(" ", tag);
+      head.title = localServerLabel(endpoint.server);
       const count = (paperCatalog.models || []).filter((model) => model.endpoint === endpoint.name).length;
-      const meta = document.createElement("span");
-      meta.className = "device-meta";
-      meta.textContent = endpoint.running ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering";
       const jobs = choices.filter(([, home]) => home && home.local && home.endpoint === endpoint.name)
         .map(([label]) => label);
-      const chosen = document.createElement("span");
-      chosen.className = "device-meta";
-      chosen.textContent = jobs.length ? `Chosen for: ${jobs.join("; ")}` : "Not chosen for these jobs";
-      item.append(head, meta, chosen);
+      const meta = document.createElement("span");
+      meta.className = "device-meta";
+      meta.textContent = [endpoint.running ? `answering · ${count} model${count === 1 ? "" : "s"}` : "not answering",
+                          jobs.length ? `chosen for ${jobs.join("; ")}` : ""].filter(Boolean).join(" · ");
+      item.append(head, meta);
       return item;
-    }),
-    [["GPUs", "not reported", "A model server does not tell Hilde its machine's hardware."]]));
+    }), []));
+  summary.textContent = !paperCatalog.loaded ? "The model servers have not been checked yet."
+    : endpoints.length ? "Choose where text runs in each model picker (Runs on): a model server, all of them, or Cloud."
+    : "No model server is added under Providers.";
   $("model-servers").replaceChildren(table, summary, ...blocks);
 }
 function renderMachines(force = false) {
@@ -35475,17 +35612,22 @@ function renderMachines(force = false) {
   // (another GPU may have its old one): it is listed after the devices found.
   const missing = consumers.filter((worker) => worker.kind === "local" && worker.status === "missing");
   const ownOf = (worker) => own.find((entry) => entry.missing && entry.label === worker.label);
-  const gpus = machine.devices.filter((device) => device.kind === "cuda").length;
+  const gpus = machine.devices.filter((device) => device.kind === "cuda");
+  // The GPUs' model and memory once, when they are all alike.
+  const alike = gpus.length && gpus.every((gpu) => gpu.name === gpus[0].name && gpu.memory === gpus[0].memory);
   const here = machineBlock(machine.name || "Name not reported",
-    gpus ? `${gpus} GPU${gpus === 1 ? "" : "s"} found by the last device check` : "",
-    [...machine.devices.map((device) => deviceItem(device,
+    !gpus.length ? "" : alike ? `${gpus.length} × ${gpus[0].name}${gpus[0].memory ? `, ${gpus[0].memory}` : ""}`
+      : `${gpus.length} GPUs`,
+    [...machine.devices.filter((device) => !gpus.length || device.kind === "cuda").map((device) => deviceItem(device,
       workers.find((worker) => worker.device === device.device),
       own.find((entry) => entry.device === device.device), true)),
      ...missing.map((worker) => deviceItem(
       { device:"", kind:"cuda", name:`${worker.label} (not found)`,
         id:ownOf(worker) ? ownOf(worker).id.slice(0, 12) : "" },
       worker, ownOf(worker), true))],
-    [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]);
+    // Only a job that is not available says so, with why.
+    [["Text preparation", ...text], ["Narration", ...narration], ["Voice design", ...voiceDesign]]
+      .filter(([, availability]) => availability !== "available"));
   // Why the list may lack this machine's GPUs (devices_note()): a failed device check, or CUDA_VISIBLE_DEVICES.
   const note = document.createElement("p");
   note.id = "machine-devices-note";

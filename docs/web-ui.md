@@ -64,7 +64,13 @@ have gone back to an earlier step. A long file name is cut short with "…".
 Green means done for this book: when you start a new book (after **Create
 audiobook** or **Create another book**), steps 2 and 3 are gray again, though
 the voice you used last is still chosen in step 2, so one **Continue** there
-confirms it.
+confirms it. With two GPUs or more, step 2 also has **Narrate on**: **Any GPU
+that is on** (how many of them are on) or one GPU by number, each with what it
+is doing now (free, narrating, designing a voice, off in Settings); a GPU that
+is off can't be chosen, and one you chose that is turned off later says so
+under the menu. This browser remembers the choice, and the summary above
+**Create audiobook** names the GPU. A book started on a GPU that cannot
+narrate is refused with the reason, never left waiting.
 
 A finished step's whole row is one button, with its **Change** label inside
 it: a click or tap anywhere on the row, or Enter or Space when the row has the
@@ -679,7 +685,7 @@ and **Ask Hilde** in the text's colour, then the chat's model box, **⋯**, and 
 right. With more than one tab (**Ask Hilde | Notes**, a figure, a page) or in a
 panel under 420 px wide (a phone, a narrow window) the header has two rows: the
 tabs, **⋯** and **×** on the first, and the whole model box on the second (the
-**Runs on** box with **Local** or **Cloud**, then the model's full name, wrapping rather than
+**Runs on** box with the model server's name, **Local**, or **Cloud**, then the model's full name, wrapping rather than
 cut). Under an answer, **Read aloud** and **Save to notes** sit side by side in
 one row, and the conversation keeps its end in sight when the card or the
 keyboard takes room, so neither is cut off.
@@ -709,10 +715,10 @@ search the web and read pages, for background or later work, and links what
 it used; those links open in a new tab, and the chat's **⋯** menu says **Web
 search on**. Its answer streams in as it writes. The model is one of yours:
 pick it in the model box in the chat's header, with the same model picker as on
-**Create** (see above), in a compact form (a **Runs on** box that says Local or
-Cloud, and the **Model** box with the model's name; the model box
-opens the list); a local model answers from the server that offers it. The
-**Runs on** box shows **Local** or **Cloud** in words, so you see where your
+**Create** (see above), in a compact form (a **Runs on** box that names the
+model server, such as Spark2, or says Local or Cloud, and the **Model** box with
+the model's name; the model box opens the list); a local model answers from the
+server that offers it. The **Runs on** box shows where in words, so you see where your
 question goes before you send it and can switch to the other (screen readers hear the server or the provider and how it is
 reached too, as the list shows them), and the picker remembers the model you
 used last; it never starts on a cloud model by itself. With **Runs on** set to Cloud and no cloud
@@ -1165,7 +1171,9 @@ pace. Suited to narration. Reads like a late-night radio host." At least one
 tag or some details are needed.
 
 **Generate preview** has VoiceDesign make a version, which plays as soon as
-it is ready; **Stop** cancels it. Voices can be designed only while no
+it is ready; **Stop** cancels it. With two GPUs or more, **Design on** above it
+chooses the GPU: **The GPU with the most free memory** (the default) or one GPU
+by number, with what each is doing now; this browser remembers it. Voices can be designed only while no
 audiobook is being made. **Save voice** turns on once you have heard this
 preview to its end or for at least 3 seconds, and only while the tags and
 details are the ones previewed; change them and you generate a new preview
@@ -1318,15 +1326,16 @@ change it. The groups:
   for every browser.", "Saved for every browser: Default text narration: …")
   or the reason it did not. **Remove** there, or **Stop changing settings
   from here** on the device, ends it. **This server**
-  is the machine Hilde runs on, by its short host name and how many GPUs the
-  last device check found, with every device the probe found: a CUDA GPU by
-  its number (**GPU 0**, **GPU 1**, the numbers narration statuses use), name,
-  memory, and a stable ID (the start of its UUID, such as `GPU-7a85a208`, which
-  stays when GPUs are added or hidden), an Apple GPU (MPS), or the CPU, each
-  saying whether it is a
-  narration worker and whether that worker is idle, narrating, held while a
-  voice is designed, off, excluded in settings, not found by the last device
-  check, or left out of the current book because it could not start. The
+  is the machine Hilde runs on, by its short host name and, once, its GPUs'
+  model and memory (such as "4 × NVIDIA RTX PRO 6000 …, 95 GiB"), then each
+  GPU by its number (**GPU 0**, **GPU 1**, the numbers **Narrate on** and the
+  narration statuses use; its model, memory, and ID such as `GPU-7a85a208`
+  show when you point at it), each saying whether it is a narration worker
+  and whether that worker is idle, narrating, held while a voice is designed,
+  off, excluded in settings, not found by the last device check, or left out
+  of the current book because it could not start. Text preparation,
+  narration, and voice design are listed under it only when one is not
+  available, with why. The
   devices are those found by the last check, at startup or at a book's
   narration; a narration worker's GPU it did not find follows them as
   "(not found)". When the list may lack GPUs the machine has, a line under
@@ -1341,11 +1350,10 @@ change it. The groups:
   <model server>", "which is not answering" when that server is down, or, for
   a cloud model, that it runs at the provider on none of these machines. Under
   it are the model servers added under **Providers**, grouped by the machine
-  of their address (two servers on one address are one machine), each
-  answering or not, how many models it lists, and which of those jobs it is
-  chosen for. Hilde knows a model server only by its address: it is not told
-  which Spark or which GPU runs it, nor whether it is busy, so each machine
-  says "GPUs: not reported". **Other narration machines** lists the nodes
+  of their address, each answering or not, how many models it lists, and
+  which of those jobs it is chosen for. You choose where text runs in each
+  model picker: its **Runs on** lists every model server by name, **All local
+  servers**, and **Cloud**. **Other narration machines** lists the nodes
   that narrate over SSH, each with its devices as `workers.yaml` names them
   (Hilde does not know their model or ID) and, on the server's own machine,
   **Remove** (after a confirmation naming it) and **Add narration workers**:
@@ -1395,8 +1403,8 @@ change it. The groups:
   readable name (such as `Qwen3-TTS 1.7B (Base)`; the model ID is in the
   tooltip), with **Local** or **Speech server**. Voice design adds the device
   its last design ran on, by name and ID, or "Device chosen on first use"
-  before the first; with several GPUs, each design takes the one with the
-  most free memory. Hilde sets these when it starts, from its start command:
+  before the first; with several GPUs, each design runs on New voice's
+  **Design on**, by default the one with the most free memory. Hilde sets these when it starts, from its start command:
   no browser changes them, on the server's machine either; the server's owner
   restarts Hilde with other models. **Default text narration** (the model that
   prepares and adapts the text) and **Default image narration** (the model
@@ -1431,8 +1439,9 @@ the machines: one on the server's own machine, a device it approved, or any
 browser when Hilde started with `--manage-from-network`
 (see [Configuration](configuration.md#manage-from-other-devices)). Elsewhere
 a note at the top of **Machines and devices** says it is read-only until
-approved, and other machines appear as `Machine 1` and so on. Browsers
-cannot select, pin, or name devices.
+approved, and other machines appear as `Machine 1` and so on. A browser
+chooses a GPU for its own jobs only (Create's **Narrate on**, New voice's
+**Design on**); it never names or pins devices for others.
 
 ## Asking before risky actions
 

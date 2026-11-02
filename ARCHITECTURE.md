@@ -1483,7 +1483,14 @@ Each page:
      (below) starts at most one job per draft.
   2. **Choose a voice**: the saved-voice dropdown (`audiobook.voice`, the
      state Voices' **Select** sets) and a card previewing the chosen voice. A
-     narration speech server takes a server voice ID instead.
+     narration speech server takes a server voice ID instead. With two GPUs or
+     more and local narration, **Narrate on** (`#narration-device`,
+     `state.audiobook.device`, `renderDeviceChoices()`): "Any GPU that is on
+     (n of m)" (`auto`) or one GPU by number with what it is doing now (free,
+     narrating, designing a voice, off in Settings, not found), from
+     `machine.devices` and the consumer snapshot; a GPU that does not narrate
+     can't be newly chosen, and a chosen one that stops narrating says so under
+     the menu. The job poll keeps it current but never rebuilds an open menu.
   3. **How Hilde prepares the text**: first `#book-model`, **Model for this
      book** (the `book` picker, `state.audiobook.model`), which all three
      options use; **Use different models per option** (`togglePerOption()`)
@@ -1498,11 +1505,16 @@ Each page:
      `renderPicker()`, `renderPickerList()`): the book, figure, and checking
      pickers, Ask Hilde's (`state.player.chat_model`), and Settings' two
      server-wide defaults. It is two dropdown boxes with their labels outside, **Runs on**
-     (`#<name>-kind`: Local or Cloud, `pickerKind()`) and **Model**
+     (`#<name>-kind`, `pickerKind()`) and **Model**
      (`#<name>-picker`: short name and badge), and a small **Change**; one
      list popover (`#<name>-picker-pop`, `position:fixed`, placed inside the
-     screen by `placePicker()`) shows either the two kinds or the models of
-     the current kind. Choosing a kind opens that kind's model list
+     screen by `placePicker()`) shows either the places or the models of
+     the current place. A place (`placeOptions()`) is one local model server of
+     Providers by name (`local:<name>`, with its address and whether it answers),
+     "All local servers" (`local`), or Cloud (`cloud`); a model's place is the
+     server the catalog routes it to, else the one an offline row names
+     (`placeOf()`), and the list shows only that place's models and rows
+     (`inPlace()`). Choosing a place opens that place's model list
      (`pickerKinds`); closing it unchosen takes the switch back. Cloud with no
      cloud model in the catalog (`needsProvider()`, `noCloudModel()`) opens no
      list: the switch stays and the Model box reads **Connect a provider**
@@ -2190,10 +2202,11 @@ server reports. `/api/state` adds `machine`: this server's short host name
 `GPU-` and the first 8 hex digits of its UUID). The public consumer snapshot
 adds each worker's `device` and, for a node, its `machine` number, so a
 browser not on the server's machine groups node workers without hosts
-(`Machine 1 · GPU 2`). **This server** heads with how many CUDA devices the
-probe found and lists them, a CUDA one as `deviceName()` numbers it (`GPU 2`,
-torch's index, the number narration statuses use) before its name and ID,
-each with its narration worker state (`idle`, `narrating`, `held while a voice is
+(`Machine 1 · GPU 2`). **This server** heads with the GPUs' model and memory
+once when they are alike ("4 × <name>, <memory>"; else "n GPUs") and lists
+each GPU by `deviceName()` (`GPU 2`, torch's index, the number narration
+statuses and **Narrate on** use), its name, memory and ID in the tooltip; the
+CPU row only when no GPU was found. Each says its narration worker state (`idle`, `narrating`, `held while a voice is
 designed`, or `off, excluded in settings`; a device that is no narration
 worker says so) and, for a browser on the server's machine, its box (`POST
 /api/workers/local`, applies now). Under it, `machine.devices_note`
@@ -2211,13 +2224,13 @@ machine: for this browser's `book` and `chat` pickers and the server's
 listing it, as `local_route()` routes), else on an offline row's `endpoint`
 ("which is not answering"), else nowhere; a cloud model "runs at the provider".
 Then `paperCatalog.endpoints` grouped by the host of their address (one
-address is one machine; no Spark name, GPU, or load is reported by a model
-server, so each says "GPUs: not reported"), each answering or not, its model
-count, and the jobs it is chosen for. **Other narration machines** lists the nodes by host
+address is one machine), each by name (its address in the tooltip), answering
+or not, its model count, and the jobs it is chosen for; one line says where
+text runs is chosen: in each model picker's **Runs on**. **Other narration machines** lists the nodes by host
 there (by number elsewhere), with their `workers.yaml` devices (no model or
-ID is known) and **Remove**. This server and each node show **Text preparation**,
+ID is known) and **Remove**. Each node shows **Text preparation**,
 **Narration**, and **Voice design** separately as `available`, `not
-available` with the reason, or `not tested`: text preparation is available on
+available` with the reason, or `not tested`, and this server only those not `available`: text preparation is available on
 this server when the model catalog lists a model (`not tested` until it
 loads), never on a node; narration when the machine has a narration worker
 that is not off; voice design on this server with a local voice-design model,
@@ -2305,10 +2318,16 @@ started with `--manage-from-network`, `HildeServer.manage_from_network`) sees
 the hosts and paths (`capabilities.manage_workers`, `GET /api/workers`) or may
 probe, set up, add, or remove; others get HTTP 403 and see only the chips.
 
-Browser state contains no device
-choice. Local audiobook jobs claim all currently idle local CUDA and
-node workers; a GPU whose worker waits for memory inside the job
-still shows `running`, and the job's log names it. Voice design runs on the
+Browser state holds each browser's device choice: `audiobook.device` (Create's
+**Narrate on**) and `voice.device` (New voice's **Design on**), each `auto` or
+`cuda:N` (`stored_device()`; anything else is `auto`). `values_of()` passes
+`audiobook.device` as the job's `requested_device`: `auto` claims all currently
+idle local CUDA and node workers; `cuda:N` only that GPU's local worker, and
+`JobQueue.reserve_audiobook()` refuses (HTTP 409 with the reason) a chosen GPU
+that is no narration worker, off in `local_off`, or not found, so a job never
+waits on a GPU that cannot take it. A GPU whose worker waits for memory inside the
+job still shows `running`, and the job's log names it. Voice design runs on
+`voice.device` (HTTP 409 when the last device check did not find it), else the
 GPU with the most free memory (`roomiest_cuda_device()` reads the same
 `gpu_free_mebibytes()` as the narration coordinator), else MPS, else CPU.
 **Download MP3** retrieves an exact retained audiobook name.
