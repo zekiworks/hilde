@@ -1293,9 +1293,21 @@ change it. The groups:
 - **Machines and devices**: only what the server reports. A device that may
   not change machines (any browser not on the server's machine, unless Hilde
   started with `--manage-from-network`) sees it read-only, with a note saying
-  so: only a browser on the server's machine turns narration workers on or
-  off here and adds model servers under **Providers**; the text model each
-  browser uses is still its own choice in each model picker. **This server**
+  so: only a browser on the server's machine, or a device it approved, turns
+  narration workers on or off here; only the server's machine adds narration
+  machines, and model servers under **Providers**; the text model each
+  browser uses is still its own choice in each model picker. To change
+  narration workers from a phone or another computer, press **Ask to turn
+  narration workers on or off here** on it: it shows a six-letter code and
+  waits. In a browser on the server's machine, **Devices that may turn
+  narration workers on or off** lists the request with the device's kind,
+  address, and code: **Approve** (or **Deny**) it there, and the waiting
+  device shows its boxes within a few seconds, without a reload. Requests
+  expire after 15 minutes. An approved device turns this server's GPUs on or
+  off for narration and nothing else; each change says "Saved: GPU 2 no
+  longer narrates" only after the server has saved it, or the reason it did
+  not. **Remove** there, or **Stop changing devices from here** on the
+  device, ends it. **This server**
   is the machine Hilde runs on, by its short host name and how many GPUs the
   last device check found, with every device the probe found: a CUDA GPU by
   its number (**GPU 0**, **GPU 1**, the numbers narration statuses use), name,
@@ -1404,12 +1416,12 @@ change it. The groups:
   `ask.yaml`, or it failed to start).
 
 Only a browser on the server's own machine sees the nodes' hosts and may change
-the devices and machines, unless Hilde started with `--manage-from-network`
-(see [Configuration](configuration.md#manage-from-other-devices)); elsewhere
-one note at the top of **Machines and devices** says "Read-only from this
-device. Manage machines from a browser on the Hilde server, or start Hilde with
---manage-from-network.", and other machines appear as `Machine 1` and so on.
-Browsers cannot select, pin, or name devices.
+the machines, unless Hilde started with `--manage-from-network`
+(see [Configuration](configuration.md#manage-from-other-devices)); a device it
+approved may also turn this server's narration workers on or off, and nothing
+else. Elsewhere a note at the top of **Machines and devices** says what is
+read-only and where it changes, and other machines appear as `Machine 1` and
+so on. Browsers cannot select, pin, or name devices.
 
 ## Asking before risky actions
 

@@ -223,7 +223,9 @@ with the proxy on the same machine, keep the default host. Cross-origin POST
 rejection is CSRF hardening, not access control. Providers and SSH machines
 change only from a browser on the server's own machine unless you start Hilde
 with `--manage-from-network`; then anyone who reaches it can add keys, sign it
-out, or add SSH machines that run as you (see
+out, or add SSH machines that run as you. Without the flag, a browser on the
+server's machine may approve other devices to turn its GPUs on or off for
+narration, and nothing more (see
 [Configuration](docs/configuration.md#manage-from-other-devices)).
 
 ### HTTPS

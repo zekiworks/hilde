@@ -56,6 +56,19 @@ this server." Hilde has no sign-in: with the flag, anyone who reaches the
 server can add API keys, sign it out of a provider, or add SSH machines that
 then run programs as this user, so use it only on a network you trust.
 
+Without the flag, a phone or another computer can be allowed to turn this
+server's narration workers (its GPUs) on or off, and nothing else: on the device, press
+**Ask to turn narration workers on or off here** under **Settings › Machines
+and devices**; it shows a six-letter code. A browser on the server's own
+machine (for example through `ssh -L 8800:127.0.0.1:8800 server`) lists the
+request there; **Approve** it if the code matches. The device keeps a random
+token in a cookie, and the server keeps only its SHA-256 in
+`<storage-root>/device-grants.json`, readable only by the server's user.
+**Remove** there, or **Stop changing devices from here** on the device, ends
+it. Over plain HTTP the cookie crosses the network unencrypted, so anyone who
+can watch the network could copy it; serve [HTTPS](../README.md#https) to keep
+it private.
+
 ### Start at boot
 
 On Linux, a systemd user service starts Hilde with the machine and restarts it

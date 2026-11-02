@@ -50,6 +50,7 @@ import os
 import platform
 import queue
 import re
+import secrets
 import select
 import shlex
 import shutil
@@ -1906,6 +1907,183 @@ WORKERS_LOCAL_ONLY = (
     "Narration workers on other machines are added and removed in a browser on the "
     "server's own machine, or from any device when Hilde starts with --manage-from-network."
 )
+DEVICES_APPROVED_ONLY = (
+    "Only a browser on the server's own machine, or a device it approved, turns this "
+    "server's narration workers on or off."
+)
+DEVICES_APPROVE_LOCAL_ONLY = "Devices are approved in a browser on the server's own machine."
+
+# Settings › Machines and devices from another device, without
+# --manage-from-network: a device asks (POST /api/devices/request) and keeps a
+# random token in an HttpOnly cookie; a browser that may manage approves it by
+# the code the device shows. An approved device may then turn this server's
+# narration workers on or off, and nothing more: narration machines, providers,
+# and the default models stay with Handler.may_manage(). device-grants.json, in
+# the storage root and readable only by the server's user, keeps each approved
+# token's SHA-256 only; requests live in memory for DEVICE_REQUEST_SECONDS.
+DEVICE_GRANTS_FILE = "device-grants.json"
+DEVICE_COOKIE = "hilde_devices"
+DEVICE_COOKIE_MAX_AGE = 400 * 24 * 3600
+DEVICE_REQUEST_SECONDS = 15 * 60
+DEVICE_REQUESTS_MAX = 8
+# No 0/O or 1/I/L, so a code read aloud is not mistaken.
+DEVICE_CODE_LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+DEVICE_CODE_LENGTH = 6
+
+
+def device_label(value):
+    """A device's name as it asked: one printable line of at most 40 characters."""
+    text = " ".join("".join(ch for ch in str(value or "") if ch.isprintable()).split())[:40]
+    return text or "A device"
+
+
+class DeviceGrants:
+    """The devices approved to turn narration workers on or off, and the
+    requests waiting for approval. Unreadable device-grants.json approves
+    nothing and refuses new approvals until fixed (`problem`)."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.lock = threading.Lock()
+        self.pending = {}  # token digest -> {"code", "name", "address", "asked"}
+        self.granted = {}  # token digest -> {"id", "name", "address", "approved"}
+        self.problem = ""
+        try:
+            entries = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(entries, list) or not all(
+                isinstance(entry, dict) and isinstance(entry.get("digest"), str)
+                and isinstance(entry.get("id"), str) for entry in entries
+            ):
+                raise ValueError("not a list of approved devices")
+        except FileNotFoundError:
+            entries = []
+        except (OSError, ValueError) as exc:
+            self.problem = f"{DEVICE_GRANTS_FILE} could not be read ({exc}); no device is approved until it is fixed."
+            print(f"{self.path}: {self.problem}", file=sys.stderr)
+            entries = []
+        for entry in entries:
+            self.granted[entry["digest"]] = {
+                "id": entry["id"], "name": device_label(entry.get("name")),
+                "address": str(entry.get("address") or ""), "approved": str(entry.get("approved") or ""),
+            }
+
+    @staticmethod
+    def digest(token):
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def _expire(self):
+        now = time.time()
+        for key in [key for key, item in self.pending.items() if now - item["asked"] > DEVICE_REQUEST_SECONDS]:
+            del self.pending[key]
+
+    def _save(self):
+        write_private_json(self.path, [{"digest": key, **item} for key, item in self.granted.items()])
+
+    def access(self, token):
+        """One device's say: {"access": "granted"|"pending"|"none"}, with its
+        name and, while it waits, its code."""
+        if not token:
+            return {"access": "none"}
+        key = self.digest(token)
+        with self.lock:
+            if key in self.granted:
+                return {"access": "granted", "name": self.granted[key]["name"]}
+            self._expire()
+            if key in self.pending:
+                item = self.pending[key]
+                return {"access": "pending", "name": item["name"], "code": item["code"]}
+        return {"access": "none"}
+
+    def request(self, name, address, previous=""):
+        """A new request, replacing this device's earlier one; the oldest
+        request goes when DEVICE_REQUESTS_MAX wait. Returns (token, code)."""
+        token = secrets.token_urlsafe(32)
+        with self.lock:
+            self._expire()
+            if previous:
+                self.pending.pop(self.digest(previous), None)
+            codes = {item["code"] for item in self.pending.values()}
+            code = ""
+            while not code or code in codes:
+                code = "".join(secrets.choice(DEVICE_CODE_LETTERS) for _ in range(DEVICE_CODE_LENGTH))
+            while len(self.pending) >= DEVICE_REQUESTS_MAX:
+                del self.pending[min(self.pending, key=lambda key: self.pending[key]["asked"])]
+            self.pending[self.digest(token)] = {
+                "code": code, "name": device_label(name), "address": address, "asked": time.time(),
+            }
+        return token, code
+
+    def _waiting(self, code):
+        wanted = "".join(str(code or "").split()).upper()
+        self._expire()
+        for key, item in self.pending.items():
+            if item["code"] == wanted:
+                return key
+        raise KeyError("No device is waiting with this code; it may have expired: ask again on the device.")
+
+    def approve(self, code):
+        with self.lock:
+            if self.problem:
+                raise ValueError(self.problem)
+            key = self._waiting(code)
+            item = self.pending.pop(key)
+            self.granted[key] = {
+                "id": secrets.token_hex(4), "name": item["name"], "address": item["address"],
+                "approved": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            }
+            try:
+                self._save()
+            except OSError:
+                del self.granted[key]
+                self.pending[key] = item
+                raise
+
+    def deny(self, code):
+        with self.lock:
+            del self.pending[self._waiting(code)]
+
+    def revoke(self, ident):
+        with self.lock:
+            key = next((key for key, item in self.granted.items() if item["id"] == ident), None)
+            if key is None:
+                raise KeyError("No approved device has this ID.")
+            self._forget_granted(key)
+
+    def forget(self, token):
+        """A device withdraws its own request or approval."""
+        if not token:
+            return
+        key = self.digest(token)
+        with self.lock:
+            self.pending.pop(key, None)
+            if key in self.granted:
+                self._forget_granted(key)
+
+    def _forget_granted(self, key):
+        item = self.granted.pop(key)
+        try:
+            self._save()
+        except OSError:
+            self.granted[key] = item
+            raise
+
+    def snapshot(self):
+        """For a browser that may manage: the waiting requests and the
+        approved devices, never a token or its digest."""
+        with self.lock:
+            self._expire()
+            return {
+                "pending": [
+                    {"code": item["code"], "name": item["name"], "address": item["address"],
+                     "asked": datetime.datetime.fromtimestamp(item["asked"], datetime.timezone.utc)
+                     .isoformat(timespec="seconds")}
+                    for item in sorted(self.pending.values(), key=lambda item: item["asked"])
+                ],
+                "granted": sorted(self.granted.values(), key=lambda item: item["approved"]),
+                "problem": self.problem,
+            }
+
+
 
 
 def is_loopback_address(host):
@@ -20385,6 +20563,28 @@ class Handler(BaseHTTPRequestHandler):
         Hilde started with --manage-from-network (HildeServer.manage_from_network)."""
         return self.local_client() or getattr(self.server, "manage_from_network", False)
 
+    def device_token(self):
+        morsel = _state_cookie_jar(self.headers.get("Cookie")).get(DEVICE_COOKIE)
+        return morsel.value if morsel else ""
+
+    def device_access(self):
+        """This browser's say over this server's narration workers: "server"
+        (may_manage(), with the waiting requests and approved devices), else
+        DeviceGrants.access(): "granted", "pending" with its code, or "none"."""
+        grants = getattr(self.server, "device_grants", None)
+        if self.may_manage():
+            return {"access": "server", **(grants.snapshot() if grants else {"pending": [], "granted": [], "problem": ""})}
+        return grants.access(self.device_token()) if grants else {"access": "none"}
+
+    def may_change_devices(self):
+        """Whether this request may turn this server's narration workers on or
+        off: a browser that may manage, or a device it approved."""
+        return self.may_manage() or self.device_access()["access"] == "granted"
+
+    def device_cookie(self, token, age):
+        return ("Set-Cookie", f"{DEVICE_COOKIE}={token}; Path=/; Max-Age={age}; HttpOnly; SameSite=Strict"
+                + ("; Secure" if self.secure() else ""))
+
     def secure(self):
         """Whether this request came over HTTPS."""
         return isinstance(self.connection, ssl.SSLSocket)
@@ -20456,6 +20656,8 @@ class Handler(BaseHTTPRequestHandler):
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                     # The device of a voice design started since the last poll.
                     "configuration": self.configuration_payload(),
+                    # Whether this browser may change devices, so an approval shows without a reload.
+                    "devices": self.device_access(),
                 },
                 extra=(("Cache-Control", "no-store"),),
             )
@@ -20483,6 +20685,8 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "airdrop": airdrop_available(),
                         "manage_workers": self.may_manage(),
+                        # This server's narration workers on or off: also a device it approved.
+                        "manage_devices": self.may_change_devices(),
                         # Settings › Providers: the same rule as machines.
                         "manage_providers": self.may_manage(),
                         # Hilde's own certificate authority, to install on a device.
@@ -20492,12 +20696,13 @@ class Handler(BaseHTTPRequestHandler):
                     "notes_enabled": self.notes_enabled(),
                     # Settings › Models and connection: how Ask Hilde reads a book (ask_reading()).
                     "ask_reading": ask_reading_payload()["text"],
+                    "devices": self.device_access(),
                 },
                 extra=(("Cache-Control", "no-store"),),
             )
         if route == "/api/workers":
-            if not self.may_manage():
-                return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
+            if not self.may_change_devices():
+                return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVED_ONLY)
             return self.reply(
                 HTTPStatus.OK,
                 self.workers_payload(),
@@ -20746,6 +20951,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self.fail(HTTPStatus.BAD_REQUEST, str(exc))
             return self.reply_paper_catalog()
+        if route.startswith("/api/devices/"):
+            return self.change_device_access(route.removeprefix("/api/devices/"), body)
         # Settings › Providers: only a browser that may manage (may_manage())
         # adds, changes, signs in to, or removes a provider; others read.
         if (route.startswith("/api/providers/") or re.fullmatch(
@@ -20946,6 +21153,15 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def workers_payload(self):
+        """/api/workers: for a browser that may manage, the nodes with their
+        hosts and paths and the setup; for an approved device only this
+        machine's narration workers and the public consumers."""
+        if not self.may_manage():
+            return {
+                "available": self.server.tts_models["clone"]["source"] == "local",
+                "consumers": self.server.jobs.public_consumers_snapshot(),
+                "local": self.server.jobs.local_snapshot(),
+            }
         busy = self.server.jobs.busy_consumer_ids()
         return {
             "available": self.server.tts_models["clone"]["source"] == "local",
@@ -20964,9 +21180,51 @@ class Handler(BaseHTTPRequestHandler):
             "setup": self.server.worker_setup and self.server.worker_setup.snapshot(),
         }
 
-    def change_workers(self, action, body):
-        """Change workers for a browser that may manage: this machine's devices, or a node."""
+    def change_device_access(self, action, body):
+        """/api/devices/request and /forget for any device (its own request or
+        approval, by its cookie); /approve, /deny (by code) and /revoke (by ID)
+        for a browser that may manage. Each answers the asker's device_access()."""
+        grants = getattr(self.server, "device_grants", None)
+        if grants is None or action not in ("request", "forget", "approve", "deny", "revoke"):
+            return self.fail(HTTPStatus.NOT_FOUND, f"no route for /api/devices/{action}")
+        if action == "request":
+            if self.may_manage():
+                return self.fail(HTTPStatus.CONFLICT, "This browser already changes this server's devices.")
+            if grants.access(self.device_token())["access"] == "granted":
+                return self.fail(HTTPStatus.CONFLICT, "This device is already approved.")
+            token, code = grants.request(body.get("name"), self.client_address[0], self.device_token())
+            return self.reply(HTTPStatus.OK, grants.access(token),
+                              extra=(self.device_cookie(token, DEVICE_COOKIE_MAX_AGE),))
+        if action == "forget":
+            try:
+                grants.forget(self.device_token())
+            except OSError as exc:
+                return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {DEVICE_GRANTS_FILE}: {exc}")
+            return self.reply(HTTPStatus.OK, {"access": "none"}, extra=(self.device_cookie("", 0),))
         if not self.may_manage():
+            return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVE_LOCAL_ONLY)
+        try:
+            if action == "approve":
+                grants.approve(body.get("code"))
+            elif action == "deny":
+                grants.deny(body.get("code"))
+            else:
+                grants.revoke(str(body.get("id") or ""))
+        except KeyError as exc:
+            return self.fail(HTTPStatus.NOT_FOUND, exc.args[0])
+        except ValueError as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
+        except OSError as exc:
+            return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {DEVICE_GRANTS_FILE}: {exc}")
+        return self.reply(HTTPStatus.OK, self.device_access())
+
+    def change_workers(self, action, body):
+        """Change workers: this machine's devices on or off for a browser that
+        may change devices (may_change_devices()), anything else only for one
+        that may manage."""
+        if action == "local" and not self.may_change_devices():
+            return self.fail(HTTPStatus.FORBIDDEN, DEVICES_APPROVED_ONLY)
+        if action != "local" and not self.may_manage():
             return self.fail(HTTPStatus.FORBIDDEN, WORKERS_LOCAL_ONLY)
         clone = self.server.tts_models["clone"]
         if clone["source"] != "local":
@@ -24183,9 +24441,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <fieldset id="settings-machines">
       <legend>Machines and devices</legend>
       <p id="machines-read-only" class="note server-only hidden">Read-only on this device. Only a browser
-        on the machine Hilde runs on turns narration workers on or off here and adds model servers under
-        Providers (or any browser, if the server's owner starts Hilde with
-        <code>--manage-from-network</code>). The text model you use is yours to choose in each model picker.</p>
+        on the machine Hilde runs on, or a device it approved, turns narration workers on or off here; only
+        the server's machine adds narration machines, and model servers under Providers (or any browser, if
+        the server's owner starts Hilde with <code>--manage-from-network</code>). The text model you use is
+        yours to choose in each model picker.</p>
+      <div id="device-access" class="stack"></div>
       <p class="note">This server, the model servers your text models run on, and the other machines
         that narrate: what each is, what it is chosen for, and what it is doing as far as Hilde knows.</p>
       <section class="machines-part" aria-labelledby="machine-here-title">
@@ -25618,6 +25878,7 @@ function pickDocument(name) {
 function load(data) {
   state = data.state; facts = data.derived; assets = data.assets || assets;
   caps = data.capabilities || caps; jobs = data.queue || [];
+  deviceAccess = data.devices || deviceAccess;
   configuration = data.configuration || configuration;
   machine = data.machine || machine;
   runs = data.runs || []; consumers = data.consumers || []; recent = data.recent || [];
@@ -33957,6 +34218,7 @@ async function refreshJobs() {
     jobs = current.queue || []; runs = current.runs || [];
     consumers = current.consumers || []; recent = current.recent || [];
     configuration = current.configuration || configuration;
+    if (current.devices) applyDeviceAccess(current.devices);
     followMaking();
     const followed = runs.find(
       (item) => item.active && runKey(item) === followedRunKey
@@ -34882,7 +35144,7 @@ function deviceName(value) {
     : value === "mps" ? "Apple MPS" : "CPU";
 }
 async function refreshWorkers() {
-  if (!caps.manage_workers) { renderWorkers(); return; }
+  if (!caps.manage_devices) { renderWorkers(); return; }
   try { applyWorkers(await jsonRequest("/api/workers")); }
   catch (error) {
     $("nodes-note").textContent = error.message;
@@ -35104,13 +35366,16 @@ function renderMachines(force = false) {
   const models = (paperCatalog.models || []).length;
   const choices = MODEL_CHOICES.map(([label, name]) => [label, modelHome(pickerChoice(name))]);
   const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes,
-    paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices]);
+    paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices, deviceAccess]);
   if (!force && signature === machinesSignature) return;
   machinesSignature = signature;
-  // Only a browser that may manage (caps.manage_workers) changes machines; others read.
-  $("machines-read-only").classList.toggle("hidden", manage);
+  // Only a browser that may manage (caps.manage_workers) changes machines; a
+  // device it approved (caps.manage_devices) turns this server's narration
+  // workers on or off; others read.
+  $("machines-read-only").classList.toggle("hidden", manage || deviceAccess.access === "granted");
+  renderDeviceAccess();
   const clone = configuration.clone || {}, design = configuration.design || {};
-  const own = manage && workerNodes ? workerNodes.local || [] : [];
+  const own = caps.manage_devices && workerNodes ? workerNodes.local || [] : [];
   $("local-devices-applies").classList.toggle("hidden", !own.length);
   const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
   // Text preparation runs on the chosen text model's server; this server
@@ -35190,17 +35455,131 @@ function renderMachines(force = false) {
 }
 // `own` is this server's device from /api/workers: its lasting `id` (a GPU's
 // UUID) goes to the server, its torch `device` names it here.
+// The box's answer is the server's: the saved workers.yaml state it replies
+// with, not the box, says whether the device narrates.
 async function setLocalDevice(own, narrates) {
+  const name = own.device ? deviceName(own.device) : own.label;
   try {
-    applyWorkers(await jsonRequest("/api/workers/local", {
+    const answer = await jsonRequest("/api/workers/local", {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ device:own.id, narrates }),
-    }));
-    setStatus(`${own.device ? deviceName(own.device) : own.label} ${narrates ? "narrates again" : "no longer narrates"}.`);
+    });
+    applyWorkers(answer);
+    const saved = (answer.local || []).find((entry) => entry.id === own.id);
+    if (!saved) throw new Error(`The server no longer lists ${name}.`);
+    if (saved.narrates !== narrates)
+      throw new Error(`The server kept ${name} ${saved.narrates ? "narrating" : "off"}.`);
+    setStatus(`Saved: ${name} ${narrates ? "narrates again" : "no longer narrates"}.`);
   } catch (error) {
     setStatus(error.message, true);
     renderWorkers();
   }
+}
+// Who may turn this server's narration workers on or off from here
+// (/api/state and /api/jobs "devices", Handler.device_access()): the server's
+// own browser approves other devices by the code each shows, and removes
+// them; another device asks, waits (the job poll brings the approval), or
+// stops.
+let deviceAccess = { access:"none" };
+function applyDeviceAccess(next) {
+  const before = !!caps.manage_devices;
+  deviceAccess = next;
+  caps.manage_devices = next.access === "server" || next.access === "granted";
+  if (caps.manage_devices !== before) {
+    if (!caps.manage_devices) workerNodes = null;
+    refreshWorkers();
+  } else renderMachines();
+}
+function deviceRequestName() {
+  const agent = navigator.userAgent;
+  const kind = /iPhone/.test(agent) ? "iPhone" : /iPad/.test(agent) ? "iPad" : /Android/.test(agent) ? "Android"
+    : /Macintosh/.test(agent) ? "Mac" : /Windows/.test(agent) ? "Windows" : /Linux/.test(agent) ? "Linux" : "Browser";
+  const browser = /Edg\//.test(agent) ? "Edge" : /Firefox\/|FxiOS/.test(agent) ? "Firefox"
+    : /Chrome\/|CriOS/.test(agent) ? "Chrome" : /Safari\//.test(agent) ? "Safari" : "";
+  return browser ? `${kind} · ${browser}` : kind;
+}
+async function deviceAction(action, body, done) {
+  try {
+    applyDeviceAccess(await jsonRequest(`/api/devices/${action}`, {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(body),
+    }));
+    setStatus(done);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+function renderDeviceAccess() {
+  const note = (text) => {
+    const line = document.createElement("p");
+    line.className = "note"; line.textContent = text;
+    return line;
+  };
+  const button = (text, label, action) => {
+    const element = document.createElement("button");
+    element.type = "button"; element.textContent = text;
+    if (label) element.setAttribute("aria-label", label);
+    element.addEventListener("click", action);
+    return element;
+  };
+  const row = (...children) => {
+    const line = document.createElement("div");
+    line.className = "line"; line.append(...children);
+    return line;
+  };
+  const access = deviceAccess.access, parts = [];
+  if (access === "server") {
+    const title = document.createElement("h3");
+    title.className = "part-title"; title.textContent = "Devices that may turn narration workers on or off";
+    parts.push(title);
+    if (deviceAccess.problem) parts.push(note(deviceAccess.problem));
+    const list = document.createElement("ul");
+    list.className = "device-list";
+    list.setAttribute("aria-label", "Devices that may turn narration workers on or off");
+    for (const item of deviceAccess.pending || []) {
+      const entry = document.createElement("li");
+      entry.className = "device";
+      const head = document.createElement("div");
+      head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
+      const code = document.createElement("code");
+      code.textContent = item.code;
+      const meta = document.createElement("span");
+      meta.className = "device-meta"; meta.append("Asks with code ", code);
+      entry.append(head, meta, row(
+        button("Approve", `Approve ${item.name} (${item.code})`, () => deviceAction("approve", { code:item.code },
+          `Approved: ${item.name} may turn narration workers on or off.`)),
+        button("Deny", `Deny ${item.name} (${item.code})`, () => deviceAction("deny", { code:item.code },
+          `Denied: ${item.name}.`))));
+      list.append(entry);
+    }
+    for (const item of deviceAccess.granted || []) {
+      const entry = document.createElement("li");
+      entry.className = "device";
+      const head = document.createElement("div");
+      head.className = "device-name"; head.textContent = `${item.name} · ${item.address}`;
+      entry.append(head, note(`Approved ${item.approved.replace("T", " ").replace("+00:00", " UTC")}`), row(
+        button("Remove", `Remove ${item.name}`, () => deviceAction("revoke", { id:item.id },
+          `Removed: ${item.name} no longer turns narration workers on or off.`))));
+      list.append(entry);
+    }
+    parts.push(list.children.length ? list : note("No other device may. A phone or computer asks in its own "
+      + "Settings › Machines and devices; approve it here by the code it shows."));
+  } else if (access === "granted") {
+    parts.push(note("This device was approved on the server's machine: it turns this server's narration "
+      + "workers on or off below. Narration machines, model servers, and the default models change only there."),
+      row(button("Stop changing devices from here", "", () => deviceAction("forget", {},
+        "This device no longer turns narration workers on or off."))));
+  } else if (access === "pending") {
+    const code = document.createElement("code");
+    code.textContent = deviceAccess.code;
+    const line = note("");
+    line.append(`Waiting for approval with code `, code, ". On the server's machine, open Settings › Machines "
+      + "and devices and approve this code; this page follows by itself.");
+    parts.push(line, row(button("Cancel the request", "", () => deviceAction("forget", {}, "Request cancelled."))));
+  } else {
+    parts.push(row(button("Ask to turn narration workers on or off here", "", () => deviceAction("request",
+      { name:deviceRequestName() }, "Asked: approve the code on the server's machine."))));
+  }
+  $("device-access").replaceChildren(...parts);
 }
 function workerSetupRunning() {
   return !!(workerNodes && workerNodes.setup && workerNodes.setup.status === "running");
@@ -36507,6 +36886,7 @@ def main():
         parser.error(f"{workers_path}: local_off: {exc}")
     server.worker_nodes = nodes
     server.workers_path = workers_path
+    server.device_grants = DeviceGrants(storage.root / DEVICE_GRANTS_FILE)
     server.workers_lock = threading.Lock()
     server.worker_setup = None
     server.openai_login = OpenAIOAuthLogin()

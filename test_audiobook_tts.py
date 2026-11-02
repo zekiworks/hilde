@@ -12148,6 +12148,7 @@ class WorkerNodeTests(unittest.TestCase):
         server.storage = storage
         server.worker_nodes = list(nodes)
         server.workers_path = storage.root / web.WORKERS_FILE
+        server.device_grants = web.DeviceGrants(storage.root / web.DEVICE_GRANTS_FILE)
         server.workers_lock = threading.Lock()
         server.worker_setup = None
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -12354,6 +12355,96 @@ class WorkerNodeTests(unittest.TestCase):
             status, _ = self.request(origin, "/api/workers/remove", {"host": self.NODE["host"]})
         self.assertEqual(status, 200)
         self.assertEqual(server.worker_nodes, [])
+
+    def test_an_approved_device_turns_narration_workers_on_or_off_and_nothing_more(self):
+        server, origin = self.serve([self.NODE])
+        grants = server.storage.root / web.DEVICE_GRANTS_FILE
+        cookies = {}
+
+        def phone(path, body=None):
+            """Another device: its own cookie jar, not on the server's machine."""
+            headers = {"Content-Type": "application/json"}
+            if cookies.get("token"):
+                headers["Cookie"] = f"{web.DEVICE_COOKIE}={cookies['token']}"
+            request = urllib.request.Request(origin + path, headers=headers,
+                                             data=None if body is None else json.dumps(body).encode(),
+                                             method="GET" if body is None else "POST")
+            with mock.patch.object(web, "is_loopback_address", return_value=False):
+                try:
+                    with urllib.request.urlopen(request) as response:
+                        status, answer, sent = response.status, json.load(response), response.headers
+                except urllib.error.HTTPError as error:
+                    status, answer, sent = error.code, json.load(error), error.headers
+            for value in sent.get_all("Set-Cookie") or []:
+                name, _, rest = value.partition("=")
+                if name == web.DEVICE_COOKIE:
+                    cookies["token"] = rest.split(";")[0]
+            return status, answer
+
+        devices = [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}]
+        with mock.patch.object(web, "_DEVICE_OPTIONS", devices), \
+                mock.patch.object(web, "devices_note", return_value=None), \
+                mock.patch.object(web, "machine_name", return_value="studio"):
+            # Before asking: the page reads, and nothing it may change.
+            state = phone("/api/state")[1]
+            self.assertEqual((state["capabilities"]["manage_devices"], state["devices"]), (False, {"access": "none"}))
+            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": False}),
+                             (403, {"error": web.DEVICES_APPROVED_ONLY}))
+            # It asks, and may not approve itself.
+            status, asked = phone("/api/devices/request", {"name": "Ümit's phone\n"})
+            self.assertEqual((status, asked["access"], asked["name"]), (200, "pending", "Ümit's phone"))
+            self.assertEqual(phone("/api/devices/approve", {"code": asked["code"]}),
+                             (403, {"error": web.DEVICES_APPROVE_LOCAL_ONLY}))
+            self.assertEqual(phone("/api/workers")[0], 403)
+            self.assertFalse(grants.exists())
+            # The server's own browser sees the request and approves it by its code.
+            self.assertEqual(self.request(origin, "/api/devices/approve", {"code": "ZZZZZZ"})[0], 404)
+            waiting = self.request(origin, "/api/state")[1]["devices"]["pending"]
+            self.assertEqual([(item["code"], item["name"]) for item in waiting], [(asked["code"], "Ümit's phone")])
+            status, after = self.request(origin, "/api/devices/approve", {"code": asked["code"].lower()})
+            self.assertEqual((status, after["pending"], [item["name"] for item in after["granted"]]),
+                             (200, [], ["Ümit's phone"]))
+            self.assertEqual(stat.S_IMODE(grants.stat().st_mode), 0o600)
+            self.assertNotIn(cookies["token"], grants.read_text(encoding="utf-8"))
+            # The approval outlives a restart; an unreadable file approves no one.
+            self.assertEqual(web.DeviceGrants(grants).access(cookies["token"])["access"], "granted")
+            capabilities = phone("/api/state")[1]["capabilities"]
+            self.assertEqual((capabilities["manage_devices"], capabilities["manage_workers"]), (True, False))
+            # Approved: it turns this machine's GPU off, saved, and learns no node's host.
+            status, workers = phone("/api/workers")
+            self.assertEqual((status, "nodes" in workers, "setup" in workers), (200, False, False))
+            status, workers = phone("/api/workers/local", {"device": self.GPU, "narrates": False})
+            self.assertEqual((status, [entry["narrates"] for entry in workers["local"]]), (200, [False]))
+            self.assertEqual(web.read_workers(server.workers_path), ([self.NODE], [self.GPU]))
+            # And nothing more.
+            for path, body in (
+                ("/api/workers/remove", {"host": self.NODE["host"]}),
+                ("/api/workers/probe", {"host": "spark"}),
+                ("/api/providers/local/remove", {"name": "nope"}),
+                ("/api/models/defaults", {"text": ""}),
+                ("/api/devices/approve", {"code": "ZZZZZZ"}),
+            ):
+                self.assertEqual(phone(path, body)[0], 403, path)
+            # Another token is no one.
+            token = cookies["token"]
+            cookies["token"] = token[:-1] + ("A" if token[-1] != "A" else "B")
+            self.assertEqual(phone("/api/workers")[0], 403)
+            cookies["token"] = token
+            # Removed on the server's machine: the device reads only again.
+            grant = self.request(origin, "/api/state")[1]["devices"]["granted"][0]
+            self.assertEqual(self.request(origin, "/api/devices/revoke", {"id": grant["id"]})[0], 200)
+            self.assertEqual(phone("/api/workers/local", {"device": self.GPU, "narrates": True}),
+                             (403, {"error": web.DEVICES_APPROVED_ONLY}))
+        self.assertEqual(server.worker_nodes, [self.NODE])
+        self.assertEqual(web.read_workers(server.workers_path)[1], [self.GPU])
+        grants.write_text("{", encoding="utf-8")
+        with redirect_stderr(io.StringIO()) as said:
+            broken = web.DeviceGrants(grants)
+        self.assertIn("no device is approved until it is fixed", said.getvalue())
+        token, code = broken.request("Phone", "10.0.0.9")
+        with self.assertRaises(ValueError):
+            broken.approve(code)
+        self.assertEqual(broken.access(token)["access"], "pending")
 
     def test_only_a_browser_that_may_manage_sets_the_default_models(self):
         temporary = tempfile.TemporaryDirectory()
