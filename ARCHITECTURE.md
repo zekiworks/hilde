@@ -2154,9 +2154,17 @@ sets only the accent role tokens: `--accent` / `--accent-ink` (a main action's f
 Voices page's `--play`: preview circles, the selected voice's row and "✓ Selected"). Hilde (default): every one is
 `--copper-light` #d89068, the light tone of `hilde-leaf-transparent.png` and the "✓ Selected" Ümit chose on 2 Nov
 as the one accent for Create, Voices, Listen, Settings and Ask Hilde, with dark `--copper-ink` on fills (6.7:1).
-Classic: the earlier plum `--accent` #8e2f6d with white ink, rose #eeaad0, pale rose `--ask` #f6cfe0, and #d276ab
-for the Voices page. The status colours (`--local`, `--cloud`, `--off`, `--bad`), the reading grounds and the
-saved highlight colours (`--mark-*`) are the same in both. **Speech tuning**: language on
+Hilde uses it sparingly ("abartısız", 2 Nov): one block at the end of the stylesheet, every rule prefixed
+`:where(:root:not([data-theme=classic]))` so it is exactly as specific as the rule it quiets (a selected, hover or
+playing state still wins), sets secondary controls neutral: links and link-like buttons (`button.browse`, picker
+link rows, `.chat-cite`, `.stack-link`) in `--text` with a copper underline where they had one; `.change`,
+`button.picker-change`, `button.library-button`, `button.secondary`, `.picker-action` and each `.book-play` a
+#5a5a5a border with `--text`; the player's `.ask-hilde` neutral with only its `.ask-icon` in `--ask`; a pressed
+voice tag and `button.tag-review-open` a copper border on `--tag-on` / transparent instead of a solid fill;
+`.applies::before` `--dim`. Classic: the earlier plum `--accent` #8e2f6d with white ink, rose #eeaad0, pale rose
+`--ask` #f6cfe0, and #d276ab for the Voices page, every rule as before. The status colours (`--local`, `--cloud`,
+`--off`, `--bad`), the reading grounds and the saved highlight colours (`--mark-*`) are the same in both.
+**Speech tuning**: language on
 top; precision (`auto (recommended)`), attention (`sdpa (recommended)`), and
 seed under Advanced. All four
 reach narration and voice design through `shared_arguments()`, so they

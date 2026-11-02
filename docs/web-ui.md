@@ -1260,12 +1260,15 @@ change it. The groups:
   this browser. It is a temporary test: one style will stay and the choice
   will go.
   **Theme**: **Hilde** (one copper accent, the default: the light copper of
-  the logo and of the Voices page's "✓ Selected" marks selected items, links,
-  main buttons, play/pause, voice previews and Ask Hilde in Create, Voices,
-  Listen, Settings and Ask Hilde alike, with dark text on it) or **Classic**
-  (the earlier plum and pink). It applies now and only in this browser, so
-  everyone keeps their own; your saved highlights and the Local, Cloud, and
-  error colours keep their colours in both.
+  the logo and of the Voices page's "✓ Selected", used sparingly in Create,
+  Voices, Listen, Settings and Ask Hilde alike: it marks what is selected or
+  on and where you are reading, fills only the key actions such as Create
+  audiobook and play/pause, with dark text on it, and colours Ask Hilde's
+  sparkle; links, Change, Library and the other secondary buttons stay in
+  the text colour with gray borders) or **Classic** (the earlier plum and
+  pink). It applies now and only in this browser, so everyone keeps their
+  own; your saved highlights and the Local, Cloud, and error colours keep
+  their colours in both.
 - **Speech tuning**: language on top; under **Advanced**, precision (**auto
   (recommended)**; "Change only if narration fails or runs out of memory on
   your GPU."), attention (**sdpa (recommended)**; "Change only if narration
