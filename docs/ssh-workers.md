@@ -57,7 +57,11 @@ lists the nodes, and **Add narration workers** adds one:
    there. The download is several gigabytes, so it takes a while; the dialog
    shows each step and the latest output, and **Stop setup** ends it. When it is
    done, the dialog shows what it found, as after **Connect**.
-3. Untick any GPU the server should leave alone, then press **Add node**.
+3. Untick any GPU the server should leave alone. Tick **Everyone's books may
+   use it too** for a machine every browser's **Any GPU that is on** should use;
+   leave it unticked for your own computer: it then narrates only the books of
+   a browser that chooses one of its devices under **Settings › Machines and
+   devices › Narrate my books on**. Then press **Add node**.
 
 The node narrates from the next book on, without a restart; a book already
 being narrated keeps its workers. Adding a machine again replaces its settings
@@ -80,9 +84,16 @@ nodes:
   python: /home/user/hilde/.venv/bin/python
   model: /home/user/models/Qwen3-TTS-12Hz-1.7B-Base
   devices: [cuda:1, cuda:2, cuda:3]
+- host: ayse@ayse-mac
+  python: /Users/ayse/hilde/.venv/bin/python
+  model: /Users/ayse/hilde/models/Qwen3-TTS-12Hz-1.7B-Base
+  devices: [mps]
+  shared: false
 ```
 
-`devices` take `cuda:N`, `mps`, or `cpu`. `local_off` names this machine's GPUs
+`devices` take `cuda:N`, `mps`, or `cpu`. `shared: false` keeps a node out of
+everyone's **Any GPU that is on**: it narrates only books whose browser chose
+one of its devices; without it a node is shared. `local_off` names this machine's GPUs
 by UUID, as `nvidia-smi -L` shows them, because a GPU that fails renumbers the
 ones after it; it also takes `mps` or `cpu`. A GPU listed there stays off even
 while it is missing. A file from an earlier Hilde that lists `cuda:N` is

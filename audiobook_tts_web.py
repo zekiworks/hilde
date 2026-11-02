@@ -1649,13 +1649,25 @@ def narration_workers_now(workers, devices, failure=""):
     return kept, left_out
 
 
+def node_key(host):
+    """A node's lasting name in browsers' device choices: a short hash of its
+    host, so a choice outlives the node's number and never shows the host."""
+    return hashlib.sha256(host.encode()).hexdigest()[:10]
+
+
 def remote_consumers(nodes):
-    """One narration worker per device a workers.yaml node lends."""
+    """One narration worker per device a workers.yaml node lends.
+
+    `shared` (the node's own setting, default true): whether "Any GPU that is
+    on" uses it; a node that is not shared narrates only the books of a browser
+    that chose one of its devices (Narrate my books on, `choice`)."""
     return tuple(
         {
             "id": f"ssh:{node['host']}:{device}",
             "kind": "ssh",
             "device": None,
+            "shared": node.get("shared", True),
+            "choice": f"node:{node_key(node['host'])}:{device}",
             "label": f"SSH {node['host']} — {device}",
             # Browsers see the machine's number, never its host.
             "public": {
@@ -1663,6 +1675,8 @@ def remote_consumers(nodes):
                 "detail": "",
                 "device": device,
                 "machine": number,
+                "shared": node.get("shared", True),
+                "choice": f"node:{node_key(node['host'])}:{device}",
             },
             "worker": {
                 "kind": "ssh",
@@ -1694,11 +1708,13 @@ WORKER_DEVICE_PATTERN = re.compile(r"cuda:\d+|mps|cpu")
 LOCAL_DEVICE_PATTERN = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|mps|cpu")
 # A GPU as files written before UUIDs named it; read only to migrate it.
 LEGACY_GPU_PATTERN = re.compile(r"cuda:\d+")
-WORKER_NODE_KEYS = ("host", "python", "model", "devices")
+WORKER_NODE_KEYS = ("host", "python", "model", "devices", "shared")
 
 
 def worker_node(value):
-    """Validate one workers.yaml node: host, python, model, and devices."""
+    """Validate one workers.yaml node: host, python, model, devices, and
+    whether everyone's "Any GPU that is on" uses it (shared, default true;
+    kept in the file only when false)."""
     if not isinstance(value, dict):
         raise ValueError("each node needs host, python, model, and devices")
     unknown = sorted(set(value) - set(WORKER_NODE_KEYS))
@@ -1727,6 +1743,11 @@ def worker_node(value):
     if len(set(devices)) != len(devices):
         raise ValueError(f"{host}: each device may appear once")
     node["devices"] = devices
+    shared = value.get("shared")
+    if shared is not None and not isinstance(shared, bool):
+        raise ValueError(f"{host}: shared is true or false")
+    if shared is False:
+        node["shared"] = False
     return node
 
 
@@ -12679,9 +12700,10 @@ def stored_text(mapping, key, fallback=""):
 
 
 # Where a browser asks its jobs to run (Settings' "Narrate my books on" and
-# "Design my voices on"): "auto" (narration: every narration worker that is on; voice
-# design: the GPU with the most free memory), or one GPU of this server.
-DEVICE_CHOICE_PATTERN = re.compile(r"auto|cuda:\d{1,2}")
+# "Design my voices on"): "auto" (narration: every narration worker that is on
+# and shared; voice design: the GPU with the most free memory), one GPU of this
+# server, or for narration one device of a node ("node:<node_key()>:cuda:0").
+DEVICE_CHOICE_PATTERN = re.compile(r"auto|cuda:\d{1,2}|node:[0-9a-f]{10}:(?:cuda:\d{1,2}|mps|cpu)")
 
 
 def stored_device(mapping):
@@ -12885,10 +12907,11 @@ def values_of(state, tts_models, storage):
         else audiobook["voice"].strip()
     )
     return {
-        "device": resolve_device(audiobook["device"]),
+        # A node's device runs on the node: this machine's own device stays automatic.
+        "device": resolve_device("auto" if audiobook["device"].startswith("node:") else audiobook["device"]),
         "requested_device": audiobook["device"],
-        # New voice's Design on (run(): "auto" takes the roomiest GPU).
-        "design_device": voice["device"],
+        # Design my voices on (run(): "auto" takes the roomiest GPU); designs run on this machine only.
+        "design_device": "auto" if voice["device"].startswith("node:") else voice["device"],
         "dtype": runtime["dtype"],
         "attn": runtime["attn"],
         "language": runtime["language"].strip(),
@@ -17465,12 +17488,16 @@ class JobQueue:
                 "kind": str(kind),
                 "device": device,
                 "label": str(consumer["label"]),
+                # A node's: whether Any GPU that is on uses it, and the value a browser chooses it by.
+                "shared": consumer.get("shared", True) is not False,
+                **({"choice": str(consumer["choice"])} if consumer.get("choice") else {}),
                 # Browsers see only this; the operator label may name a host.
                 "public": {
                     "label": str(public.get("label") or f"Worker {index}"),
                     "detail": str(public.get("detail") or ""),
-                    # Which device, and a node's number: never its host.
-                    **{key: public[key] for key in ("device", "machine") if public.get(key) is not None},
+                    # Which device, a node's number, whether it is shared, and its choice: never its host.
+                    **{key: public[key] for key in ("device", "machine", "shared", "choice")
+                       if public.get(key) is not None},
                 },
                 "worker": dict(worker) if worker is not None else None,
             })
@@ -17635,7 +17662,10 @@ class JobQueue:
     def _eligible_consumers(self, requested_device):
         requested = (requested_device or "auto").strip()
         if requested == "auto":
-            return tuple(consumer["id"] for consumer in self.consumers)
+            # Any GPU that is on: every worker but a node kept for those who choose it.
+            return tuple(consumer["id"] for consumer in self.consumers if consumer.get("shared", True))
+        if requested.startswith("node:"):
+            return tuple(consumer["id"] for consumer in self.consumers if consumer.get("choice") == requested)
         if requested.startswith("cuda:"):
             return tuple(
                 consumer["id"]
@@ -17684,7 +17714,7 @@ class JobQueue:
                 if consumer["id"] not in self.active
                 and consumer["id"] not in self.local_off
                 and (
-                    record["requested_device"] == "auto"
+                    (record["requested_device"] == "auto" and consumer.get("shared", True))
                     or consumer["id"] in record["eligible_consumers"]
                 )
             ]
@@ -17786,6 +17816,9 @@ class JobQueue:
                                      "choose another GPU, or turn it on there.")
                 if all(consumer in self.missing for consumer in eligible):
                     raise ValueError(f"{gpu} was not found by the last device check: choose another GPU.")
+            if requested.startswith("node:") and not eligible:
+                raise ValueError("That machine's device is no longer a narration worker of this server: "
+                                 "choose another in Settings › Machines and devices.")
             if not eligible:
                 raise ValueError(
                     f"no consumer is available for {requested_device}"
@@ -25758,6 +25791,11 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     </div></div>
     <div class="row"><span class="row-label">Devices:</span>
       <div id="worker-devices" class="stack"></div></div>
+    <div class="row"><span class="row-label">Who uses it:</span><div class="stack">
+      <label class="check"><input id="worker-shared" type="checkbox"> Everyone's books may use it too</label>
+      <span class="note">Unticked, it narrates only the books of a browser that chooses it under
+        Settings › Machines and devices › Narrate my books on; ticked, every browser's Any GPU that is on uses it too.</span>
+    </div></div>
   </div>
   <div id="worker-status" class="note" role="status"></div>
   <div id="worker-setup-progress" class="hidden">
@@ -35384,6 +35422,11 @@ async function cancelSignIn(name) {
 let workerNodes = null, workerProbe = null, workerSetupStatus = "", workerSetupTimer = null;
 const MIN_NARRATION_MIB = 6 * 1024;
 function deviceName(value) {
+  // A node's device (Narrate my books on): its public name, "Machine 1 · GPU 0".
+  if (value.startsWith("node:")) {
+    const worker = consumers.find((item) => item.choice === value);
+    return worker ? worker.label : "A machine that is no longer added";
+  }
   return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
     : value === "mps" ? "Apple MPS" : "CPU";
 }
@@ -35391,10 +35434,13 @@ function deviceName(value) {
 // "Design my voices on" (Ümit, 2 Nov: chosen in Settings, not in Create), this
 // browser's own (state.audiobook.device, state.voice.device, stored_device()
 // on the server): Any GPU that is on / the GPU with the most free memory, or
-// one GPU this server found, each with what it is doing now. For narration a
-// GPU that is off in Settings or not found is listed but can't be chosen.
-// Shown with two GPUs or more; the job poll keeps it current, but never
-// rebuilds a menu that is open. Create's summary names a chosen GPU.
+// one GPU this server found, each with what it is doing now; narration also
+// lists each device of the other narration machines ("Machine 1 · GPU 0",
+// node:<key>:<device>; Ümit, 2 Nov: everyone may have their own computer), a
+// machine that is not shared only there and never in Any. A device that is
+// off in Settings or not found is listed but can't be chosen. Shown with two
+// devices or more; the job poll keeps it current, but never rebuilds a menu
+// that is open. Create's summary names a chosen device.
 const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
                        left_out:"left out of the current book", missing:"not found" };
 let deviceChoicesSignature = "";
@@ -35402,7 +35448,9 @@ function renderDeviceChoices() {
   if (!state) return;
   const gpus = (machine.devices || []).filter((device) => device.kind === "cuda");
   const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
+  const nodes = consumers.filter((worker) => worker.kind === "node" && worker.choice);
   const signature = JSON.stringify([gpus, workers.map((worker) => [worker.device, worker.status]),
+    nodes.map((worker) => [worker.choice, worker.label, worker.status, worker.shared]),
     state.audiobook.device, state.voice.device, configuration.clone, configuration.design]);
   if (signature === deviceChoicesSignature) return;
   deviceChoicesSignature = signature;
@@ -35411,7 +35459,7 @@ function renderDeviceChoices() {
     return worker ? DEVICE_DOING[worker.status] || worker.status : "";
   };
   const usable = (gpu) => !["off in Settings", "not found", ""].includes(doing(gpu));
-  const fill = (group, id, show, auto, blocked) => {
+  const fill = (group, id, show, auto, blocked, extra = []) => {
     $(`${id}-row`).classList.toggle("hidden", !show);
     if (!show) return;
     const select = $(id), chosen = state[group].device;
@@ -35423,11 +35471,20 @@ function renderDeviceChoices() {
       option.disabled = blocked(gpu) && gpu.device !== chosen;
       options.push(option);
     }
+    for (const worker of extra) {
+      const now = DEVICE_DOING[worker.status] || worker.status;
+      const option = new Option(`${worker.label}${now ? ` · ${now}` : ""}${worker.shared ? "" : " · only when chosen"}`,
+                                worker.choice);
+      option.disabled = worker.status === "off" && worker.choice !== chosen;
+      options.push(option);
+    }
     if (!options.some((option) => option.value === chosen)) options.push(new Option(`${deviceName(chosen)} · not found`, chosen));
     select.replaceChildren(...options);
     select.value = chosen;
     const gpu = gpus.find((item) => item.device === chosen);
+    const node = extra.find((worker) => worker.choice === chosen);
     const note = chosen === "auto" ? ""
+      : node ? (node.status === "running" ? `${node.label} is narrating: your book waits for it.` : "")
       : !gpu ? `${deviceName(chosen)} was not found by the last device check: choose another.`
       : blocked(gpu) ? `${deviceName(chosen)} does not narrate now (${doing(gpu) || "no narration worker"}): `
         + "choose another GPU, or turn it on in Settings › Machines and devices."
@@ -35436,9 +35493,10 @@ function renderDeviceChoices() {
     $(`${id}-note`).textContent = note;
     $(`${id}-note`).classList.toggle("hidden", !note);
   };
-  const on = gpus.filter(usable).length;
-  fill("audiobook", "narration-device", gpus.length > 1 && (configuration.clone || {}).source === "local",
-       `Any GPU that is on (${on} of ${gpus.length})`, (gpu) => !usable(gpu));
+  const on = gpus.filter(usable).length + nodes.filter((worker) => worker.shared && worker.status !== "off").length;
+  const all = gpus.length + nodes.filter((worker) => worker.shared).length;
+  fill("audiobook", "narration-device", gpus.length + nodes.length > 1 && (configuration.clone || {}).source === "local",
+       `Any GPU that is on (${on} of ${all})`, (gpu) => !usable(gpu), nodes);
   fill("voice", "design-device", gpus.length > 1 && (configuration.design || {}).source === "local",
        "The GPU with the most free memory", () => false);
   $("device-choice-note").classList.toggle("hidden", $("narration-device-row").classList.contains("hidden")
@@ -35786,7 +35844,10 @@ function renderMachines(force = false) {
       remove.setAttribute("aria-label", `Remove ${node.host}`);
       remove.addEventListener("click", () => removeWorkerNode(node.host));
     }
-    return machineBlock(node.host || `Machine ${node.number}`, node.host ? `Machine ${node.number}` : "",
+    const shared = node.host ? node.shared !== false : theirs.every((worker) => worker.shared !== false);
+    const aside = [node.host ? `Machine ${node.number}` : "",
+                   shared ? "everyone's books" : "only books that choose it"].filter(Boolean).join(" · ");
+    return machineBlock(node.host || `Machine ${node.number}`, aside,
       node.devices.map((value) => deviceItem(nodeDevice(value),
         theirs.find((worker) => worker.device === value), null, false)),
       [["Text preparation", "not available", "Other machines only narrate."],
@@ -35978,7 +36039,7 @@ function renderWorkerSetup() {
 function openWorkers() {
   workerProbe = null;
   $("worker-host").value = workerSetupRunning() ? workerNodes.setup.host : "";
-  $("worker-python").value = ""; $("worker-model").value = "";
+  $("worker-python").value = ""; $("worker-model").value = ""; $("worker-shared").checked = false;
   $("worker-found").classList.add("hidden");
   $("worker-status").textContent = "";
   renderWorkerSetup();
@@ -36089,7 +36150,7 @@ async function addWorkerNode() {
       method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({
         host: workerProbe.host, python: $("worker-python").value,
-        model: $("worker-model").value, devices,
+        model: $("worker-model").value, devices, shared: $("worker-shared").checked,
       }),
     });
     applyWorkers(answer);

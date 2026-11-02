@@ -2369,8 +2369,39 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual([worker["device"] for worker in run.assigned_workers], ["cuda:2"])
         run.close(0)
 
+    def test_a_machine_not_shared_narrates_only_books_that_choose_it(self):
+        with self.assertRaisesRegex(ValueError, "shared is true or false"):
+            web.worker_node({"host": "mac", "python": "/p", "model": "/m", "devices": ["mps"], "shared": "no"})
+        mine = web.worker_node({"host": "umit-mac", "python": "/p", "model": "/m", "devices": ["mps"], "shared": False})
+        lab = web.worker_node({"host": "lab", "python": "/p", "model": "/m", "devices": ["cuda:0"], "shared": True})
+        self.assertEqual((mine["shared"], "shared" in lab), (False, False))
+        gpus = [{"value": "cuda:0", "label": "CUDA 0", "uuid": "0a0a0a00-1111-2222-3333-444444444440"}]
+        jobs = web.JobQueue(web.audiobook_consumers({"source": "local", "model": "/m", "allow_downloads": False},
+                                                    gpus, [mine, lab]))
+        self.addCleanup(jobs.shutdown)
+        # Any GPU that is on: this server's GPU and the shared machine, never the one kept for its owner.
+        record, _ = self.reserve(jobs, "anyone")
+        run = self.ControlledRun("anyone.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        self.assertEqual(sorted(worker.get("target", worker["device"]) for worker in run.assigned_workers),
+                         ["cuda:0", "lab"])
+        run.close(0)
+        # Chosen in Narrate my books on: that machine's device only.
+        choice = f"node:{web.node_key('umit-mac')}:mps"
+        record, _ = self.reserve(jobs, "mine", choice)
+        run = self.ControlledRun("mine.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        self.assertEqual([(worker["kind"], worker.get("target")) for worker in run.assigned_workers],
+                         [("ssh", "umit-mac")])
+        run.close(0)
+        with self.assertRaisesRegex(ValueError, "no longer a narration worker"):
+            self.reserve(jobs, "gone", f"node:{web.node_key('removed-host')}:mps")
+
     def test_a_browsers_device_choice_is_one_gpu_or_auto_and_reaches_the_job(self):
-        for given, kept in (("cuda:3", "cuda:3"), ("cuda:x", "auto"), ("/dev/nvidia0", "auto"), (2, "auto"), (None, "auto")):
+        for given, kept in (("cuda:3", "cuda:3"), ("cuda:x", "auto"), ("/dev/nvidia0", "auto"), (2, "auto"), (None, "auto"),
+                            ("node:0123456789:mps", "node:0123456789:mps"), ("node:umit-mac:mps", "auto")):
             state = web.normalize({"audiobook": {"device": given}, "voice": {"device": given}})
             self.assertEqual((state["audiobook"]["device"], state["voice"]["device"]), (kept, kept), given)
         temporary = tempfile.TemporaryDirectory()
@@ -2381,6 +2412,11 @@ class JobQueueTests(unittest.TestCase):
                                web.unconfigured_tts_models(), storage)
         self.assertEqual((values["requested_device"], values["device"], values["design_device"]),
                          ("cuda:2", "cuda:2", "cuda:1"))
+        # A machine's device is for narration only: a design chosen there takes this server's roomiest GPU.
+        values = web.values_of(web.normalize({"audiobook": {"device": "node:0123456789:mps"},
+                                              "voice": {"device": "node:0123456789:mps"}}),
+                               web.unconfigured_tts_models(), storage)
+        self.assertEqual((values["requested_device"], values["design_device"]), ("node:0123456789:mps", "auto"))
 
     def test_auto_job_claims_all_gpu_workers_before_next_job(self):
         consumers = (

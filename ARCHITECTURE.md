@@ -1039,7 +1039,12 @@ new voice or a remake as one.
 
 For a local narration model, `audiobook_consumers()` creates one worker
 descriptor per CUDA GPU visible to the server process and, through
-`remote_consumers()`, one per device of each node in `workers.yaml`.
+`remote_consumers()`, one per device of each node in `workers.yaml`; a node
+with `shared: false` (`worker_node()`; kept in the file only when false) is
+left out of `auto` and taken only by a job whose `requested_device` is its
+`choice` (`node:<node_key()>:<device>`, a hash of the host, never the host).
+`JobQueue._normalized()` keeps each consumer's `shared` and `choice`, and its
+public snapshot carries both, without the host.
 `CUDA_VISIBLE_DEVICES` sets which local GPUs exist; `local_off` takes some of
 them out of narration. `read_workers()` validates the file at startup (an
 invalid node, or a `local_off` that leaves no worker, stops the server).
@@ -2320,13 +2325,16 @@ the hosts and paths (`capabilities.manage_workers`, `GET /api/workers`) or may
 probe, set up, add, or remove; others get HTTP 403 and see only the chips.
 
 Browser state holds each browser's device choice, set in Settings › Machines and devices › This server
-(`renderDeviceChoices()`, shown with two GPUs or more): `audiobook.device` (**Narrate my books on**: "Any GPU that is
-on (n of m)" or one GPU by number with what it is doing now, from `machine.devices` and the consumer snapshot; a GPU
-that does not narrate can't be newly chosen, and a chosen one that stops narrating says so under the menu) and
-`voice.device` (**Design my voices on**), each `auto` or
-`cuda:N` (`stored_device()`; anything else is `auto`). `values_of()` passes
+(`renderDeviceChoices()`, shown with two narration devices or more): `audiobook.device` (**Narrate my books on**: "Any GPU that is
+on (n of m)", one GPU by number, or one node device by its public label, each with what it is doing now, from
+`machine.devices` and the consumer snapshot; a device that does not narrate can't be newly chosen, and a chosen one
+that stops narrating says so under the menu) and
+`voice.device` (**Design my voices on**), each `auto`, `cuda:N`, or for
+narration `node:<key>:<device>` (`stored_device()`; anything else is `auto`;
+a node choice for design is `auto`). `values_of()` passes
 `audiobook.device` as the job's `requested_device`: `auto` claims all currently
-idle local CUDA and node workers; `cuda:N` only that GPU's local worker, and
+idle local CUDA workers and shared node workers; `node:` only that node device,
+refused when no such worker is left; `cuda:N` only that GPU's local worker, and
 `JobQueue.reserve_audiobook()` refuses (HTTP 409 with the reason) a chosen GPU
 that is no narration worker, off in `local_off`, or not found, so a job never
 waits on a GPU that cannot take it. A GPU whose worker waits for memory inside the
@@ -3946,7 +3954,7 @@ read aloud by **Read answers aloud**.
 | `POST /api/paper/anthropic/key`, `POST /api/paper/anthropic/remove`, `POST /api/paper/openai-api/key`, `POST /api/paper/openai-api/remove`, `POST /api/paper/gemini/key`, `POST /api/paper/gemini/remove`, `POST /api/paper/deepseek/key`, `POST /api/paper/deepseek/remove`, `POST /api/paper/xai-api/key`, `POST /api/paper/xai-api/remove` | Save an Anthropic, OpenAI, Google Gemini, DeepSeek, or xAI API key once the provider accepts it (400 for a key that cannot be one, 502 when the provider refuses it), or delete it; both return the refreshed catalog. |
 | `POST /api/airdrop` | macOS-only sharing for a path inside shared storage. |
 | `GET /api/workers` | For a browser that may manage (`may_manage()`, else HTTP 403): `workers.yaml`'s nodes with `host`, `python`, `model`, `devices`, and `busy`, whether the server narrates with a local model (`available`), the public worker chips (`consumers`, as in `/api/jobs`, each with `kind` `local` or `node`), `local` (each of this machine's devices with its `device`, `label`, `detail`, whether it `narrates`, and `busy`), and `setup`: the latest node setup's `host`, `status` (`running`, `done`, `failed`, or `stopped`), `step`, `log` (its last lines), `error`, and `found` (the final probe), or `null`. |
-| `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser that may manage only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
+| `POST /api/workers/probe`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser that may manage only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, or HTTP 502 with why SSH failed. Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`, and `shared`: false keeps it for books that choose it), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser that may manage only (else HTTP 403, `WORKERS_LOCAL_ONLY`). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off` before answering, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
 | `POST /api/devices/request`, `POST /api/devices/forget` | Any device that may not approve, over HTTPS only (`Handler.secure()`). Request is HTTP 409 for one that may approve or is already approved, and HTTP 403 (`DEVICES_NEED_HTTPS`) over plain HTTP; it starts a `DeviceGrants` request with the device's `name` (`device_label()`) and address, replaces its earlier one, and sets the `hilde_devices` cookie (a 256-bit random token; `HttpOnly`, `SameSite=Strict`, `Secure`); it answers `{access: "pending", name, code}`, a six-letter code. Forget withdraws the cookie's request or approval (over HTTPS; over plain HTTP the cookie is not read) and expires the cookie. Over plain HTTP `device_access()` is `{access: "insecure"}` for another device and never reads its cookie, so an approval is neither given nor used where the network could read it; a loopback browser (and `--manage-from-network`) approves and manages over plain HTTP as before. |
 | `POST /api/devices/approve`, `POST /api/devices/deny`, `POST /api/devices/revoke` | For a browser that may approve only (`may_approve()`: loopback or `--manage-from-network`; an approved device gets HTTP 403, `DEVICES_APPROVE_LOCAL_ONLY`). Approve or deny the waiting request with JSON `code` (case and spaces ignored; HTTP 404 when none waits with it), or remove the approved device with JSON `id`; HTTP 409 while `device-grants.json` is unreadable, HTTP 500 when it cannot be saved (nothing changes). Each answers the asker's `devices`. |

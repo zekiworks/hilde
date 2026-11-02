@@ -1341,12 +1341,15 @@ change it. The groups:
   server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
   On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
-  again (applies now). With two GPUs or more, two menus under it choose for
-  this device only (everyone chooses their own): **Narrate my books on**,
-  **Any GPU that is on** (how many of them are on) or one GPU by number, each
-  with what it is doing now (free, narrating, designing a voice, off in
-  Settings), a GPU that is off not choosable and one you chose that is turned
-  off later saying so under the menu; and **Design my voices on**, **The GPU
+  again (applies now). With two narration devices or more, two menus under it
+  choose for this device only (everyone chooses their own): **Narrate my books
+  on**, **Any GPU that is on** (how many of them are on) or one GPU by number,
+  or one device of another narration machine ("Machine 1 · Apple MPS", so
+  each person can pick their own computer), each with what it is doing now
+  (free, narrating, designing a voice, off in Settings); a machine added for
+  "only when chosen" never takes part in anyone's **Any GPU that is on**; a
+  device that is off is not choosable and one you chose that is turned off later
+  says so under the menu; and **Design my voices on**, **The GPU
   with the most free memory** or one GPU. **Text models** lists the model
   servers added under **Providers**, one line each: its name (the address
   shows when you point at it), whether it answers, and **Use**: untick it and,
@@ -1364,10 +1367,12 @@ change it. The groups:
   model picker: its **Runs on** lists every model server by name, **All local
   servers**, and **Cloud**. **Other narration machines** lists the nodes
   that narrate over SSH, each with its devices as `workers.yaml` names them
-  (Hilde does not know their model or ID) and, on the server's own machine,
+  (Hilde does not know their model or ID), whether everyone's books use it or
+  only books that choose it, and, on a device that may change settings,
   **Remove** (after a confirmation naming it) and **Add narration workers**:
   enter its address, **Connect**, **Set up** if it lacks Hilde's Python or the
-  speech model, untick any GPU to leave alone, **Add node**; see
+  speech model, untick any GPU to leave alone, tick **Everyone's books may use
+  it too** unless it is your own computer, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a
   running audiobook keeps its narration workers. With none: "No other machine
   narrates." This server and each narration machine list each job on its own: **Text
