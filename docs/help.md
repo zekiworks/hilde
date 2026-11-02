@@ -129,7 +129,7 @@ Hilde Reader reads PDF, TXT or Markdown files (`.pdf`, `.txt` or `.text`, `.md` 
 - **A book stopped or failed**: on **Create** or **Progress**, press **Continue from the last completed part**.
 - **Paused: a model became unreachable**: press **Retry**, or **Continue with another model…**.
 - **No sound**: check the volume and the output device.
-- **Settings are read-only**: providers and machines can be changed only from a browser on the Hilde server.
+- **Settings are read-only**: press **Ask to change settings from this device** and approve its code on the Hilde server.
 
 <!-- more: docs/web-ui.md › Following an audiobook being made -->
-<!-- checked: docs/web-ui.md "Create an audiobook" ("Choose a document first", Not ready fixes, unreachable alternatives), "Following an audiobook being made" (stopped/failed card, Paused, Retry), "Listen" (chat red box + Providers…, Claude Code models cannot, no paragraph summaries → recreate, player silent), "Settings" (Read-only from this device) -->
+<!-- checked: docs/web-ui.md "Create an audiobook" ("Choose a document first", Not ready fixes, unreachable alternatives), "Following an audiobook being made" (stopped/failed card, Paused, Retry), "Listen" (chat red box + Providers…, Claude Code models cannot, no paragraph summaries → recreate, player silent), "Settings" (Read-only on this device until the server approves it; Ask to change settings from this device) -->

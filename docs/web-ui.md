@@ -1291,11 +1291,32 @@ change it. The groups:
   changed): the format of the reference recording saved with a new voice,
   which local voice cloning reads ("Change only to save disk space; FLOAT keeps
   a new voice's reference recording exactly as designed.").
-- **Machines and devices**: only what the server reports. **This server** is
-  the machine Hilde runs on, by its short host name, with every device its
-  probe found: a CUDA GPU by its name, memory, and a stable ID (the start of
-  its UUID, such as `GPU-7a85a208`, which stays when GPUs are added or
-  hidden), an Apple GPU (MPS), or the CPU, each saying whether it is a
+- **Machines and devices**: only what the server reports. A device that may
+  not change settings (any browser not on the server's machine, unless Hilde
+  started with `--manage-from-network`, until the server approves it) sees it
+  read-only, with a note saying so; the text model each browser uses is still
+  its own choice in each model picker. **Providers** and the default models
+  under **Models and connection** say the same. Under each of the three notes,
+  **Ask to change settings from this device** asks the server: the device
+  shows a six-letter code and waits. In a browser on the server's machine,
+  **Devices approved to change these settings** says what approving allows
+  (Machines and devices, including narration machines over SSH, which then
+  run programs as the server's user; Providers, with keys and sign-ins; the
+  default models; for every browser) and lists the request with the device's
+  kind, address, and code: **Approve** (or **Deny**) it there, and the
+  waiting device can change all three sections within a few seconds, without
+  a reload, as a browser on the server's machine can; only approving other
+  devices stays there. Requests expire after 15 minutes. Each change reports
+  what the server saved ("Saved: GPU 2 no longer narrates", "Added 'Spark5'
+  for every browser.", "Saved for every browser: Default text narration: …")
+  or the reason it did not. **Remove** there, or **Stop changing settings
+  from here** on the device, ends it. **This server**
+  is the machine Hilde runs on, by its short host name and how many GPUs the
+  last device check found, with every device the probe found: a CUDA GPU by
+  its number (**GPU 0**, **GPU 1**, the numbers narration statuses use), name,
+  memory, and a stable ID (the start of its UUID, such as `GPU-7a85a208`, which
+  stays when GPUs are added or hidden), an Apple GPU (MPS), or the CPU, each
+  saying whether it is a
   narration worker and whether that worker is idle, narrating, held while a
   voice is designed, off, excluded in settings, not found by the last device
   check, or left out of the current book because it could not start. The
@@ -1307,15 +1328,25 @@ change it. The groups:
   server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
   On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
-  again (applies now). **Other machines** lists the nodes that narrate over
-  SSH, each with its devices as `workers.yaml` names them (Hilde does not know
-  their model or ID) and, on the server's own machine, **Remove** (after a
-  confirmation naming it) and **Add narration workers**: enter its address,
-  **Connect**, **Set up** if it lacks Hilde's Python or the speech model,
-  untick any GPU to leave alone, **Add node**; see
+  again (applies now). **Text models** says where each text job's model
+  runs: **Text** and **Ask Hilde** (this browser's choices) and the server's
+  **Default text** and **Default images**, each by model name and "On
+  <model server>", "which is not answering" when that server is down, or, for
+  a cloud model, that it runs at the provider on none of these machines. Under
+  it are the model servers added under **Providers**, grouped by the machine
+  of their address (two servers on one address are one machine), each
+  answering or not, how many models it lists, and which of those jobs it is
+  chosen for. Hilde knows a model server only by its address: it is not told
+  which Spark or which GPU runs it, nor whether it is busy, so each machine
+  says "GPUs: not reported". **Other narration machines** lists the nodes
+  that narrate over SSH, each with its devices as `workers.yaml` names them
+  (Hilde does not know their model or ID) and, on the server's own machine,
+  **Remove** (after a confirmation naming it) and **Add narration workers**:
+  enter its address, **Connect**, **Set up** if it lacks Hilde's Python or the
+  speech model, untick any GPU to leave alone, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). Changes apply now; a
-  running audiobook keeps its narration workers. With none: "No other
-  machines connected." Each machine lists each job on its own: **Text
+  running audiobook keeps its narration workers. With none: "No other machine
+  narrates." This server and each narration machine list each job on its own: **Text
   preparation**, **Narration**, and **Voice design**, each "available", "not
   available" (with the reason), or "not tested". This server can prepare
   text when the model list has a model it can reach (the model itself runs
@@ -1345,11 +1376,11 @@ change it. The groups:
   afterwards "Key saved") with **Save key**, or **Subscription**, offered only
   for OpenAI (ChatGPT sign-in), Anthropic (Claude Code on the server: turns it
   on and shows its status), and xAI (SuperGrok or X Premium+ sign-in); see
-  [Text adaptation](text-adaptation.md) for each. Applies now. On other
-  devices, unless Hilde started with `--manage-from-network`, the rows are
-  read-only, without Add, Edit, or Delete, under the note "Read-only from this
-  device. Manage providers from a browser on the Hilde server, or start Hilde
-  with --manage-from-network."
+  [Text adaptation](text-adaptation.md) for each. Applies now. On a device
+  that may not change settings, the rows are read-only, without Add, Edit, or
+  Delete, under the note "Read-only on this device until the server approves
+  it: then it adds, changes, and removes providers here." and **Ask to change
+  settings from this device**.
 - **Models and connection** only assigns models to their jobs; adding servers
   and connecting providers is under **Providers**, so this section has no
   **Add local**, **Connect a provider**, or **Providers…** link. **Default
@@ -1358,8 +1389,9 @@ change it. The groups:
   tooltip), with **Local** or **Speech server**. Voice design adds the device
   its last design ran on, by name and ID, or "Device chosen on first use"
   before the first; with several GPUs, each design takes the one with the
-  most free memory. Hilde sets these when it starts; to change them, restart
-  Hilde with different settings. **Default text narration** (the model that
+  most free memory. Hilde sets these when it starts, from its start command:
+  no browser changes them, on the server's machine either; the server's owner
+  restarts Hilde with other models. **Default text narration** (the model that
   prepares and adapts the text) and **Default image narration** (the model
   that reads figures) are the server's defaults for every browser, set with
   the same picker as Create; see
@@ -1371,11 +1403,11 @@ change it. The groups:
   unreachable" with one-click alternatives that set another default. Their
   lists end with **Add local** and **Connect**, which open the provider
   dialog; with Cloud chosen and no provider connected, a Model box opens that
-  list instead of reading **Connect a provider**. On other devices, unless
-  Hilde started with `--manage-from-network`, both rows are read-only, in the
-  look of the speech models' rows, under "Read-only from this device. Set the
-  default models from a browser on the Hilde server, or start Hilde with
-  --manage-from-network." A browser's own model is chosen in Create or Ask
+  list instead of reading **Connect a provider**. On a device that may not
+  change settings, both rows are read-only, in the look of the speech models'
+  rows, under "Read-only on this device until the server approves it: then it
+  sets the default models here." and **Ask to change settings from this
+  device**. A browser's own model is chosen in Create or Ask
   Hilde and remembered there. **Connection to Hilde**
   says "local (this computer)" on this computer, "HTTPS" over HTTPS, or, over
   plain HTTP from another device, that browsers may warn about or block
@@ -1387,13 +1419,13 @@ change it. The groups:
   search and why (no embedding model, no llama.cpp server, turned off in
   `ask.yaml`, or it failed to start).
 
-Only a browser on the server's own machine sees the nodes' hosts and may change
-the devices and machines, unless Hilde started with `--manage-from-network`
-(see [Configuration](configuration.md#manage-from-other-devices)); elsewhere
-one note at the top of **Machines and devices** says "Read-only from this
-device. Manage machines from a browser on the Hilde server, or start Hilde with
---manage-from-network.", and other machines appear as `Machine 1` and so on.
-Browsers cannot select, pin, or name devices.
+Only a browser that may change settings sees the nodes' hosts and may change
+the machines: one on the server's own machine, a device it approved, or any
+browser when Hilde started with `--manage-from-network`
+(see [Configuration](configuration.md#manage-from-other-devices)). Elsewhere
+a note at the top of **Machines and devices** says it is read-only until
+approved, and other machines appear as `Machine 1` and so on. Browsers
+cannot select, pin, or name devices.
 
 ## Asking before risky actions
 
