@@ -24040,6 +24040,39 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .keyboard-open .chat-model-notes, .keyboard-open .chat-problem { display:none; }
   .reader-tag button.link { min-height:44px; padding:0 4px; }
 }
+/* Hilde, the default theme: the one copper used sparingly (Ümit, 2 Nov: "abartısız olsun"). Copper marks only what
+   is selected or on (tab bars and their LEDs, a switch, the open step, the chosen voice, tag, model and note), where
+   you are (the reading line and underline, progress), the focus ring, hover, Ask Hilde's sparkle, and the fill of a
+   few key actions (Create audiobook, play/pause, a book that plays, "✓ Selected", Ask Hilde for a selection, the
+   chat's own action). Everything secondary stays neutral: links and link-like buttons in the text colour with a
+   copper underline; the quiet buttons (Change, Library, secondary) and each book's play circle with a gray border
+   and text-coloured content until hovered or playing; the player's Ask Hilde gray with only its sparkle copper; a
+   pressed voice tag and Review tags a copper border on a faint fill, not a solid block; "Applies now" with a gray
+   arrow. :where() keeps each rule exactly as specific as the rule it quiets, so a selected, hover or playing state
+   still wins. Classic (:root[data-theme=classic]) keeps its plum and pink as before. */
+:where(:root:not([data-theme=classic])) a { color:var(--text); text-decoration-color:var(--accent-light); }
+:where(:root:not([data-theme=classic])) :is(.change, button.picker-change, button.library-button, button.secondary) {
+  border-color:#5a5a5a; color:var(--text); }
+:where(:root:not([data-theme=classic])) button.browse,
+:where(:root:not([data-theme=classic])) .picker-option.link-row .picker-option-name,
+:where(:root:not([data-theme=classic])) .suggest-source button.link,
+:where(:root:not([data-theme=classic])) .tag-pick-option[data-new],
+:where(:root:not([data-theme=classic])) .stack-bar > button.stack-link { color:var(--text); }
+:where(:root:not([data-theme=classic])) .chat-cite { color:var(--text); text-decoration:underline;
+  text-decoration-color:var(--accent-light); text-underline-offset:3px; }
+:where(:root:not([data-theme=classic])) .picker-action { border-color:#5a5a5a; color:var(--text); }
+:where(:root:not([data-theme=classic])) .applies::before { color:var(--dim); }
+:where(:root:not([data-theme=classic])) .book-card .book-play { border-color:#5a5a5a; color:var(--text); }
+:where(:root:not([data-theme=classic])) .player-bar .ask-hilde {
+  border-color:#5a5a5a; background:var(--surface); color:var(--text); }
+:where(:root:not([data-theme=classic])) .player-bar .ask-hilde .ask-icon { color:var(--ask); }
+:where(:root:not([data-theme=classic])) :is(.voice-table button.voice-tag[aria-pressed=true],
+  .voice-table button.voice-tag[aria-pressed=true]:hover:not(:disabled)) {
+  background:var(--tag-on); color:var(--text); }
+:where(:root:not([data-theme=classic])) button.tag-review-open {
+  border-color:var(--accent-light); background:transparent; color:var(--text); }
+:where(:root:not([data-theme=classic])) button.tag-review-open:hover:not(:disabled) {
+  border-color:var(--accent-light); background:var(--accent-soft); filter:none; }
 </style>
 </head>
 <body>
