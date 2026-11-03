@@ -18058,7 +18058,10 @@ class ChatRegistry:
 # over Hilde (which stops her), and sends each turn's audio here; LFM3-Audio's
 # server (--live-voice: llama-server with /v1/audio/transcriptions and /tts)
 # hears it, and speaks the model's answer sentence by sentence while it is
-# written. No tools, nothing attached, no document read: just the talk.
+# written. No tools (each round would delay her first word): about a book, its
+# abstract is in the instructions and each turn comes with the book's
+# paragraphs found for it as written Ask Hilde finds them (ask_retrieve(),
+# LiveSession.found()); the help mode reads nothing yet.
 # Nothing of it shows while it runs; when it ends its transcript, after one
 # pass by the same model that mends what speech recognition misheard, is kept
 # beside the conversation (LIVE_FILE), shown in the chat panel as a callout,
@@ -18080,6 +18083,17 @@ LIVE_SYSTEM = (
     "you understood and ask. Your reply is read aloud: answer in plain, natural spoken English, as fully as the "
     "question needs but usually two to four sentences, with no lists, markdown, emojis, or stage directions."
 )
+# About a book (Can, 3 Nov: "we need them to know the document"): its abstract,
+# and what each turn's paragraphs are, after LIVE_SYSTEM.
+LIVE_BOOK_PROMPT = (
+    "\n\nThe book: “{title}”. {what}:\n{abstract}\n\n"
+    "With each thing the reader says come the book's paragraphs found for it, each tagged with its id and "
+    "labelled \"From the paper\" (the book's own words) or \"Hilde's narration\" (what they hear). Answer from them "
+    "and the abstract; when they do not cover what was asked, say so briefly instead of guessing. The paragraph ids "
+    "are for you only: never say them aloud."
+)
+# Above a turn's paragraphs when the similarity search is unavailable (no embedding model): BM25 found them.
+LIVE_KEYWORD_HEAD = "Paragraphs of the open document that share the most telling words with this message, best first:"
 LIVE_EDIT_SYSTEM = (
     "You tidy the transcript of a spoken conversation between a reader and Hilde. Each READER line was written "
     "by speech recognition and may have misheard words, broken sentences, or false starts; HILDE's lines are "
@@ -18223,14 +18237,21 @@ class LiveTurn:
 
 class LiveSession:
     """A live conversation: the chat it belongs to (`key`, a book or
-    HELP_DOCUMENT), the model, and its turns so far, each {"heard", "turn"
-    (its LiveTurn), "joined", "at"}; what Hilde got to say in each is
-    worked out as it is read (spoken()), since the page's cut may come later."""
+    HELP_DOCUMENT), the model, the book (`document`, an AskDocument, None in
+    help mode), and its turns so far, each {"heard", "turn" (its LiveTurn),
+    "joined", "at"}; what Hilde got to say in each is worked out as it is
+    read (spoken()), since the page's cut may come later."""
 
-    def __init__(self, key, selector, local_servers, about):
+    def __init__(self, key, selector, local_servers, about, storage=None, document=None, abstract=None):
         self.id = secrets.token_hex(16)
         self.key, self.selector, self.local_servers = key, selector, local_servers
+        self.storage, self.document, self.keywords = storage, document, None
         self.system = LIVE_SYSTEM.format(about=about)
+        if document is not None and abstract and abstract.get("text"):
+            what = "Its abstract" if abstract["found"] else "Its opening"
+            self.system += LIVE_BOOK_PROMPT.format(
+                title=document.title, what=f"{what}, {abstract.get('label', ASK_LABELS['paper'])}",
+                abstract=abstract["text"])
         self.started = utc_timestamp()
         self.seen = time.monotonic()
         self.turns = []
@@ -18246,6 +18267,48 @@ class LiveSession:
         if before is not None:
             before.stop()
         return turn
+
+    def warm(self):
+        """Build (or load) the book's similarity index as the conversation
+        starts, so the first turn does not wait for it (a new book takes
+        seconds)."""
+        config = ask_config()
+        if self.document is not None and ask_reading(config)["mode"] == "similarity":
+            with contextlib.suppress(AskEmbedderUnavailable, OSError):
+                ask_index(self.storage, self.document, config["retrieval"])
+
+    def found(self, heard):
+        """The book's paragraphs for what was just said (with the turn before,
+        as written Ask Hilde asks), as the model reads them: the similarity
+        search's k (ask_retrieve()), else BM25's k over the same texts; ""
+        in help mode. The server log says which and what."""
+        if self.document is None:
+            return ""
+        config = ask_config()
+        k = config["retrieval"]["k"]
+        earlier = [item["heard"] for item in self.transcript()]
+        query = f"{earlier[-1]}\n{heard}" if earlier else heard
+        reading, numbers = ask_reading(config), []
+        mode = reading["mode"]
+        if mode == "similarity":
+            try:
+                numbers, _ = ask_retrieve(self.storage, self.document, query, config["retrieval"])
+            except (AskEmbedderUnavailable, OSError) as exc:
+                mode, reading = "keyword", {"why": str(exc)}
+        if mode != "similarity":
+            if self.keywords is None:
+                self.keywords = AskBM25([
+                    (number, "\n\n".join(item["text"] for item in self.document.items(number)))
+                    for number in range(1, len(self.document.paragraphs) + 1)])
+            numbers = self.keywords.rank(query)[:k]
+        items = [item for number in numbers for item in self.document.items(number)]
+        print(f"Talk reading: session={self.id[:12]} mode={mode}"
+              f"{'' if mode == 'similarity' else ' why=' + str(reading.get('why') or '')} "
+              f"ids={','.join(f'{self.document.id}:{number}' for number in numbers)}", flush=True)
+        if not items:
+            return ""
+        head = ASK_RETRIEVED_HEAD if mode == "similarity" else LIVE_KEYWORD_HEAD
+        return "\n\n".join([head, *(ask_item_text(item, item["text"]) for item in items)])
 
     def cut_last(self, seconds):
         """The page talked over Hilde (or ended) after `seconds` of her
@@ -18330,8 +18393,10 @@ class LiveSession:
                 sentences.put(sentence)
 
         try:
+            attached = self.found(heard)
             chat_model_reply(self.selector, self.local_servers, self.system,
-                             [*self.history(), {"role": "user", "text": heard}], (), on_text, turn.model_stream,
+                             [*self.history(), {"role": "user", "text": heard, **({"attached": attached} if attached else {})}],
+                             (), on_text, turn.model_stream,
                              turn.stopped.wait, LIVE_REPLY_MAX_TOKENS, {})
             if state["buffer"].strip():
                 sentences.put(state["buffer"].strip())
@@ -23754,17 +23819,24 @@ class Handler(BaseHTTPRequestHandler):
         if not model:
             return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
         key = chat_key(body.get("book"), body.get("help") is True)
+        document = abstract = None
         if key == HELP_DOCUMENT:
             about = " about Hilde Reader, the app they use to read and listen"
         else:
             try:
-                record = read_book(self.server.storage, key)[1] if making_job(key) is None else (
-                    read_json_file(making_stage(self.server.storage, key)[0] / MAKING_FILE) or {})
+                _, record, passages = chat_book(self.server.storage, key)
             except (ValueError, FileNotFoundError):
                 return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+            except ChatUnavailable as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
             title = " ".join(str(record.get("title") or "").split())
             about = f" about the book they are reading, “{title}”" if title else ""
-        session = self.server.live.add(LiveSession(key, model, self.local_servers(), about))
+            document = ask_book_document(key, record, passages)
+            abstract = chat_abstract(passages, ask_config()["abstract_tokens"])
+        session = self.server.live.add(LiveSession(key, model, self.local_servers(), about, self.server.storage,
+                                                   document, abstract))
+        if document is not None:
+            threading.Thread(target=session.warm, name="live-index", daemon=True).start()
         return self.reply(HTTPStatus.OK, {"session": session.id, "in_rate": LIVE_IN_RATE, "out_rate": LIVE_OUT_RATE})
 
     def live_turn(self, query):

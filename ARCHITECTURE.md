@@ -4039,8 +4039,16 @@ With `--live-voice` (an LFM3-Audio llama-server: `/v1/audio/transcriptions`
 to hear, `/tts` to speak; `live_voice_origin()`), `GET /api/chat` says
 `live_voice` and the composer shows **Talk** (`#chat-talk`, a sound-wave icon
 between the box and Send; Can, 3 Nov). It talks with the chat model the panel
-has chosen (`chatModel()`), nothing else: no tools, no attachment, no book
-text, only the book's title in `LIVE_SYSTEM`. `startTalk()` asks
+has chosen (`chatModel()`), without tools (each round would delay her first
+word). About a book it reads the book as written Ask Hilde does: the book's
+abstract (`chat_abstract()`) in the instructions (`LIVE_BOOK_PROMPT` after
+`LIVE_SYSTEM`), and with each turn the paragraphs found for what was just said
+and the turn before (`LiveSession.found()`: `ask_retrieve()` with `ask.yaml`'s
+`retrieval`, under `ASK_RETRIEVED_HEAD`; without the embedding model, BM25's
+`k` over the same texts, under `LIVE_KEYWORD_HEAD`), formatted by
+`ask_item_text()` and logged as `Talk reading:`; only the turn being answered
+carries them. `live_start()` warms the book's index in a thread
+(`LiveSession.warm()`). Help mode reads nothing yet. `startTalk()` asks
 `/api/live/start` for a session (`LiveSession` in `LiveRegistry`, forgotten
 after `LIVE_SESSION_SECONDS` alone), opens the microphone with the browser's
 echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave

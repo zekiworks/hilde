@@ -13976,6 +13976,51 @@ class LiveTalkTests(unittest.TestCase):
         # Only the first piece may end at a comma: later ones wait for the sentence.
         self.assertEqual(web.live_sentences(clause, False), ([], clause))
 
+    def test_each_turn_brings_the_books_paragraphs_found_for_it(self):
+        """About a book Talk sends its abstract and, with each turn, the
+        paragraphs found for what was said and the turn before (Can, 3 Nov:
+        "we need them to know the document"); without the embedding model,
+        BM25's."""
+        with tempfile.TemporaryDirectory() as folder:
+            storage = web.SharedStorage(Path(folder) / "library")
+            storage.ensure()
+            _, making = making_stage(storage, per_worker=1)
+            _, record, passages = web.chat_book(storage, making)
+            document = web.ask_book_document(making, record, passages)
+            abstract = web.chat_abstract(passages)
+            sent, queries = [], []
+
+            def talk(reading, *said):
+                session = web.LiveSession(making, "lm-studio/model", {}, "", storage, document, abstract)
+                with mock.patch.object(web, "chat_model_reply",
+                                       side_effect=lambda _model, _servers, system, entries, *_: (
+                                           sent.append((system, entries)) or ("", [], {}))), \
+                        mock.patch.object(web, "ask_reading", return_value=reading), \
+                        mock.patch.object(web, "ask_retrieve",
+                                          side_effect=lambda _storage, _document, query, _settings: (
+                                              queries.append(query) or ([3], {}))):
+                    for heard in said:
+                        turn = session.begin()
+                        session.answer(turn, heard, "http://speech.test", lambda line: None)
+                        session.keep(turn, heard, False)
+                return sent[-1]
+
+            system, entries = talk({"mode": "similarity", "model": "m", "k": 8},
+                                   "Why do dams matter?", "And at what cost?")
+            self.assertIn(abstract["text"], system)
+            self.assertEqual(queries, ["Why do dams matter?", "Why do dams matter?\nAnd at what cost?"])
+            attached = entries[-1]["attached"]
+            self.assertTrue(attached.startswith(web.ASK_RETRIEVED_HEAD))
+            self.assertIn(f'<paragraph id="{document.id}:3"', attached)
+            self.assertIn("Dams hold rivers back", attached)
+            # Only the turn being answered carries paragraphs: earlier ones go as said.
+            self.assertEqual([entry.get("attached") for entry in entries[:-1]], [None, None])
+            # No embedding model: the same texts by BM25, so a spoken question's common words count for little.
+            _, entries = talk({"mode": "keyword", "why": "no model"}, "Tell me about the silt that rivers carry.")
+            attached = entries[-1]["attached"]
+            self.assertTrue(attached.startswith(web.LIVE_KEYWORD_HEAD))
+            self.assertIn("Rivers carry silt to the sea", attached.split("</paragraph>")[0])
+
 
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else
