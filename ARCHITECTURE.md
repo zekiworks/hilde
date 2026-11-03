@@ -4033,6 +4033,53 @@ passes on; with no text yet, the notice "Stopped." as before), then ends;
 answer marked stopped is drawn with the same mark after a reload and is not
 read aloud by **Read answers aloud**.
 
+### Talk (spoken conversation)
+
+With `--live-voice` (an LFM3-Audio llama-server: `/v1/audio/transcriptions`
+to hear, `/tts` to speak; `live_voice_origin()`), `GET /api/chat` says
+`live_voice` and the composer shows **Talk** (`#chat-talk`, a sound-wave icon
+between the box and Send; Can, 3 Nov). It talks with the chat model the panel
+has chosen (`chatModel()`), nothing else: no tools, no attachment, no book
+text, only the book's title in `LIVE_SYSTEM`. `startTalk()` asks
+`/api/live/start` for a session (`LiveSession` in `LiveRegistry`, forgotten
+after `LIVE_SESSION_SECONDS` alone), opens the microphone with the browser's
+echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave
+(`drawTalk()`: Hilde's output level in `--accent`, the listener's in `--text`)
+and **End**. Nothing said is shown while it runs.
+
+Turns are found in the page, with the voice test page's rules as tuned on
+3 Nov: an AudioWorklet tap, resampled to the session's `in_rate`
+(`TalkResampler`), 20 ms frames against a background learned only while
+neither speaks; a turn starts after `TALK_START_FRAMES` voiced frames, keeps
+`TALK_PREROLL_MS` from before, and ends after `TALK_HANG_MS` of quiet. While
+an answer is pending or playing only sound above
+`max(background + 18 dB, TALK_BARGE_MIN_DB)` (-38: her echo peaked at -41)
+counts, and `TALK_CONFIRM_BARGE_MS` of it stops her (`stopTalkReply()`: the
+request aborted, its sources stopped). Each turn goes as raw 16-bit PCM to
+`/api/live/turn`, which hears it (`live_transcribe()`), asks the model with
+the conversation so far (`LiveSession.history()`, at most
+`LIVE_HISTORY_TURNS`), and speaks sentence by sentence as it is written
+(`live_sentences()`: the first piece may end at a comma after 30 characters;
+`live_speak()` streams `/tts` PCM), streamed back as JSON lines and scheduled
+gaplessly by `playTalk()`. The page sends with the next turn (and with End)
+`cut`, the seconds of the answer that had played (`talkPlayed()`); the server
+keeps each sentence's audio length (`LiveTurn.said`), so only sentences begun
+by then count as said (`LiveSession.spoken()`), marked interrupted. A turn
+talked over before any of its answer played is sent again with what follows
+(`joins`), and the earlier one is dropped.
+
+**End** (`endTalk()`, also when the panel moves to another book or help)
+posts `/api/live/end`: the transcript's listener lines go through one edit
+pass by the same model (`live_edit()`, `LIVE_EDIT_SYSTEM`: mend misheard
+words and fillers, a JSON array of one line per line, else kept as heard),
+and the record (`{id, started, ended, model, edited, turns: [{heard, you,
+hilde, interrupted, at}]}`) is appended to `live.json` beside the chat's
+`chat.json` (`live_folder()`, `save_live()`). `GET /api/chat` returns them
+as `live` (`live_display()`); the page draws each as a callout
+(`liveCallout()`, **As heard** shows the untidied lines) placed by time among
+the messages, never one of them, and never sent to the model with a written
+question. **New conversation** deletes `live.json` with `chat.json`.
+
 ## HTTP routes
 
 | Route | Behavior |
@@ -4081,14 +4128,17 @@ read aloud by **Read answers aloud**.
 | `POST /api/computer-link/begin`, `/confirm`, `/stop` | For a browser that may manage only: this Hilde helping another. Begin takes JSON `url` (https only) and `name`, confirm takes the `fingerprint` the page showed and trusts that one certificate (HTTP 409 when the offer changed since, or no fingerprint is waiting), stop withdraws the pairing; each answers `ComputerLink.snapshot()` (`state`: `idle`, `checking`, `confirm`, `pending` with `code`, `connected`, `reconnecting`, `failed`, `removed`; `error`, `url`, `name`, `trust`, `sessions`). |
 | `POST /api/devices/request`, `POST /api/devices/forget` | Any device that may not approve, over HTTPS only (`Handler.secure()`). Request is HTTP 409 for one that may approve or is already approved, and HTTP 403 (`DEVICES_NEED_HTTPS`) over plain HTTP; it starts a `DeviceGrants` request with the device's `name` (`device_label()`) and address, replaces its earlier one, and sets the `hilde_devices` cookie (a 256-bit random token; `HttpOnly`, `SameSite=Strict`, `Secure`); it answers `{access: "pending", name, code}`, a six-letter code. Forget withdraws the cookie's request or approval (over HTTPS; over plain HTTP the cookie is not read) and expires the cookie. Over plain HTTP `device_access()` is `{access: "insecure"}` for another device and never reads its cookie, so an approval is neither given nor used where the network could read it; a loopback browser (and `--manage-from-network`) approves and manages over plain HTTP as before. |
 | `POST /api/devices/approve`, `POST /api/devices/deny`, `POST /api/devices/revoke` | For a browser that may approve only (`may_approve()`: loopback or `--manage-from-network`; an approved device gets HTTP 403, `DEVICES_APPROVE_LOCAL_ONLY`). Approve or deny the waiting request with JSON `code` (case and spaces ignored; HTTP 404 when none waits with it), or remove the approved device with JSON `id`; HTTP 409 while `device-grants.json` is unreadable, HTTP 500 when it cannot be saved (nothing changes). Each answers the asker's `devices`. |
-| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), `reading` (`{mode, text}`: `similarity` or `keyword` and the sentence saying so and why, `ask_reading()`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, reading, or web search. |
+| `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), `live_voice` (whether it runs with `--live-voice`), `live` (the kept spoken conversations, `live_display()`, oldest first; see [Talk](#talk-spoken-conversation)), `reading` (`{mode, text}`: `similarity` or `keyword` and the sentence saying so and why, `ask_reading()`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, reading, or web search. |
 | `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. `help=1` instead of `book` follows the help conversation's turn. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
 | `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
 | `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are this browser's (`Handler.local_servers()`). Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
-| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` alone (`chat_key()`: only that flag reaches the help conversation). |
+| `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and `live.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` and `live.json` alone (`chat_key()`: only that flag reaches the help conversation). |
+| `POST /api/live/start` | With `--live-voice` only (else 409, `LIVE_UNAVAILABLE`). JSON `book` (or `help: true`) and `model`; returns `{session, in_rate, out_rate}`. 400 without a model, 404 for an unknown book. See [Talk](#talk-spoken-conversation). |
+| `POST /api/live/turn?session=ID[&joins=1][&cut=S]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool}`, `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played. 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
+| `POST /api/live/end` | JSON `session` and optionally `cut`; keeps the edited transcript in `live.json` and returns `{live}` (as `GET /api/chat` shows it), or `{live: null}` when nothing was said. 404 for an unknown session. |
 | `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
 | `POST /api/marks/save` | With `--enable-notes` only (else 404). JSON `{book, item}`: creates or updates the mark by `item.id` under the book's lock (`save_mark()`) and returns `{item}` as stored, with `place`. HTTP 409 `{error, item}` with the stored item when `item.base_updated_at` is not its `updated_at`, or when it was deleted; 400 for an invalid item (`clean_mark()`), a changed `kind`, or an invalid book id; 404 for a book not in the library; 500 when the marks file can't be read or written, with nothing changed. |
 | `POST /api/marks/delete` | With `--enable-notes` only (else 404). JSON `{book, id}`: leaves a tombstone (`delete_mark()`) and returns it as `{item}`; 400 for an id that is no UUID v4. |

@@ -835,6 +835,21 @@ frees its GPU. Code, web addresses, and Markdown are not read; a citation such
 as ¶12 is read as "paragraph 12". Reading aloud needs the server's own
 narration model (`--voice-clone-model`); without it, neither shows.
 
+**Talk**, the sound-wave button between the question box and **Send**, starts
+a spoken conversation with the model chosen for Ask Hilde (shown only when
+the server has a speech server, `--live-voice`; see
+[Talking with Hilde](configuration.md#talking-with-hilde)). The browser asks
+for the microphone once. Then just talk: Hilde answers out loud a moment
+after you stop, in a few spoken sentences, and you can talk over her at your
+normal voice to stop her. While it runs the question box gives way to a
+moving wave and **End**; nothing of what is said shows. **End** (or opening
+another book) ends it: your words are tidied once by the same model (misheard
+words mended, "uh"s dropped) and the conversation is kept as a box, **Spoken
+conversation**, among the messages, with Hilde's answers as far as you let her
+speak. **As heard** shows your words as the speech recognition wrote them.
+Spoken conversations are kept apart: a written question never sends them to
+the model. **New conversation** deletes them with the written one.
+
 Under the question box one small gray line always says "Hilde can make
 mistakes. Check the source text." (on a phone too, on one line).
 

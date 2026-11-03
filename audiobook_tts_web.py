@@ -18051,6 +18051,395 @@ class ChatRegistry:
         return False
 
 
+# --- Talking with Hilde (the chat panel's Talk button, --live-voice) ------------
+#
+# A spoken conversation with the chat model the browser chose (Can, 3 Nov). The
+# page hears when the listener starts and stops speaking, and when they talk
+# over Hilde (which stops her), and sends each turn's audio here; LFM3-Audio's
+# server (--live-voice: llama-server with /v1/audio/transcriptions and /tts)
+# hears it, and speaks the model's answer sentence by sentence while it is
+# written. No tools, nothing attached, no document read: just the talk.
+# Nothing of it shows while it runs; when it ends its transcript, after one
+# pass by the same model that mends what speech recognition misheard, is kept
+# beside the conversation (LIVE_FILE), shown in the chat panel as a callout,
+# and never sent to the model with a later question.
+LIVE_FILE = "live.json"
+LIVE_IN_RATE = 16000   # what the page sends: 16-bit mono PCM
+LIVE_OUT_RATE = 24000  # what LFM3-Audio speaks
+LIVE_VOICE = "female"
+LIVE_LANGUAGE = "en"
+LIVE_TURN_MAX_SECONDS = 120
+LIVE_SESSION_SECONDS = 3600
+LIVE_REPLY_MAX_TOKENS = 600
+LIVE_HISTORY_TURNS = 20
+LIVE_UNAVAILABLE = "Talking with Hilde needs its speech server: start Hilde with --live-voice."
+LIVE_ENDED = "This conversation has ended: press Talk to start another."
+LIVE_SYSTEM = (
+    "You are Hilde, talking out loud with the reader{about}. Their words reach you through speech recognition "
+    "and may contain mistakes, so guess the most likely meaning; if it looks cut off or garbled, say briefly what "
+    "you understood and ask. Your reply is read aloud: answer in plain, natural spoken English, as fully as the "
+    "question needs but usually two to four sentences, with no lists, markdown, emojis, or stage directions."
+)
+LIVE_EDIT_SYSTEM = (
+    "You tidy the transcript of a spoken conversation between a reader and Hilde. Each READER line was written "
+    "by speech recognition and may have misheard words, broken sentences, or false starts; HILDE's lines are "
+    "exact. Rewrite only the READER lines: mend words that were clearly misheard (let the conversation tell "
+    "you), drop stutters and fillers such as 'uh', keep everything the reader meant, in their words, and add "
+    "nothing. Answer with a JSON array of the READER lines in order, one string each, and nothing else."
+)
+LIVE_SENTENCE_END = re.compile(r"(.+?[.!?…])(\s+|$)", re.S)
+_LIVE_FILE_LOCK = threading.Lock()
+
+
+def live_voice_origin(value):
+    """--live-voice: the origin of LFM3-Audio's llama-server."""
+    try:
+        return normalize_local_server(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "use the speech server's address with only a host and port, such as http://127.0.0.1:9941"
+        ) from None
+
+
+def live_wav(pcm, rate=LIVE_IN_RATE):
+    """16-bit mono PCM as a WAV file."""
+    return struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(pcm), b"WAVE", b"fmt ", 16, 1, 1, rate,
+                       rate * 2, 2, 16, b"data", len(pcm)) + pcm
+
+
+def live_transcribe(origin, pcm, timeout=30):
+    """What the listener said in one turn (16-bit mono PCM at LIVE_IN_RATE),
+    by the speech server's OpenAI-style transcription."""
+    boundary = uuid.uuid4().hex
+    fields = [("model", None, b"lfm-audio"), ("language", None, LIVE_LANGUAGE.encode()),
+              ("file", "turn.wav", live_wav(pcm))]
+    body = b"".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"'.encode()
+        + (f'; filename="{filename}"\r\nContent-Type: audio/wav'.encode() if filename else b"")
+        + b"\r\n\r\n" + value + b"\r\n"
+        for name, filename, value in fields
+    ) + f"--{boundary}--\r\n".encode()
+    request = urllib.request.Request(f"{origin}/v1/audio/transcriptions", data=body,
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            answer = json.load(response)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"The speech server could not hear the turn: {exc}") from exc
+    return " ".join(str(answer.get("text") or "").split()) if isinstance(answer, dict) else ""
+
+
+def live_speak(origin, text, write, stopped, timeout=60):
+    """Speak `text` in Hilde's live voice: write(pcm) gets 16-bit mono PCM at
+    LIVE_OUT_RATE as the speech server streams it (its float samples), until
+    it is done or stopped() says so."""
+    body = json.dumps({"input": text, "voice": LIVE_VOICE, "lang": LIVE_LANGUAGE, "response_format": "pcm",
+                       "stream": True}).encode("utf-8")
+    request = urllib.request.Request(f"{origin}/tts", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            rest = b""
+            while not stopped():
+                chunk = response.read1(16384)
+                if not chunk:
+                    return
+                data = rest + chunk
+                usable = len(data) - len(data) % 4
+                rest = data[usable:]
+                if usable:
+                    # The server's samples, like WAV's, are little-endian.
+                    samples = array.array("f", data[:usable])
+                    if sys.byteorder == "big":
+                        samples.byteswap()
+                    pcm = array.array("h", (max(-32768, min(32767, int(value * 32767))) for value in samples))
+                    if sys.byteorder == "big":
+                        pcm.byteswap()
+                    write(pcm.tobytes())
+    except OSError as exc:
+        if not stopped():
+            raise RuntimeError(f"The speech server could not speak: {exc}") from exc
+
+
+def live_sentences(buffer, first):
+    """The sentences of `buffer` ready to speak, and the rest. The first
+    may also end at a comma once it is long enough, so speech starts sooner."""
+    ready = []
+    while True:
+        match = LIVE_SENTENCE_END.match(buffer)
+        if match:
+            ready.append(match.group(1).strip())
+            buffer = buffer[match.end():]
+            continue
+        if first and not ready and len(buffer) > 60 and "," in buffer[30:]:
+            cut = buffer.index(",", 30) + 1
+            ready.append(buffer[:cut].strip())
+            buffer = buffer[cut:].lstrip()
+            continue
+        return ready, buffer
+
+
+def live_spoken(text):
+    """What of a model's text is said aloud: no reasoning, no Markdown marks."""
+    text = re.sub(r"<think>.*?(?:</think>|$)", "", text, flags=re.DOTALL)
+    return " ".join(re.sub(r"[*_#`>|]+", "", text).split())
+
+
+class LiveTurn:
+    """One turn of a live conversation: its model request and its speech,
+    which talking over Hilde (the page drops the request) or the next turn
+    stops. `said` holds each sentence spoken, with its seconds of audio;
+    `cut`, the seconds of it the page had played when it was talked over."""
+
+    def __init__(self):
+        self.stopped = threading.Event()
+        self.streams = set()
+        self.said = []
+        self.cut = None
+        self.text = ""
+
+    def stop(self):
+        self.stopped.set()
+        for stream in list(self.streams):
+            stream.abort()
+
+    @contextlib.contextmanager
+    def model_stream(self, url, headers, body):
+        stream = ModelStream(url, headers, body)
+        if self.stopped.is_set():
+            raise InterruptedError("talked over")
+        self.streams.add(stream)
+        try:
+            yield stream.open()
+        except Exception as exc:
+            if self.stopped.is_set():
+                raise InterruptedError("talked over") from exc
+            if isinstance(exc, (OSError, http.client.HTTPException)):
+                raise RuntimeError(f"The model request failed: {exc}") from exc
+            raise
+        finally:
+            self.streams.discard(stream)
+            stream.close()
+
+
+class LiveSession:
+    """A live conversation: the chat it belongs to (`key`, a book or
+    HELP_DOCUMENT), the model, and its turns so far, each {"heard", "turn"
+    (its LiveTurn), "joined", "at"}; what Hilde got to say in each is
+    worked out as it is read (spoken()), since the page's cut may come later."""
+
+    def __init__(self, key, selector, local_servers, about):
+        self.id = secrets.token_hex(16)
+        self.key, self.selector, self.local_servers = key, selector, local_servers
+        self.system = LIVE_SYSTEM.format(about=about)
+        self.started = utc_timestamp()
+        self.seen = time.monotonic()
+        self.turns = []
+        self.lock = threading.Lock()
+        self.current = None
+
+    def begin(self):
+        """A new turn, which ends the one before: the listener spoke again."""
+        turn = LiveTurn()
+        with self.lock:
+            before, self.current = self.current, turn
+            self.seen = time.monotonic()
+        if before is not None:
+            before.stop()
+        return turn
+
+    def cut_last(self, seconds):
+        """The page talked over Hilde (or ended) after `seconds` of her
+        latest answer had played: only the sentences begun by then count as said."""
+        with self.lock:
+            turn = self.current or (self.turns[-1]["turn"] if self.turns else None)
+        if turn is not None:
+            turn.cut = max(0.0, seconds)
+
+    @staticmethod
+    def spoken(item):
+        """What Hilde got to say in a kept turn: {"hilde", "interrupted",
+        "unheard" (talked over before any of it played)}."""
+        turn = item["turn"]
+        if turn.cut is None and not turn.stopped.is_set():
+            return {"hilde": live_spoken(turn.text), "interrupted": False, "unheard": False}
+        said, start = [], 0.0
+        for sentence, seconds in list(turn.said):
+            if turn.cut is not None and start >= turn.cut:
+                break
+            said.append(sentence)
+            start += seconds
+        return {"hilde": " ".join(said), "interrupted": True, "unheard": not said}
+
+    def transcript(self):
+        """The turns kept so far as the transcript holds them."""
+        with self.lock:
+            items = [item for item in self.turns if not item.get("joined")]
+        return [{"heard": item["heard"], "at": item["at"], **self.spoken(item)} for item in items]
+
+    def history(self):
+        turns = [item for item in self.transcript() if not item["unheard"]][-LIVE_HISTORY_TURNS:]
+        entries = []
+        for item in turns:
+            entries += [{"role": "user", "text": item["heard"]},
+                        {"role": "assistant", "text": item["hilde"] + (" [interrupted]" if item["interrupted"] else "")}]
+        return entries
+
+    def answer(self, turn, heard, origin, emit):
+        """The model's answer to `heard`, spoken as it is written: emit()
+        gets {"audio": base64 PCM} lines. Returns the answer's text."""
+        sentences = queue.Queue()
+        failure = []
+
+        def speak():
+            try:
+                while (sentence := sentences.get()) is not None:
+                    if turn.stopped.is_set():
+                        continue
+                    spoken = live_spoken(sentence)
+                    if spoken:
+                        samples = [0]
+                        live_speak(origin, spoken, lambda pcm: (
+                            emit({"audio": base64.b64encode(pcm).decode("ascii")}),
+                            samples.__setitem__(0, samples[0] + len(pcm) // 2)), turn.stopped.is_set)
+                        if samples[0]:
+                            turn.said.append((spoken, samples[0] / LIVE_OUT_RATE))
+            except (RuntimeError, InterruptedError) as exc:
+                failure.append(exc)
+                turn.stop()
+
+        speaker = threading.Thread(target=speak, name="live-speech", daemon=True)
+        speaker.start()
+        state = {"buffer": "", "first": True}
+
+        def on_text(delta):
+            if turn.stopped.is_set():
+                raise InterruptedError("talked over")
+            if delta is None:
+                turn.text, state["buffer"] = "", ""
+                return
+            turn.text += delta
+            state["buffer"] += delta
+            # A model that thinks aloud: nothing is said until its thinking ends.
+            if state["buffer"].lstrip().startswith("<think>"):
+                if "</think>" not in state["buffer"]:
+                    return
+                state["buffer"] = state["buffer"].split("</think>", 1)[1]
+            ready, state["buffer"] = live_sentences(state["buffer"], state["first"])
+            for sentence in ready:
+                state["first"] = False
+                sentences.put(sentence)
+
+        try:
+            chat_model_reply(self.selector, self.local_servers, self.system,
+                             [*self.history(), {"role": "user", "text": heard}], (), on_text, turn.model_stream,
+                             turn.stopped.wait, LIVE_REPLY_MAX_TOKENS, {})
+            if state["buffer"].strip():
+                sentences.put(state["buffer"].strip())
+        finally:
+            sentences.put(None)
+            speaker.join()
+        if failure and not isinstance(failure[0], InterruptedError):
+            raise failure[0]
+        return live_spoken(turn.text)
+
+    def keep(self, turn, heard, joins):
+        """Keep a finished turn in the transcript. With `joins` the page sends
+        the words of the turn before again (talked over before any of its
+        answer played), with what the listener went on to say, so that turn
+        goes."""
+        with self.lock:
+            if self.current is turn:
+                self.current = None
+            if joins and self.turns and not self.turns[-1].get("joined"):
+                self.turns[-1]["joined"] = True
+            if heard:
+                self.turns.append({"heard": heard, "turn": turn, "at": utc_timestamp()})
+
+
+class LiveRegistry:
+    """The live conversations under way, each by its id; one left alone for
+    LIVE_SESSION_SECONDS is forgotten."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.sessions = {}
+
+    def add(self, session):
+        with self.lock:
+            now = time.monotonic()
+            for key in [key for key, item in self.sessions.items() if now - item.seen > LIVE_SESSION_SECONDS]:
+                self.sessions.pop(key)
+            self.sessions[session.id] = session
+        return session
+
+    def get(self, session_id):
+        with self.lock:
+            return self.sessions.get(str(session_id or ""))
+
+    def pop(self, session_id):
+        with self.lock:
+            return self.sessions.pop(str(session_id or ""), None)
+
+
+def live_folder(storage, key):
+    """Where a chat's live transcripts are kept: beside its conversation."""
+    return help_chat_path(storage).parent if key == HELP_DOCUMENT else chat_folder(storage, key)
+
+
+def read_live(folder):
+    """A chat's kept live conversations, oldest first."""
+    data = read_json_file(Path(folder) / LIVE_FILE)
+    items = data.get("conversations") if isinstance(data, dict) else None
+    return [item for item in items or () if isinstance(item, dict) and isinstance(item.get("turns"), list)]
+
+
+def save_live(folder, record):
+    folder = Path(folder)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _LIVE_FILE_LOCK:
+        write_private_json(folder / LIVE_FILE, {"schema": 1, "conversations": [*read_live(folder), record]})
+
+
+def live_display(record):
+    """A kept live conversation as the chat panel shows it."""
+    turns = [
+        {"you": str(item.get("you") or item.get("heard") or ""), "heard": str(item.get("heard") or ""),
+         "hilde": str(item.get("hilde") or ""), "interrupted": item.get("interrupted") is True}
+        for item in record.get("turns") or () if isinstance(item, dict)
+    ]
+    return {"id": str(record.get("id") or ""), "started": str(record.get("started") or ""),
+            "ended": str(record.get("ended") or ""), "model": str(record.get("model") or ""),
+            "model_name": chat_model_name(str(record.get("model") or "")) if record.get("model") else "",
+            "edited": record.get("edited") is True, "turns": turns}
+
+
+def live_edit(session, turns):
+    """The reader's lines of `turns` after the edit pass (LIVE_EDIT_SYSTEM),
+    by the conversation's own model; None when it did not answer one line
+    per line, and the lines stay as heard."""
+    lines = "\n".join(f"{'READER' if role == 'you' else 'HILDE'}: {text}" for item in turns
+                      for role, text in (("you", item["heard"]), ("hilde", item["hilde"])))
+    turn = LiveTurn()
+    try:
+        text, _, _ = chat_model_reply(session.selector, session.local_servers, LIVE_EDIT_SYSTEM,
+                                      [{"role": "user", "text": lines}], (), lambda delta: None, turn.model_stream,
+                                      turn.stopped.wait, 2000, {})
+    except (RuntimeError, InterruptedError, OSError) as exc:
+        print(f"Talk: the transcript's edit pass failed: {exc}", flush=True)
+        return None
+    text = re.sub(r"<think>.*?(?:</think>|$)", "", text, flags=re.DOTALL)
+    match = re.search(r"\[.*\]", text, flags=re.DOTALL)
+    try:
+        edited = json.loads(match.group(0)) if match else None
+    except ValueError:
+        edited = None
+    if not isinstance(edited, list) or len(edited) != len(turns) or not all(isinstance(line, str) for line in edited):
+        print("Talk: the transcript's edit pass did not answer one line per line; kept as heard.", flush=True)
+        return None
+    return [" ".join(line.split()) or item["heard"] for line, item in zip(edited, turns)]
+
+
+
 def chat_payload(storage, chats, book, search_server=""):
     """What the page shows for a book's chat; `web_search` says whether
     Chat may search the web (the server's --search-server)."""
@@ -22443,6 +22832,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(
                 HTTPStatus.FORBIDDEN, "cross-origin request refused"
             )
+        # A live turn's audio is its body (16-bit mono PCM), not JSON.
+        if route == "/api/live/turn":
+            return self.live_turn(query)
         if route == "/api/documents/upload":
             return self.upload_document(
                 query.get("name", ["document.txt"])[0],
@@ -22663,6 +23055,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply_chat(key)
         if route == "/api/chat/new":
             return self.chat_new(chat_key(body.get("book"), body.get("help") is True))
+        if route == "/api/live/start":
+            return self.live_start(body)
+        if route == "/api/live/end":
+            return self.live_end(body)
         if route == "/api/airdrop":
             return self.airdrop(body.get("path", ""))
         if route in (
@@ -23224,6 +23620,12 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
         payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE
+        # Its kept live conversations, shown as callouts among the messages, and whether Talk is offered.
+        payload["live_voice"] = bool(getattr(self.server, "live_voice", ""))
+        try:
+            payload["live"] = [live_display(record) for record in read_live(live_folder(self.server.storage, book))]
+        except (OSError, ValueError):
+            payload["live"] = []
         return self.reply(HTTPStatus.OK, payload, extra=(("Cache-Control", "no-store"),))
 
     def chat_speak(self, body):
@@ -23331,13 +23733,133 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(HTTPStatus.CONFLICT, "Hilde is still answering; stop it first.")
         if book == HELP_DOCUMENT:
             help_chat_path(self.server.storage).unlink(missing_ok=True)
+            (help_chat_path(self.server.storage).parent / LIVE_FILE).unlink(missing_ok=True)
             return self.reply_chat(book)
         try:
             path = chat_folder(self.server.storage, book)
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        # A new conversation starts without the spoken ones too.
         (path / BOOK_CHAT_FILE).unlink(missing_ok=True)
+        (path / LIVE_FILE).unlink(missing_ok=True)
         return self.reply_chat(book)
+
+    def live_start(self, body):
+        """Begin a live conversation with the chosen chat model (`model`)
+        about a book, or with `help` in help mode: its session id."""
+        origin = getattr(self.server, "live_voice", "")
+        if not origin:
+            return self.fail(HTTPStatus.CONFLICT, LIVE_UNAVAILABLE)
+        model = str(body.get("model") or "").strip()
+        if not model:
+            return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
+        key = chat_key(body.get("book"), body.get("help") is True)
+        if key == HELP_DOCUMENT:
+            about = " about Hilde Reader, the app they use to read and listen"
+        else:
+            try:
+                record = read_book(self.server.storage, key)[1] if making_job(key) is None else (
+                    read_json_file(making_stage(self.server.storage, key)[0] / MAKING_FILE) or {})
+            except (ValueError, FileNotFoundError):
+                return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+            title = " ".join(str(record.get("title") or "").split())
+            about = f" about the book they are reading, “{title}”" if title else ""
+        session = self.server.live.add(LiveSession(key, model, self.local_servers(), about))
+        return self.reply(HTTPStatus.OK, {"session": session.id, "in_rate": LIVE_IN_RATE, "out_rate": LIVE_OUT_RATE})
+
+    def live_turn(self, query):
+        """One turn: its audio heard, then the answer spoken as it is
+        written, streamed as lines of JSON: {"heard": whether words were
+        heard}, {"audio": base64 16-bit PCM at LIVE_OUT_RATE} as it comes,
+        then {"done": true} or {"error": why}. Dropping the request (talking
+        over Hilde) stops the answer. `joins` says the audio repeats the
+        turn before, stopped before any of its answer was heard."""
+        origin = getattr(self.server, "live_voice", "")
+        if not origin:
+            return self.fail(HTTPStatus.CONFLICT, LIVE_UNAVAILABLE)
+        session = self.server.live.get(query.get("session", [""])[0])
+        if session is None:
+            return self.fail(HTTPStatus.NOT_FOUND, LIVE_ENDED)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not 0 < length <= LIVE_IN_RATE * 2 * LIVE_TURN_MAX_SECONDS or length % 2:
+            return self.fail(HTTPStatus.BAD_REQUEST, f"A turn is 16-bit audio of at most {LIVE_TURN_MAX_SECONDS} seconds.")
+        pcm = self.rfile.read(length)
+        # `cut`: the seconds of Hilde's answer that had played when this turn talked over her.
+        with contextlib.suppress(ValueError):
+            if query.get("cut"):
+                session.cut_last(float(query["cut"][0]))
+        turn = session.begin()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        lock = threading.Lock()
+
+        def emit(line):
+            with lock:
+                if turn.stopped.is_set() and "audio" in line:
+                    raise InterruptedError("talked over")
+                try:
+                    self.wfile.write((json.dumps(line) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                except OSError as exc:
+                    turn.stop()
+                    raise InterruptedError("talked over") from exc
+
+        heard = ""
+        try:
+            heard = live_transcribe(origin, pcm)
+            emit({"heard": bool(heard)})
+            if heard:
+                session.answer(turn, heard, origin, emit)
+            emit({"done": True})
+        except InterruptedError:
+            pass
+        except (RuntimeError, OSError, ValueError) as exc:
+            with contextlib.suppress(InterruptedError):
+                emit({"error": str(exc)})
+        finally:
+            session.keep(turn, heard, query.get("joins", [""])[0] == "1")
+
+    def live_end(self, body):
+        """End a live conversation: its transcript, after the edit pass, kept
+        beside the chat's conversation (LIVE_FILE); answers it as shown
+        ({"live": …}, or null when nothing was said)."""
+        session = self.server.live.pop(body.get("session"))
+        if session is None:
+            return self.fail(HTTPStatus.NOT_FOUND, LIVE_ENDED)
+        if isinstance(body.get("cut"), (int, float)):
+            session.cut_last(float(body["cut"]))
+        if session.current is not None:
+            session.current.stop()
+        # The stopped turn is kept by its own request as it ends (keep()): wait for it, briefly.
+        deadline = time.monotonic() + 5
+        while session.current is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        turns = [item for item in session.transcript() if not item["unheard"]]
+        if not turns:
+            return self.reply(HTTPStatus.OK, {"live": None})
+        edited = live_edit(session, turns)
+        record = {
+            "id": session.id[:12], "started": session.started, "ended": utc_timestamp(), "model": session.selector,
+            "edited": edited is not None,
+            "turns": [{"heard": item["heard"], "you": edited[index] if edited else item["heard"],
+                       "hilde": item["hilde"], "interrupted": item["interrupted"], "at": item["at"]}
+                      for index, item in enumerate(turns)],
+        }
+        try:
+            save_live(live_folder(self.server.storage, session.key), record)
+        except (ValueError, FileNotFoundError):
+            return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
+        except OSError as exc:
+            return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not keep the transcript: {exc}")
+        return self.reply(HTTPStatus.OK, {"live": live_display(record)})
 
     def chat_events(self, book, start, turn_id=""):
         """Stream what Hilde writes and does while answering, from event
@@ -25348,6 +25870,27 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
                        border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
                        color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
 .chat-compose button:hover:not(:disabled) { background:var(--hover); }
+/* Talk (--live-voice): the sound-wave button beside Send starts a spoken conversation. While it runs the question
+   box gives way to a wave that moves with whoever speaks (Hilde in the accent colour, the listener in the text's)
+   and End; nothing of what is said shows until it ends. */
+.chat-compose button.chat-talk { padding:2px 8px; }
+.chat-talk svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round;
+                 vertical-align:middle; }
+.chat-live { display:flex; align-items:center; gap:10px; min-height:42px; padding:5px 6px 5px 12px;
+             background:var(--field); border:1px solid var(--accent); border-radius:8px; }
+.chat-live-wave { flex:1; min-width:0; width:100%; height:32px; }
+.chat-live-end { flex:0 0 auto; min-height:26px; padding:2px 12px; border:1px solid #5a5a5a; border-radius:6px;
+                 background:transparent; box-shadow:none; color:var(--text); font-size:13px; }
+/* A kept spoken conversation: a callout among the messages, never one of them. */
+.chat-live-callout { display:grid; gap:8px; margin:0; padding:10px 12px; border-left:3px solid var(--accent);
+                     border-radius:0 8px 8px 0; background:var(--surface); font-size:14px; }
+.chat-live-callout header { display:flex; flex-wrap:wrap; gap:4px 8px; align-items:baseline; color:var(--dim);
+                            font-size:12px; }
+.chat-live-callout header strong { color:var(--text); font-size:13px; font-weight:600; }
+.chat-live-lines { display:grid; gap:6px; }
+.chat-live-lines p { margin:0; line-height:1.5; overflow-wrap:anywhere; }
+.chat-live-lines .who { font-weight:600; }
+.chat-live-lines .interrupted { color:var(--dim); font-size:12px; }
 /* Under the question box, always: one line of small gray text (12 px fits one line in a 375 px phone's sheet). */
 .chat-disclaimer { margin:-4px 0 0; color:var(--dim); font-size:12px; line-height:1.4; text-align:center;
                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -26975,8 +27518,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
               <label for="chat-input" class="visually-hidden">Message</label>
               <textarea id="chat-input" rows="1" maxlength="8000" placeholder="Type a question"></textarea>
+              <button id="chat-talk" class="chat-talk hidden" type="button" onclick="startTalk()"
+                aria-label="Talk with Hilde" title="Talk with Hilde"><svg viewBox="0 0 24 24" aria-hidden="true"><path
+                d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></button>
               <button id="chat-send" type="submit">Send</button>
             </form>
+            <!-- Talk: in the question box's place while a spoken conversation runs. -->
+            <div id="chat-live" class="chat-live hidden" role="group" aria-label="Talking with Hilde">
+              <canvas id="chat-live-wave" class="chat-live-wave" aria-hidden="true"></canvas>
+              <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
+              <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
+            </div>
             <p id="chat-disclaimer" class="chat-disclaimer">Hilde can make mistakes. Check the source text.</p>
           </div>
         </section>
@@ -30390,6 +30942,8 @@ function focusChatInput() {
 // question back (the server still refuses one while an answer runs).
 async function loadChat() {
   const scope = chatScope(), epoch = chatEpoch;
+  // Another book (or help) opened: the conversation under way there ends.
+  if (talk && talk.scope !== scope) endTalk();
   clearTimeout(chatRetryTimer);
   try {
     const data = await jsonRequest("/api/chat?" + chatQuery());
@@ -30421,7 +30975,16 @@ function applyChat(data) {
   }
   if (!data.help) renderChatFiles(data.files || []);
   const log = $("chat-log");
-  log.replaceChildren(...(data.help ? [HELP_INTRO] : []), ...data.conversation.map(chatEntryElement).filter(Boolean));
+  // Kept spoken conversations show as callouts where they happened in time (after what was written before
+  // they began), never as messages.
+  const lives = [...(data.live || [])].sort((a, b) => (a.started < b.started ? -1 : 1)), nodes = [];
+  data.conversation.forEach((entry, index, list) => {
+    while (lives.length && entry.at && entry.at > lives[0].started) nodes.push(liveCallout(lives.shift()));
+    const node = chatEntryElement(entry, index, list);
+    if (node) nodes.push(node);
+  });
+  nodes.push(...lives.map(liveCallout));
+  log.replaceChildren(...(data.help ? [HELP_INTRO] : []), ...nodes);
   chatLive = null;
   if (data.partial) {
     setLiveText(data.partial);
@@ -30608,6 +31171,319 @@ async function copyNote(url, name) {
     showToast(`Copied the text of ${name}.`);
   } catch (_) { showToast(`The text of ${name} couldn't be copied.`); }
 }
+// A kept spoken conversation (/api/chat's `live`) as a callout: when, how long, the model, and its lines,
+// the listener's as the edit pass tidied them (As heard shows speech recognition's own).
+function liveCallout(record) {
+  const node = document.createElement("aside");
+  node.className = "chat-live-callout";
+  const head = document.createElement("header");
+  const title = document.createElement("strong");
+  title.textContent = "Spoken conversation";
+  const minutes = Math.max(1, Math.round((Date.parse(record.ended) - Date.parse(record.started)) / 60000));
+  const when = document.createElement("span");
+  when.textContent = [new Date(record.started).toLocaleString([], { dateStyle:"medium", timeStyle:"short" }),
+    `${minutes} min`, record.model_name].filter(Boolean).join(" · ");
+  head.append(title, when);
+  const lines = document.createElement("div");
+  lines.className = "chat-live-lines";
+  const line = (who, text, interrupted) => {
+    const paragraph = document.createElement("p");
+    const name = document.createElement("span");
+    name.className = "who"; name.textContent = `${who}: `;
+    paragraph.append(name, text);
+    if (interrupted) {
+      const mark = document.createElement("span");
+      mark.className = "interrupted"; mark.textContent = " (interrupted)";
+      paragraph.append(mark);
+    }
+    return paragraph;
+  };
+  const fill = (heard) => lines.replaceChildren(...record.turns.flatMap((turn) => [
+    line("You", heard ? turn.heard : turn.you), ...(turn.hilde || turn.interrupted ? [line("Hilde", turn.hilde, turn.interrupted)] : [])]));
+  fill(false);
+  node.append(head, lines);
+  if (record.edited && record.turns.some((turn) => turn.heard !== turn.you)) {
+    const toggle = document.createElement("button");
+    toggle.type = "button"; toggle.className = "link"; toggle.textContent = "As heard";
+    toggle.title = "Your words as speech recognition wrote them, before the tidy-up";
+    toggle.addEventListener("click", () => {
+      const heard = toggle.textContent === "As heard";
+      fill(heard);
+      toggle.textContent = heard ? "Tidied" : "As heard";
+    });
+    head.append(toggle);
+  }
+  return node;
+}
+
+// ---- Talk: a spoken conversation with the chat model (the server's --live-voice) ----
+// The page hears when the listener starts and stops speaking, and when they talk over Hilde, as the voice test
+// page was tuned on 3 Nov: a sound starts a tentative turn, which becomes a turn once TALK_CONFIRM_*_MS of it are
+// voiced; while Hilde speaks only sound above TALK_BARGE_MIN_DB counts (her echo peaked at -41 dB), against a
+// background learned while she is silent. Each turn's audio (16-bit, the server's in_rate) goes to
+// /api/live/turn, whose answer streams back as speech; talking over her drops that request, which stops her.
+// Nothing shows while it runs but the wave; End keeps the transcript (after the model's edit pass) as a callout.
+const TALK_FRAME_MS = 20, TALK_PREROLL_MS = 300, TALK_START_FRAMES = 3, TALK_JITTER_S = 0.03, TALK_HANG_MS = 700;
+const TALK_CONFIRM_IDLE_MS = 200, TALK_CONFIRM_BARGE_MS = 250, TALK_BARGE_EXTRA_DB = 6, TALK_BARGE_MIN_DB = -38;
+const TALK_TAP = `class TalkTap extends AudioWorkletProcessor {
+  process(inputs) { const channel = inputs[0][0]; if (channel) this.port.postMessage(channel.slice(0)); return true; }
+}
+registerProcessor("talk-tap", TalkTap);`;
+let talk = null, talkStarting = false;
+// The microphone's rate down to the server's: each output sample averages its span of input.
+class TalkResampler {
+  constructor(from, to) { this.step = from / to; this.t = 0; this.buffer = new Float32Array(0); }
+  push(samples) {
+    const all = new Float32Array(this.buffer.length + samples.length);
+    all.set(this.buffer); all.set(samples, this.buffer.length);
+    const out = [];
+    while (this.t + this.step <= all.length) {
+      const start = Math.floor(this.t), end = Math.max(start + 1, Math.floor(this.t + this.step));
+      let sum = 0;
+      for (let i = start; i < end; i++) sum += all[i];
+      out.push(sum / (end - start));
+      this.t += this.step;
+    }
+    const keep = Math.floor(this.t);
+    this.buffer = all.slice(keep); this.t -= keep;
+    return Float32Array.from(out);
+  }
+}
+function talkReplyAudible() { return !!talk && talk.playNext > talk.playback.currentTime; }
+function talkReplyBusy() { return !!talk && (!!talk.request || talkReplyAudible()); }
+
+async function startTalk() {
+  if (talk || talkStarting) return;
+  const model = chatModel();
+  if (!model) { chatHint("Choose a model for Chat first, then press Talk.", true); return; }
+  talkStarting = true; renderChatControls();
+  const scope = chatScope();
+  const end = (session) => jsonRequest("/api/live/end", { method:"POST", headers:{ "Content-Type":"application/json" },
+    body:JSON.stringify({ session }) }).catch(() => {});
+  try {
+    const session = await jsonRequest("/api/live/start", { method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify(chatMode === "help" ? { help:true, model } : { book:state.player.book, model }) });
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio:{
+        echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 } });
+    } catch (error) {
+      end(session.session);
+      chatHint("Hilde needs the microphone to talk: allow it for this page, then press Talk again.", true);
+      return;
+    }
+    const capture = new AudioContext(), playback = new AudioContext();
+    await Promise.all([capture.resume(), playback.resume()]);
+    await capture.audioWorklet.addModule(URL.createObjectURL(new Blob([TALK_TAP], { type:"text/javascript" })));
+    const source = capture.createMediaStreamSource(stream), tap = new AudioWorkletNode(capture, "talk-tap");
+    const mute = capture.createGain();
+    mute.gain.value = 0;
+    source.connect(tap); tap.connect(mute); mute.connect(capture.destination);
+    const analyser = playback.createAnalyser();
+    analyser.fftSize = 512; analyser.connect(playback.destination);
+    talk = { session:session.session, scope, inRate:session.in_rate, outRate:session.out_rate, stream, capture,
+             playback, analyser, resampler:new TalkResampler(capture.sampleRate, session.in_rate),
+             pending:new Float32Array(0), preroll:[], frames:[], held:[], floorDb:null, voicedRun:0, silenceMs:0,
+             speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
+             sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
+             scheduled:[], cut:null };
+    tap.port.onmessage = (event) => talkSamples(event.data);
+    chatHint();
+    $("chat-compose").classList.add("hidden");
+    $("chat-live").classList.remove("hidden");
+    $("chat-live-status").textContent = "Talking with Hilde. Speak whenever you like; press End to stop.";
+    $("chat-live-end").focus();
+    drawTalk();
+  } catch (error) {
+    chatHint(`Talk couldn't start: ${error.message}`, true);
+  } finally {
+    talkStarting = false;
+    renderChatControls();
+  }
+}
+function talkSamples(samples) {
+  if (!talk) return;
+  const fresh = talk.resampler.push(samples), size = talk.inRate * TALK_FRAME_MS / 1000;
+  const all = new Float32Array(talk.pending.length + fresh.length);
+  all.set(talk.pending); all.set(fresh, talk.pending.length);
+  let at = 0;
+  for (; at + size <= all.length && talk; at += size) onTalkFrame(all.slice(at, at + size));
+  if (talk) talk.pending = all.slice(at);
+}
+function onTalkFrame(frame) {
+  let sum = 0;
+  for (const value of frame) sum += value * value;
+  const db = 10 * Math.log10(sum / frame.length + 1e-12);
+  talk.micDb = db;
+  if (talk.floorDb === null) talk.floorDb = db;
+  // The background is learned while neither speaks: Hilde's echo must not raise the bar.
+  if (!talk.speaking && !talkReplyAudible())
+    talk.floorDb = db < talk.floorDb ? 0.9 * talk.floorDb + 0.1 * db : talk.floorDb + 0.01 * (db - talk.floorDb);
+  const threshold = talkReplyBusy()
+    ? Math.max(talk.floorDb + (talk.speaking ? 8 : 12) + TALK_BARGE_EXTRA_DB, TALK_BARGE_MIN_DB)
+    : Math.max(talk.floorDb + (talk.speaking ? 8 : 12), -60);
+  const voiced = db > threshold;
+  if (talk.speaking) {
+    (talk.tentative ? talk.held : talk.frames).push(frame);
+    if (voiced) {
+      talk.silenceMs = 0; talk.voicedMs += TALK_FRAME_MS;
+      if (talk.tentative
+          && talk.voicedMs >= (talk.bargeTurn && !talk.beforeReply ? TALK_CONFIRM_BARGE_MS : TALK_CONFIRM_IDLE_MS))
+        confirmTalkTurn();
+    } else if ((talk.silenceMs += TALK_FRAME_MS) >= TALK_HANG_MS) {
+      if (talk.tentative) Object.assign(talk, { speaking:false, tentative:false, held:[], voicedMs:0 });
+      else endTalkTurn();
+    }
+    return;
+  }
+  talk.preroll.push(frame);
+  while (talk.preroll.length > TALK_PREROLL_MS / TALK_FRAME_MS) talk.preroll.shift();
+  talk.voicedRun = voiced ? talk.voicedRun + 1 : 0;
+  if (talk.voicedRun >= TALK_START_FRAMES) {
+    const busy = talkReplyBusy();
+    Object.assign(talk, { voicedRun:0, silenceMs:0, speaking:true, tentative:true, bargeTurn:busy,
+                          beforeReply:busy && !talkReplyAudible(), voicedMs:0, held:talk.preroll, preroll:[], frames:[] });
+  }
+}
+function confirmTalkTurn() {
+  talk.tentative = false;
+  if (talk.bargeTurn) stopTalkReply(talk.beforeReply);
+  talk.frames = talk.held; talk.held = [];
+}
+function endTalkTurn() {
+  talk.speaking = false;
+  const length = talk.frames.reduce((sum, frame) => sum + frame.length, 0);
+  if (length < talk.inRate * 0.25) { talk.frames = []; return; }  // a tap, not a turn
+  let samples = new Float32Array(length), at = 0;
+  for (const frame of talk.frames) { samples.set(frame, at); at += frame.length; }
+  talk.frames = [];
+  const joins = !!talk.joinAudio;
+  if (joins) {
+    const both = new Float32Array(talk.joinAudio.length + samples.length);
+    both.set(talk.joinAudio); both.set(samples, talk.joinAudio.length);
+    samples = both; talk.joinAudio = null;
+  }
+  talk.lastAudio = samples;
+  const cut = talk.cut;
+  talk.cut = null;
+  sendTalkTurn(samples, joins, cut);
+}
+// Seconds of the latest answer that played: what the server keeps as said (LiveSession.cut_last()).
+function talkPlayed() {
+  const now = talk.playback.currentTime;
+  return talk.scheduled.reduce((sum, [start, length]) => sum + Math.min(length, Math.max(0, now - start)), 0);
+}
+// Talking over Hilde: her speech stops and her request is dropped, which stops the server writing and
+// speaking. Before any of her answer was heard (`join`), what was said goes again with what follows.
+function stopTalkReply(join) {
+  talk.cut = talkPlayed();
+  if (talk.request) { talk.request.abort(); talk.request = null; }
+  for (const source of talk.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
+  talk.sources = []; talk.playNext = 0; talk.scheduled = [];
+  if (join && talk.lastAudio) talk.joinAudio = talk.lastAudio;
+}
+async function sendTalkTurn(samples, joins, cut) {
+  const owner = talk, request = new AbortController();
+  const pcm = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+  owner.request = request;
+  try {
+    owner.scheduled = [];
+    const asked = `session=${encodeURIComponent(owner.session)}${joins ? "&joins=1" : ""}`
+      + (cut === null ? "" : `&cut=${cut.toFixed(2)}`);
+    const response = await fetch(`/api/live/turn?${asked}`, {
+      method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:pcm.buffer, signal:request.signal });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let rest = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      rest += decoder.decode(value, { stream:true });
+      for (let cut = rest.indexOf("\n"); cut >= 0; cut = rest.indexOf("\n")) {
+        const line = rest.slice(0, cut).trim();
+        rest = rest.slice(cut + 1);
+        if (!line || talk !== owner || owner.request !== request) continue;
+        const event = JSON.parse(line);
+        if (event.audio) playTalk(event.audio);
+        else if (event.error) chatHint(event.error, true);
+      }
+    }
+  } catch (error) {
+    if (error.name !== "AbortError" && talk === owner) chatHint(error.message, true);
+  } finally {
+    if (owner.request === request) owner.request = null;
+  }
+}
+function playTalk(base64) {
+  const bytes = atob(base64), samples = new Float32Array(bytes.length >> 1);
+  for (let i = 0; i < samples.length; i++)
+    samples[i] = ((bytes.charCodeAt(2 * i) | (bytes.charCodeAt(2 * i + 1) << 8)) << 16 >> 16) / 32768;
+  const buffer = talk.playback.createBuffer(1, samples.length, talk.outRate);
+  buffer.copyToChannel(samples, 0);
+  const source = talk.playback.createBufferSource();
+  source.buffer = buffer;
+  source.connect(talk.analyser);
+  const now = talk.playback.currentTime;
+  if (talk.playNext < now) talk.playNext = now + TALK_JITTER_S;
+  source.start(talk.playNext);
+  talk.scheduled.push([talk.playNext, buffer.duration]);
+  talk.playNext += buffer.duration;
+  talk.sources.push(source);
+  const owner = talk;
+  source.onended = () => { owner.sources = owner.sources.filter((item) => item !== source); };
+}
+// The wave: bars that move with Hilde's voice (the accent colour) or the listener's (the text's), and rest low
+// while neither speaks.
+function drawTalk() {
+  if (!talk) return;
+  const canvas = $("chat-live-wave"), ratio = window.devicePixelRatio || 1;
+  const width = Math.round(canvas.clientWidth * ratio), height = Math.round(canvas.clientHeight * ratio);
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+  const context = canvas.getContext("2d"), wave = new Uint8Array(talk.analyser.fftSize);
+  talk.analyser.getByteTimeDomainData(wave);
+  let hilde = 0;
+  for (const value of wave) hilde = Math.max(hilde, Math.abs(value - 128) / 128);
+  const listener = talk.speaking ? Math.max(0, Math.min(1, (talk.micDb + 55) / 45)) : 0;
+  talk.level = 0.75 * talk.level + 0.25 * Math.max(hilde, listener);
+  const styles = getComputedStyle(document.documentElement);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = (hilde >= listener ? styles.getPropertyValue("--accent") : styles.getPropertyValue("--text")).trim();
+  const bars = 32, gap = 3 * ratio, bar = (width - gap * (bars - 1)) / bars, time = performance.now() / 1000;
+  for (let i = 0; i < bars; i++) {
+    const swing = 0.5 + 0.5 * Math.sin(time * 7 + i * 0.6);
+    const tall = Math.max(3 * ratio, height * (0.1 + 0.9 * talk.level * (0.3 + 0.7 * swing)));
+    context.fillRect(i * (bar + gap), (height - tall) / 2, bar, tall);
+  }
+  talk.raf = requestAnimationFrame(drawTalk);
+}
+// End: the microphone and Hilde's voice stop, and the transcript is kept (after the edit pass) as a callout.
+async function endTalk() {
+  const ending = talk;
+  if (!ending) return;
+  const cut = talkReplyBusy() ? talkPlayed() : null;
+  talk = null;
+  cancelAnimationFrame(ending.raf);
+  if (ending.request) ending.request.abort();
+  for (const source of ending.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
+  for (const track of ending.stream.getTracks()) track.stop();
+  ending.capture.close(); ending.playback.close();
+  $("chat-live").classList.add("hidden");
+  $("chat-compose").classList.remove("hidden");
+  renderChatControls();
+  chatHint("Keeping the conversation's transcript…");
+  try {
+    const data = await jsonRequest("/api/live/end", { method:"POST", headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ session:ending.session, ...(cut === null ? {} : { cut }) }) });
+    chatHint(data.live ? "" : "Nothing was said, so nothing was kept.");
+  } catch (error) {
+    chatHint(`The transcript couldn't be kept: ${error.message}`, true);
+  }
+  if (chatScope() === ending.scope) loadChat();
+}
 function renderChatControls() {
   const running = !!(chatData && chatData.running);
   const problem = chatData && chatData.problem ? chatData.problem
@@ -30619,6 +31495,9 @@ function renderChatControls() {
   renderChatAction();
   renderSendButton();
   $("chat-send").disabled = chatSending || !!(chatData && chatData.problem);
+  // Talk, with the server's speech server (--live-voice); not while a written answer runs.
+  $("chat-talk").classList.toggle("hidden", !(chatData && chatData.live_voice) || !!talk);
+  $("chat-talk").disabled = running || !!(chatData && chatData.problem) || talkStarting;
   // The box stays the listener's own; with a part attached, Enter on an
   // empty box asks Hilde to explain it.
   $("chat-input").placeholder = !chatAbout || chatAbout.error ? CHAT_PLACEHOLDER
@@ -30825,7 +31704,9 @@ function speakLatestAnswer() {
 // and switching Runs on back uses it again, but nothing goes to it meanwhile.
 function chatModel() {
   const { model, problem } = pickerChoice("chat");
-  if (!model || problem || !model.selector || pickerKind("chat") !== modelKind(model.selector)) return "";
+  // Runs on is a place (one local server, every local one, or Cloud: selectorIn()), not just a kind; comparing
+  // it with modelKind() took every model on one local server for one elsewhere (3 Nov).
+  if (!model || problem || !model.selector || !selectorIn(model.selector, pickerKind("chat"))) return "";
   return model.selector;
 }
 // The panel's head: the book, the section the question is about (else the
@@ -39235,6 +40116,16 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--live-voice",
+        metavar="URL",
+        type=live_voice_origin,
+        default="",
+        help=(
+            "LFM3-Audio's llama-server origin, such as http://127.0.0.1:9941 (/v1/audio/transcriptions and "
+            "/tts). The chat panel then offers Talk: a spoken conversation with the chat model."
+        ),
+    )
+    parser.add_argument(
         "--local-server",
         metavar="PROVIDER=URL",
         type=local_server_option,
@@ -39399,6 +40290,8 @@ def main():
     server.xai_login = XaiOAuthLogin()
     server.chats = ChatRegistry()
     server.search_server = args.search_server
+    server.live_voice = args.live_voice
+    server.live = LiveRegistry()
     # Settings › Providers' local servers, each --local-server added once.
     try:
         load_providers([

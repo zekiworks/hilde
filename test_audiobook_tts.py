@@ -13927,6 +13927,56 @@ class LiveWorkStatusTests(unittest.TestCase):
             self.assertEqual(web.gpu_memory(), {})
 
 
+class LiveTalkTests(unittest.TestCase):
+    """Talk (the chat panel's spoken conversation): what its transcript keeps
+    of Hilde's answers. No speech server, no model."""
+
+    def session(self, *answers):
+        session = web.LiveSession("a-book--" + "a" * 12, "lm-studio/model", {}, "")
+        turns = []
+        for heard, said, written in answers:
+            turn = session.begin()
+            turn.text, turn.said = written, list(said)
+            turns.append(turn)
+            session.keep(turn, heard, False)
+        return session, turns
+
+    def test_talking_over_hilde_keeps_only_the_sentences_that_had_begun_to_play(self):
+        sentences = [("Printing made books cheap.", 2.0), ("Literacy rose.", 1.5), ("Ideas spread.", 1.5)]
+        session, (first, second) = self.session(
+            ("Tell me about printing.", sentences, "Printing made books cheap. Literacy rose. Ideas spread."),
+            ("And then?", [("It changed everything.", 2.0)], "It changed everything."))
+        # The page cut in 2.4 s into the first answer (sent with the next turn): two sentences had begun.
+        first.cut = 2.4
+        first.stopped.set()
+        self.assertEqual([(item["hilde"], item["interrupted"]) for item in session.transcript()],
+                         [("Printing made books cheap. Literacy rose.", True), ("It changed everything.", False)])
+        # Exactly at a sentence's start it has not begun; the model is told what was said, marked.
+        first.cut = 2.0
+        self.assertEqual(session.history()[1], {"role": "assistant", "text": "Printing made books cheap. [interrupted]"})
+        # Ended (End) before any of an answer played: the turn is left out of what the model is told.
+        second.cut = 0.0
+        self.assertEqual([item["unheard"] for item in session.transcript()], [False, True])
+        self.assertEqual(len(session.history()), 2)
+
+    def test_a_turn_talked_over_before_its_answer_played_joins_what_follows(self):
+        session, (first,) = self.session(("What is", [], ""))
+        first.cut = 0.0
+        first.stopped.set()
+        joined = session.begin()
+        joined.text = "A word embedding is a vector."
+        session.keep(joined, "What is a word embedding?", True)
+        self.assertEqual([item["heard"] for item in session.transcript()], ["What is a word embedding?"])
+
+    def test_speech_starts_at_the_first_sentence_or_a_long_clause(self):
+        self.assertEqual(web.live_sentences("Sure. Word embeddings map", True), (["Sure."], "Word embeddings map"))
+        clause = "Word embeddings map words to vectors, so similar words sit near"
+        self.assertEqual(web.live_sentences(clause, True), (["Word embeddings map words to vectors,"],
+                                                            "so similar words sit near"))
+        # Only the first piece may end at a comma: later ones wait for the sentence.
+        self.assertEqual(web.live_sentences(clause, False), ([], clause))
+
+
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else
     reported by its server, else one small test picture, found out in the
