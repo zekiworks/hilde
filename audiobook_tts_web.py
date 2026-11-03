@@ -84,6 +84,7 @@ from audiobook_tts import (
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
     VOICE_VERSIONS_DIR,
+    WORKER_PROTOCOL,
     WORKER_PROTOCOL_VERSION,
     WORKER_READY_SECONDS,
     NarrationWorkerProcess,
@@ -2154,6 +2155,10 @@ COMPUTERS_NEED_HTTPS = ("A computer pairs with Hilde over HTTPS only, so its key
 COMPUTERS_MANAGE_ONLY = "Computers are added in a browser that may change this server's settings."
 COMPUTER_UNKNOWN = "This computer is not paired with this Hilde (any more): pair it again from its Settings."
 COMPUTER_SPEECH_SERVER = "This Hilde narrates with a speech server, so another computer's narration is of no use to it."
+COMPUTER_OUTPUT_LOST = ("The paired computer could not deliver its worker's output, so that worker stops here; "
+                        "its parts go to the other workers.")
+# Tries to send a batch of a worker's output before its session is given up as lost.
+COMPUTER_SEND_TRIES = 3
 
 
 class ComputerGrants(DeviceGrants):
@@ -2183,17 +2188,55 @@ def speech_model_name(model):
     return re.split(r"[\\/]", str(model or "").rstrip("/\\"))[-1]
 
 
+CERTIFICATE_PATTERN = re.compile(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", re.S)
+
+
+def _fingerprint(der):
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return " ".join(digest[index:index + 4] for index in range(0, 24, 4))
+
+
 def certificate_fingerprint(pem):
     """The SHA-256 of the first certificate in `pem`, as six groups of four hex
     digits to read and compare ("1A2B 3C4D …"); "" when there is none."""
-    match = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", str(pem or ""), re.S)
+    match = CERTIFICATE_PATTERN.search(str(pem or ""))
     if match is None:
         return ""
     try:
-        digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(match.group(0))).hexdigest().upper()
+        return _fingerprint(ssl.PEM_cert_to_DER_cert(match.group(0)))
     except ValueError:
         return ""
-    return " ".join(digest[index:index + 4] for index in range(0, 24, 4))
+
+
+def single_certificate(pem):
+    """The one certificate an offer holds, re-encoded, and its fingerprint.
+    What the user compares is all that is trusted: `cadata` would take every
+    certificate in a longer offer, so an offer of none or of more than one is
+    a ValueError, and nothing but that certificate is ever loaded."""
+    blocks = CERTIFICATE_PATTERN.findall(str(pem or ""))
+    if len(blocks) != 1:
+        raise ValueError("it offers no certificate" if not blocks
+                         else f"it offers {len(blocks)} certificates, and only one can be compared")
+    der = ssl.PEM_cert_to_DER_cert(blocks[0])
+    return ssl.DER_cert_to_PEM_cert(der), _fingerprint(der)
+
+
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Pairing and session requests go to the approved address only. urllib
+    would follow a redirect, bearer token included, even to another host or to
+    plain HTTP; here a redirect is an error and is never followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"it answered with a redirect to {newurl}, which pairing "
+                                                         "never follows", headers, fp)
+
+
+def open_pinned(request, context, timeout):
+    """Open `request` (an https URL) with `context`, following no redirect."""
+    if not request.full_url.startswith("https://"):
+        raise ValueError("pairing talks to another Hilde over HTTPS only")
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), RefuseRedirects)
+    return opener.open(request, timeout=timeout)
 
 
 def computer_report(body):
@@ -2254,10 +2297,14 @@ class ComputerLinks:
         with self.lock:
             entry = self.computers.setdefault(ident, {
                 "seen": 0.0, "devices": [], "model": "", "protocol": 0, "busy": [], "outbox": collections.deque(),
-                "online": False, "waiting": 0,
+                "online": False, "waiting": 0, "loaded": {}, "loaded_before": "", "failed": "",
             })
             now = {key: report[key] for key in ("devices", "model", "protocol", "busy")}
-            changed = not entry["online"] or any(entry[key] != value for key, value in now.items())
+            fresh = not entry["online"] or entry["model"] != now["model"]
+            changed = fresh or any(entry[key] != value for key, value in now.items())
+            if fresh:
+                # Reconnected, or another model: an earlier load or failure says nothing now.
+                entry.update(loaded_before="", failed="")
             entry.update(now, seen=time.monotonic(), online=True)
         if changed:
             self._changed()
@@ -2268,12 +2315,17 @@ class ComputerLinks:
             entry = self.computers.get(ident)
             if entry is None:
                 return {"online": False, "devices": [], "model": "", "protocol": 0, "busy": [], "seen": None,
-                        "sessions": 0}
+                        "sessions": 0, "loaded": [], "loaded_before": "", "failed": ""}
             return {
                 "online": self._online(entry), "devices": list(entry["devices"]), "model": entry["model"],
                 "protocol": entry["protocol"], "busy": list(entry["busy"]),
                 "seen": round(time.monotonic() - entry["seen"]),
                 "sessions": sum(1 for item in self.sessions.values() if item["computer"] == ident),
+                # Devices whose worker said ready and still runs; the model an
+                # earlier worker loaded on this connection; why the last start
+                # failed before its model loaded.
+                "loaded": sorted(set(entry["loaded"].values())), "loaded_before": entry["loaded_before"],
+                "failed": entry["failed"],
             }
 
     def take(self, ident, timeout):
@@ -2312,10 +2364,28 @@ class ComputerLinks:
                     continue
             if "exit" in message:
                 code = message["exit"]
-                self.close_session(session, code=code if type(code) is int else 1, tell=False)
+                self.close_session(session, code=code if type(code) is int else 1, tell=False, exited=True)
             elif "out" in message or "err" in message:
                 key = "out" if "out" in message else "err"
-                self._write(item, {key: str(message[key])})
+                line = str(message[key])
+                if key == "out" and is_ready_line(line):
+                    self._ready(session)
+                elif key == "err" and line.strip():
+                    with self.lock:
+                        item["said"] = line.strip()[-300:]
+                self._write(item, {key: line})
+
+    def _ready(self, session):
+        """A session's worker said it is ready: its model loaded on that computer."""
+        with self.lock:
+            item = self.sessions.get(session)
+            entry = self.computers.get(item["computer"]) if item is not None else None
+            if entry is None or item.get("ready"):
+                return
+            item["ready"] = True
+            entry["loaded"][session] = item["device"]
+            entry.update(loaded_before=entry["model"], failed="")
+        self._changed()
 
     @staticmethod
     def _write(item, payload):
@@ -2336,19 +2406,28 @@ class ComputerLinks:
                                       "connection": None, "lock": threading.Lock(), "started": False}
         return self.address, session, key
 
-    def close_session(self, session, code=None, reason="", tell=True):
+    def close_session(self, session, code=None, reason="", tell=True, exited=False):
         """End a session: its relay gets `reason` and `code` (when given), and
-        the computer is told to stop its worker (`tell`) if it started one."""
+        the computer is told to stop its worker (`tell`) if it started one.
+        `exited`: the computer says its worker exited, which before the worker
+        was ready means its model did not load (shown in Settings)."""
         with self.lock:
             item = self.sessions.pop(session, None)
             if item is None:
                 return
             entry = self.computers.get(item["computer"])
+            changed = False
             if entry is not None:
                 entry["outbox"] = collections.deque(
                     message for message in entry["outbox"] if message.get("session") != session)
                 if item["started"] and tell:
                     entry["outbox"].append({"type": "stop", "session": session})
+                changed = entry["loaded"].pop(session, None) is not None
+                if exited and not item.get("ready") and code:
+                    said = item.get("said", "")
+                    entry["failed"] = (f"its worker exited with code {code} before its model loaded"
+                                       + (f": {said}" if said else ""))
+                    entry["loaded_before"], changed = "", True
                 self.lock.notify_all()
         if item["writer"] is not None:
             if reason:
@@ -2359,6 +2438,22 @@ class ComputerLinks:
                 item["writer"].close()
             with contextlib.suppress(OSError):
                 item["connection"].close()
+        if changed:
+            self._changed()
+
+    def lose(self, ident, sessions):
+        """Sessions whose worker output the computer could not deliver
+        (ComputerLink._send_loop()): their relays end now with
+        COMPUTER_OUTPUT_LOST, so the narration hands their chunks to its other
+        workers (or fails, with none left) instead of waiting for output that
+        will never come."""
+        for session in sessions if isinstance(sessions, list) else ():
+            session = str(session)
+            with self.lock:
+                item = self.sessions.get(session)
+                if item is None or item["computer"] != ident:
+                    continue
+            self.close_session(session, code=255, reason=COMPUTER_OUTPUT_LOST, tell=False)
 
     def forget(self, ident, reason):
         """A computer is removed (or withdrew): its sessions end, its state goes."""
@@ -2490,7 +2585,9 @@ def computer_consumers(grants, links, clone):
             consumers.append({
                 "id": ident, "kind": "computer", "device": None, "shared": shared, "choice": ident, "label": label,
                 "public": {"label": label, "detail": "", "device": device["device"], "computer": grant["id"],
-                           "shared": shared, "choice": ident},
+                           "shared": shared, "choice": ident, "model": state["model"],
+                           "loaded": device["device"] in state["loaded"], "loaded_before": state["loaded_before"],
+                           "failed": state["failed"]},
                 "worker": {"kind": "relay", "id": ident, "computer": grant["id"], "device": device["device"],
                            "label": label, "name": label},
             })
@@ -2552,6 +2649,9 @@ def setup_computers(server, storage, tts_models):
         model=lambda: clone["model"] if clone["source"] == "local" else "",
         devices=lambda: narration_devices(server.jobs),
         busy=lambda: busy_devices(server.jobs),
+        # One reservation with this server's own books (JobQueue.reserve_for_another()).
+        reserve=lambda device, session: server.jobs.reserve_for_another(device, session),
+        release=lambda session: server.jobs.release_for_another(session),
     )
     refresh_computers(server)
 
@@ -2584,17 +2684,26 @@ class ComputerLink:
     that address only. `model`, `devices` and `busy` are callables: this
     server's speech model, its narration devices, and those its own books use."""
 
-    def __init__(self, path, model, devices, busy, worker_command=computer_worker_command, retry_seconds=30):
+    def __init__(self, path, model, devices, busy, worker_command=computer_worker_command, retry_seconds=30,
+                 reserve=None, release=None):
         self.path = Path(path)
         self.model, self.devices, self.busy = model, devices, busy
         self.worker_command = worker_command
         self.retry_seconds = retry_seconds
+        # Hold a device against this machine's own books while a session runs
+        # on it (False: they use it now), and let it go afterwards.
+        self.reserve = reserve or (lambda device, session: True)
+        self.release = release or (lambda session: None)
         self.lock = threading.RLock()
+        # Each pairing, or each step of one, has its own generation: a poll's
+        # messages start sessions, and its sessions' output is sent, only
+        # while it is still the current one.
         self.generation = 0
         self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
-        self.offered = ""   # the other's authority, while the user compares its fingerprint
-        self.sessions = {}
-        self.outbox = queue.Queue()
+        self.offered = ""   # the one certificate shown as a fingerprint, while the user compares it
+        self.sessions = {}  # session -> {"process", "generation", "device"}
+        self.lost = set()   # sessions whose output could not be sent: the next poll says so
+        self.outbox = queue.Queue()  # (generation, message)
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8"))
             self.saved = {key: str(saved.get(key) or "") for key in ("url", "name", "ca", "token")}
@@ -2637,18 +2746,23 @@ class ComputerLink:
             raise ValueError("Enter the other Hilde's address as https://name:port: pairing never uses plain HTTP.")
         if not self.model():
             raise ValueError("This Hilde has no narration model of its own, so it cannot narrate for another.")
-        self._stop_sessions()
         with self.lock:
             self.saved = {"url": f"https://{parts.netloc}", "name": device_label(name or socket.gethostname().split(".")[0]),
                           "ca": "", "token": ""}
             self.offered = ""
-        self._run(self._check, "checking")
+            self.lost.clear()
+            self._run(self._check, "checking")
+        self._stop_sessions()
 
-    def confirm(self):
-        """The user saw the same fingerprint on the other Hilde: trust its authority."""
+    def confirm(self, fingerprint):
+        """The user saw the same fingerprint on the other Hilde: trust that one
+        certificate. `fingerprint` is the one the page showed; if the offer
+        changed since (another Connect), nothing is trusted."""
         with self.lock:
             if self.view["state"] != "confirm" or not self.offered:
                 raise ValueError("There is no fingerprint to confirm now: connect again.")
+            if " ".join(str(fingerprint or "").split()).upper() != self.view["fingerprint"]:
+                raise ValueError("The fingerprint changed since it was shown: connect again and compare the new one.")
             self.saved["ca"] = self.offered
         self._run(self._ask, "checking")
 
@@ -2659,6 +2773,7 @@ class ComputerLink:
             self.generation += 1
             self.saved = {"url": "", "name": "", "ca": "", "token": ""}
             self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
+            self.lost.clear()
         self._stop_sessions()
         with contextlib.suppress(OSError):
             self.path.unlink()
@@ -2669,15 +2784,18 @@ class ComputerLink:
     # -- talking to the other Hilde
 
     def _call(self, path, body=None, saved=None, timeout=30):
+        """One request to the other Hilde: its exact https address, the one
+        certificate the user confirmed (or this system's trust), no redirect."""
         saved = saved or self.saved
-        context = ssl.create_default_context(cadata=saved["ca"]) if saved["ca"] else ssl.create_default_context()
+        context = (ssl.create_default_context(cadata=single_certificate(saved["ca"])[0]) if saved["ca"]
+                   else ssl.create_default_context())
         headers = {"Content-Type": "application/json"}
         if saved["token"]:
             headers["Authorization"] = f"Bearer {saved['token']}"
         request = urllib.request.Request(
             saved["url"] + path, data=None if body is None else json.dumps(body).encode("utf-8"),
             headers=headers, method="GET" if body is None else "POST")
-        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+        with open_pinned(request, context, timeout) as response:
             return json.load(response)
 
     def _report(self):
@@ -2701,21 +2819,24 @@ class ComputerLink:
             try:
                 insecure = ssl.create_default_context()
                 insecure.check_hostname, insecure.verify_mode = False, ssl.CERT_NONE
-                with urllib.request.urlopen(self.saved["url"] + "/api/certificate", timeout=20,
-                                            context=insecure) as response:
+                with open_pinned(urllib.request.Request(self.saved["url"] + "/api/certificate"),
+                                 insecure, 20) as response:
                     pem = response.read(65536).decode("ascii", "replace")
             except (OSError, ValueError) as error:
                 return self._set(generation, state="failed",
                                  error=f"{self.saved['url']}'s certificate is not trusted here, and its authority "
                                        f"could not be fetched: {self._reason(error)}")
-            fingerprint = certificate_fingerprint(pem)
-            if not fingerprint:
+            try:
+                pem, fingerprint = single_certificate(pem)
+            except ValueError as error:
                 return self._set(generation, state="failed",
-                                 error=f"{self.saved['url']}'s certificate is not trusted here, and it offers no authority to check.")
+                                 error=f"{self.saved['url']}'s certificate is not trusted here, and its offer cannot "
+                                       f"be compared: {error}.")
             with self.lock:
                 if generation == self.generation:
                     self.offered = pem
-            return self._set(generation, state="confirm", fingerprint=fingerprint)
+                    self.view.update(state="confirm", fingerprint=fingerprint)
+            return
         except (OSError, ValueError) as exc:
             return self._set(generation, state="failed", error=f"Could not reach {self.saved['url']}: {self._reason(exc)}")
         self._request(generation)
@@ -2782,8 +2903,11 @@ class ComputerLink:
     def _serve(self, generation):
         delay = 1
         while generation == self.generation:
+            with self.lock:
+                lost = sorted(self.lost)
             try:
-                answer = self._call("/api/computers/poll", self._report(), timeout=COMPUTER_POLL_SECONDS + 15)
+                answer = self._call("/api/computers/poll", {**self._report(), "lost": lost},
+                                    timeout=COMPUTER_POLL_SECONDS + 15)
             except urllib.error.HTTPError as exc:
                 if exc.code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
                     with self.lock:
@@ -2798,26 +2922,30 @@ class ComputerLink:
                 self._set(generation, state="reconnecting", error=f"Lost {self.saved['url']}: {self._reason(exc)}")
             else:
                 delay = 1
+                with self.lock:
+                    self.lost.difference_update(lost)  # the other Hilde has heard of them
                 self._set(generation, state="connected", error="")
                 for message in answer.get("messages") or ():
                     if isinstance(message, dict):
-                        self._handle(message)
+                        self._handle(message, generation)
                 continue
             time.sleep(min(delay, self.retry_seconds))
             delay *= 2
 
     # -- the narration workers it runs
 
-    def _handle(self, message):
+    def _handle(self, message, generation):
+        """One message of a poll of pairing `generation`."""
         session = str(message.get("session") or "")
         kind = message.get("type")
         if kind == "start":
-            self._start_session(session, message)
+            self._start_session(session, message, generation)
             return
         with self.lock:
-            process = self.sessions.get(session)
-        if process is None:
+            item = self.sessions.get(session)
+        if item is None or item["generation"] != generation:
             return
+        process = item["process"]
         if kind == "stdin":
             with contextlib.suppress(OSError, ValueError):
                 process.stdin.write(str(message.get("line") or "") + "\n")
@@ -2826,7 +2954,7 @@ class ComputerLink:
             with contextlib.suppress(OSError):
                 process.terminate()
 
-    def _start_session(self, session, message):
+    def _start_session(self, session, message, generation):
         device = str(message.get("device") or "")
         worker = message.get("worker") if isinstance(message.get("worker"), dict) else {}
         files = message.get("files") if isinstance(message.get("files"), dict) else {}
@@ -2837,25 +2965,42 @@ class ComputerLink:
             if device not in {item["device"] for item in self.devices()}
             else ""
         )
-        folder = None
+        folder, reserved = None, False
+
+        def undo():
+            if folder is not None:
+                shutil.rmtree(folder, ignore_errors=True)
+            if reserved:
+                self.release(session)
+
         try:
             if refused:
                 raise ValueError(refused)
+            # The same reservation as this machine's own books: a device they
+            # use is refused, and they wait for it while this session runs.
+            if not self.reserve(device, session):
+                raise ValueError(f"this computer's own books or a voice design use {public_device_label(device)} now")
+            reserved = True
             folder = Path(tempfile.mkdtemp(prefix="hilde-computer-"))
             for name in ("reference.wav", "transcript.txt"):
                 (folder / name).write_bytes(base64.b64decode(str(files.get(name) or ""), validate=True))
-            command, environment = pin_cuda(self.worker_command(self.model(), folder, device, worker))
-            process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, text=True, bufsize=1, errors="replace")
+            with self.lock:
+                # The start itself is fenced: once Stop helping or a new
+                # pairing changed the generation, nothing starts, and nothing
+                # of this session goes out (_send_loop()).
+                if generation != self.generation:
+                    undo()
+                    return
+                command, environment = pin_cuda(self.worker_command(self.model(), folder, device, worker))
+                process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True, bufsize=1, errors="replace")
+                self.sessions[session] = {"process": process, "generation": generation, "device": device}
         except (OSError, ValueError) as exc:
-            if folder is not None:
-                shutil.rmtree(folder, ignore_errors=True)
-            self.outbox.put({"session": session, "err": f"This computer could not start its worker: {exc}"})
-            self.outbox.put({"session": session, "exit": 2})
+            undo()
+            self.outbox.put((generation, {"session": session, "err": f"This computer could not start its worker: {exc}"}))
+            self.outbox.put((generation, {"session": session, "exit": 2}))
             return
-        with self.lock:
-            self.sessions[session] = process
-        readers = [threading.Thread(target=self._read, args=(session, stream, key), daemon=True)
+        readers = [threading.Thread(target=self._read, args=(session, stream, key, generation), daemon=True)
                    for stream, key in ((process.stdout, "out"), (process.stderr, "err"))]
         for reader in readers:
             reader.start()
@@ -2866,28 +3011,32 @@ class ComputerLink:
             code = process.wait()
             with contextlib.suppress(OSError):
                 process.stdin.close()
-            shutil.rmtree(folder, ignore_errors=True)
             with self.lock:
                 self.sessions.pop(session, None)
-            self.outbox.put({"session": session, "exit": code})
+            undo()
+            self.outbox.put((generation, {"session": session, "exit": code}))
 
         threading.Thread(target=finish, daemon=True).start()
 
-    def _read(self, session, stream, key):
+    def _read(self, session, stream, key, generation):
         for line in stream:
-            self.outbox.put({"session": session, key: line.rstrip("\r\n")})
+            self.outbox.put((generation, {"session": session, key: line.rstrip("\r\n")}))
         stream.close()
 
     def _stop_sessions(self):
         with self.lock:
-            processes = list(self.sessions.values())
+            processes = [item["process"] for item in self.sessions.values()]
         for process in processes:
             with contextlib.suppress(OSError):
                 process.terminate()
 
     def _send_loop(self):
-        """Send the workers' output in batches, in order; a batch that cannot
-        be sent is dropped (the other Hilde hands that worker's chunks on)."""
+        """Send the workers' output in batches, in order, under the pairing
+        that made it only. A batch that cannot be sent after
+        COMPUTER_SEND_TRIES ends its sessions here and the next poll names
+        them (lost), so the other Hilde ends their relays at once and hands
+        their chunks to its other workers, rather than wait for output that
+        will never come."""
         while True:
             batch = [self.outbox.get()]
             time.sleep(0.05)
@@ -2897,15 +3046,36 @@ class ComputerLink:
                 except queue.Empty:
                     break
             with self.lock:
-                saved = dict(self.saved)
-            if not saved["token"]:
+                saved, generation, lost = dict(self.saved), self.generation, set(self.lost)
+            messages = [message for made, message in batch
+                        if made == generation and message["session"] not in lost]
+            if not messages or not saved["token"]:
                 continue
-            for attempt in range(3):
+            for attempt in range(COMPUTER_SEND_TRIES):
                 try:
-                    self._call("/api/computers/send", {"messages": batch}, saved=saved, timeout=60)
+                    self._call("/api/computers/send", {"messages": messages}, saved=saved, timeout=60)
                     break
                 except (OSError, ValueError):
-                    time.sleep(1 + attempt)
+                    time.sleep(min(1 + attempt, self.retry_seconds))
+            else:
+                sessions = {message["session"] for message in messages}
+                with self.lock:
+                    if generation == self.generation:
+                        self.lost |= sessions
+                    processes = [self.sessions[session]["process"] for session in sessions if session in self.sessions]
+                for process in processes:
+                    with contextlib.suppress(OSError):
+                        process.terminate()
+
+
+def is_ready_line(line):
+    """Whether a worker's stdout line is its ready message: its model loaded."""
+    if not line.startswith(WORKER_PROTOCOL):
+        return False
+    try:
+        return json.loads(line[len(WORKER_PROTOCOL):]).get("type") == "ready"
+    except (ValueError, AttributeError):
+        return False
 
 
 def is_loopback_address(host):
@@ -18348,6 +18518,9 @@ class JobQueue:
         self.consumers = normalized
         self.active = {}
         self.exclusive = None
+        # This machine's workers held for another Hilde's session (Help another
+        # Hilde narrate), by consumer: no book of its own starts on them.
+        self.helping = {}
         # This machine's devices taken out of narration under Settings.
         self.local_off = frozenset()
         # This machine's workers whose device the last device check, at a
@@ -18391,8 +18564,10 @@ class JobQueue:
                 "public": {
                     "label": str(public.get("label") or f"Worker {index}"),
                     "detail": str(public.get("detail") or ""),
-                    # Which device, a node's number, a computer's ID, whether it is shared, and its choice: never a host.
-                    **{key: public[key] for key in ("device", "machine", "computer", "shared", "choice")
+                    # Which device, a node's number, a computer's ID, whether it is shared, and its choice: never a
+                    # host; for a paired computer, the speech model it reports and whether that model loaded.
+                    **{key: public[key] for key in ("device", "machine", "computer", "shared", "choice", "model",
+                                                    "loaded", "loaded_before", "failed")
                        if public.get(key) is not None},
                 },
                 "worker": dict(worker) if worker is not None else None,
@@ -18452,9 +18627,9 @@ class JobQueue:
         """
         with self.lock:
             off = frozenset(devices)
-            if any(device in self.active for device in off - self.local_off):
+            if any(device in self.active or device in self.helping for device in off - self.local_off):
                 raise ValueError(
-                    "That GPU is narrating a book. Turn it off once the book is done."
+                    "That GPU is narrating a book (here or for another Hilde). Turn it off once it is done."
                 )
             self._check_pool(self.consumers, off)
             self.local_off = off
@@ -18500,7 +18675,34 @@ class JobQueue:
 
     def busy_consumer_ids(self):
         with self.lock:
-            return set(self.active)
+            return set(self.active) | set(self.helping)
+
+    def reserve_for_another(self, device, session):
+        """Hold this machine's worker on `device` for another Hilde's session
+        (Help another Hilde narrate, ComputerLink): under the same lock as this
+        queue's own dispatch, so a book of its own and a session never start
+        on one device together. False, holding nothing, when a book of its own
+        or a voice design uses it, it is off or not found, or another session
+        holds it; while held, books of its own wait for it."""
+        with self.lock:
+            consumer = next((item for item in self.consumers
+                             if item["kind"] == "local" and item["device"] == device), None)
+            if (consumer is None or self.exclusive is not None or consumer["id"] in self.active
+                    or consumer["id"] in self.helping or consumer["id"] in self.local_off
+                    or consumer["id"] in self.missing):
+                return False
+            self.helping[consumer["id"]] = session
+            return True
+
+    def release_for_another(self, session):
+        """Let go of what `session` held; books of its own waiting for it start."""
+        with self.lock:
+            for consumer_id, held in tuple(self.helping.items()):
+                if held == session:
+                    self.helping.pop(consumer_id)
+            launch = self._dispatch_locked()
+        for item in launch:
+            self._launch(item)
 
     def voice_in_use(self, name):
         """Whether a preparing, queued, or running audiobook reads with this voice."""
@@ -18525,7 +18727,7 @@ class JobQueue:
                     "narrates": consumer["id"] not in self.local_off,
                     # Not found by the last device check: `device` is its old number.
                     "missing": consumer["id"] in self.missing,
-                    "busy": consumer["id"] in self.active,
+                    "busy": consumer["id"] in self.active or consumer["id"] in self.helping,
                 }
                 for consumer in self.consumers
                 if consumer["kind"] == "local"
@@ -18623,6 +18825,7 @@ class JobQueue:
                 consumer
                 for consumer in self.consumers
                 if consumer["id"] not in self.active
+                and consumer["id"] not in self.helping
                 and consumer["id"] not in self.local_off
                 and consumer["id"] not in self.unavailable
                 and (
@@ -18794,7 +18997,7 @@ class JobQueue:
 
     def start_voice(self, run):
         with self.lock:
-            if self.exclusive is not None or self.active or self.pending or any(
+            if self.exclusive is not None or self.active or self.helping or self.pending or any(
                 record["status"] == "preparing"
                 for record in self.records.values()
             ):
@@ -18906,6 +19109,8 @@ class JobQueue:
                         if consumer["id"] in getattr(self.active.get(consumer["id"], {}).get("run"), "left_out", ())
                         else "running"
                         if consumer["id"] in self.active
+                        else "helping"
+                        if consumer["id"] in self.helping
                         else "missing"
                         if consumer["id"] in self.missing
                         else "offline"
@@ -22345,6 +22550,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(HTTPStatus.UNAUTHORIZED, COMPUTER_UNKNOWN)
         if action == "poll":
             links.heard(grant["id"], computer_report(body))
+            # Sessions whose output it could not send: their relays end now.
+            links.lose(grant["id"], body.get("lost"))
             return self.reply(HTTPStatus.OK, {"messages": links.take(grant["id"], COMPUTER_POLL_SECONDS)})
         if action == "send":
             links.deliver(grant["id"], body.get("messages"))
@@ -22364,7 +22571,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == "begin":
                 link.begin(body.get("url"), body.get("name"))
             elif action == "confirm":
-                link.confirm()
+                link.confirm(body.get("fingerprint"))
             elif action == "stop":
                 link.stop()
             else:
@@ -36613,7 +36820,8 @@ function deviceName(value) {
 // devices or more; the job poll keeps it current, but never rebuilds a menu
 // that is open. Create's summary names a chosen device.
 const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
-                       left_out:"left out of the current book", missing:"not found", offline:"not connected" };
+                       left_out:"left out of the current book", missing:"not found", offline:"not connected",
+                       helping:"narrating for another Hilde" };
 let deviceChoicesSignature = "";
 function renderDeviceChoices() {
   if (!state) return;
@@ -37068,13 +37276,29 @@ function renderMachines(force = false) {
       remove.addEventListener("click", () => removeComputer(computer.id, name));
       actions.append(label, remove);
     }
+    const first = theirs[0] || {};
+    const model = (computer.devices ? computer.model : first.model) || "";
     const aside = [online ? "connected" : "not connected",
-                   shared ? "everyone's books" : "only books that choose it"].join(" · ");
+                   shared ? "everyone's books" : "only books that choose it",
+                   model ? `speech model ${model}` : "no speech model reported"].join(" · ");
     const devices = theirs.map((worker) => deviceItem(nodeDevice(worker.device), worker, null, false));
     const problem = theirs.find((worker) => worker.status === "offline" && worker.detail && worker.detail !== "not connected");
+    // Connected with the same model *name* is no proof the model loads: only
+    // its worker's ready message is (ComputerLinks._ready()). So: loaded now,
+    // its last start failed, loaded earlier on this connection, or not yet.
+    const loadedNow = computer.devices ? (computer.loaded || []).length > 0 : theirs.some((worker) => worker.loaded);
+    const before = (computer.devices ? computer.loaded_before : first.loaded_before) || "";
+    const failed = (computer.devices ? computer.failed : first.failed) || "";
+    const narration = !online ? ["not available", "Not connected: open Hilde on it."]
+      : problem ? ["not available", problem.detail]
+      : loadedNow ? ["model loaded", `${model} is loaded on it now.`]
+      : failed ? ["last start failed", `${failed[0].toUpperCase()}${failed.slice(1)}. A book that chooses it tries again.`]
+      : before ? ["connected; loaded before", `${before} loaded on it earlier on this connection; it is not loaded now `
+                  + "and loads again when a book uses it."]
+      : ["connected; model not yet loaded", `It reports ${model || "no model"}, the same name as this server's; `
+         + "whether it loads shows when a book first uses it."];
     blocks.push(machineBlock(name, aside, devices,
-      [["Narration", online && !problem ? "available" : "not available",
-        !online ? "Not connected: open Hilde on it." : problem ? problem.detail : ""],
+      [["Narration", ...narration],
        ["Voice design", "not available", "Voice design runs on this server only."]],
       actions));
   }
@@ -37206,7 +37430,7 @@ function renderComputerLink() {
       + "computer shows this same fingerprint, then confirm:"));
     const code = document.createElement("code");
     code.className = "computer-fingerprint"; code.textContent = link.fingerprint;
-    parts.push(code, row(button("It matches", () => linkAction("confirm", {}), true),
+    parts.push(code, row(button("It matches", () => linkAction("confirm", { fingerprint:link.fingerprint }), true),
                          button("Cancel", () => linkAction("stop", {}))));
   } else if (state === "pending") {
     const code = document.createElement("strong");

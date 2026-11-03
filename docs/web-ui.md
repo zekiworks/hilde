@@ -1379,21 +1379,29 @@ change it. The groups:
   it too** unless it is your own computer, **Add node**; see
   [Narration workers on other machines](ssh-workers.md). **Add a computer**
   is the easy way for a computer that has Hilde installed (a Mac, or Linux
-  with an NVIDIA GPU), with no SSH, keys, or Terminal: on that computer open
+  with an NVIDIA GPU; installing it there is one line in its Terminal, see the
+  README). Pairing then needs no SSH, keys, or Terminal: on that computer open
   **Settings › Machines and devices › Help another Hilde narrate**, enter this
   Hilde's address and a name for the computer, press **Connect**, check that
   the fingerprint it shows is the one in this dialog and press **It
   matches**, then approve the six-letter code it shows here (needs HTTPS:
   start this Hilde with `--https`). Both need the same narration model; a
   computer with another model, an older Hilde, or no connection is listed
-  with the reason and never used. It then appears by its name under **Other
-  narration machines** and in **Narrate my books on** ("Ayhan's Mac mini ·
-  Apple MPS · only when chosen"); tick **Everyone's books** to let every
+  with the reason and never used. It then appears by its name, with the speech
+  model it reports, under **Other narration machines** and in **Narrate my
+  books on** ("Ayhan's Mac mini · Apple MPS · only when chosen"). The same
+  model *name* is no proof the model loads, so its Narration line says
+  "connected; model not yet loaded" until a book has started it, "model
+  loaded" while it narrates, "connected; loaded before" after that, or "last
+  start failed" with the reason. Tick **Everyone's books** to let every
   browser's **Any GPU that is on** use it too, and **Remove** to stop it. The
-  books, voices, and notes stay here: the computer only speaks their text. If
-  it goes away mid-book, its parts go to the other workers; a book that chose
-  only that computer is refused with the reason. It reconnects by itself when
-  Hilde starts again there. Changes apply now; a
+  books, voices, and notes stay here: the computer only speaks their text. On
+  that computer, its own books and helping never use one device at once: a
+  device its books use is refused, and its books wait while it helps. If it
+  goes away mid-book, or cannot send back what it made, its parts go to the
+  other workers; with none left, the book stops with the reason; a book that
+  chose only that computer is refused with the reason. It reconnects by itself
+  when Hilde starts again there. Changes apply now; a
   running audiobook keeps its narration workers. With none: "No other machine
   narrates." This server and each narration machine list each job on its own: **Text
   preparation**, **Narration**, and **Voice design**, each "available", "not

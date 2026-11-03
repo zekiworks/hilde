@@ -2299,11 +2299,17 @@ keys, no terminal on the server) narrate with the computer's own Hilde. The
 computer asks from its Settings (**Help another Hilde narrate**,
 `ComputerLink`, saved in `computer-link.json`): `GET /api/computers/hello`
 over HTTPS checks the speech model (`speech_model_name()`, the model folder's
-or ID's last part, must be equal) and `WORKER_PROTOCOL_VERSION`; a
-certificate the computer's system does not trust is fetched from
-`/api/certificate` and trusted only after the user confirms its fingerprint
-(`certificate_fingerprint()`), which the main Hilde's **Add a computer** dialog
-shows. `POST /api/computers/request` answers a 256-bit token and a six-letter
+or ID's last part, must be equal) and `WORKER_PROTOCOL_VERSION`. Every
+request the computer makes goes to that exact https address and follows no
+redirect (`open_pinned()`, `RefuseRedirects`: urllib would otherwise carry the
+bearer token to another host or to plain HTTP). A certificate the computer's
+system does not trust is fetched from `/api/certificate`; the offer must be
+exactly one certificate (`single_certificate()`, since `cadata` would trust
+every certificate in a longer one), its fingerprint is shown, and confirm
+must echo the fingerprint the page showed, so an offer that changed in
+between is refused; only that re-encoded certificate becomes the trust
+anchor, with hostname checks kept. The main Hilde's **Add a computer** dialog
+shows the same fingerprint. `POST /api/computers/request` answers a 256-bit token and a six-letter
 code (`ComputerGrants`, a `DeviceGrants` that keeps `shared` and says
 "computer"); a browser that may manage approves the code (wrong, expired, or
 used codes are HTTP 404), and only the token's SHA-256 is kept. The approved
@@ -2315,7 +2321,15 @@ reported device (`computer:<grant id>:<device>`, labelled by the computer's
 name); one that cannot take work now (not connected, another model, another
 protocol, busy) is listed with the reason (`JobQueue.unavailable`, status
 `offline`) and never used, so there is no silent fallback; a book that chose
-it is refused with the reason, never left waiting. A narration gives each
+it is refused with the reason, never left waiting. Being listed means
+connected with the same model *name*, not a loaded model: `ComputerLinks`
+records a session's worker as loaded only when its ready message passes
+(`_ready()`, `is_ready_line()`), drops that when the session ends, keeps the
+model as `loaded_before` on that connection (cleared on reconnect or another
+model), and keeps `failed` when the computer's worker exited before ready
+(with its last error line); Settings shows "connected; model not yet
+loaded", "model loaded", "connected; loaded before", or "last start failed"
+accordingly. A narration gives each
 computer worker a session (`ComputerLinks.open_session()`): `narrate_command()`
 passes `--relay-worker 127.0.0.1:PORT/SESSION`, the session keys only in
 `HILDE_RELAY_KEYS` (never the logged command line), and `audiobook_tts.py
@@ -2323,9 +2337,21 @@ _relay` connects to the loopback relay, sends the voice's two files and the
 worker options, then passes protocol lines both ways; the computer runs its
 own `_worker` (`computer_worker_command()`, own model, voice in a temporary
 folder removed afterwards) and returns output through `POST
-/api/computers/send`. A computer that loses its link mid-chunk exits its relay
+/api/computers/send`. On the computer, a session's device is held with
+`JobQueue.reserve_for_another()` under the queue's own dispatch lock: a
+device its own books (or a voice design) use is refused, and its own books
+wait while the session runs (status `helping`); every exit or failure lets go
+(`release_for_another()`). Each pairing step has a generation: a start is
+fenced on it at the moment the worker would be spawned, and output is sent
+only under the pairing that made it, so Stop helping (or a new pairing) never
+starts a worker from a poll already on its way and never sends old output with
+new credentials. A batch the computer cannot send after `COMPUTER_SEND_TRIES`
+ends its sessions there and is named in the next poll (`lost`); the main ends
+their relays with `COMPUTER_OUTPUT_LOST` at once (`ComputerLinks.lose()`), so a
+live poll never hides lost output. A computer that loses its link or output mid-chunk exits its relay
 with 255: `_narrate_distributed()` hands its chunks to the other workers
-(only for `Computer …` workers; a local or SSH worker still fails the book).
+(only for `Computer …` workers; a local or SSH worker still fails the book),
+and with no worker left the book fails with the reason.
 **Remove** (`/api/computers/revoke`) ends its sessions and makes its token
 answer HTTP 401, which the computer shows as removed.
 
@@ -4008,9 +4034,9 @@ read aloud by **Read answers aloud**.
 | `POST /api/workers/probe`, `POST /api/workers/trust`, `POST /api/workers/setup`, `POST /api/workers/setup/stop`, `POST /api/workers/add`, `POST /api/workers/remove` | For a browser that may manage only (else HTTP 403). Probe connects to JSON `host` (with optional `python` and `model`) and returns the Python, model, and devices it found plus a `problem` to fix, HTTP 409 with `host_key` (`host`, `fingerprints`) when SSH does not know the host yet, or HTTP 502 with why SSH failed. Trust takes JSON `host` and the `fingerprints` the browser was shown and adds the host's keys to `~/.ssh/known_hosts` (`trust_host_key()`), or HTTP 409 when the host now shows other keys or cannot be scanned (nothing written). Setup starts `WorkerSetup` for JSON `host` with the server's own model, or HTTP 409 while another setup runs; stop ends the running one; both return what `GET /api/workers` does. Add validates and saves a node (`host`, `python`, `model`, `devices`, and `shared`: false keeps it for books that choose it), replacing one with the same host; remove deletes the node named by `host`. Both apply at once and return what `GET /api/workers` does; HTTP 409 refuses to take away a worker that is narrating. |
 | `POST /api/workers/local` | For a browser that may manage only (else HTTP 403, `WORKERS_LOCAL_ONLY`). Turns this machine's JSON `device` on (`narrates: true`) or off, saves `local_off` before answering, and returns what `GET /api/workers` does; HTTP 404 for a device it does not have, HTTP 409 for a GPU that is narrating or when no worker would be left. |
 | `GET /api/computers/hello` | Any client: `{hilde: "narration", protocol, model, fingerprint}` (this server's speech model name, `WORKER_PROTOCOL_VERSION`, its certificate's fingerprint); nothing private. |
-| `POST /api/computers/request`, `/status`, `/poll`, `/send`, `/forget` | A computer itself, over HTTPS or from this machine only (else HTTP 403, `COMPUTERS_NEED_HTTPS`), by `Authorization: Bearer <token>`. Request (JSON `name` and its report: `devices`, `model`, `protocol`, `busy`) answers `{token, code, name}`, HTTP 409 when this server narrates with a speech server; status answers `access` (`pending`, `granted`, `none`); poll (its report) waits up to `COMPUTER_POLL_SECONDS` and answers `{messages}` (`start`, `stdin`, `stop` per session); send takes `{messages}` (`out`, `err`, `exit` per session); forget withdraws it. A token not approved yet is HTTP 403, an unknown or removed one HTTP 401 (`COMPUTER_UNKNOWN`). |
+| `POST /api/computers/request`, `/status`, `/poll`, `/send`, `/forget` | A computer itself, over HTTPS or from this machine only (else HTTP 403, `COMPUTERS_NEED_HTTPS`), by `Authorization: Bearer <token>`. Request (JSON `name` and its report: `devices`, `model`, `protocol`, `busy`) answers `{token, code, name}`, HTTP 409 when this server narrates with a speech server; status answers `access` (`pending`, `granted`, `none`); poll (its report, plus `lost`: sessions whose output it could not send, which end at once) waits up to `COMPUTER_POLL_SECONDS` and answers `{messages}` (`start`, `stdin`, `stop` per session); send takes `{messages}` (`out`, `err`, `exit` per session); forget withdraws it. A token not approved yet is HTTP 403, an unknown or removed one HTTP 401 (`COMPUTER_UNKNOWN`). |
 | `POST /api/computers/approve`, `/deny`, `/revoke`, `/share` | For a browser that may manage only (else HTTP 403, `COMPUTERS_MANAGE_ONLY`). Approve (JSON `code`, `shared`) or deny the waiting computer, remove one (JSON `id`; its sessions end), or set whether everyone's **Any GPU that is on** uses it (`id`, `shared`); HTTP 404 for no such code or ID, 409 for a speech-server Hilde or an unreadable `computer-grants.json`, 500 when it cannot be saved. Each answers what `GET /api/workers` does, which now also carries `computers` (`pending`, `granted` with connection, devices, model, `shared`; never a token; `fingerprint`, `https`, `model`) and `link`. |
-| `POST /api/computer-link/begin`, `/confirm`, `/stop` | For a browser that may manage only: this Hilde helping another. Begin takes JSON `url` (https only) and `name`, confirm trusts the fingerprint shown (state `confirm`), stop withdraws the pairing; each answers `ComputerLink.snapshot()` (`state`: `idle`, `checking`, `confirm`, `pending` with `code`, `connected`, `reconnecting`, `failed`, `removed`; `error`, `url`, `name`, `trust`, `sessions`). |
+| `POST /api/computer-link/begin`, `/confirm`, `/stop` | For a browser that may manage only: this Hilde helping another. Begin takes JSON `url` (https only) and `name`, confirm takes the `fingerprint` the page showed and trusts that one certificate (HTTP 409 when the offer changed since, or no fingerprint is waiting), stop withdraws the pairing; each answers `ComputerLink.snapshot()` (`state`: `idle`, `checking`, `confirm`, `pending` with `code`, `connected`, `reconnecting`, `failed`, `removed`; `error`, `url`, `name`, `trust`, `sessions`). |
 | `POST /api/devices/request`, `POST /api/devices/forget` | Any device that may not approve, over HTTPS only (`Handler.secure()`). Request is HTTP 409 for one that may approve or is already approved, and HTTP 403 (`DEVICES_NEED_HTTPS`) over plain HTTP; it starts a `DeviceGrants` request with the device's `name` (`device_label()`) and address, replaces its earlier one, and sets the `hilde_devices` cookie (a 256-bit random token; `HttpOnly`, `SameSite=Strict`, `Secure`); it answers `{access: "pending", name, code}`, a six-letter code. Forget withdraws the cookie's request or approval (over HTTPS; over plain HTTP the cookie is not read) and expires the cookie. Over plain HTTP `device_access()` is `{access: "insecure"}` for another device and never reads its cookie, so an approval is neither given nor used where the network could read it; a loopback browser (and `--manage-from-network`) approves and manages over plain HTTP as before. |
 | `POST /api/devices/approve`, `POST /api/devices/deny`, `POST /api/devices/revoke` | For a browser that may approve only (`may_approve()`: loopback or `--manage-from-network`; an approved device gets HTTP 403, `DEVICES_APPROVE_LOCAL_ONLY`). Approve or deny the waiting request with JSON `code` (case and spaces ignored; HTTP 404 when none waits with it), or remove the approved device with JSON `id`; HTTP 409 while `device-grants.json` is unreadable, HTTP 500 when it cannot be saved (nothing changes). Each answers the asker's `devices`. |
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), `reading` (`{mode, text}`: `similarity` or `keyword` and the sentence saying so and why, `ask_reading()`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, reading, or web search. |
@@ -4053,7 +4079,7 @@ HTTPS (`HildeServer`, a `ThreadingHTTPServer`): with `--tls-cert` and `--tls-key
 ## Core invariants
 
 - The browser never supplies model configuration, worker devices/hosts, storage paths, output paths, or arbitrary server paths. The one exception is `workers.yaml`, whose nodes and local devices turned off only a browser that may manage may change, because the server has no sign-in: one on the server's own machine (a loopback address), a device such a browser approved (`DeviceGrants`, by the code the device shows), or, with `--manage-from-network`, every browser that reaches the server; the same rule covers Settings › Providers, the default models, and trusting a new narration machine's host key (`POST /api/workers/trust` appends to this user's `~/.ssh/known_hosts` only the keys the host still shows, after that browser saw their fingerprints; a changed key is never trusted from a browser). Approving, denying, and removing devices stays with `may_approve()`, so an approved device cannot approve another. A device approval is asked for, set (an `HttpOnly`, `SameSite=Strict`, `Secure` cookie), and read only over HTTPS (`Handler.secure()`): over plain HTTP another device gets `DEVICES_NEED_HTTPS` and its cookie is never read, so `may_manage()` checks the transport on every request. `device-grants.json` (0600) keeps only each approved token's SHA-256; an unreadable file approves no one and refuses approvals. Loading the page (`/api/state`, `/api/jobs`) only reads it. Default TTS and Voice design come from the start command only (`configured_tts_models()`); no browser changes them.
-- A paired computer gets work only with a token a browser that may manage approved by the six-letter code it showed (`ComputerGrants`; the code alone gives nothing, and a wrong, expired, or used code approves nothing), only over HTTPS or from this machine, and `computer-grants.json` keeps only the token's SHA-256. It receives a voice's two files and chunk texts for its own narration worker, never a path, model choice, or command; it decides its model and devices itself and is refused (listed with the reason, never silently replaced) when its model or protocol differs. The computer trusts the other Hilde's certificate only through its system's trust or the authority whose fingerprint its user compared; pairing never falls back to plain HTTP or an unchecked certificate. Remove makes the token answer HTTP 401 at once.
+- A paired computer gets work only with a token a browser that may manage approved by the six-letter code it showed (`ComputerGrants`; the code alone gives nothing, and a wrong, expired, or used code approves nothing), only over HTTPS or from this machine, and `computer-grants.json` keeps only the token's SHA-256. It receives a voice's two files and chunk texts for its own narration worker, never a path, model choice, or command; it decides its model and devices itself and is refused (listed with the reason, never silently replaced) when its model or protocol differs. The computer sends its token only to the exact https address it paired with and follows no redirect; it trusts the other Hilde's certificate only through its system's trust or the one certificate whose fingerprint its user compared (an offer of several is refused); pairing never falls back to plain HTTP or an unchecked certificate. Remove makes the token answer HTTP 401 at once.
 - Chat's web tools exist only when the operator passes `--search-server`; the page a model asks to read is fetched only from a public address, checked on the connection itself at every redirect.
 - Reference audio and transcript move together and the transcript remains the exact generation passage.
 - Every voice created by the web UI speaks `VOICE_REFERENCE_TEXT`; the browser never supplies the reference passage. A rendered `preview.wav` is published only after a successful render and is removed whenever its voice is replaced.

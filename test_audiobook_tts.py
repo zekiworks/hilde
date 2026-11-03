@@ -13038,6 +13038,8 @@ for line in sys.stdin:
         with open(record, "a", encoding="utf-8") as stream:
             stream.write(f"{name} got {request['indexes']}\\n")
         time.sleep(8)
+    elif behaviour == "steady":
+        time.sleep(0.5)
     with open(record, "a", encoding="utf-8") as stream:
         stream.write(f"{name} {request['indexes']}\\n")
     waves = []
@@ -13059,6 +13061,140 @@ for line in sys.stdin:
         server, origin = WorkerNodeTests.serve(self, tls=True)
         web.setup_computers(server, server.storage, server.tts_models)
         return server, origin
+
+    def wait_for(self, done, why, seconds=10):
+        deadline = time.monotonic() + seconds
+        while not done():
+            if time.monotonic() > deadline:
+                self.fail(why)
+            time.sleep(0.05)
+
+    def worker(self, name, behaviour, record):
+        """A helper's worker command: the fixture worker (WORKER), no model."""
+        return lambda model, voice_dir, device, worker: [
+            sys.executable, "-c", self.WORKER, cli.WORKER_PROTOCOL, name, behaviour, str(record)]
+
+    def pair(self, server, origin, name, worker_command, **options):
+        """A helper Hilde paired with `server` as `name` the way a user pairs:
+        Connect, compare and confirm the fingerprint shown, approve the code.
+        Returns (helper, its grant's ID)."""
+        root = Path(server.storage.root)
+        helper = web.ComputerLink(
+            root / f"link-{name.replace(' ', '-')}.json", model=lambda: "/elsewhere/Base",
+            devices=lambda: [{"device": "mps", "name": "Apple M2", "memory": ""}], busy=lambda: [],
+            worker_command=worker_command, retry_seconds=1, **options)
+        self.addCleanup(helper.stop)
+        helper.begin(origin, name)
+        self.wait_for(lambda: helper.snapshot()["state"] == "confirm", f"{name} never showed a fingerprint")
+        # The test authority is not trusted here: the user compares the
+        # fingerprint the server's Settings shows, then confirms that one.
+        shown = helper.snapshot()["fingerprint"]
+        self.assertEqual(shown, web.certificate_fingerprint(server.tls_authority.read_text(encoding="utf-8")))
+        helper.confirm(shown)
+        self.wait_for(lambda: helper.snapshot()["code"], f"{name} never got a code")
+        self.computer(origin, "/api/computers/approve", {"code": helper.snapshot()["code"]}, remote=False)
+        self.wait_for(lambda: helper.snapshot()["state"] == "connected", f"{name} never connected")
+        return helper, next(item["id"] for item in server.computer_grants.snapshot()["granted"] if item["name"] == name)
+
+    def narrate(self, root, idents):
+        """Start narrating eight fixture chunks on these computers only (no
+        local worker): (the narration process, its sessions in order)."""
+        voice = root / "voice"
+        if not voice.is_dir():
+            voice.mkdir()
+            sf.write(voice / "reference.wav", (0.1 * np.sin(np.arange(24000) / 10)).astype("float32"), 24000)
+            (voice / "transcript.txt").write_text("A fixture voice.", encoding="utf-8")
+        keys, arguments, sessions = {}, [], []
+        for ident in idents:
+            address, session, key = self.links.open_session(ident, "mps")
+            keys[session] = {"key": key}
+            arguments += ["--relay-worker", f"{address}/{session}"]
+            sessions.append(session)
+        chunks = " ".join(f"Sentence number {word} of the fixture book." for word in
+                          ("one", "two", "three", "four", "five", "six", "seven", "eight"))
+        narration = subprocess.Popen(
+            [sys.executable, "-u", str(web.SCRIPT), "narrate", "--text", chunks, "--voice-dir", str(voice),
+             "--clone-model-path", "/local/Base", "--device", "cpu", "--attn-implementation", "sdpa",
+             "--resume-dir", str(root / f"chunks-{sessions[0]}"), "--output", str(root / "book.wav"), "--overwrite",
+             "--chunk-max-chars", "60", "--sentence-chunks", "--batch-size", "1", "--no-local-worker",
+             *arguments, "--worker-ready-timeout", "30"],
+            env={**os.environ, cli.RELAY_KEYS_ENV: json.dumps(keys)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        return narration, sessions
+
+    def https_stub(self, answer):
+        """A disposable HTTPS server on 127.0.0.1 with a fresh authority of its
+        own, answering each request with answer(path) -> (status, headers,
+        body): (its origin, that authority's PEM)."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        cert, key = web.ensure_tls_files(Path(temporary.name) / "tls", (["localhost"], ["127.0.0.1"]))
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+
+        class Stub(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def reply(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                status, headers, body = answer(self.path)
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = reply
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return (f"https://127.0.0.1:{server.server_port}",
+                (Path(temporary.name) / "tls" / "ca.pem").read_text(encoding="utf-8"))
+
+    def trap(self):
+        """A plain-HTTP listener that records every request it gets, headers included."""
+        seen = []
+
+        class Trap(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def record(self):
+                seen.append((self.command, self.path, dict(self.headers)))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_GET = do_POST = record
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Trap)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}", seen
+
+    def helper_link(self, name="link.json", **options):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        link = web.ComputerLink(Path(temporary.name) / name, model=lambda: "/m/Base",
+                                devices=lambda: [{"device": "cpu", "name": "CPU", "memory": ""}],
+                                busy=lambda: [], retry_seconds=1, **options)
+        self.addCleanup(link.stop)
+        return link
+
+    @staticmethod
+    def start(session):
+        files = {"reference.wav": base64.b64encode(b"RIFF").decode(), "transcript.txt": base64.b64encode(b"Hi").decode()}
+        return {"type": "start", "session": session, "device": "cpu",
+                "worker": {"protocol": cli.WORKER_PROTOCOL_VERSION}, "files": files}
 
     def computer(self, origin, path, body, token="", remote=True):
         """A request as a computer on another machine (or, `remote` False, as a
@@ -13217,53 +13353,10 @@ for line in sys.stdin:
         server, origin = self.serve()
         root = Path(server.storage.root)
         record = root / "made.txt"
-        helpers = {}
+        helpers, ids = {}, {}
         for name, behaviour in (("fast", "ready"), ("slow", "slow")):
-            helper = web.ComputerLink(
-                root / f"link-{name}.json", model=lambda: "/elsewhere/Base",
-                devices=lambda: [{"device": "mps", "name": "Apple M2", "memory": ""}], busy=lambda: [],
-                worker_command=lambda model, voice_dir, device, worker, name=name, behaviour=behaviour: [
-                    sys.executable, "-c", self.WORKER, cli.WORKER_PROTOCOL, name, behaviour, str(record)],
-                retry_seconds=1)
-            helper.begin(origin, f"Computer {name}")
-            deadline = time.monotonic() + 10
-            while helper.snapshot()["state"] != "confirm" and time.monotonic() < deadline:
-                time.sleep(0.05)
-            # The test authority is not trusted here: the user compares the
-            # fingerprint the server's Settings shows, then confirms.
-            self.assertEqual(helper.snapshot()["fingerprint"],
-                             web.certificate_fingerprint(server.tls_authority.read_text(encoding="utf-8")))
-            helper.confirm()
-            while not helper.snapshot()["code"] and time.monotonic() < deadline:
-                time.sleep(0.05)
-            self.computer(origin, "/api/computers/approve", {"code": helper.snapshot()["code"]}, remote=False)
-            while helper.snapshot()["state"] != "connected" and time.monotonic() < deadline:
-                time.sleep(0.05)
-            self.assertEqual(helper.snapshot()["state"], "connected")
-            helpers[name] = helper
-            self.addCleanup(helper.stop)
-        ids = {item["name"]: item["id"] for item in server.computer_grants.snapshot()["granted"]}
-
-        voice = root / "voice"
-        voice.mkdir()
-        sf.write(voice / "reference.wav", (0.1 * np.sin(np.arange(24000) / 10)).astype("float32"), 24000)
-        (voice / "transcript.txt").write_text("A fixture voice.", encoding="utf-8")
-        keys, arguments = {}, []
-        for name in ("fast", "slow"):
-            address, session, key = self.links.open_session(ids[f"Computer {name}"], "mps")
-            keys[session] = {"key": key}
-            arguments += ["--relay-worker", f"{address}/{session}"]
-        slow_session = arguments[-1].rpartition("/")[2]
-        chunks = " ".join(f"Sentence number {word} of the fixture book." for word in
-                          ("one", "two", "three", "four", "five", "six", "seven", "eight"))
-        narration = subprocess.Popen(
-            [sys.executable, "-u", str(web.SCRIPT), "narrate", "--text", chunks, "--voice-dir", str(voice),
-             "--clone-model-path", "/local/Base", "--device", "cpu", "--attn-implementation", "sdpa",
-             "--resume-dir", str(root / "chunks"), "--output", str(root / "book.wav"), "--overwrite",
-             "--chunk-max-chars", "60", "--sentence-chunks", "--batch-size", "1", "--no-local-worker",
-             *arguments, "--worker-ready-timeout", "30"],
-            env={**os.environ, cli.RELAY_KEYS_ENV: json.dumps(keys)},
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            helpers[name], ids[name] = self.pair(server, origin, f"Computer {name}", self.worker(name, behaviour, record))
+        narration, (_, slow_session) = self.narrate(root, [ids["fast"], ids["slow"]])
         # The slow computer loses its link once it is narrating a chunk.
         deadline = time.monotonic() + 20
         while "slow got" not in (record.read_text(encoding="utf-8") if record.exists() else ""):
@@ -13282,13 +13375,232 @@ for line in sys.stdin:
         made = [line.split(" ", 1) for line in record.read_text(encoding="utf-8").splitlines()]
         self.assertEqual(sorted(index for name, indexes in made if name == "fast"
                                 for index in json.loads(indexes)), list(range(1, 9)))
-        # Stopped, the computers end their workers and remove their copies of the voice.
+        # Its model loaded (its worker said ready) and, the book done, is not loaded now: no sticky claim.
+        self.wait_for(lambda: not self.links.state(ids["fast"])["loaded"], "the fast computer stayed 'loaded'")
+        self.assertEqual(self.links.state(ids["fast"])["loaded_before"], "Base")
         for helper in helpers.values():
             helper.stop()
         deadline = time.monotonic() + 10
         while list(Path(tempfile.gettempdir()).glob("hilde-computer-*")) and time.monotonic() < deadline:
             time.sleep(0.1)
         self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+
+    def test_pairing_requests_follow_no_redirect_and_never_use_plain_http(self):
+        trap, seen = self.trap()
+        origin, authority = self.https_stub(lambda path: (302, {"Location": f"{trap}/stolen{path}"}, b""))
+        link = self.helper_link()
+        link.saved = {"url": origin, "name": "Mac", "ca": authority, "token": "secret-token"}
+        # An authenticated request answered with a redirect: refused, so the token goes nowhere else.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            link._call("/api/computers/poll", {"lost": []})
+        self.assertEqual(caught.exception.code, 302)
+        # A plain-HTTP address is refused before anything is sent.
+        link.saved = {**link.saved, "url": trap}
+        with self.assertRaisesRegex(ValueError, "HTTPS only"):
+            link._call("/api/computers/poll", {"lost": []})
+        # Fetching the other's certificate to compare follows no redirect either.
+        discovering = self.helper_link("other.json")
+        discovering.begin(origin, "Mac")
+        self.wait_for(lambda: discovering.snapshot()["state"] == "failed", "the certificate fetch never failed")
+        self.assertIn("redirect", discovering.snapshot()["error"])
+        self.assertEqual(seen, [])
+
+    def test_only_the_one_certificate_the_user_compared_is_trusted(self):
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        web.ensure_tls_files(Path(other.name) / "tls", (["localhost"], ["127.0.0.1"]))
+        second = (Path(other.name) / "tls" / "ca.pem").read_text(encoding="utf-8")
+        offer = {}
+        origin, first = self.https_stub(
+            lambda path: (200, {"Content-Type": "text/plain"}, offer["pem"].encode())
+            if path == "/api/certificate" else (404, {"Content-Type": "application/json"}, b"{}"))
+        link = self.helper_link()
+
+        def connect():
+            link.begin(origin, "Mac")
+            self.wait_for(lambda: link.snapshot()["state"] in ("confirm", "failed"), "no answer to Connect")
+            return link.snapshot()
+
+        # Two certificates: only the first would be shown, but cadata would trust both, so it is refused.
+        offer["pem"] = first + second
+        shown = connect()
+        self.assertEqual((shown["state"], link.saved["ca"]), ("failed", ""))
+        self.assertIn("2 certificates", shown["error"])
+        # One certificate: its fingerprint is shown...
+        offer["pem"] = first
+        shown = connect()
+        self.assertEqual((shown["state"], shown["fingerprint"]), ("confirm", web.certificate_fingerprint(first)))
+        # ...but the offer changed (Connect again) before the user confirmed what they compared: refused.
+        offer["pem"] = second
+        again = connect()
+        self.assertNotEqual(again["fingerprint"], shown["fingerprint"])
+        with self.assertRaisesRegex(ValueError, "changed since it was shown"):
+            link.confirm(shown["fingerprint"])
+        self.assertEqual(link.saved["ca"], "")
+        # Confirmed, exactly that one certificate is trusted, re-encoded.
+        link.confirm(again["fingerprint"])
+        self.assertEqual(link.saved["ca"], web.single_certificate(second)[0])
+        # The stub's own certificate chains to the first authority, not the confirmed one: refused.
+        self.wait_for(lambda: link.snapshot()["state"] == "failed", "the other authority was accepted")
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", link.snapshot()["error"])
+
+    def test_stop_helping_fences_a_start_a_pending_poll_brings_and_sends_nothing_of_the_old_pairing(self):
+        started, sent, polls = [], [], []
+        polled, answer = threading.Event(), threading.Event()
+
+        def command(model, voice_dir, device, worker):
+            started.append(device)
+            return [sys.executable, "-c", "import time; print('working', flush=True); time.sleep(30)"]
+
+        def call(path, body=None, saved=None, timeout=30):
+            if path == "/api/computers/poll":
+                polls.append(path)
+                if len(polls) == 1:
+                    polled.set()
+                    answer.wait(10)
+                    return {"messages": [self.start("s1")]}
+                time.sleep(0.1)
+                return {"messages": []}
+            if path == "/api/computers/send":
+                sent.append(body["messages"])
+            return {}
+
+        link = self.helper_link(worker_command=command)
+        link._call = call
+        link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "t"}
+        # A poll is out when the user presses Stop helping; it then returns with a start.
+        link._run(link._serve, "connected")
+        self.assertTrue(polled.wait(5))
+        link.stop()
+        answer.set()
+        time.sleep(0.5)
+        self.assertEqual((started, link.sessions, sent), ([], {}, []))
+        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+
+        # In a current pairing the start does start; after Stop helping, nothing of it is sent.
+        polls.clear()
+        link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "t"}
+        link._run(link._serve, "connected")
+        self.wait_for(lambda: any("working" in message.get("out", "") for batch in sent for message in batch),
+                      "the worker's output was never sent")
+        self.assertEqual(started, ["cpu"])
+        link.stop()
+        before = len(sent)
+        self.wait_for(lambda: not link.sessions, "the worker never ended")
+        time.sleep(0.5)
+        self.assertEqual(sent[before:], [])
+
+    def test_output_a_computer_cannot_send_ends_its_session_and_its_chunk_goes_to_another(self):
+        server, origin = self.serve()
+        root = Path(server.storage.root)
+        record = root / "made.txt"
+        steady, steady_id = self.pair(server, origin, "Computer steady", self.worker("steady", "steady", record))
+        mute, mute_id = self.pair(server, origin, "Computer mute", self.worker("mute", "ready", record))
+        send = mute._call
+
+        def results_lost(path, body=None, saved=None, timeout=30):
+            # The network drops this computer's results (its ready line still arrives), while it keeps polling.
+            if path == "/api/computers/send" and any('"result"' in message.get("out", "") for message in body["messages"]):
+                raise OSError("fixture: this computer's results never arrive")
+            return send(path, body, saved, timeout)
+
+        mute._call = results_lost
+        narration, (_, mute_session) = self.narrate(root, [steady_id, mute_id])
+        log, _ = narration.communicate(timeout=90)
+        self.assertEqual(narration.returncode, 0, log)
+        self.assertIn(f"Narration worker left out: Computer {mute_session}: exited with code 255 while narrating", log)
+        self.assertIn(web.COMPUTER_OUTPUT_LOST, log)
+        made = [line.split(" ", 1) for line in record.read_text(encoding="utf-8").splitlines()]
+        self.assertIn("mute", [name for name, _ in made])  # it did get a chunk, whose result was lost
+        self.assertEqual(sorted({index for name, indexes in made if name == "steady"
+                                 for index in json.loads(indexes)}), list(range(1, 9)))
+        # With no other worker the book fails, in bounded time, saying why.
+        began = time.monotonic()
+        narration, _ = self.narrate(root, [mute_id])
+        log, _ = narration.communicate(timeout=90)
+        self.assertNotEqual(narration.returncode, 0, log)
+        self.assertRegex(log, "no narration worker (is left|could start)")
+        self.assertIn(web.COMPUTER_OUTPUT_LOST, log)
+        self.assertLess(time.monotonic() - began, 60)
+        self.wait_for(lambda: not mute.sessions, "the mute computer's worker kept running")
+
+    def test_a_device_serves_another_hilde_or_its_own_books_never_both(self):
+        jobs = web.JobQueue(web.audiobook_consumers(self.CLONE, [{"value": "cpu", "label": "CPU"}]))
+        self.addCleanup(jobs.shutdown)
+        status = lambda: next(item["status"] for item in jobs.consumers_snapshot() if item["kind"] == "local")
+        idle = lambda: self.wait_for(lambda: not jobs.busy_consumer_ids(), "the device was never let go")
+        # Helping first: no second session, no voice design, and its own book waits for the device.
+        self.assertTrue(jobs.reserve_for_another("cpu", "s1"))
+        self.assertFalse(jobs.reserve_for_another("cpu", "s2"))
+        self.assertFalse(jobs.start_voice(JobQueueTests.ControlledRun("voice.wav")))
+        record, _ = JobQueueTests.reserve(self, jobs, "own")
+        own = JobQueueTests.ControlledRun("own.mp3")
+        jobs.commit(record, own)
+        self.assertFalse(own.started.wait(0.3))
+        self.assertEqual(status(), "helping")
+        jobs.release_for_another("s1")
+        self.assertTrue(own.started.wait(2))
+        # Its own book first: another Hilde's session is refused until the book ends.
+        self.assertFalse(jobs.reserve_for_another("cpu", "s3"))
+        own.close(0)
+        idle()
+        self.assertTrue(jobs.reserve_for_another("cpu", "s3"))
+        jobs.release_for_another("s3")
+        self.assertFalse(jobs.reserve_for_another("cuda:7", "s4"))
+
+        # The helper's start goes through that reservation and lets go on every way out.
+        sent = []
+
+        def call(path, body=None, saved=None, timeout=30):
+            if path == "/api/computers/send":
+                sent.append(body["messages"])
+            return {}
+
+        link = self.helper_link(worker_command=lambda *args: [sys.executable, "-c", "print('done')"],
+                                reserve=jobs.reserve_for_another, release=jobs.release_for_another)
+        link._call = call
+        link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "t"}
+        said = lambda session: [message for batch in sent for message in batch if message["session"] == session]
+        record, _ = JobQueueTests.reserve(self, jobs, "busy")
+        own = JobQueueTests.ControlledRun("busy.mp3")
+        jobs.commit(record, own)
+        self.assertTrue(own.started.wait(2))
+        link._start_session("refused", self.start("refused"), link.generation)
+        self.wait_for(lambda: any(message.get("exit") == 2 for message in said("refused")), "the refusal was never sent")
+        self.assertIn("own books or a voice design use CPU now", said("refused")[0]["err"])
+        own.close(0)
+        idle()
+        link._start_session("served", self.start("served"), link.generation)
+        self.wait_for(lambda: any("exit" in message for message in said("served")), "the session never ended")
+        self.assertEqual([message.get("out") for message in said("served") if "out" in message], ["done"])
+        idle()
+        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+
+    def test_a_paired_worker_that_fails_before_ready_is_shown_fails_the_book_and_leaves_nothing(self):
+        server, origin = self.serve()
+        root = Path(server.storage.root)
+        failing = lambda model, voice_dir, device, worker: [
+            sys.executable, "-c", "import sys; print('Cannot load the fixture model', file=sys.stderr, flush=True); sys.exit(3)"]
+        helper, ident = self.pair(server, origin, "Computer broken", failing)
+        # Connected and the same model name: not yet loaded, nor failed.
+        state = self.links.state(ident)
+        self.assertEqual((state["loaded"], state["loaded_before"], state["failed"]), ([], "", ""))
+        narration, _ = self.narrate(root, [ident])
+        log, _ = narration.communicate(timeout=60)
+        # No silent fallback: with no worker that started, the book fails, saying why.
+        self.assertNotEqual(narration.returncode, 0, log)
+        self.assertIn("no narration worker could start", log)
+        self.assertIn("Cannot load the fixture model", log)
+        self.assertFalse((root / "book.wav").exists())
+        # Settings says its last start failed before its model loaded; nothing is loaded or left open.
+        self.wait_for(lambda: self.links.state(ident)["failed"], "the failure was never recorded")
+        state = self.links.state(ident)
+        self.assertEqual((state["loaded"], state["loaded_before"], state["sessions"]), ([], "", 0))
+        self.assertIn("exited with code 3 before its model loaded: Cannot load the fixture model", state["failed"])
+        [worker] = [item for item in server.jobs.public_consumers_snapshot() if item["kind"] == "computer"]
+        self.assertEqual((worker["loaded"], worker["failed"]), (False, state["failed"]))
+        self.wait_for(lambda: not helper.sessions and not list(Path(tempfile.gettempdir()).glob("hilde-computer-*")),
+                      "its worker or its copy of the voice stayed")
 
 
 class ImageCheckTests(unittest.TestCase):
