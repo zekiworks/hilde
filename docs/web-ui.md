@@ -993,7 +993,7 @@ are on:
 A new book can be read and asked about as soon as its document has been
 converted, the first step of making it, while Hilde prepares the text and
 narrates it. Its card is in the Library in its usual place (by when it became
-readable), with **Being made · 42%** (the job's own count for the step it is
+readable), with **In progress · 42%** (the job's own count for the step it is
 on, as on **Progress**; **Stopped · 42%** once it stopped or failed) and no play
 button. A click (or **Enter** or **Space**) opens it: the paper's own text and
 its figures, with no player, **Follow along**, or **Narration text | Source

@@ -5164,7 +5164,7 @@ def mark_place(anchor, units, chosen=None):
 # A new book's job (Create, adapted) is readable once its document has been
 # converted, its first step: the job writes MAKING_FILE into its stage, and
 # until the book is published the Library lists it as "making-<job id>"
-# ("Being made · N%", no play button), its reading view shows the paper's own
+# ("In progress · N%", no play button), its reading view shows the paper's own
 # text and figures (no player), and Ask Hilde answers about it from the stage:
 # the paper's text at once, each part's narration, summary and tags as its
 # batch's checkpoint is written. Its conversation (chat.json, 0600, and
@@ -29581,7 +29581,7 @@ async function openMaking(id, focus) {
   $("book-view").classList.add("making");
   render(); queueSync();
   resetChatFor(id);
-  $("reader-title").textContent = book ? book.title : "Being made";
+  $("reader-title").textContent = book ? book.title : "In progress";
   $("reader-voice-name").textContent = "";
   $("paper-bar-name").textContent = $("reader-title").textContent;
   $("reader-making").classList.remove("hidden");
@@ -29606,12 +29606,12 @@ async function openMaking(id, focus) {
     $("reader-unavailable").classList.remove("hidden");
   }
 }
-// How far the book being made is, from its card: "Being made · 42%" (the
+// How far the book being made is, from its card: "In progress · 42%" (Ümit, 3 Nov; the
 // job's own count, as the progress view shows it), and what can be done now.
 function renderMakingNote() {
   const making = (bookById(readerMaking) || {}).making;
   const stopped = !!making && making.status === "stopped";
-  const where = making ? `${stopped ? "Stopped" : "Being made"} · ${making.percent}%` : "Being made";
+  const where = making ? `${stopped ? "Stopped" : "In progress"} · ${making.percent}%` : "In progress";
   $("reader-meta").textContent = `· ${where}`;
   $("paper-bar-meta").textContent = where;
   setText($("reader-making"), stopped
@@ -32798,7 +32798,7 @@ const PAGE_ICON = '<svg class="page-icon" viewBox="0 0 56 72" aria-hidden="true"
 // in progress, the status chip, the round play button, and ⋯. The title is
 // the card's one Tab stop (Enter opens the book, Space plays or pauses it); a
 // click anywhere else on the card opens it too. A book being made says
-// "Being made · N%" (or "Stopped · N%"), has no play button, and opens to
+// "In progress · N%" (or "Stopped · N%"), has no play button, and opens to
 // be read and asked about.
 function bookCard(book) {
   let card = bookCards.get(book.id);
@@ -32844,7 +32844,7 @@ function updateCard(card, book, status) {
   card.dataset.book = book.id;
   card.dataset.status = status.kind;
   const open = card.querySelector(".book-open");
-  open.setAttribute("aria-label", book.making ? `Read ${book.title}, being made` : `Listen to ${book.title}`);
+  open.setAttribute("aria-label", book.making ? `Read ${book.title}, in progress` : `Listen to ${book.title}`);
   open.title = book.title;
   setText(card.querySelector(".book-name"), book.title);
   const voice = status.voice || book.voices.find((item) => item.name === book.voice) || null;
@@ -32859,7 +32859,7 @@ function updateCard(card, book, status) {
     line.append(part);
   }
   setText(card.querySelector(".book-chip"), playing ? `Playing · ${percent}%`
-    : kind === "making" ? `${book.making.status === "stopped" ? "Stopped" : "Being made"} · ${percent}%`
+    : kind === "making" ? `${book.making.status === "stopped" ? "Stopped" : "In progress"} · ${percent}%`
     : kind === "progress" ? `${percent}% listened` : kind === "finished" ? "✓ Finished" : "New");
   const bar = card.querySelector(".book-bar");
   bar.classList.toggle("hidden", !(kind === "progress" || playing && status.kind !== "finished"));

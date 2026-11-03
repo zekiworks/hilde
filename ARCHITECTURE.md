@@ -964,7 +964,7 @@ and `making` (`making_progress()`: `status` `running`, `queued`, or `stopped`
 `percent`, the current phase's `Run.last_count`, the progress view's count,
 else the share of batches written). A published one, or one whose job is
 `done`, is not listed. The card (`bookStatus()` kind `making`) reads
-**Being made · N%** or **Stopped · N%** in the New chip's gray, has no play
+**In progress · N%** or **Stopped · N%** in the New chip's gray, has no play
 button (Space opens it), and **⋯** holds **Delete…** alone. `openAudiobook()`
 hands a making id to `openMaking()`: no audio, `readerMaking` set,
 `#book-view.making` hiding `.listen-bar`, `.player-dock`, and Back to reading

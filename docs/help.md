@@ -85,14 +85,14 @@ Pick the model in the panel's header; this browser keeps it. Its badge says **Lo
 
 On a phone, drag the bar at the top of the sheet: up for full height, down for half, further down to close it. On a computer, drag the panel's left edge to resize it; your browser remembers the width.
 
-**While a book is being made** (its card says **Being made · N%**), open it to read and ask; the player appears when it's done.
+**While a book is being made** (its card says **In progress · N%**), open it to read and ask; the player appears when it's done.
 
 The narration can be wrong; when it differs from the document, Hilde says so and goes by the document.
 
 <!-- more: docs/web-ui.md › Ask Hilde on every page -->
 <!-- checked (25 Oct): docs/web-ui.md, the side panel's left-edge resize (remembered by the browser) and the phone sheet's drag bar (full, half, closed); the "being made" and New conversation sentences shortened for the 1,650-word cap -->
 <!-- checked (27 Oct): ask-rag, how Hilde finds paragraphs (similarity search or keyword search) is a line of the ⋯ menu, and a note under the header when it is keyword search (docs/configuration.md "Similarity search"); words cut for the cap -->
-<!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation; "A book being made": Being made · N% card, reading view without player, conversation kept and moved into the book, model per browser in player.chat_model); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()); making_passages(), ASK_NOT_READY. -->
+<!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation; "A book being made": In progress · N% card, reading view without player, conversation kept and moved into the book, model per browser in player.chat_model); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()); making_passages(), ASK_NOT_READY. -->
 
 ## Local and Cloud: what data leaves your computer
 
