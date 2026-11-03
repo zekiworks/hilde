@@ -664,12 +664,15 @@ PDF work is page-addressable:
    the page's own text of that box behind the picture as its picture text
    (`formula_text()`: each span smaller than the text around it hangs from
    the span before it as `<sup>` or `<sub>` by its baseline, by the PDF's
-   superscript flag for a whole exponent, nested, and a stacked fraction is
+   superscript flag for a whole exponent unless it sits below its base, nested, and a stacked fraction is
    written `(numerator)/(denominator)`, so "warmup_steps<sup>−1.5</sup>" no
    longer reads "warmup_steps−1.5" and models raise the right term; no span
    hangs from one ending in an operator, separator, or opening bracket
    (`SCRIPTLESS`), from a base more than 0.6 text heights off its baseline, or
-   across a full-size glyph between them, so a small stacked ½ after "C_attn
+   across a full-size glyph between them; a span near its baseline is its base
+   before one on the line above or below that ends further right, so a
+   caption set close keeps Harness-Zero's "π<sub>S</sub>" (the "˜" of the line
+   below had taken the S, which was then left flat); a small stacked ½ after "C_attn
    [" is a fraction, not "C_attn₂ … +₂¹"; a superscript stacked over a
    subscript, too far above the subscript, hangs from their base, so RRSI's
    "𝐻<sub>𝑡</sub><sup>(1)</sup>" is neither flat nor nested; glyphs of a math-extension font
@@ -699,7 +702,14 @@ PDF work is page-addressable:
    number and no other (`label_equation()`). Prose, caption, and footnote
    boxes outside listings get their subscripts marked the same way
    (`with_subscripts()`), "_d<sub>k</sub>_" for "_dk_", since the layout
-   marks only superscripts. Table, equation, prose, and listing replacements are applied from
+   marks only superscripts. It marks those by PyMuPDF's flag, which measures
+   from the first character of a MuPDF line; when that is a subscript, every
+   full-size word after it on the printed line is flagged, and Harness-Zero's
+   "π_θ^h denote … parameters θ operates under h" came out raised and run
+   together. So before pymupdf4llm joins a layout box's spans into lines
+   (`lines_with_true_superscripts()` in place of its `get_raw_lines()`), a
+   flag stands only on a span raised above the box's unflagged full-size text
+   nearest its baseline (`true_superscripts()`). Table, equation, prose, and listing replacements are applied from
    the end of the page;
 4. `join_pdf_pages()` joins the page Markdown into `document.md` in source
    order, mending what page breaks split. A page break always ends a

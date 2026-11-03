@@ -682,7 +682,9 @@ from pathlib import Path
 
 import pymupdf
 import pymupdf4llm
+from pymupdf4llm.helpers import document_layout
 from pymupdf4llm.helpers.document_layout import select_ocr_function
+from pymupdf4llm.helpers.utils import almost_in_bbox
 
 source, output, images = (Path(value).resolve() for value in sys.argv[1:4])
 page = int(sys.argv[4])
@@ -705,6 +707,50 @@ class InvisibleOcrText:
     def insert_text(self, *args, **kwargs):
         return self._page.insert_text(*args, render_mode=3, **kwargs)
 
+
+# PyMuPDF flags a span as a superscript when its baseline sits above that of
+# the first character of its MuPDF line, and a line can start with a
+# subscript: in "π_θ^h denote …" (Harness-Zero, page 4) the θ, printed after
+# the h and left of it, starts a line, and every full-size word after it on
+# the printed line was flagged, so pymupdf4llm raised them all and ran them
+# together, "parameters</sup><sup>_θ_operates under</sup>". Before
+# pymupdf4llm joins a layout box's spans into lines, a flag stands only on a
+# span raised above the box's unflagged full-size text nearest its baseline.
+def true_superscripts(blocks, clip):
+    spans = [
+        span for block in blocks for line in block.get("lines", ())
+        if abs(line["dir"][0] - 1) < 0.001
+        for span in line["spans"]
+        if span["text"].strip() and almost_in_bbox(span["bbox"], clip, portion=0.51)
+    ]
+    weights = collections.Counter()
+    for span in spans:
+        weights[round(span["size"], 1)] += len(span["text"])
+    if not weights:
+        return
+    base = weights.most_common(1)[0][0]
+    body = [span for span in spans if not span["flags"] & 1 and span["size"] > 0.85 * base]
+    for span in spans:
+        if not span["flags"] & 1:
+            continue
+        near = min(body, key=lambda other: abs(other["origin"][1] - span["origin"][1]), default=None)
+        if (
+            near is not None and abs(near["origin"][1] - span["origin"][1]) <= 0.6 * near["size"]
+            and span["origin"][1] >= near["origin"][1] - 0.1 * span["size"]
+        ):
+            span["flags"] &= ~1
+
+
+raw_lines = document_layout.get_raw_lines
+
+
+def lines_with_true_superscripts(*args, blocks=None, clip=None, **options):
+    if blocks is not None and clip is not None:
+        true_superscripts(blocks, clip)
+    return raw_lines(*args, blocks=blocks, clip=clip, **options)
+
+
+document_layout.get_raw_lines = lines_with_true_superscripts
 
 engine = select_ocr_function()
 chunk = pymupdf4llm.to_markdown(
@@ -1041,7 +1087,15 @@ def script_tree(sheet, rect):
         if not before:
             roots.append(span)
             continue
-        parent = max(before, key=lambda other: (other["x1"], -abs(other["y"] - span["y"])))
+        # A full-size span on the next or previous printed line can end
+        # further right than the symbol a script hangs from, and is too far
+        # from it to be its base: in a caption set close, "π" of "πS" lost its
+        # S to "˜" of the line below (Harness-Zero, page 4). A span near the
+        # script's baseline comes first.
+        parent = max(before, key=lambda other: (
+            other["script"] or abs(other["y"] - span["y"]) <= 0.6 * other["size"],
+            other["x1"], -abs(other["y"] - span["y"]),
+        ))
         # A superscript stacked over a subscript, "𝐻<sub>𝑡</sub><sup>(1)</sup>",
         # hangs from the base, not from the subscript it sits far above.
         if parent["script"] and abs(span["y"] - parent["y"]) > 0.6 * parent["size"]:
@@ -1072,8 +1126,12 @@ def script_tree(sheet, rect):
             span["merged"] = True
             continue
         shift = span["y"] - parent["y"]
-        # The PDF's superscript flag marks a whole exponent, not a script inside it.
-        raised = (span["flagged"] and not parent["script"]) or shift < -0.15 * parent["size"]
+        # The PDF's superscript flag marks a whole exponent, not a script
+        # inside it, nor one printed below its base: PyMuPDF's flag measures
+        # from the start of a MuPDF line, which can be a lowered script.
+        raised = (
+            span["flagged"] and not parent["script"] and shift <= 0.08 * parent["size"]
+        ) or shift < -0.15 * parent["size"]
         span["mark"] = "sup" if raised else "sub" if shift > 0.08 * parent["size"] else ""
         if not span["mark"]:
             roots.append(span)

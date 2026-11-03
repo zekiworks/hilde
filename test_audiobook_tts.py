@@ -1284,6 +1284,48 @@ class PaperWorkflowTests(unittest.TestCase):
             half = functions["formula_text"](page, pymupdf.Rect(60, 85, 330, 112))
         self.assertEqual(half, "F = C<sub>attn</sub> [(1)/(2)(P + G) +(1)/(2)G] (9)")
 
+    def test_words_after_a_stacked_script_stay_on_the_line(self):
+        import pymupdf
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        width = pymupdf.get_text_length
+
+        def draw(page):
+            for line in range(6):
+                page.insert_text((72, 72 + 12 * line), "Body text of the paper that says what the method does.", fontsize=10)
+            # Harness-Zero's "π_θ^h denote …", the θ printed after the h and
+            # left of its end, and T_h further on (page 4).
+            x = 72 + width("Let p", fontsize=10)
+            page.insert_text((72, 180), "Let p", fontsize=10)
+            page.insert_text((x + 0.4, 176.4), "h", fontsize=7)
+            page.insert_text((x, 182.8), "q", fontsize=7)
+            x += width("h", fontsize=7) + 0.4
+            for text, size, y in (
+                (" denote the policy of a model with parameters q under h, and let T", 10, 180), ("h", 7, 181.5),
+                ("(c, y) denote", 10, 180),
+            ):
+                page.insert_text((x, y), text, fontsize=size)
+                x += width(text, fontsize=size)
+            page.insert_text((72, 192), "the transition function that executes a response through the harness.", fontsize=10)
+            # A caption set close: the line below has a word ending just
+            # past the p that S hangs from.
+            x = 72 + width("Figure 1: The student p", fontsize=10)
+            page.insert_text((72, 260), "Figure 1: The student p", fontsize=10)
+            page.insert_text((x, 261.5), "S", fontsize=7)
+            page.insert_text((x + width("S", fontsize=7) + 3, 260), "runs under the harness and proposes a response.", fontsize=10)
+            page.insert_text((x + 0.5 - width("using the reference and corrects", fontsize=10), 270.9),
+                             "using the reference and corrects", fontsize=10)
+            page.insert_text((x + 4, 270.9), "it when needed, privately.", fontsize=10)
+
+        text = "\n\n".join(self.converted_page(Path(temporary.name), draw))
+        # Only the h is raised; the words after it keep their spaces.
+        self.assertIn(
+            "Let p<sub>q</sub><sup>h</sup> denote the policy of a model with parameters q under h, "
+            "and let T<sub>h</sub>(c, y) denote the transition function", text,
+        )
+        self.assertIn("The student p<sub>S</sub> runs under", text)
+
     def test_a_table_is_told_the_paragraphs_that_discuss_it(self):
         paragraphs = [
             "Training used label smoothing.",
