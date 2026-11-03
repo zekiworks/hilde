@@ -4558,7 +4558,7 @@ with open(arguments[arguments.index("--output") + 1], "wb") as stream:
 
     def test_e_each_local_worker_sees_only_its_own_gpu_by_uuid_as_cuda_0(self):
         args = argparse.Namespace(
-            no_local_worker=False, device="cuda:0", worker_device=["cuda:1"], ssh_worker=[],
+            no_local_worker=False, device="cuda:0", worker_device=["cuda:1"], ssh_worker=[], relay_worker=[],
             clone_model_path="/models/Base", dtype="auto", attn_implementation="sdpa", language="Auto",
             seed=None, allow_downloads=False,
         )
@@ -13009,6 +13009,281 @@ def image_stub(test, behaviour, models=("m",), ollama=None, lm_studio=None):
     test.addCleanup(server.server_close)
     test.addCleanup(server.shutdown)
     return f"http://127.0.0.1:{server.server_port}", requests
+
+
+class PairedComputerTests(unittest.TestCase):
+    """Computers paired to narrate (Add a computer / Help another Hilde
+    narrate): pairing by code over HTTPS, the queue's choice, and a real
+    narration through the relay. The computers' workers are fake scripts
+    speaking the worker protocol; no model loads."""
+
+    CLONE = {"source": "local", "model": "/local/Base", "allow_downloads": False}
+    GPU = WorkerNodeTests.GPU
+    MAC = {"name": "Ayhan's Mac mini", "devices": [{"device": "mps", "name": "Apple M2"}], "model": "Base",
+           "protocol": cli.WORKER_PROTOCOL_VERSION, "busy": []}
+    # One computer's narration worker: "ready" makes each chunk at once,
+    # "slow" takes 8 s a chunk: longer than a lost link takes to be noticed
+    # (its last wait for work, 2 s here, then 1 s without asking).
+    WORKER = """\
+import base64, io, json, sys, time
+import numpy, soundfile
+protocol, name, behaviour, record = sys.argv[1:5]
+print(protocol + json.dumps({"type": "ready"}), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["type"] == "stop":
+        break
+    if behaviour == "slow":
+        with open(record, "a", encoding="utf-8") as stream:
+            stream.write(f"{name} got {request['indexes']}\\n")
+        time.sleep(8)
+    with open(record, "a", encoding="utf-8") as stream:
+        stream.write(f"{name} {request['indexes']}\\n")
+    waves = []
+    for text in request["texts"]:
+        buffer = io.BytesIO()
+        soundfile.write(buffer, numpy.zeros(int(len(text) * 0.07 * 24000), "float32"), 24000, format="WAV", subtype="FLOAT")
+        waves.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    print(protocol + json.dumps({"type": "result", "indexes": request["indexes"], "waves": waves}), flush=True)
+"""
+
+    def setUp(self):
+        self.links = web.ComputerLinks(offline_seconds=1.0)
+        for patch in (mock.patch.object(web, "COMPUTER_LINKS", self.links),
+                      mock.patch.object(web, "COMPUTER_POLL_SECONDS", 2)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def serve(self):
+        server, origin = WorkerNodeTests.serve(self, tls=True)
+        web.setup_computers(server, server.storage, server.tts_models)
+        return server, origin
+
+    def computer(self, origin, path, body, token="", remote=True):
+        """A request as a computer on another machine (or, `remote` False, as a
+        browser on the server's own) over HTTPS."""
+        request = urllib.request.Request(
+            origin + path, data=json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})})
+        with mock.patch.object(web, "is_loopback_address", return_value=not remote):
+            try:
+                with urllib.request.urlopen(request, context=self.trusting) as response:
+                    return response.status, json.load(response)
+            except urllib.error.HTTPError as error:
+                return error.code, json.load(error)
+
+    def test_a_computer_pairs_only_over_https_with_a_managers_approval_of_its_code(self):
+        server, origin = self.serve()
+        grants = server.storage.root / web.COMPUTER_GRANTS_FILE
+        # Over plain HTTP from another machine nothing is asked or given.
+        plain, plain_origin = WorkerNodeTests.serve(self)
+        web.setup_computers(plain, plain.storage, plain.tts_models)
+        with mock.patch.object(web, "is_loopback_address", return_value=False):
+            self.assertEqual(WorkerNodeTests.request(plain_origin, "/api/computers/request", self.MAC),
+                             (403, {"error": web.COMPUTERS_NEED_HTTPS}))
+
+        status, asked = self.computer(origin, "/api/computers/request", self.MAC)
+        token, code = asked["token"], asked["code"]
+        self.assertEqual((status, len(code), asked["name"]), (200, 6, "Ayhan's Mac mini"))
+        self.assertEqual(self.computer(origin, "/api/computers/status", {}, token)[1],
+                         {"access": "pending", "name": "Ayhan's Mac mini", "code": code})
+        # Asking for work before approval, or with a made-up token, is refused.
+        self.assertEqual(self.computer(origin, "/api/computers/poll", self.MAC, token)[0], 403)
+        self.assertEqual(self.computer(origin, "/api/computers/poll", self.MAC, "x" * 43),
+                         (401, {"error": web.COMPUTER_UNKNOWN}))
+        # The code alone gives nothing: only a browser that may manage approves it.
+        self.assertEqual(self.computer(origin, "/api/computers/approve", {"code": code}),
+                         (403, {"error": web.COMPUTERS_MANAGE_ONLY}))
+        self.assertEqual(self.computer(origin, "/api/computers/approve", {"code": "ZZZZZZ"}, remote=False)[0], 404)
+        self.assertFalse(grants.exists())
+        status, answer = self.computer(origin, "/api/computers/approve", {"code": code.lower()}, remote=False)
+        self.assertEqual(status, 200)
+        [paired] = answer["computers"]["granted"]
+        self.assertEqual((paired["name"], paired["shared"], answer["computers"]["pending"]), ("Ayhan's Mac mini", False, []))
+        # Used once: the same code approves nothing more.
+        self.assertEqual(self.computer(origin, "/api/computers/approve", {"code": code}, remote=False)[0], 404)
+        self.assertEqual(stat.S_IMODE(grants.stat().st_mode), 0o600)
+        self.assertNotIn(token, grants.read_text(encoding="utf-8"))
+        self.assertEqual(self.computer(origin, "/api/computers/status", {}, token)[1]["access"], "granted")
+
+        # A request whose code expired cannot be approved.
+        late = self.computer(origin, "/api/computers/request", {**self.MAC, "name": "Late"})[1]
+        with mock.patch.object(web, "DEVICE_REQUEST_SECONDS", -1):
+            self.assertEqual(self.computer(origin, "/api/computers/approve", {"code": late["code"]}, remote=False)[0], 404)
+
+        # Asking for work (connected while its poll waits), it is a narration worker of its own name.
+        polled = []
+        poll = threading.Thread(target=lambda: polled.append(self.computer(origin, "/api/computers/poll", self.MAC, token)))
+        poll.start()
+        deadline = time.monotonic() + 5
+        while not any(item["kind"] == "computer" for item in server.jobs.public_consumers_snapshot()):
+            self.assertLess(time.monotonic(), deadline, "the polling computer never became a worker")
+            time.sleep(0.05)
+        [worker] = [item for item in server.jobs.public_consumers_snapshot() if item["kind"] == "computer"]
+        self.assertEqual((worker["label"], worker["shared"], worker["status"]), ("Ayhan's Mac mini · Apple MPS", False, "idle"))
+        # Removed while it waits: the wait answers, its next poll is refused, and it is no worker any more.
+        self.computer(origin, "/api/computers/revoke", {"id": paired["id"]}, remote=False)
+        poll.join(5)
+        self.assertEqual(polled, [(200, {"messages": []})])
+        self.assertEqual(self.computer(origin, "/api/computers/poll", self.MAC, token)[0], 401)
+        self.assertFalse(any(item["kind"] == "computer" for item in server.jobs.public_consumers_snapshot()))
+
+    def test_the_queue_gives_a_paired_computer_only_to_books_that_choose_it_and_while_it_can_narrate(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        grants = web.ComputerGrants(Path(temporary.name) / web.COMPUTER_GRANTS_FILE)
+        token, code = grants.request("Ayhan's Mac mini", "10.0.0.7")
+        ident = grants.approve(code, shared=False)["id"]
+        jobs = web.JobQueue(web.audiobook_consumers(self.CLONE, [{"value": "cuda:0", "label": "CUDA 0", "uuid": self.GPU[4:]}]))
+        self.addCleanup(jobs.shutdown)
+        chosen = f"computer:{ident}:mps"
+
+        def finish(run):
+            run.close(0)
+            deadline = time.monotonic() + 5
+            while jobs.busy_consumer_ids() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.links.heard(ident, web.computer_report(self.MAC))
+        jobs.set_computer_consumers(*web.computer_consumers(grants, self.links, self.CLONE))
+
+        # Any GPU that is on: this server's GPU only, not the computer kept for its own books.
+        record, _ = JobQueueTests.reserve(self, jobs, "anyone")
+        run = JobQueueTests.ControlledRun("anyone.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        self.assertEqual([worker["kind"] for worker in run.assigned_workers], ["local"])
+        finish(run)
+        # Chosen in Narrate my books on: the computer alone, through the relay.
+        record, _ = JobQueueTests.reserve(self, jobs, "mine", chosen)
+        run = JobQueueTests.ControlledRun("mine.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        self.assertEqual([(worker["kind"], worker["computer"], worker["device"]) for worker in run.assigned_workers],
+                         [("relay", ident, "mps")])
+        finish(run)
+        # Another speech model than this server's: listed, never used, and why (no silent fallback).
+        self.links.heard(ident, web.computer_report({**self.MAC, "model": "Qwen3-TTS-12Hz-0.6B-Base"}))
+        jobs.set_computer_consumers(*web.computer_consumers(grants, self.links, self.CLONE))
+        [listed] = [item for item in jobs.public_consumers_snapshot() if item["kind"] == "computer"]
+        self.assertEqual((listed["status"], listed["detail"]), ("offline", "has Qwen3-TTS-12Hz-0.6B-Base, this server Base"))
+        with self.assertRaisesRegex(ValueError, "cannot narrate now \\(has Qwen3-TTS-12Hz-0.6B-Base"):
+            JobQueueTests.reserve(self, jobs, "wrong-model", chosen)
+        # Not connected: refused with the reason, never left waiting.
+        self.links.heard(ident, web.computer_report(self.MAC))
+        time.sleep(1.2)
+        jobs.set_computer_consumers(*web.computer_consumers(grants, self.links, self.CLONE))
+        with self.assertRaisesRegex(ValueError, "cannot narrate now \\(not connected\\)"):
+            JobQueueTests.reserve(self, jobs, "gone", chosen)
+        # Shared, everyone's Any GPU that is on uses it too once it is back.
+        grants.set_shared(ident, True)
+        self.links.heard(ident, web.computer_report(self.MAC))
+        jobs.set_computer_consumers(*web.computer_consumers(grants, self.links, self.CLONE))
+        record, _ = JobQueueTests.reserve(self, jobs, "shared")
+        run = JobQueueTests.ControlledRun("shared.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        self.assertEqual(sorted(worker["kind"] for worker in run.assigned_workers), ["local", "relay"])
+        finish(run)
+        with self.assertRaisesRegex(ValueError, "not connected now, or no longer paired"):
+            JobQueueTests.reserve(self, jobs, "unknown", "computer:0badc0de:mps")
+
+    def test_a_computer_gone_mid_wait_turns_offline_and_a_removed_one_hears_it_at_once(self):
+        links = self.links  # offline after 1 s without a poll
+        links.heard("mac", web.computer_report(self.MAC))
+        # Gone while its poll waits: connected while the wait lasts, then not,
+        # since the end of a wait is not hearing from it.
+        links.take("mac", 0.3)
+        self.assertTrue(links.state("mac")["online"])
+        time.sleep(1.0)
+        self.assertFalse(links.state("mac")["online"])
+        # Removed while its poll waits: the poll answers at once, not after its wait.
+        links.heard("mac", web.computer_report(self.MAC))
+        waited = []
+        poll = threading.Thread(target=lambda: waited.append(links.take("mac", 10)))
+        poll.start()
+        time.sleep(0.2)
+        started = time.monotonic()
+        links.forget("mac", "removed")
+        poll.join(5)
+        self.assertEqual(waited, [[]])
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_narration_reaches_paired_computers_through_the_relay_and_a_lost_one_hands_its_chunks_on(self):
+        server, origin = self.serve()
+        root = Path(server.storage.root)
+        record = root / "made.txt"
+        helpers = {}
+        for name, behaviour in (("fast", "ready"), ("slow", "slow")):
+            helper = web.ComputerLink(
+                root / f"link-{name}.json", model=lambda: "/elsewhere/Base",
+                devices=lambda: [{"device": "mps", "name": "Apple M2", "memory": ""}], busy=lambda: [],
+                worker_command=lambda model, voice_dir, device, worker, name=name, behaviour=behaviour: [
+                    sys.executable, "-c", self.WORKER, cli.WORKER_PROTOCOL, name, behaviour, str(record)],
+                retry_seconds=1)
+            helper.begin(origin, f"Computer {name}")
+            deadline = time.monotonic() + 10
+            while helper.snapshot()["state"] != "confirm" and time.monotonic() < deadline:
+                time.sleep(0.05)
+            # The test authority is not trusted here: the user compares the
+            # fingerprint the server's Settings shows, then confirms.
+            self.assertEqual(helper.snapshot()["fingerprint"],
+                             web.certificate_fingerprint(server.tls_authority.read_text(encoding="utf-8")))
+            helper.confirm()
+            while not helper.snapshot()["code"] and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.computer(origin, "/api/computers/approve", {"code": helper.snapshot()["code"]}, remote=False)
+            while helper.snapshot()["state"] != "connected" and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(helper.snapshot()["state"], "connected")
+            helpers[name] = helper
+            self.addCleanup(helper.stop)
+        ids = {item["name"]: item["id"] for item in server.computer_grants.snapshot()["granted"]}
+
+        voice = root / "voice"
+        voice.mkdir()
+        sf.write(voice / "reference.wav", (0.1 * np.sin(np.arange(24000) / 10)).astype("float32"), 24000)
+        (voice / "transcript.txt").write_text("A fixture voice.", encoding="utf-8")
+        keys, arguments = {}, []
+        for name in ("fast", "slow"):
+            address, session, key = self.links.open_session(ids[f"Computer {name}"], "mps")
+            keys[session] = {"key": key}
+            arguments += ["--relay-worker", f"{address}/{session}"]
+        slow_session = arguments[-1].rpartition("/")[2]
+        chunks = " ".join(f"Sentence number {word} of the fixture book." for word in
+                          ("one", "two", "three", "four", "five", "six", "seven", "eight"))
+        narration = subprocess.Popen(
+            [sys.executable, "-u", str(web.SCRIPT), "narrate", "--text", chunks, "--voice-dir", str(voice),
+             "--clone-model-path", "/local/Base", "--device", "cpu", "--attn-implementation", "sdpa",
+             "--resume-dir", str(root / "chunks"), "--output", str(root / "book.wav"), "--overwrite",
+             "--chunk-max-chars", "60", "--sentence-chunks", "--batch-size", "1", "--no-local-worker",
+             *arguments, "--worker-ready-timeout", "30"],
+            env={**os.environ, cli.RELAY_KEYS_ENV: json.dumps(keys)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # The slow computer loses its link once it is narrating a chunk.
+        deadline = time.monotonic() + 20
+        while "slow got" not in (record.read_text(encoding="utf-8") if record.exists() else ""):
+            if time.monotonic() > deadline:
+                narration.kill()
+                self.fail("the slow computer never got a chunk:\n" + narration.communicate()[0])
+            time.sleep(0.05)
+        with helpers["slow"].lock:
+            helpers["slow"].generation += 1  # it stops asking for work: its link is lost
+        log, _ = narration.communicate(timeout=60)
+
+        self.assertEqual(narration.returncode, 0, log)
+        self.assertTrue((root / "book.wav").is_file())
+        self.assertIn(f"Narration worker left out: Computer {slow_session}: exited with code 255 while narrating", log)
+        self.assertIn("return to the queue", log)
+        made = [line.split(" ", 1) for line in record.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(sorted(index for name, indexes in made if name == "fast"
+                                for index in json.loads(indexes)), list(range(1, 9)))
+        # Stopped, the computers end their workers and remove their copies of the voice.
+        for helper in helpers.values():
+            helper.stop()
+        deadline = time.monotonic() + 10
+        while list(Path(tempfile.gettempdir()).glob("hilde-computer-*")) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
 
 
 class ImageCheckTests(unittest.TestCase):

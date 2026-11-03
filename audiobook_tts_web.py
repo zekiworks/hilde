@@ -39,6 +39,7 @@ import datetime
 import io
 import json
 import hashlib
+import hmac
 import html
 import html.parser
 import http.client
@@ -79,9 +80,11 @@ import yaml
 from markdown_it import MarkdownIt
 
 from audiobook_tts import (
+    RELAY_KEYS_ENV,
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
     VOICE_VERSIONS_DIR,
+    WORKER_PROTOCOL_VERSION,
     WORKER_READY_SECONDS,
     NarrationWorkerProcess,
     clip_token_limit,
@@ -1965,13 +1968,19 @@ def device_label(value):
 class DeviceGrants:
     """The devices approved to manage this server's settings, and the
     requests waiting for approval. Unreadable device-grants.json approves
-    nothing and refuses new approvals until fixed (`problem`)."""
+    nothing and refuses new approvals until fixed (`problem`). ComputerGrants
+    keeps paired computers the same way, with what each approval adds (KEEP)."""
+
+    # Fields an approval adds, kept in the file beside id, name, address, approved;
+    # and what is approved, for messages.
+    KEEP = ()
+    NOUN = "device"
 
     def __init__(self, path):
         self.path = Path(path)
         self.lock = threading.Lock()
-        self.pending = {}  # token digest -> {"code", "name", "address", "asked"}
-        self.granted = {}  # token digest -> {"id", "name", "address", "approved"}
+        self.pending = {}  # token digest -> {"code", "name", "address", "asked", **details}
+        self.granted = {}  # token digest -> {"id", "name", "address", "approved", **KEEP}
         self.problem = ""
         try:
             entries = json.loads(self.path.read_text(encoding="utf-8"))
@@ -1983,13 +1992,14 @@ class DeviceGrants:
         except FileNotFoundError:
             entries = []
         except (OSError, ValueError) as exc:
-            self.problem = f"{DEVICE_GRANTS_FILE} could not be read ({exc}); no device is approved until it is fixed."
+            self.problem = f"{self.path.name} could not be read ({exc}); no {self.NOUN} is approved until it is fixed."
             print(f"{self.path}: {self.problem}", file=sys.stderr)
             entries = []
         for entry in entries:
             self.granted[entry["digest"]] = {
                 "id": entry["id"], "name": device_label(entry.get("name")),
                 "address": str(entry.get("address") or ""), "approved": str(entry.get("approved") or ""),
+                **{key: entry[key] for key in self.KEEP if key in entry},
             }
 
     @staticmethod
@@ -2019,9 +2029,10 @@ class DeviceGrants:
                 return {"access": "pending", "name": item["name"], "code": item["code"]}
         return {"access": "none"}
 
-    def request(self, name, address, previous=""):
+    def request(self, name, address, previous="", **details):
         """A new request, replacing this device's earlier one; the oldest
-        request goes when DEVICE_REQUESTS_MAX wait. Returns (token, code)."""
+        request goes when DEVICE_REQUESTS_MAX wait. `details` stay with the
+        request until it is approved or goes. Returns (token, code)."""
         token = secrets.token_urlsafe(32)
         with self.lock:
             self._expire()
@@ -2034,7 +2045,7 @@ class DeviceGrants:
             while len(self.pending) >= DEVICE_REQUESTS_MAX:
                 del self.pending[min(self.pending, key=lambda key: self.pending[key]["asked"])]
             self.pending[self.digest(token)] = {
-                "code": code, "name": device_label(name), "address": address, "asked": time.time(),
+                "code": code, "name": device_label(name), "address": address, "asked": time.time(), **details,
             }
         return token, code
 
@@ -2044,9 +2055,11 @@ class DeviceGrants:
         for key, item in self.pending.items():
             if item["code"] == wanted:
                 return key
-        raise KeyError("No device is waiting with this code; it may have expired: ask again on the device.")
+        raise KeyError(f"No {self.NOUN} is waiting with this code; it may have expired: ask again on the {self.NOUN}.")
 
-    def approve(self, code):
+    def approve(self, code, **extra):
+        """Approve the request waiting with `code`, keeping `extra` (KEEP's
+        fields) with it; returns the approval."""
         with self.lock:
             if self.problem:
                 raise ValueError(self.problem)
@@ -2055,6 +2068,7 @@ class DeviceGrants:
             self.granted[key] = {
                 "id": secrets.token_hex(4), "name": item["name"], "address": item["address"],
                 "approved": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                **{key: value for key, value in extra.items() if key in self.KEEP},
             }
             try:
                 self._save()
@@ -2062,6 +2076,15 @@ class DeviceGrants:
                 del self.granted[key]
                 self.pending[key] = item
                 raise
+            return dict(self.granted[key])
+
+    def grant(self, token):
+        """The approval this token holds, or None."""
+        if not token:
+            return None
+        with self.lock:
+            item = self.granted.get(self.digest(token))
+            return dict(item) if item else None
 
     def deny(self, code):
         with self.lock:
@@ -2101,7 +2124,8 @@ class DeviceGrants:
                 "pending": [
                     {"code": item["code"], "name": item["name"], "address": item["address"],
                      "asked": datetime.datetime.fromtimestamp(item["asked"], datetime.timezone.utc)
-                     .isoformat(timespec="seconds")}
+                     .isoformat(timespec="seconds"),
+                     **{key: value for key, value in item.items() if key not in ("code", "name", "address", "asked")}}
                     for item in sorted(self.pending.values(), key=lambda item: item["asked"])
                 ],
                 "granted": sorted(self.granted.values(), key=lambda item: item["approved"]),
@@ -2109,6 +2133,779 @@ class DeviceGrants:
             }
 
 
+# Computers paired to narrate for this server (Settings › Machines and devices ›
+# Add a computer; Ümit, 3 Nov: anyone's Mac or other computer, without SSH). A
+# computer with Hilde installed asks from its own Settings (Help another Hilde
+# narrate, ComputerLink) over HTTPS, shows a six-letter code, and keeps a random
+# token; a browser here that may manage approves the code. computer-grants.json
+# (0600, storage root) keeps each approved token's SHA-256 and whether everyone's
+# "Any GPU that is on" may use the computer (shared). The computer then asks for
+# work (POST /api/computers/poll), runs its own installed narration worker for
+# each session and sends the output back; a narration reaches it through the
+# loopback relay (ComputerLinks, audiobook_tts.py _relay) like any other worker.
+COMPUTER_GRANTS_FILE = "computer-grants.json"
+COMPUTER_LINK_FILE = "computer-link.json"
+# A paired computer that has not asked for work within this long is not connected.
+COMPUTER_OFFLINE_SECONDS = 45
+# How long a paired computer's request for work waits for some.
+COMPUTER_POLL_SECONDS = 20
+COMPUTERS_NEED_HTTPS = ("A computer pairs with Hilde over HTTPS only, so its key never crosses the network "
+                        "unencrypted: start Hilde with --https (or --tls-cert).")
+COMPUTERS_MANAGE_ONLY = "Computers are added in a browser that may change this server's settings."
+COMPUTER_UNKNOWN = "This computer is not paired with this Hilde (any more): pair it again from its Settings."
+COMPUTER_SPEECH_SERVER = "This Hilde narrates with a speech server, so another computer's narration is of no use to it."
+
+
+class ComputerGrants(DeviceGrants):
+    """The computers paired to narrate for this server, and those waiting with
+    a code. Each approval keeps whether everyone's books may use it."""
+
+    KEEP = ("shared",)
+    NOUN = "computer"
+
+    def set_shared(self, ident, shared):
+        with self.lock:
+            key = next((key for key, item in self.granted.items() if item["id"] == ident), None)
+            if key is None:
+                raise KeyError("No paired computer has this ID.")
+            before = self.granted[key].get("shared", False)
+            self.granted[key]["shared"] = bool(shared)
+            try:
+                self._save()
+            except OSError:
+                self.granted[key]["shared"] = before
+                raise
+
+
+def speech_model_name(model):
+    """A narration model's name for matching across machines: the last part of
+    its folder or Hugging Face ID, as "Qwen3-TTS-12Hz-1.7B-Base"."""
+    return re.split(r"[\\/]", str(model or "").rstrip("/\\"))[-1]
+
+
+def certificate_fingerprint(pem):
+    """The SHA-256 of the first certificate in `pem`, as six groups of four hex
+    digits to read and compare ("1A2B 3C4D …"); "" when there is none."""
+    match = re.search(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", str(pem or ""), re.S)
+    if match is None:
+        return ""
+    try:
+        digest = hashlib.sha256(ssl.PEM_cert_to_DER_cert(match.group(0))).hexdigest().upper()
+    except ValueError:
+        return ""
+    return " ".join(digest[index:index + 4] for index in range(0, 24, 4))
+
+
+def computer_report(body):
+    """What a paired computer says about itself, validated: its narration
+    devices ({device, name, memory}), the speech model it has, the worker
+    protocol it speaks, and the devices its own Hilde is narrating on."""
+    devices = []
+    for item in body.get("devices") if isinstance(body.get("devices"), list) else ():
+        device = str(item.get("device") or "") if isinstance(item, dict) else ""
+        if WORKER_DEVICE_PATTERN.fullmatch(device) and all(device != known["device"] for known in devices):
+            devices.append({"device": device, "name": device_label(item.get("name"))[:60],
+                            "memory": str(item.get("memory") or "")[:20]})
+    busy = body.get("busy") if isinstance(body.get("busy"), list) else []
+    protocol = body.get("protocol")
+    return {
+        "devices": devices[:16],
+        "model": str(body.get("model") or "")[:120],
+        "protocol": protocol if type(protocol) is int else 0,
+        "busy": [device for device in busy if isinstance(device, str) and WORKER_DEVICE_PATTERN.fullmatch(device)],
+    }
+
+
+class ComputerLinks:
+    """Paired computers' connections and the loopback relay that puts their
+    narration workers in a narration. A computer is connected while it asks for
+    work (heard(), take()); each of its workers in a narration is one session
+    (open_session()): that narration's `audiobook_tts.py _relay` connects here
+    with the session's key, and the computer gets the voice's two files, the
+    worker's options and every protocol line in its requests for work, and
+    sends its worker's output back (deliver()). A computer that stops asking
+    for COMPUTER_OFFLINE_SECONDS loses its sessions: their relays exit, and
+    the narration hands their chunks to its other workers."""
+
+    def __init__(self, offline_seconds=COMPUTER_OFFLINE_SECONDS):
+        self.offline_seconds = offline_seconds
+        self.lock = threading.Condition()
+        self.computers = {}  # id -> {"seen", "devices", "model", "protocol", "busy", "outbox", "online"}
+        self.sessions = {}   # session -> {"computer", "device", "key", "writer", "connection", "lock", "started"}
+        self.address = None
+        self.watching = False
+        # Called when a computer's connection or report changes (refresh_computers()).
+        self.listeners = []
+
+    def _online(self, entry):
+        # Connected while it waits for work, or asked within offline_seconds.
+        return entry["waiting"] > 0 or time.monotonic() - entry["seen"] < self.offline_seconds
+
+    def _changed(self):
+        for listener in list(self.listeners):
+            try:
+                listener()
+            except Exception as exc:  # a listener's failure must not stop the link
+                print(f"Paired computers: could not update the narration workers: {exc}", file=sys.stderr, flush=True)
+
+    def heard(self, ident, report):
+        """A computer asked for work, saying what it has now."""
+        self._watch()
+        with self.lock:
+            entry = self.computers.setdefault(ident, {
+                "seen": 0.0, "devices": [], "model": "", "protocol": 0, "busy": [], "outbox": collections.deque(),
+                "online": False, "waiting": 0,
+            })
+            now = {key: report[key] for key in ("devices", "model", "protocol", "busy")}
+            changed = not entry["online"] or any(entry[key] != value for key, value in now.items())
+            entry.update(now, seen=time.monotonic(), online=True)
+        if changed:
+            self._changed()
+
+    def state(self, ident):
+        """What this server knows of a computer now, for Settings and its workers."""
+        with self.lock:
+            entry = self.computers.get(ident)
+            if entry is None:
+                return {"online": False, "devices": [], "model": "", "protocol": 0, "busy": [], "seen": None,
+                        "sessions": 0}
+            return {
+                "online": self._online(entry), "devices": list(entry["devices"]), "model": entry["model"],
+                "protocol": entry["protocol"], "busy": list(entry["busy"]),
+                "seen": round(time.monotonic() - entry["seen"]),
+                "sessions": sum(1 for item in self.sessions.values() if item["computer"] == ident),
+            }
+
+    def take(self, ident, timeout):
+        """The messages waiting for a computer, after at most `timeout` s."""
+        deadline = time.monotonic() + timeout
+        with self.lock:
+            entry = self.computers.get(ident)
+            if entry is None:
+                return []
+            entry["waiting"] += 1
+            try:
+                # Removed meanwhile (forget()): answer now, so its next poll hears 401.
+                while not entry["outbox"] and self.computers.get(ident) is entry:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self.lock.wait(remaining)
+                messages = list(entry["outbox"])
+                entry["outbox"].clear()
+            finally:
+                # Not "heard": a computer that went away mid-wait is seen only
+                # by its next poll, which never comes (heard() sets seen).
+                entry["waiting"] -= 1
+            return messages
+
+    def deliver(self, ident, messages):
+        """A computer's worker output, by session: a line of its stdout
+        ("out") or stderr ("err"), or its exit code ("exit")."""
+        for message in messages if isinstance(messages, list) else ():
+            if not isinstance(message, dict):
+                continue
+            session = str(message.get("session") or "")
+            with self.lock:
+                item = self.sessions.get(session)
+                if item is None or item["computer"] != ident or item["writer"] is None:
+                    continue
+            if "exit" in message:
+                code = message["exit"]
+                self.close_session(session, code=code if type(code) is int else 1, tell=False)
+            elif "out" in message or "err" in message:
+                key = "out" if "out" in message else "err"
+                self._write(item, {key: str(message[key])})
+
+    @staticmethod
+    def _write(item, payload):
+        with item["lock"]:
+            try:
+                item["writer"].write(json.dumps(payload, separators=(",", ":")) + "\n")
+                item["writer"].flush()
+            except (OSError, ValueError):
+                pass
+
+    def open_session(self, ident, device):
+        """A session for one narration worker on computer `ident`'s `device`:
+        returns (relay address, session, key) for `audiobook_tts.py _relay`."""
+        self._listen()
+        session, key = secrets.token_hex(16), secrets.token_urlsafe(32)
+        with self.lock:
+            self.sessions[session] = {"computer": ident, "device": device, "key": key, "writer": None,
+                                      "connection": None, "lock": threading.Lock(), "started": False}
+        return self.address, session, key
+
+    def close_session(self, session, code=None, reason="", tell=True):
+        """End a session: its relay gets `reason` and `code` (when given), and
+        the computer is told to stop its worker (`tell`) if it started one."""
+        with self.lock:
+            item = self.sessions.pop(session, None)
+            if item is None:
+                return
+            entry = self.computers.get(item["computer"])
+            if entry is not None:
+                entry["outbox"] = collections.deque(
+                    message for message in entry["outbox"] if message.get("session") != session)
+                if item["started"] and tell:
+                    entry["outbox"].append({"type": "stop", "session": session})
+                self.lock.notify_all()
+        if item["writer"] is not None:
+            if reason:
+                self._write(item, {"err": reason})
+            if code is not None:
+                self._write(item, {"exit": code})
+            with contextlib.suppress(OSError, ValueError):
+                item["writer"].close()
+            with contextlib.suppress(OSError):
+                item["connection"].close()
+
+    def forget(self, ident, reason):
+        """A computer is removed (or withdrew): its sessions end, its state goes."""
+        with self.lock:
+            sessions = [session for session, item in self.sessions.items() if item["computer"] == ident]
+        for session in sessions:
+            self.close_session(session, code=255, reason=reason, tell=False)
+        with self.lock:
+            self.computers.pop(ident, None)
+            self.lock.notify_all()
+        self._changed()
+
+    def _listen(self):
+        with self.lock:
+            if self.address is not None:
+                return
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(16)
+            self.address = f"127.0.0.1:{listener.getsockname()[1]}"
+        threading.Thread(target=self._accept, args=(listener,), name="computer-relay", daemon=True).start()
+        self._watch()
+
+    def _accept(self, listener):
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._relay, args=(connection,), daemon=True).start()
+
+    def _relay(self, connection):
+        reader = connection.makefile("r", encoding="utf-8", newline="\n")
+        writer = connection.makefile("w", encoding="utf-8", newline="\n")
+        try:
+            connection.settimeout(30)
+            hello = json.loads(reader.readline() or "{}")
+            connection.settimeout(None)
+        except (OSError, ValueError):
+            hello = {}
+        session = str(hello.get("session") or "") if isinstance(hello, dict) else ""
+        with self.lock:
+            item = self.sessions.get(session)
+            valid = (item is not None and item["writer"] is None
+                     and hmac.compare_digest(str(hello.get("key") or ""), item["key"]))
+            if valid:
+                item.update(writer=writer, connection=connection)
+                entry = self.computers.get(item["computer"])
+                if entry is not None and self._online(entry):
+                    item["started"] = True
+                    files = hello.get("files") if isinstance(hello.get("files"), dict) else {}
+                    entry["outbox"].append({
+                        "type": "start", "session": session, "device": item["device"],
+                        "files": {name: str(files.get(name) or "") for name in ("reference.wav", "transcript.txt")},
+                        "worker": hello.get("worker") if isinstance(hello.get("worker"), dict) else {},
+                    })
+                    self.lock.notify_all()
+        if not valid:
+            with contextlib.suppress(OSError, ValueError):
+                writer.write(json.dumps({"err": "the relay refused this worker: unknown session or key"}) + "\n")
+                writer.write(json.dumps({"exit": 255}) + "\n")
+                writer.flush()
+            for stream in (writer, reader, connection):
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
+            return
+        if not item["started"]:
+            reader.close()
+            self.close_session(session, code=255, reason="The paired computer is not connected now.")
+            return
+        try:
+            for raw in reader:
+                message = json.loads(raw)
+                if isinstance(message, dict) and "in" in message:
+                    with self.lock:
+                        entry = self.computers.get(item["computer"])
+                        if session in self.sessions and entry is not None:
+                            entry["outbox"].append({"type": "stdin", "session": session, "line": str(message["in"])})
+                            self.lock.notify_all()
+        except (OSError, ValueError):
+            pass
+        # The narration let this worker go (or its relay died): the computer stops it.
+        with contextlib.suppress(OSError, ValueError):
+            reader.close()
+        self.close_session(session)
+
+    def _watch(self):
+        with self.lock:
+            if self.watching:
+                return
+            self.watching = True
+        threading.Thread(target=self._check, name="computer-watch", daemon=True).start()
+
+    def _check(self):
+        while True:
+            time.sleep(min(2.0, self.offline_seconds / 4))
+            lost, changed = [], False
+            with self.lock:
+                for ident, entry in self.computers.items():
+                    online = self._online(entry)
+                    if online != entry["online"]:
+                        entry["online"], changed = online, True
+                    if not online:
+                        lost += [session for session, item in self.sessions.items()
+                                 if item["computer"] == ident and item["writer"] is not None]
+            for session in lost:
+                self.close_session(session, code=255, reason="The paired computer lost its connection.", tell=False)
+            if changed:
+                self._changed()
+
+
+# This process's paired computers' connections (one relay for every narration).
+COMPUTER_LINKS = ComputerLinks()
+
+
+def computer_consumers(grants, links, clone):
+    """One narration worker per device each paired computer reports, as
+    JobQueue consumers, and those that cannot take work now with why: not
+    connected, another speech model than this server's (no silent fallback),
+    an older Hilde (another worker protocol), or busy with its own books."""
+    model = speech_model_name(clone.get("model")) if clone.get("source") == "local" else ""
+    consumers, unavailable = [], {}
+    for grant in grants.snapshot()["granted"]:
+        state = links.state(grant["id"])
+        shared = bool(grant.get("shared"))
+        for device in state["devices"]:
+            ident = f"computer:{grant['id']}:{device['device']}"
+            label = f"{grant['name']} · {public_device_label(device['device'])}"
+            consumers.append({
+                "id": ident, "kind": "computer", "device": None, "shared": shared, "choice": ident, "label": label,
+                "public": {"label": label, "detail": "", "device": device["device"], "computer": grant["id"],
+                           "shared": shared, "choice": ident},
+                "worker": {"kind": "relay", "id": ident, "computer": grant["id"], "device": device["device"],
+                           "label": label, "name": label},
+            })
+            reason = (
+                "not connected" if not state["online"]
+                else f"has {state['model'] or 'no speech model'}, this server {model}"
+                if state["model"].casefold() != model.casefold()
+                else "needs Hilde updated on it" if state["protocol"] != WORKER_PROTOCOL_VERSION
+                else "busy with its own books" if device["device"] in state["busy"]
+                else ""
+            )
+            if reason:
+                unavailable[ident] = reason
+    return consumers, unavailable
+
+
+def refresh_computers(server):
+    """Give the job queue the paired computers' workers as they are now."""
+    grants, jobs = getattr(server, "computer_grants", None), getattr(server, "jobs", None)
+    if jobs is None:
+        return
+    clone = server.tts_models["clone"]
+    consumers, unavailable = (computer_consumers(grants, server.computer_links, clone)
+                              if grants is not None and clone["source"] == "local" else ([], {}))
+    jobs.set_computer_consumers(consumers, unavailable)
+
+
+def narration_devices(jobs):
+    """The devices of this machine another Hilde may narrate on: its GPUs
+    (CUDA or Apple) that narrate here too (none turned off under Settings), or
+    its CPU when it has no GPU; each {device, name, memory}."""
+    choices = available_devices()
+    off = {item["device"] for item in jobs.local_snapshot() if not item["narrates"]}
+    gpus = [choice for choice in choices
+            if (choice["value"].startswith("cuda:") or choice["value"] == "mps") and choice["value"] not in off]
+    return [
+        {"device": choice["value"], "name": choice.get("name") or choice["label"],
+         "memory": f"{round(choice['memory'] / 2**30)} GiB" if choice.get("memory") else ""}
+        for choice in gpus or [choice for choice in choices if choice["value"] == "cpu"]
+    ]
+
+
+def busy_devices(jobs):
+    """The devices of this machine its own books are narrating on now."""
+    return [consumer["device"] for consumer in jobs.consumers_snapshot()
+            if consumer["kind"] == "local" and consumer["status"] == "running" and consumer["device"]]
+
+
+def setup_computers(server, storage, tts_models):
+    """Paired computers on a server: those that narrate for it (computer
+    grants, COMPUTER_LINKS and the queue's computer workers) and, with a
+    narration model of its own, its narrating for another (ComputerLink)."""
+    server.computer_grants = ComputerGrants(storage.root / COMPUTER_GRANTS_FILE)
+    server.computer_links = COMPUTER_LINKS
+    COMPUTER_LINKS.listeners.append(lambda: refresh_computers(server))
+    clone = tts_models["clone"]
+    server.computer_link = ComputerLink(
+        storage.root / COMPUTER_LINK_FILE,
+        model=lambda: clone["model"] if clone["source"] == "local" else "",
+        devices=lambda: narration_devices(server.jobs),
+        busy=lambda: busy_devices(server.jobs),
+    )
+    refresh_computers(server)
+
+
+def computer_worker_command(model, voice_dir, device, worker):
+    """This machine's own narration worker for a session another Hilde sent:
+    its installed audiobook_tts.py, its own speech model, the voice's files
+    in `voice_dir`, and only the options a worker takes, checked."""
+    dtype = worker.get("dtype") if worker.get("dtype") in ("auto", "float32", "float16", "bfloat16") else "auto"
+    attention = worker.get("attn_implementation")
+    attention = attention if attention in ("flash_attention_2", "sdpa", "eager") else "sdpa"
+    language = str(worker.get("language") or "Auto")
+    language = language if re.fullmatch(r"[A-Za-z][A-Za-z ]{0,30}", language) else "Auto"
+    seed = worker.get("seed")
+    return [sys.executable, "-u", str(SCRIPT), "_worker", "--clone-model-path", str(model),
+            "--voice-dir", str(voice_dir), "--device", device, "--dtype", dtype,
+            "--attn-implementation", attention, "--language", language,
+            *(["--seed", str(seed)] if type(seed) is int and 0 <= seed < 2**32 else [])]
+
+
+class ComputerLink:
+    """This Hilde narrating for another (Settings › Machines and devices › Help
+    another Hilde narrate). It checks the other's HTTPS certificate (this
+    system's trust, or the other's own authority once the user confirms its
+    fingerprint, which the other's Settings shows too), asks to pair and shows
+    the code the other's Settings approves, then asks for work and runs this
+    machine's own narration worker (computer_worker_command()) for each
+    session, returning its output. computer-link.json (0600) keeps the
+    address, the name, the authority it trusts and the token, which goes to
+    that address only. `model`, `devices` and `busy` are callables: this
+    server's speech model, its narration devices, and those its own books use."""
+
+    def __init__(self, path, model, devices, busy, worker_command=computer_worker_command, retry_seconds=30):
+        self.path = Path(path)
+        self.model, self.devices, self.busy = model, devices, busy
+        self.worker_command = worker_command
+        self.retry_seconds = retry_seconds
+        self.lock = threading.RLock()
+        self.generation = 0
+        self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
+        self.offered = ""   # the other's authority, while the user compares its fingerprint
+        self.sessions = {}
+        self.outbox = queue.Queue()
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+            self.saved = {key: str(saved.get(key) or "") for key in ("url", "name", "ca", "token")}
+        except (OSError, ValueError, AttributeError):
+            self.saved = {"url": "", "name": "", "ca": "", "token": ""}
+        threading.Thread(target=self._send_loop, name="computer-link-send", daemon=True).start()
+        if self.saved["token"]:
+            self._run(self._wait_for_approval, "pending")
+
+    # -- what the page sees
+
+    def snapshot(self):
+        with self.lock:
+            return {**self.view, "url": self.saved["url"], "name": self.saved["name"],
+                    "trust": "fingerprint" if self.saved["ca"] else "system", "sessions": len(self.sessions)}
+
+    def _set(self, generation, **view):
+        with self.lock:
+            if generation == self.generation:
+                self.view.update(view)
+
+    def _run(self, target, state):
+        with self.lock:
+            self.generation += 1
+            self.view = {"state": state, "error": "", "code": self.view.get("code", ""), "fingerprint": ""}
+            threading.Thread(target=target, args=(self.generation,), name="computer-link", daemon=True).start()
+
+    def _save(self):
+        write_private_json(self.path, self.saved)
+
+    # -- what the user does
+
+    def begin(self, url, name):
+        """Start pairing with the Hilde at `url` (https only), as `name`."""
+        address = str(url or "").strip().rstrip("/")
+        if "://" not in address:
+            address = "https://" + address
+        parts = urllib.parse.urlsplit(address)
+        if parts.scheme != "https" or not parts.netloc or parts.path or parts.query:
+            raise ValueError("Enter the other Hilde's address as https://name:port: pairing never uses plain HTTP.")
+        if not self.model():
+            raise ValueError("This Hilde has no narration model of its own, so it cannot narrate for another.")
+        self._stop_sessions()
+        with self.lock:
+            self.saved = {"url": f"https://{parts.netloc}", "name": device_label(name or socket.gethostname().split(".")[0]),
+                          "ca": "", "token": ""}
+            self.offered = ""
+        self._run(self._check, "checking")
+
+    def confirm(self):
+        """The user saw the same fingerprint on the other Hilde: trust its authority."""
+        with self.lock:
+            if self.view["state"] != "confirm" or not self.offered:
+                raise ValueError("There is no fingerprint to confirm now: connect again.")
+            self.saved["ca"] = self.offered
+        self._run(self._ask, "checking")
+
+    def stop(self):
+        """Stop helping: withdraw from the other Hilde and forget it."""
+        with self.lock:
+            saved = dict(self.saved)
+            self.generation += 1
+            self.saved = {"url": "", "name": "", "ca": "", "token": ""}
+            self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
+        self._stop_sessions()
+        with contextlib.suppress(OSError):
+            self.path.unlink()
+        if saved["token"]:
+            with contextlib.suppress(OSError, ValueError):
+                self._call("/api/computers/forget", {}, saved=saved, timeout=10)
+
+    # -- talking to the other Hilde
+
+    def _call(self, path, body=None, saved=None, timeout=30):
+        saved = saved or self.saved
+        context = ssl.create_default_context(cadata=saved["ca"]) if saved["ca"] else ssl.create_default_context()
+        headers = {"Content-Type": "application/json"}
+        if saved["token"]:
+            headers["Authorization"] = f"Bearer {saved['token']}"
+        request = urllib.request.Request(
+            saved["url"] + path, data=None if body is None else json.dumps(body).encode("utf-8"),
+            headers=headers, method="GET" if body is None else "POST")
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            return json.load(response)
+
+    def _report(self):
+        return {"devices": self.devices(), "model": speech_model_name(self.model()),
+                "protocol": WORKER_PROTOCOL_VERSION, "busy": self.busy()}
+
+    @staticmethod
+    def _reason(exc):
+        reason = getattr(exc, "reason", exc)
+        return str(reason) or type(reason).__name__
+
+    def _check(self, generation):
+        try:
+            self._hello(generation)
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, ssl.SSLCertVerificationError):
+                return self._set(generation, state="failed", error=f"Could not reach {self.saved['url']}: {self._reason(exc)}")
+            # Not trusted here: fetch the other's own authority, unverified,
+            # only to show its fingerprint; nothing is sent until the user
+            # confirms it matches what the other Hilde's Settings shows.
+            try:
+                insecure = ssl.create_default_context()
+                insecure.check_hostname, insecure.verify_mode = False, ssl.CERT_NONE
+                with urllib.request.urlopen(self.saved["url"] + "/api/certificate", timeout=20,
+                                            context=insecure) as response:
+                    pem = response.read(65536).decode("ascii", "replace")
+            except (OSError, ValueError) as error:
+                return self._set(generation, state="failed",
+                                 error=f"{self.saved['url']}'s certificate is not trusted here, and its authority "
+                                       f"could not be fetched: {self._reason(error)}")
+            fingerprint = certificate_fingerprint(pem)
+            if not fingerprint:
+                return self._set(generation, state="failed",
+                                 error=f"{self.saved['url']}'s certificate is not trusted here, and it offers no authority to check.")
+            with self.lock:
+                if generation == self.generation:
+                    self.offered = pem
+            return self._set(generation, state="confirm", fingerprint=fingerprint)
+        except (OSError, ValueError) as exc:
+            return self._set(generation, state="failed", error=f"Could not reach {self.saved['url']}: {self._reason(exc)}")
+        self._request(generation)
+
+    def _hello(self, generation):
+        hello = self._call("/api/computers/hello", timeout=20)
+        theirs, ours = str(hello.get("model") or ""), speech_model_name(self.model())
+        if not theirs:
+            raise ValueError("it narrates with a speech server, so it has no use for this computer")
+        if theirs.casefold() != ours.casefold():
+            raise ValueError(f"it narrates with {theirs}, this computer with {ours}; both need the same model")
+        if hello.get("protocol") != WORKER_PROTOCOL_VERSION:
+            raise ValueError("it runs another version of Hilde: update both with the installer")
+
+    def _ask(self, generation):
+        try:
+            self._hello(generation)
+        except (OSError, ValueError) as exc:
+            return self._set(generation, state="failed", error=f"Could not pair with {self.saved['url']}: {self._reason(exc)}")
+        self._request(generation)
+
+    def _request(self, generation):
+        try:
+            answer = self._call("/api/computers/request", {"name": self.saved["name"], **self._report()})
+        except urllib.error.HTTPError as exc:
+            return self._set(generation, state="failed", error=self._said(exc))
+        except (OSError, ValueError) as exc:
+            return self._set(generation, state="failed", error=f"Could not pair with {self.saved['url']}: {self._reason(exc)}")
+        with self.lock:
+            if generation != self.generation:
+                return
+            self.saved["token"] = str(answer.get("token") or "")
+            self._save()
+            self.view.update(state="pending", code=str(answer.get("code") or ""), fingerprint="")
+        self._wait_for_approval(generation)
+
+    @staticmethod
+    def _said(exc):
+        try:
+            return str(json.load(exc).get("error") or exc)
+        except (OSError, ValueError, AttributeError):
+            return str(exc)
+
+    def _wait_for_approval(self, generation):
+        while generation == self.generation:
+            try:
+                access = self._call("/api/computers/status", {}).get("access")
+            except (OSError, ValueError) as exc:
+                self._set(generation, error=f"Could not reach {self.saved['url']}: {self._reason(exc)}")
+                time.sleep(min(self.retry_seconds, 5))
+                continue
+            if access == "granted":
+                self._set(generation, state="connected", code="", error="")
+                return self._serve(generation)
+            if access != "pending":
+                with self.lock:
+                    if generation == self.generation:
+                        self.saved["token"] = ""
+                        self._save()
+                return self._set(generation, state="failed", code="",
+                                 error="The other Hilde did not approve this computer in time, or denied it: pair again.")
+            time.sleep(min(self.retry_seconds, 3))
+
+    def _serve(self, generation):
+        delay = 1
+        while generation == self.generation:
+            try:
+                answer = self._call("/api/computers/poll", self._report(), timeout=COMPUTER_POLL_SECONDS + 15)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+                    with self.lock:
+                        if generation == self.generation:
+                            self.saved["token"] = ""
+                            self._save()
+                    self._stop_sessions()
+                    return self._set(generation, state="removed",
+                                     error="The other Hilde removed this computer. Pair again to help it.")
+                self._set(generation, state="reconnecting", error=self._said(exc))
+            except (OSError, ValueError) as exc:
+                self._set(generation, state="reconnecting", error=f"Lost {self.saved['url']}: {self._reason(exc)}")
+            else:
+                delay = 1
+                self._set(generation, state="connected", error="")
+                for message in answer.get("messages") or ():
+                    if isinstance(message, dict):
+                        self._handle(message)
+                continue
+            time.sleep(min(delay, self.retry_seconds))
+            delay *= 2
+
+    # -- the narration workers it runs
+
+    def _handle(self, message):
+        session = str(message.get("session") or "")
+        kind = message.get("type")
+        if kind == "start":
+            self._start_session(session, message)
+            return
+        with self.lock:
+            process = self.sessions.get(session)
+        if process is None:
+            return
+        if kind == "stdin":
+            with contextlib.suppress(OSError, ValueError):
+                process.stdin.write(str(message.get("line") or "") + "\n")
+                process.stdin.flush()
+        elif kind == "stop":
+            with contextlib.suppress(OSError):
+                process.terminate()
+
+    def _start_session(self, session, message):
+        device = str(message.get("device") or "")
+        worker = message.get("worker") if isinstance(message.get("worker"), dict) else {}
+        files = message.get("files") if isinstance(message.get("files"), dict) else {}
+        refused = (
+            "this computer speaks another worker protocol: update Hilde on it"
+            if worker.get("protocol") != WORKER_PROTOCOL_VERSION
+            else f"this computer has no device {device}"
+            if device not in {item["device"] for item in self.devices()}
+            else ""
+        )
+        folder = None
+        try:
+            if refused:
+                raise ValueError(refused)
+            folder = Path(tempfile.mkdtemp(prefix="hilde-computer-"))
+            for name in ("reference.wav", "transcript.txt"):
+                (folder / name).write_bytes(base64.b64decode(str(files.get(name) or ""), validate=True))
+            command, environment = pin_cuda(self.worker_command(self.model(), folder, device, worker))
+            process = subprocess.Popen(command, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, bufsize=1, errors="replace")
+        except (OSError, ValueError) as exc:
+            if folder is not None:
+                shutil.rmtree(folder, ignore_errors=True)
+            self.outbox.put({"session": session, "err": f"This computer could not start its worker: {exc}"})
+            self.outbox.put({"session": session, "exit": 2})
+            return
+        with self.lock:
+            self.sessions[session] = process
+        readers = [threading.Thread(target=self._read, args=(session, stream, key), daemon=True)
+                   for stream, key in ((process.stdout, "out"), (process.stderr, "err"))]
+        for reader in readers:
+            reader.start()
+
+        def finish():
+            for reader in readers:
+                reader.join()
+            code = process.wait()
+            with contextlib.suppress(OSError):
+                process.stdin.close()
+            shutil.rmtree(folder, ignore_errors=True)
+            with self.lock:
+                self.sessions.pop(session, None)
+            self.outbox.put({"session": session, "exit": code})
+
+        threading.Thread(target=finish, daemon=True).start()
+
+    def _read(self, session, stream, key):
+        for line in stream:
+            self.outbox.put({"session": session, key: line.rstrip("\r\n")})
+        stream.close()
+
+    def _stop_sessions(self):
+        with self.lock:
+            processes = list(self.sessions.values())
+        for process in processes:
+            with contextlib.suppress(OSError):
+                process.terminate()
+
+    def _send_loop(self):
+        """Send the workers' output in batches, in order; a batch that cannot
+        be sent is dropped (the other Hilde hands that worker's chunks on)."""
+        while True:
+            batch = [self.outbox.get()]
+            time.sleep(0.05)
+            while len(batch) < 200:
+                try:
+                    batch.append(self.outbox.get_nowait())
+                except queue.Empty:
+                    break
+            with self.lock:
+                saved = dict(self.saved)
+            if not saved["token"]:
+                continue
+            for attempt in range(3):
+                try:
+                    self._call("/api/computers/send", {"messages": batch}, saved=saved, timeout=60)
+                    break
+                except (OSError, ValueError):
+                    time.sleep(1 + attempt)
 
 
 def is_loopback_address(host):
@@ -12405,7 +13202,7 @@ def narrate_command(values):
             and worker.get("device") != values["device"]
         ):
             arguments += ["--worker-device", worker["device"]]
-    # With every GPU of this machine turned off, only the nodes narrate.
+    # With every GPU of this machine turned off, only the nodes and paired computers narrate.
     if workers and not any(worker.get("kind") == "local" for worker in workers):
         arguments.append("--no-local-worker")
     for worker in workers:
@@ -12417,8 +13214,11 @@ def narrate_command(values):
                 f"python={worker['python']}",
                 f"model={worker['model']}",
             ))]
+        elif worker.get("kind") == "relay" and worker.get("session"):
+            # A paired computer, through this server's relay; its key is in RELAY_KEYS_ENV.
+            arguments += ["--relay-worker", f"{worker['address']}/{worker['session']}"]
     # Each worker of a narration on more than one has this long to start.
-    if "--worker-device" in arguments or "--ssh-worker" in arguments:
+    if any(flag in arguments for flag in ("--worker-device", "--ssh-worker", "--relay-worker")):
         arguments += ["--worker-ready-timeout", f"{WORKER_READY_TIMEOUT:g}"]
     return (
         arguments
@@ -12792,8 +13592,10 @@ def stored_text(mapping, key, fallback=""):
 # Where a browser asks its jobs to run (Settings' "Narrate my books on" and
 # "Design my voices on"): "auto" (narration: every narration worker that is on
 # and shared; voice design: the GPU with the most free memory), one GPU of this
-# server, or for narration one device of a node ("node:<node_key()>:cuda:0").
-DEVICE_CHOICE_PATTERN = re.compile(r"auto|cuda:\d{1,2}|node:[0-9a-f]{10}:(?:cuda:\d{1,2}|mps|cpu)")
+# server, or for narration one device of a node ("node:<node_key()>:cuda:0") or
+# of a paired computer ("computer:<its ID>:mps", computer_consumers()).
+DEVICE_CHOICE_PATTERN = re.compile(
+    r"auto|cuda:\d{1,2}|(?:node:[0-9a-f]{10}|computer:[0-9a-f]{8}):(?:cuda:\d{1,2}|mps|cpu)")
 
 
 def stored_device(mapping):
@@ -12998,10 +13800,11 @@ def values_of(state, tts_models, storage):
     )
     return {
         # A node's device runs on the node: this machine's own device stays automatic.
-        "device": resolve_device("auto" if audiobook["device"].startswith("node:") else audiobook["device"]),
+        "device": resolve_device("auto" if audiobook["device"].startswith(("node:", "computer:"))
+                                 else audiobook["device"]),
         "requested_device": audiobook["device"],
         # Design my voices on (run(): "auto" takes the roomiest GPU); designs run on this machine only.
-        "design_device": "auto" if voice["device"].startswith("node:") else voice["device"],
+        "design_device": "auto" if voice["device"].startswith(("node:", "computer:")) else voice["device"],
         "dtype": runtime["dtype"],
         "attn": runtime["attn"],
         "language": runtime["language"].strip(),
@@ -17550,6 +18353,9 @@ class JobQueue:
         # This machine's workers whose device the last device check, at a
         # narration's start, did not find (refresh_local_devices()).
         self.missing = frozenset()
+        # Paired computers' workers that cannot take work now, with why
+        # (computer_consumers()): not connected, another model, busy there.
+        self.unavailable = {}
         # The device the last voice design ran on, for Settings.
         self.design_device = None
         self.pending = []
@@ -17585,8 +18391,8 @@ class JobQueue:
                 "public": {
                     "label": str(public.get("label") or f"Worker {index}"),
                     "detail": str(public.get("detail") or ""),
-                    # Which device, a node's number, whether it is shared, and its choice: never its host.
-                    **{key: public[key] for key in ("device", "machine", "shared", "choice")
+                    # Which device, a node's number, a computer's ID, whether it is shared, and its choice: never a host.
+                    **{key: public[key] for key in ("device", "machine", "computer", "shared", "choice")
                        if public.get(key) is not None},
                 },
                 "worker": dict(worker) if worker is not None else None,
@@ -17617,6 +18423,21 @@ class JobQueue:
                 raise ValueError("job consumers must have unique identities")
             self._check_pool(combined, self.local_off)
             self.consumers = combined
+            launch = self._dispatch_locked()
+        for item in launch:
+            self._launch(item)
+
+    def set_computer_consumers(self, consumers, unavailable):
+        """Replace the paired computers' workers, and say which cannot take
+        work now and why. A computer removed while narrating loses its
+        sessions (ComputerLinks.forget()); the narration hands their chunks on."""
+        computers = self._normalized(consumers)
+        with self.lock:
+            combined = tuple(item for item in self.consumers if item["kind"] != "computer") + computers
+            if len({item["id"] for item in combined}) != len(combined):
+                raise ValueError("job consumers must have unique identities")
+            self.consumers = combined
+            self.unavailable = dict(unavailable)
             launch = self._dispatch_locked()
         for item in launch:
             self._launch(item)
@@ -17754,7 +18575,7 @@ class JobQueue:
         if requested == "auto":
             # Any GPU that is on: every worker but a node kept for those who choose it.
             return tuple(consumer["id"] for consumer in self.consumers if consumer.get("shared", True))
-        if requested.startswith("node:"):
+        if requested.startswith(("node:", "computer:")):
             return tuple(consumer["id"] for consumer in self.consumers if consumer.get("choice") == requested)
         if requested.startswith("cuda:"):
             return tuple(
@@ -17803,6 +18624,7 @@ class JobQueue:
                 for consumer in self.consumers
                 if consumer["id"] not in self.active
                 and consumer["id"] not in self.local_off
+                and consumer["id"] not in self.unavailable
                 and (
                     (record["requested_device"] == "auto" and consumer.get("shared", True))
                     or consumer["id"] in record["eligible_consumers"]
@@ -17909,6 +18731,15 @@ class JobQueue:
             if requested.startswith("node:") and not eligible:
                 raise ValueError("That machine's device is no longer a narration worker of this server: "
                                  "choose another in Settings › Machines and devices.")
+            if requested.startswith("computer:"):
+                # A paired computer this browser chose: only while it can take work.
+                if not eligible:
+                    raise ValueError("That computer is not connected now, or no longer paired: choose another "
+                                     "under Settings › Machines and devices.")
+                if all(consumer in self.unavailable for consumer in eligible):
+                    label = next(item["public"]["label"] for item in self.consumers if item["id"] == eligible[0])
+                    raise ValueError(f"{label} cannot narrate now ({self.unavailable[eligible[0]]}): choose another "
+                                     "under Settings › Machines and devices.")
             if not eligible:
                 raise ValueError(
                     f"no consumer is available for {requested_device}"
@@ -18077,6 +18908,8 @@ class JobQueue:
                         if consumer["id"] in self.active
                         else "missing"
                         if consumer["id"] in self.missing
+                        else "offline"
+                        if consumer["id"] in self.unavailable
                         else "idle"
                     ),
                     "job_id": (
@@ -18097,7 +18930,8 @@ class JobQueue:
             return [
                 {
                     **consumer["public"],
-                    "kind": "node" if consumer["kind"] == "ssh" else "local",
+                    "kind": {"ssh": "node", "computer": "computer"}.get(consumer["kind"], "local"),
+                    **({"detail": self.unavailable[consumer["id"]]} if consumer["id"] in self.unavailable else {}),
                     "status": snapshot["status"],
                     "job_id": snapshot["job_id"],
                 }
@@ -19885,10 +20719,14 @@ class AudiobookRun(Run):
 
     def _worker_labelled(self, label):
         """The worker of this job that the narration command calls `label`:
-        "Local GPU-<UUID>", "Local <device>", or "SSH <host> <device>"."""
+        "Local GPU-<UUID>", "Local <device>", "SSH <host> <device>", or
+        "Computer <session>" for a paired computer (_run_narration())."""
         for worker in self.values.get("workers") or ():
             if worker.get("kind") == "ssh":
                 labels = (f"SSH {worker['target']} {worker['device']}",)
+            elif worker.get("kind") == "relay":
+                labels = tuple(f"Computer {session}" for session, item in getattr(self, "relays", {}).items()
+                               if item is worker)
             else:
                 labels = (f"Local {worker.get('id')}", f"Local {worker['device']}")
             if label in labels:
@@ -20147,9 +20985,30 @@ class AudiobookRun(Run):
             "output": str(staged_output),
             "resume_dir": str(narration_dir / "chunks"),
         }
+        # Each paired computer's worker is a session of this server's relay;
+        # the keys go in the environment, never on the logged command line.
+        self.relays, keys = {}, {}
+        if any(worker.get("kind") == "relay" for worker in command_values.get("workers") or ()):
+            workers = []
+            for worker in command_values["workers"]:
+                if worker.get("kind") == "relay":
+                    address, session, key = COMPUTER_LINKS.open_session(worker["computer"], worker["device"])
+                    self.relays[session], keys[session] = worker, {"key": key}
+                    worker = {**worker, "address": address, "session": session}
+                workers.append(worker)
+            command_values["workers"] = workers
         command, environment = pin_cuda(narrate_command(command_values), devices)
+        if keys:
+            environment = {**(environment if environment is not None else os.environ), RELAY_KEYS_ENV: json.dumps(keys)}
         visible = (environment or {}).get("CUDA_VISIBLE_DEVICES")
         self.publish("log", (f"CUDA_VISIBLE_DEVICES={visible} " if visible else "") + " ".join(command) + "\n\n")
+        try:
+            return self._narrate(command, environment, staged_output)
+        finally:
+            for session in keys:
+                COMPUTER_LINKS.close_session(session)
+
+    def _narrate(self, command, environment, staged_output):
         try:
             self.process = subprocess.Popen(
                 command,
@@ -21033,6 +21892,21 @@ class Handler(BaseHTTPRequestHandler):
             if query.get("container", [""])[0] == "mp4":
                 return self.send_mp3_as_mp4(target)
             return self.send_file(str(target), False)
+        if route == "/api/computers/hello":
+            # What a computer asking to pair checks first: the speech model it
+            # must have too, the worker protocol, and this server's certificate
+            # fingerprint (which its user compares). Nothing private.
+            clone = self.server.tts_models["clone"]
+            return self.reply(HTTPStatus.OK, {
+                "hilde": "narration", "protocol": WORKER_PROTOCOL_VERSION,
+                "model": speech_model_name(clone.get("model")) if clone["source"] == "local" else "",
+                "fingerprint": getattr(self.server, "tls_fingerprint", ""),
+            })
+        if route == "/api/computer-link":
+            if not self.may_manage():
+                return self.fail(HTTPStatus.FORBIDDEN, COMPUTERS_MANAGE_ONLY)
+            link = getattr(self.server, "computer_link", None)
+            return self.reply(HTTPStatus.OK, link.snapshot() if link else {"state": "unavailable"})
         if route == "/api/certificate":
             # Hilde's certificate authority, installed once on each device.
             authority = self.authority()
@@ -21346,6 +22220,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/workers/setup", "/api/workers/setup/stop", "/api/workers/local", "/api/workers/trust",
         ):
             return self.change_workers(route.removeprefix("/api/workers/"), body)
+        if route.startswith("/api/computers/"):
+            return self.change_computers(route.removeprefix("/api/computers/"), body)
+        if route.startswith("/api/computer-link/"):
+            return self.change_computer_link(route.removeprefix("/api/computer-link/"), body)
         return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
 
     def split(self):
@@ -21378,7 +22256,122 @@ class Handler(BaseHTTPRequestHandler):
             "setup": self.server.worker_setup and self.server.worker_setup.snapshot(),
             # For another machine's authorized_keys (Add narration workers › This server's key).
             "ssh_key": ssh_public_key(),
+            "computers": self.computers_payload(),
+            # This Hilde narrating for another (Help another Hilde narrate).
+            "link": self.server.computer_link.snapshot() if getattr(self.server, "computer_link", None) else None,
         }
+
+    def computers_payload(self):
+        """Paired computers for a browser that may manage: those waiting with a
+        code, and each paired one with whether it is connected, its devices,
+        its model, and whether everyone's books use it; never a token."""
+        grants = getattr(self.server, "computer_grants", None)
+        if grants is None:
+            return None
+        clone = self.server.tts_models["clone"]
+        snapshot = grants.snapshot()
+        paired = []
+        for grant in snapshot["granted"]:
+            state = self.server.computer_links.state(grant["id"])
+            paired.append({**grant, "shared": bool(grant.get("shared")), **state})
+        return {
+            "pending": snapshot["pending"], "granted": paired, "problem": snapshot["problem"],
+            "fingerprint": getattr(self.server, "tls_fingerprint", ""), "https": bool(self.server.tls),
+            "model": speech_model_name(clone.get("model")) if clone["source"] == "local" else "",
+        }
+
+    def computer_token(self):
+        kind, _, token = (self.headers.get("Authorization") or "").partition(" ")
+        return token.strip() if kind.lower() == "bearer" else ""
+
+    def change_computers(self, action, body):
+        """Paired computers. /approve, /deny (by code), /revoke and /share (by
+        ID) for a browser that may manage. /request, /status, /poll, /send and
+        /forget for a computer itself, over HTTPS (or from this machine), by
+        the token it got when it asked."""
+        grants, links = getattr(self.server, "computer_grants", None), getattr(self.server, "computer_links", None)
+        if grants is None or links is None:
+            return self.fail(HTTPStatus.NOT_FOUND, "This server pairs no computers.")
+        local_model = self.server.tts_models["clone"]["source"] == "local"
+        if action in ("approve", "deny", "revoke", "share"):
+            if not self.may_manage():
+                return self.fail(HTTPStatus.FORBIDDEN, COMPUTERS_MANAGE_ONLY)
+            try:
+                if action == "approve":
+                    if not local_model:
+                        raise ValueError(COMPUTER_SPEECH_SERVER)
+                    grants.approve(body.get("code"), shared=body.get("shared") is True)
+                elif action == "deny":
+                    grants.deny(body.get("code"))
+                elif action == "revoke":
+                    ident = str(body.get("id") or "")
+                    grants.revoke(ident)
+                    links.forget(ident, "This computer was removed from the other Hilde's Settings.")
+                else:
+                    grants.set_shared(str(body.get("id") or ""), body.get("shared") is True)
+            except KeyError as exc:
+                return self.fail(HTTPStatus.NOT_FOUND, exc.args[0])
+            except ValueError as exc:
+                return self.fail(HTTPStatus.CONFLICT, str(exc))
+            except OSError as exc:
+                return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {COMPUTER_GRANTS_FILE}: {exc}")
+            refresh_computers(self.server)
+            return self.reply(HTTPStatus.OK, self.workers_payload())
+        if not (self.secure() or self.local_client()):
+            return self.fail(HTTPStatus.FORBIDDEN, COMPUTERS_NEED_HTTPS)
+        token = self.computer_token()
+        if action == "request":
+            if not local_model:
+                return self.fail(HTTPStatus.CONFLICT, COMPUTER_SPEECH_SERVER)
+            report = computer_report(body)
+            token, code = grants.request(body.get("name"), self.client_address[0], previous=token,
+                                         model=report["model"], devices=[item["device"] for item in report["devices"]])
+            return self.reply(HTTPStatus.OK, {"token": token, "code": code, "name": device_label(body.get("name"))})
+        if action == "status":
+            return self.reply(HTTPStatus.OK, grants.access(token))
+        grant = grants.grant(token)
+        if action == "forget":
+            try:
+                grants.forget(token)
+            except OSError as exc:
+                return self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not save {COMPUTER_GRANTS_FILE}: {exc}")
+            if grant is not None:
+                links.forget(grant["id"], "This computer stopped helping.")
+            refresh_computers(self.server)
+            return self.reply(HTTPStatus.OK, {"access": "none"})
+        if grant is None:
+            if grants.access(token)["access"] == "pending":
+                return self.fail(HTTPStatus.FORBIDDEN, "Not approved yet: approve this computer's code on the other Hilde.")
+            return self.fail(HTTPStatus.UNAUTHORIZED, COMPUTER_UNKNOWN)
+        if action == "poll":
+            links.heard(grant["id"], computer_report(body))
+            return self.reply(HTTPStatus.OK, {"messages": links.take(grant["id"], COMPUTER_POLL_SECONDS)})
+        if action == "send":
+            links.deliver(grant["id"], body.get("messages"))
+            return self.reply(HTTPStatus.OK, {})
+        return self.fail(HTTPStatus.NOT_FOUND, f"no route for /api/computers/{action}")
+
+    def change_computer_link(self, action, body):
+        """This Hilde narrating for another: /begin (address, name), /confirm
+        (the fingerprint matched), /stop; for a browser that may manage, as
+        the computer's narration runs programs as this server's user."""
+        if not self.may_manage():
+            return self.fail(HTTPStatus.FORBIDDEN, COMPUTERS_MANAGE_ONLY)
+        link = getattr(self.server, "computer_link", None)
+        if link is None:
+            return self.fail(HTTPStatus.NOT_FOUND, "This server cannot narrate for another.")
+        try:
+            if action == "begin":
+                link.begin(body.get("url"), body.get("name"))
+            elif action == "confirm":
+                link.confirm()
+            elif action == "stop":
+                link.stop()
+            else:
+                return self.fail(HTTPStatus.NOT_FOUND, f"no route for /api/computer-link/{action}")
+        except ValueError as exc:
+            return self.fail(HTTPStatus.CONFLICT, str(exc))
+        return self.reply(HTTPStatus.OK, link.snapshot())
 
     def change_device_access(self, action, body):
         """/api/devices/request and /forget for any device (its own request or
@@ -23041,6 +24034,11 @@ details.technical pre, .setup-log { margin:8px 0 0; color:var(--dim); white-spac
 .worker-key-help summary { cursor:pointer; }
 .worker-key-help ol { margin:8px 0 0; padding-left:20px; }
 .worker-key-help pre { user-select:all; color:var(--text); }
+/* Add a computer / Help another Hilde narrate: steps, a code to read across the room, a fingerprint to compare. */
+.computer-steps { margin:8px 0; padding-left:20px; }
+.computer-steps li { margin:4px 0; }
+.computer-code { font-size:22px; letter-spacing:4px; font-family:ui-monospace, monospace; }
+.computer-fingerprint { display:block; margin:6px 0; font-family:ui-monospace, monospace; overflow-wrap:anywhere; user-select:all; }
 .voice-card { display:flex; align-items:center; gap:14px; min-width:0; padding:12px 14px;
               background:var(--raised); border-radius:10px; }
 .voice-meta { display:grid; grid-template-columns:minmax(0,1fr); gap:2px; min-width:0; }
@@ -24770,12 +25768,17 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <h3 id="machine-others-title" class="part-title">Other narration machines</h3>
         <div id="node-list" class="stack"></div>
         <div id="nodes-actions" class="line hidden">
+          <button id="computers-open" class="hidden" type="button" onclick="openComputers()">Add a computer</button>
           <button id="workers-open" class="hidden" type="button" onclick="openWorkers()">Add narration
             workers</button>
           <span id="nodes-note" class="note"></span>
         </div>
         <p id="nodes-applies" class="applies hidden">Applies now: a running audiobook keeps its
           narration workers</p>
+      </section>
+      <section id="computer-link-part" class="machines-part hidden" aria-labelledby="computer-link-title">
+        <h3 id="computer-link-title" class="part-title">Help another Hilde narrate</h3>
+        <div id="computer-link" class="stack"></div>
       </section>
     </fieldset>
     <fieldset id="settings-providers" tabindex="-1">
@@ -25946,6 +26949,35 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
     <span class="grow"></span>
     <button type="button" onclick="closeWorkers()">Cancel</button>
     <button id="worker-add" class="primary" type="button" onclick="addWorkerNode()" disabled>Add node</button>
+  </div>
+</dialog>
+
+<dialog id="computer-dialog" aria-labelledby="computer-dialog-title">
+  <h2 id="computer-dialog-title">Add a computer</h2>
+  <p class="note">Another computer with Hilde (a Mac, or Linux with an NVIDIA GPU) narrates books from this one:
+    the books stay here; it only speaks their text with the voice chosen here. No SSH and no keys to copy.</p>
+  <p id="computer-no-https" class="note hidden">This Hilde runs without HTTPS, and a computer pairs over HTTPS only:
+    start Hilde with <code>--https</code> first.</p>
+  <ol id="computer-steps" class="note computer-steps">
+    <li>On the other computer, install Hilde (one line in its Terminal, see the README) and open it.</li>
+    <li>There, under <strong>Settings › Machines and devices › Help another Hilde narrate</strong>, enter this
+      address: <code id="computer-address"></code> and press <strong>Connect</strong>.</li>
+    <li>If it shows a fingerprint, check that it is this one: <code id="computer-fingerprint"></code></li>
+    <li>It shows a six-letter code: approve it below. Its own Hilde must have the same narration model as this one
+      (<span id="computer-model"></span>).</li>
+  </ol>
+  <div id="computer-waiting" class="stack"></div>
+  <div class="row"><label for="computer-code">Code:</label><div class="line">
+    <input id="computer-code" type="text" autocomplete="off" spellcheck="false" maxlength="8" placeholder="ABC234">
+  </div></div>
+  <label class="check"><input id="computer-shared" type="checkbox"> Everyone's books may use it too</label>
+  <p class="note">Unticked, it narrates only the books of a browser that chooses it under Narrate my books on.</p>
+  <div id="computer-status" class="note" role="status"></div>
+  <div class="footer">
+    <span class="grow"></span>
+    <button type="button" onclick="closeComputers()">Close</button>
+    <button id="computer-approve" class="primary" type="button"
+      onclick="approveComputer($('computer-code').value)">Approve</button>
   </div>
 </dialog>
 
@@ -35560,10 +36592,11 @@ async function cancelSignIn(name) {
 let workerNodes = null, workerProbe = null, workerSetupStatus = "", workerSetupTimer = null;
 const MIN_NARRATION_MIB = 6 * 1024;
 function deviceName(value) {
-  // A node's device (Narrate my books on): its public name, "Machine 1 · GPU 0".
-  if (value.startsWith("node:")) {
+  // A node's or a paired computer's device (Narrate my books on): its public
+  // name, "Machine 1 · GPU 0" or "Ayhan's Mac mini · Apple MPS".
+  if (value.startsWith("node:") || value.startsWith("computer:")) {
     const worker = consumers.find((item) => item.choice === value);
-    return worker ? worker.label : "A machine that is no longer added";
+    return worker ? worker.label : "A computer that is no longer added";
   }
   return value.startsWith("cuda:") ? `GPU ${value.slice(5)}`
     : value === "mps" ? "Apple MPS" : "CPU";
@@ -35580,13 +36613,13 @@ function deviceName(value) {
 // devices or more; the job poll keeps it current, but never rebuilds a menu
 // that is open. Create's summary names a chosen device.
 const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
-                       left_out:"left out of the current book", missing:"not found" };
+                       left_out:"left out of the current book", missing:"not found", offline:"not connected" };
 let deviceChoicesSignature = "";
 function renderDeviceChoices() {
   if (!state) return;
   const gpus = (machine.devices || []).filter((device) => device.kind === "cuda");
   const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
-  const nodes = consumers.filter((worker) => worker.kind === "node" && worker.choice);
+  const nodes = consumers.filter((worker) => (worker.kind === "node" || worker.kind === "computer") && worker.choice);
   const signature = JSON.stringify([gpus, workers.map((worker) => [worker.device, worker.status]),
     nodes.map((worker) => [worker.choice, worker.label, worker.status, worker.shared]),
     state.audiobook.device, state.voice.device, configuration.clone, configuration.design]);
@@ -35610,10 +36643,12 @@ function renderDeviceChoices() {
       options.push(option);
     }
     for (const worker of extra) {
-      const now = DEVICE_DOING[worker.status] || worker.status;
+      // A paired computer that cannot take work says why (not connected, another model).
+      const now = worker.status === "offline" ? worker.detail || DEVICE_DOING.offline
+        : DEVICE_DOING[worker.status] || worker.status;
       const option = new Option(`${worker.label}${now ? ` · ${now}` : ""}${worker.shared ? "" : " · only when chosen"}`,
                                 worker.choice);
-      option.disabled = worker.status === "off" && worker.choice !== chosen;
+      option.disabled = (worker.status === "off" || worker.status === "offline") && worker.choice !== chosen;
       options.push(option);
     }
     if (!options.some((option) => option.value === chosen)) options.push(new Option(`${deviceName(chosen)} · not found`, chosen));
@@ -35622,7 +36657,8 @@ function renderDeviceChoices() {
     const gpu = gpus.find((item) => item.device === chosen);
     const node = extra.find((worker) => worker.choice === chosen);
     const note = chosen === "auto" ? ""
-      : node ? (node.status === "running" ? `${node.label} is narrating: your book waits for it.` : "")
+      : node ? (node.status === "running" ? `${node.label} is narrating: your book waits for it.`
+        : node.status === "offline" ? `${node.label} cannot narrate now (${node.detail || "not connected"}).` : "")
       : !gpu ? `${deviceName(chosen)} was not found by the last device check: choose another.`
       : blocked(gpu) ? `${deviceName(chosen)} does not narrate now (${doing(gpu) || "no narration worker"}): `
         + "choose another GPU, or turn it on in Settings › Machines and devices."
@@ -35631,7 +36667,8 @@ function renderDeviceChoices() {
     $(`${id}-note`).textContent = note;
     $(`${id}-note`).classList.toggle("hidden", !note);
   };
-  const on = gpus.filter(usable).length + nodes.filter((worker) => worker.shared && worker.status !== "off").length;
+  const on = gpus.filter(usable).length
+    + nodes.filter((worker) => worker.shared && worker.status !== "off" && worker.status !== "offline").length;
   const all = gpus.length + nodes.filter((worker) => worker.shared).length;
   fill("audiobook", "narration-device", gpus.length + nodes.length > 1 && (configuration.clone || {}).source === "local",
        `Any GPU that is on (${on} of ${all})`, (gpu) => !usable(gpu), nodes);
@@ -35663,12 +36700,22 @@ function renderWorkers() {
   const local = !!caps.manage_workers;
   const available = !!(workerNodes && workerNodes.available);
   $("workers-open").classList.toggle("hidden", !local || !available);
+  $("computers-open").classList.toggle("hidden", !local || !available || !(workerNodes && workerNodes.computers));
   $("nodes-applies").classList.toggle("hidden", !local || !available);
   $("nodes-note").textContent = local && workerNodes && !available
     ? "Narration workers on other machines need a local narration model (--voice-clone-model)." : "";
   $("nodes-actions").classList.toggle("hidden", !local || !workerNodes);
   // A box the server refused to change shows its state again.
   renderMachines(true);
+  renderComputerLink();
+  if ($("computer-dialog").open) renderComputerDialog();
+  // Pairing, a dialog waiting on the other side, or (while Settings is open) a
+  // link that may be lost or removed there: ask again shortly.
+  clearTimeout(computerTimer);
+  const link = (workerNodes && workerNodes.link) || {};
+  if (local && ($("computer-dialog").open || ["checking", "pending", "reconnecting"].includes(link.state)
+                || (settingsOpen && link.state === "connected")))
+    computerTimer = setTimeout(refreshWorkers, 2000);
 }
 // Settings › Machines and devices, only from what the server reports: this
 // server's name and the devices its probe found, each narration worker's
@@ -35994,12 +37041,201 @@ function renderMachines(force = false) {
        ["Voice design", "not available", "Voice design runs on this server only."]],
       remove);
   });
+  // Paired computers (Add a computer), by the name each gave itself.
+  const paired = manage && workerNodes && workerNodes.computers ? workerNodes.computers.granted
+    : [...new Set(consumers.filter((worker) => worker.kind === "computer").map((worker) => worker.computer))]
+      .map((id) => ({ id, name:"", devices:null }));
+  for (const computer of paired) {
+    const theirs = consumers.filter((worker) => worker.kind === "computer" && worker.computer === computer.id);
+    const name = computer.name || (theirs[0] ? theirs[0].label.split(" · ")[0] : "A computer");
+    const shared = computer.devices ? computer.shared : theirs.every((worker) => worker.shared);
+    const online = computer.devices ? computer.online : theirs.some((worker) => worker.status !== "offline");
+    let actions = null;
+    if (computer.devices) {
+      actions = document.createElement("span");
+      actions.className = "line";
+      const label = document.createElement("label");
+      label.className = "check";
+      const box = document.createElement("input");
+      box.type = "checkbox"; box.checked = shared;
+      box.setAttribute("aria-label", `Everyone's books may use ${name}`);
+      box.addEventListener("change", () => computerAction("share", { id:computer.id, shared:box.checked },
+        `Saved for every browser: ${name} ${box.checked ? "narrates everyone's books too" : "narrates only books that choose it"}.`));
+      label.append(box, " Everyone's books");
+      const remove = document.createElement("button");
+      remove.type = "button"; remove.className = "link"; remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove ${name}`);
+      remove.addEventListener("click", () => removeComputer(computer.id, name));
+      actions.append(label, remove);
+    }
+    const aside = [online ? "connected" : "not connected",
+                   shared ? "everyone's books" : "only books that choose it"].join(" · ");
+    const devices = theirs.map((worker) => deviceItem(nodeDevice(worker.device), worker, null, false));
+    const problem = theirs.find((worker) => worker.status === "offline" && worker.detail && worker.detail !== "not connected");
+    blocks.push(machineBlock(name, aside, devices,
+      [["Narration", online && !problem ? "available" : "not available",
+        !online ? "Not connected: open Hilde on it." : problem ? problem.detail : ""],
+       ["Voice design", "not available", "Voice design runs on this server only."]],
+      actions));
+  }
   if (!blocks.length) {
     const none = document.createElement("p");
     none.className = "note"; none.textContent = "No other machine narrates.";
     blocks.push(none);
   }
   $("node-list").replaceChildren(...blocks);
+}
+// Add a computer (this Hilde's side): the steps, the computers waiting with a
+// code (Approve, Deny), and a code box. /api/workers is asked again every 2 s
+// while the dialog is open, so a computer that asks shows up by itself.
+let computerTimer = 0;
+function openComputers() {
+  $("computer-code").value = ""; $("computer-shared").checked = false; $("computer-status").textContent = "";
+  $("computer-dialog").showModal();
+  renderComputerDialog();
+  refreshWorkers();
+  $("computer-code").focus();
+}
+function closeComputers() { $("computer-dialog").close(); }
+function renderComputerDialog() {
+  const computers = (workerNodes && workerNodes.computers) || { pending:[], https:false };
+  $("computer-no-https").classList.toggle("hidden", !!computers.https);
+  $("computer-steps").classList.toggle("hidden", !computers.https);
+  $("computer-approve").disabled = !computers.https;
+  $("computer-address").textContent = location.origin;
+  $("computer-fingerprint").textContent = computers.fingerprint || "(none: its certificate is trusted everywhere)";
+  $("computer-model").textContent = computers.model || "none";
+  const rows = (computers.pending || []).map((item) => {
+    const row = document.createElement("div");
+    row.className = "line";
+    const text = document.createElement("span");
+    const same = !computers.model || (item.model || "").toLowerCase() === computers.model.toLowerCase();
+    text.textContent = `${item.name} (${item.address}) asks with code ${item.code}`
+      + (same ? "" : ` · has ${item.model || "no narration model"}: it would not be used`);
+    const approve = document.createElement("button");
+    approve.type = "button"; approve.textContent = "Approve";
+    approve.setAttribute("aria-label", `Approve ${item.name} (${item.code})`);
+    approve.addEventListener("click", () => approveComputer(item.code));
+    const deny = document.createElement("button");
+    deny.type = "button"; deny.className = "link"; deny.textContent = "Deny";
+    deny.setAttribute("aria-label", `Deny ${item.name} (${item.code})`);
+    deny.addEventListener("click", () => computerAction("deny", { code:item.code }, `Denied: ${item.name}.`));
+    row.append(text, approve, deny);
+    return row;
+  });
+  $("computer-waiting").replaceChildren(...rows);
+}
+async function computerAction(action, body, done) {
+  try {
+    applyWorkers(await jsonRequest(`/api/computers/${action}`, {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(body),
+    }));
+    setStatus(done);
+    return true;
+  } catch (error) {
+    setStatus(error.message, true);
+    if ($("computer-dialog").open) $("computer-status").textContent = error.message;
+    renderMachines(true);
+    return false;
+  }
+}
+async function approveComputer(code) {
+  const waiting = ((workerNodes && workerNodes.computers) || { pending:[] }).pending
+    .find((item) => item.code === String(code || "").replace(/\s+/g, "").toUpperCase());
+  const shared = $("computer-shared").checked;
+  if (await computerAction("approve", { code, shared },
+      `Approved: ${waiting ? waiting.name : "the computer"} narrates ${shared ? "everyone's books too" : "books that choose it"}.`)) {
+    $("computer-code").value = "";
+    $("computer-status").textContent = "Approved. It appears under Other narration machines and in Narrate my books on.";
+  }
+}
+async function removeComputer(id, name) {
+  if (!(await askConfirm({
+    title:`Remove '${name}'?`,
+    text:"It stops narrating for this Hilde now; a book it is narrating goes on with the others. Pair it again to add it back.",
+    confirm:"Remove", danger:true,
+  }))) return;
+  computerAction("revoke", { id }, `Removed: ${name} no longer narrates for this Hilde.`);
+}
+// Help another Hilde narrate (this Hilde narrating for another): its address
+// and this computer's name, then the other's certificate fingerprint to
+// compare, then the code to approve there, then connected. Redrawn only when
+// its state changes, so what is being typed stays.
+let computerLinkSignature = "";
+function renderComputerLink() {
+  const link = caps.manage_workers && workerNodes ? workerNodes.link : null;
+  $("computer-link-part").classList.toggle("hidden", !link || !workerNodes.available);
+  if (!link) return;
+  const signature = JSON.stringify(link);
+  if (signature === computerLinkSignature) return;
+  computerLinkSignature = signature;
+  const note = (text) => { const line = document.createElement("p"); line.className = "note"; line.textContent = text; return line; };
+  const button = (text, action, primary) => {
+    const element = document.createElement("button");
+    element.type = "button"; element.textContent = text;
+    if (primary) element.className = "primary";
+    element.addEventListener("click", action);
+    return element;
+  };
+  const row = (...children) => { const line = document.createElement("div"); line.className = "line"; line.append(...children); return line; };
+  const parts = [];
+  const state = link.state;
+  if (["idle", "failed", "removed"].includes(state)) {
+    parts.push(note("This computer can narrate books for another Hilde, such as the one at home or at work: the "
+      + "books stay there; this computer only speaks their text, with its own narration model and GPU."));
+    if (link.error) parts.push(note(link.error));
+    const field = (id, label, value, placeholder) => {
+      const wrap = document.createElement("div");
+      wrap.className = "row";
+      const caption = document.createElement("label");
+      caption.htmlFor = id; caption.textContent = label;
+      const input = document.createElement("input");
+      input.id = id; input.type = "text"; input.autocomplete = "off"; input.spellcheck = false;
+      input.value = value || ""; input.placeholder = placeholder;
+      wrap.append(caption, input);
+      return wrap;
+    };
+    parts.push(field("computer-link-url", "The other Hilde's address:", link.url, "https://name:8800"),
+               field("computer-link-name", "This computer's name:", link.name, "For example Ayhan's Mac mini"),
+               row(button("Connect", () => linkAction("begin", { url:$("computer-link-url").value,
+                 name:$("computer-link-name").value }), true)));
+  } else if (state === "checking") {
+    parts.push(note(`Checking ${link.url}…`));
+  } else if (state === "confirm") {
+    parts.push(note(`${link.url} uses its own certificate. Check that its Settings › Machines and devices › Add a `
+      + "computer shows this same fingerprint, then confirm:"));
+    const code = document.createElement("code");
+    code.className = "computer-fingerprint"; code.textContent = link.fingerprint;
+    parts.push(code, row(button("It matches", () => linkAction("confirm", {}), true),
+                         button("Cancel", () => linkAction("stop", {}))));
+  } else if (state === "pending") {
+    const code = document.createElement("strong");
+    code.className = "computer-code"; code.textContent = link.code;
+    const line = document.createElement("p");
+    line.append("Approve this code on the other Hilde: ", code,
+      " (Settings › Machines and devices › Add a computer). This page follows by itself.");
+    parts.push(line, row(button("Cancel", () => linkAction("stop", {}))));
+  } else {
+    parts.push(note(state === "connected"
+      ? `Narrating for ${link.url} as ${link.name}${link.sessions ? `: ${link.sessions} part${link.sessions === 1 ? "" : "s"} now` : ""}. `
+        + "Books there that choose this computer, or all of them if it allows, use it."
+      : `Lost ${link.url}; trying again. ${link.error || ""}`));
+    parts.push(row(button("Stop helping", () => linkAction("stop", {}))));
+  }
+  $("computer-link").replaceChildren(...parts);
+}
+async function linkAction(action, body) {
+  try {
+    const link = await jsonRequest(`/api/computer-link/${action}`, {
+      method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(body),
+    });
+    if (workerNodes) workerNodes.link = link;
+    renderComputerLink();
+    refreshWorkers();
+    setStatus(action === "stop" ? "This computer no longer narrates for another Hilde." : "");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
 }
 // `own` is this server's device from /api/workers: its lasting `id` (a GPU's
 // UUID) goes to the server, its torch `device` names it here.
@@ -37543,6 +38779,9 @@ def main():
     )
     server.tts_models = tts_models
     server.storage = storage
+    # This server's certificate fingerprint, which a computer pairing with it shows its user.
+    server.tls_fingerprint = certificate_fingerprint(Path(authority or cert).read_text(encoding="utf-8")) if tls else ""
+    setup_computers(server, storage, tts_models)
     # Create's duplicate guard: one job per draft, kept across restarts.
     server.drafts = DraftGuard(storage.in_progress / CREATE_DRAFTS_FILE)
     server.verbose = args.verbose

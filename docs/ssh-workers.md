@@ -5,6 +5,11 @@ audiobook, for the web server and for `audiobook_tts.py narrate` alike. Each of
 their GPUs loads its own Base model and pulls chunk batches like a
 [local GPU worker](command-line.md#multiple-gpus); no shared storage is required.
 
+A computer with Hilde installed needs none of this: pair it with **Settings ›
+Machines and devices › Add a computer** (by a six-letter code, over HTTPS; see
+[the web UI](web-ui.md)). SSH nodes are for machines you manage yourself,
+such as GPU servers without Hilde's page.
+
 ## Requirements
 
 The server's machine must reach the other machine with

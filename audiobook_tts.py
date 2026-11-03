@@ -100,6 +100,14 @@ GPU_RECHECK_SECONDS = 60
 # How long a narration worker may take to load its model and say it is ready
 # (--worker-ready-timeout); one that takes longer is left out of the narration.
 WORKER_READY_SECONDS = 600
+# A narration worker on a computer paired with the web server (Settings ›
+# Machines and devices › Add a computer) is reached through that server: the
+# coordinator runs `_relay`, which connects to the server's loopback relay and
+# finds its session key in this environment variable (JSON {session: {"key"}}),
+# never on a command line. The computer runs its own installed `_worker`; the
+# protocol version must match, or the server does not use it.
+RELAY_KEYS_ENV = "HILDE_RELAY_KEYS"
+WORKER_PROTOCOL_VERSION = 1
 
 
 def split_sentences(text):
@@ -199,6 +207,17 @@ def ssh_target(value):
             "must be an SSH host or user@host without whitespace or options"
         )
     return target
+
+
+def relay_worker(value):
+    """Parse 127.0.0.1:PORT/SESSION for one worker on a paired computer: the web
+    server's loopback relay and the session it opened for this narration."""
+    address, _, session = value.partition("/")
+    host, _, port = address.rpartition(":")
+    if host != "127.0.0.1" or not port.isdigit() or not 0 < int(port) < 65536 \
+            or not re.fullmatch(r"[0-9a-f]{16,64}", session):
+        raise argparse.ArgumentTypeError("must be 127.0.0.1:PORT/SESSION, as the web server gives it")
+    return {"address": address, "session": session}
 
 
 SSH_WORKER_SETTINGS = ("device", "python", "model")
@@ -511,6 +530,14 @@ def build_parser():
         ),
     )
     narration.add_argument(
+        "--relay-worker",
+        action="append",
+        default=[],
+        type=relay_worker,
+        metavar="127.0.0.1:PORT/SESSION",
+        help=argparse.SUPPRESS,
+    )
+    narration.add_argument(
         "--no-local-worker",
         action="store_true",
         help=(
@@ -590,6 +617,16 @@ def build_parser():
     worker.add_argument("--language", default="Auto")
     worker.add_argument("--seed", type=nonnegative_int)
     worker.add_argument("--allow-downloads", action="store_true")
+
+    # One worker on a computer paired with the web server, bridged through it.
+    relay = commands.add_parser("_relay", help=argparse.SUPPRESS)
+    relay.add_argument("--address", required=True)
+    relay.add_argument("--session", required=True)
+    relay.add_argument("--voice-dir", type=Path, required=True)
+    relay.add_argument("--dtype", choices=("auto", "float32", "float16", "bfloat16"), default="auto")
+    relay.add_argument("--attn-implementation", choices=("flash_attention_2", "sdpa", "eager"), required=True)
+    relay.add_argument("--language", default="Auto")
+    relay.add_argument("--seed", type=nonnegative_int)
     return parser
 
 
@@ -1268,6 +1305,66 @@ def narration_worker(args, parser):
     return 0
 
 
+def narration_relay(args):
+    """Stand in for one narration worker on a computer paired with the web
+    server: connect to the server's loopback relay with this session's key
+    (RELAY_KEYS_ENV), send the saved voice's two files and the worker options,
+    then pass the coordinator's protocol lines on and print the computer's
+    worker output, its stdout and stderr apart, as a local worker would. Exits
+    with the computer's worker's code, or 255 when the connection ends first."""
+    import socket
+
+    session = (json.loads(os.environ.get(RELAY_KEYS_ENV) or "{}") or {}).get(args.session) or {}
+    host, _, port = args.address.rpartition(":")
+    voice = args.voice_dir.expanduser()
+    try:
+        files = {name: base64.b64encode((voice / name).read_bytes()).decode("ascii")
+                 for name in ("reference.wav", "transcript.txt")}
+        connection = socket.create_connection((host, int(port)), timeout=30)
+    except (OSError, ValueError) as exc:
+        print(f"cannot reach the web server's relay: {exc}", file=sys.stderr, flush=True)
+        return 255
+    connection.settimeout(None)
+    reader = connection.makefile("r", encoding="utf-8", newline="\n")
+    writer = connection.makefile("w", encoding="utf-8", newline="\n")
+    lock = threading.Lock()
+
+    def send(payload):
+        with lock:
+            writer.write(json.dumps(payload, separators=(",", ":")) + "\n")
+            writer.flush()
+
+    def forward_input():
+        try:
+            for line in sys.stdin:
+                send({"in": line.rstrip("\r\n")})
+            send({"eof": True})
+        except (OSError, ValueError):
+            pass
+
+    try:
+        send({"session": args.session, "key": session.get("key", ""), "files": files,
+              "worker": {"dtype": args.dtype, "attn_implementation": args.attn_implementation,
+                         "language": args.language, "seed": args.seed, "protocol": WORKER_PROTOCOL_VERSION}})
+        threading.Thread(target=forward_input, daemon=True).start()
+        for raw in reader:
+            message = json.loads(raw)
+            if "out" in message:
+                sys.stdout.write(str(message["out"]) + "\n")
+                sys.stdout.flush()
+            elif "err" in message:
+                sys.stderr.write(str(message["err"]) + "\n")
+                sys.stderr.flush()
+            elif "exit" in message:
+                return int(message["exit"])
+    except (OSError, ValueError) as exc:
+        print(f"the paired computer's connection failed: {exc}", file=sys.stderr, flush=True)
+        return 255
+    print("the paired computer's connection ended", file=sys.stderr, flush=True)
+    return 255
+
+
+
 class NarrationWorkerProcess:
     """One local or SSH model process speaking the chunk-worker protocol."""
 
@@ -1567,6 +1664,18 @@ def _narration_worker_specifications(args, voice_dir):
                 left_out.append((f"SSH {worker['target']} {worker['device']}", str(exc)))
                 continue
             specifications.append((*staged, None, None))
+        # A paired computer's worker, through the web server's relay; its label
+        # names the session, which the web server knows the computer by.
+        for worker in args.relay_worker:
+            specifications.append((
+                f"Computer {worker['session']}",
+                [sys.executable, "-u", str(Path(__file__).resolve()), "_relay",
+                 "--address", worker["address"], "--session", worker["session"],
+                 "--voice-dir", str(voice_dir), "--dtype", args.dtype,
+                 "--attn-implementation", args.attn_implementation, "--language", args.language,
+                 *(["--seed", str(args.seed)] if args.seed is not None else [])],
+                None, None, None,
+            ))
     except BaseException:
         for _, _, cleanup, _, _ in specifications:
             if cleanup is not None:
@@ -1904,6 +2013,24 @@ def _narrate_distributed(
                         f"exited during startup with code {event.get('code')}" + (f": {said}" if said else ""),
                     )
                     continue
+                if worker in inflight and worker.label.startswith("Computer "):
+                    # A paired computer lost while narrating (its connection to
+                    # the web server ended, or it was removed): its chunks go
+                    # back to the queue and the others go on; no worker left
+                    # fails the book. A local or SSH worker exiting mid-book
+                    # still fails it, as before.
+                    indexes = inflight.pop(worker)
+                    batches.appendleft(indexes)
+                    alive.discard(worker)
+                    idle.discard(worker)
+                    said = last_line.get(worker, "").strip()
+                    reason = f"exited with code {event.get('code')} while narrating" + (f": {said}" if said else "")
+                    left_out.append((worker.label, reason))
+                    print(f"Narration worker left out: {worker.label}: {reason}", flush=True)
+                    print(f"Chunks {','.join(str(index) for index in indexes)} return to the queue", flush=True)
+                    if idle:
+                        dispatch(next(iter(idle)))
+                    continue
                 if worker in inflight:
                     raise RuntimeError(
                         f"{worker.label} exited with code {event.get('code')}"
@@ -1981,7 +2108,7 @@ def _narrate_resumable_local(
     subtype,
     sf,
 ):
-    distributed = bool(args.worker_device or args.ssh_worker)
+    distributed = bool(args.worker_device or args.ssh_worker or args.relay_worker)
     try:
         checkpoint_dir, completed = prepare_resume(
             args, text, chunks, _narration_voice_version(args, voice_dir), sf,
@@ -2188,6 +2315,7 @@ def check_mode(args, parser):
             ("--worker-device", args.worker_device or None),
             ("--no-local-worker", args.no_local_worker or None),
             ("--ssh-worker", args.ssh_worker or None),
+            ("--relay-worker", args.relay_worker or None),
             ("--ssh-model-path", args.ssh_model_path),
             ("--worker-ready-timeout", args.worker_ready_timeout),
         ]
@@ -2213,11 +2341,11 @@ def check_mode(args, parser):
 
 
 def check_distributed_mode(args, parser):
-    """Validate local/SSH chunk workers before any model process starts."""
-    distributed = bool(args.worker_device or args.ssh_worker)
+    """Validate local, SSH and paired-computer chunk workers before any model process starts."""
+    distributed = bool(args.worker_device or args.ssh_worker or args.relay_worker)
     if args.ssh_model_path and not args.ssh_worker:
         parser.error("--ssh-model-path requires at least one --ssh-worker")
-    if args.no_local_worker and (not args.ssh_worker or args.worker_device):
+    if args.no_local_worker and (not (args.ssh_worker or args.relay_worker) or args.worker_device):
         parser.error("--no-local-worker needs --ssh-worker and excludes --worker-device")
     if not distributed:
         return
@@ -2249,6 +2377,8 @@ def main():
         parser.error("--seed must be between 0 and 4294967295")
     if args.command == "_worker":
         raise SystemExit(narration_worker(args, parser))
+    if args.command == "_relay":
+        raise SystemExit(narration_relay(args))
     check_mode(args, parser)
     if args.command == "narrate":
         check_distributed_mode(args, parser)
