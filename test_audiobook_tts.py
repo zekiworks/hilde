@@ -1,5 +1,6 @@
 import argparse
 import base64
+import contextlib
 import datetime
 import hashlib
 import io
@@ -13061,11 +13062,15 @@ for line in sys.stdin:
 
     def computer(self, origin, path, body, token="", remote=True):
         """A request as a computer on another machine (or, `remote` False, as a
-        browser on the server's own) over HTTPS."""
+        browser on the server's own) over HTTPS; `remote` None leaves where it
+        comes from alone (for a request from another thread: a module patch
+        there would race this thread's)."""
         request = urllib.request.Request(
             origin + path, data=json.dumps(body).encode(), method="POST",
             headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {token}"} if token else {})})
-        with mock.patch.object(web, "is_loopback_address", return_value=not remote):
+        where = (contextlib.nullcontext() if remote is None
+                 else mock.patch.object(web, "is_loopback_address", return_value=not remote))
+        with where:
             try:
                 with urllib.request.urlopen(request, context=self.trusting) as response:
                     return response.status, json.load(response)
@@ -13113,7 +13118,7 @@ for line in sys.stdin:
 
         # Asking for work (connected while its poll waits), it is a narration worker of its own name.
         polled = []
-        poll = threading.Thread(target=lambda: polled.append(self.computer(origin, "/api/computers/poll", self.MAC, token)))
+        poll = threading.Thread(target=lambda: polled.append(self.computer(origin, "/api/computers/poll", self.MAC, token, remote=None)))
         poll.start()
         deadline = time.monotonic() + 5
         while not any(item["kind"] == "computer" for item in server.jobs.public_consumers_snapshot()):

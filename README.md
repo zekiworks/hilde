@@ -35,9 +35,11 @@ https://github.com/user-attachments/assets/3bbf7fd4-e17e-487b-81cd-e5916ba34db2
   tap any word to listen from there, tap the sentence being read to pause, or select words to ask Hilde about them. **Original** shows the author's text and its
   PDF page beneath each adapted passage, and model-written figure
   descriptions are labelled.
-- **Every GPU in the house.** Narration spreads across all local GPUs and, over
-  SSH, other machines. A busy local GPU joins once it has room, and one that
-  runs out of memory hands its chunks to the others.
+- **Every GPU in the house.** Narration spreads across all local GPUs, other
+  computers with Hilde installed (a Mac or a Linux box, paired by a six-letter
+  code under **Settings › Machines and devices › Add a computer**, no SSH), and
+  machines reached over SSH. A busy local GPU joins once it has room, and one
+  that runs out of memory hands its chunks to the others.
 - **Local first.** Speech is generated on your own hardware by default. Text
   adaptation runs on a local model server, or on OpenAI, Claude, Gemini, or
   DeepSeek, through your ChatGPT subscription, your Claude subscription in your
@@ -199,8 +201,8 @@ each browser changes only its own settings, under **Settings**.
 - [speech models](docs/configuration.md#speech-models), local or on a speech
   server;
 - [narration workers](docs/configuration.md#narration-workers): every GPU the
-  server sees, plus the GPUs of [other machines](docs/ssh-workers.md), added
-  under **Settings**;
+  server sees, plus [paired computers](docs/web-ui.md) and the GPUs of
+  [other machines](docs/ssh-workers.md), added under **Settings**;
 - [batch size](docs/configuration.md#batch-size) and GPU memory;
 - [suggested models](docs/configuration.md#suggested-models): the ratings file
   `~/.hilde/ratings.json`, written by `qa/rate_models.py` from Hilde's own
