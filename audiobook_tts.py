@@ -1910,11 +1910,17 @@ def _narrate_distributed(
                         )
                     waiting.add(device)
                 else:
+                    if device in waiting:
+                        print(f"[{local[device][0]}] Memory free: starting", flush=True)
                     waiting.discard(device)
                     launch(local[device])
 
         def dispatch(worker):
             if not batches:
+                # Said once as it goes idle, so whoever shows this worker
+                # (Settings) stops calling it narrating.
+                if worker not in idle:
+                    print(f"[{worker.label}] No part left for it now", flush=True)
                 idle.add(worker)
                 return
             idle.discard(worker)
@@ -2037,6 +2043,7 @@ def _narrate_distributed(
                     )
                 alive.discard(worker)
                 idle.discard(worker)
+                print(f"[{worker.label}] Stopped (exit code {event.get('code')})", flush=True)
             elif kind == "result" and worker in inflight:
                 expected = inflight.pop(worker)
                 indexes = event.get("indexes")

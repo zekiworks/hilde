@@ -21056,6 +21056,12 @@ class AudiobookRun(Run):
                 if waiting
                 else {"state": "waiting_memory", "free_gib": None, "need_gib": NARRATION_MIN_FREE_MIB // 1024}
                 if text.startswith("Out of GPU memory")
+                # Not narrating any more: its parts are done (until a part
+                # comes back to the queue), or it stopped; never stuck on its
+                # last part.
+                else {"state": "done"} if text == "No part left for it now"
+                else {"state": "stopped"} if text.startswith("Stopped")
+                else {"state": "starting"} if text == "Memory free: starting"
                 else None
             )
             key = self._worker_labelled(label).get("id")
@@ -37092,6 +37098,8 @@ function workerNow(worker, memory = true) {
       + (doing.free_gib == null ? "" : `${doing.free_gib} GiB free, `) + `${doing.need_gib} GiB needed`
     : doing.state === "ready" ? "model loaded · waiting for its next part"
     : doing.state === "starting" ? "loading the model"
+    : doing.state === "done" ? "done with its parts · the others finish"
+    : doing.state === "stopped" ? "stopped"
     : doing.state === "left_out" ? WORKER_STATES.left_out
     : doing.phase === "alignment" ? "reserved · word alignment"
     : "reserved · waiting for text";
@@ -37304,9 +37312,11 @@ function renderModelServers(choices) {
     const status = endpoint.off ? "off" : work || endpoint.running ? "on" : "down";
     const state = document.createElement("span");
     state.className = "server-state"; state.dataset.state = status;
+    // "Not used by a book" is all Hilde knows: a server another program, or
+    // a chat, keeps busy is not "idle" (Zeki #979).
     state.textContent = status === "off" ? "off on this device"
       : work ? `preparing ${work.book}` + (work.total ? ` · ${work.done}/${work.total}${work.unit ? ` ${work.unit}s` : ""}` : "")
-      : status === "on" ? "answering · idle" : "not answering";
+      : status === "on" ? "answering · not used by a book now" : "not answering";
     const label = document.createElement("label");
     label.className = "check";
     const box = document.createElement("input");

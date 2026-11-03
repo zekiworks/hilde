@@ -4305,11 +4305,12 @@ for line in sys.stdin:
                 outcome["error"] = exc
 
         specifications = [worker("cuda:0", str(marker)), worker("cuda:1", "")]
+        printed = io.StringIO()
         with (
             mock.patch.object(cli, "_narration_worker_specifications", return_value=(specifications, [])),
             mock.patch.object(cli, "GpuMemory", Memory),
             mock.patch.object(cli, "GPU_RECHECK_SECONDS", 0.2),
-            mock.patch("sys.stdout", io.StringIO()),
+            mock.patch("sys.stdout", printed),
         ):
             # A thread, so a coordinator that never rechecks fails instead of hanging.
             thread = threading.Thread(target=narrate, daemon=True)
@@ -4326,6 +4327,27 @@ for line in sys.stdin:
         self.assertEqual(events[:2], ["start cuda:0", "oom cuda:0 [1]"])
         self.assertIn("start cuda:1", events)
         self.assertEqual(events.count("start cuda:0"), 2)
+        # What Settings shows comes from these lines (AudiobookRun.inspect()):
+        # the full GPU waits for memory, then loads its model; once the book is
+        # done neither GPU is left "narrating".
+        storage = web.SharedStorage(root / "library")
+        storage.ensure()
+        run = web.AudiobookRun({"workers": [{"kind": "local", "id": "cuda:0", "device": "cuda:0"},
+                                            {"kind": "local", "id": "cuda:1", "device": "cuda:1"}]},
+                               storage, "document-version", "voice-version", "j" * 64)
+        run.set_phase("narration", "Narration")
+        seen = {"cuda:0": [], "cuda:1": []}
+        for line in printed.getvalue().splitlines():
+            run.inspect(line)
+            for device, states in seen.items():
+                state = run.worker_states.get(device, {}).get("state")
+                if state and (not states or states[-1] != state):
+                    states.append(state)
+        self.assertEqual(seen["cuda:1"][:2], ["waiting_memory", "starting"])
+        self.assertIn("narrating", seen["cuda:1"])
+        self.assertEqual(seen["cuda:0"][:2], ["ready", "narrating"])
+        self.assertIn("waiting_memory", seen["cuda:0"])  # its out-of-memory, until it starts again
+        self.assertEqual({device: states[-1] for device, states in seen.items()}, {"cuda:0": "done", "cuda:1": "done"})
 
 
 class WorkerStartupFixtureTests(unittest.TestCase):
@@ -13771,6 +13793,12 @@ class LiveWorkStatusTests(unittest.TestCase):
             second: {"state": "waiting_memory", "free_gib": 1.4, "need_gib": 6}})
         run.inspect(f"[Local {first}] Out of GPU memory; chunks 3,4 return to the queue, and the GPU is checked again\n")
         self.assertEqual(run.worker_states[first], {"state": "waiting_memory", "free_gib": None, "need_gib": 6})
+        # Back once there is room, done with its parts, and an idle one that stopped: never left "narrating".
+        run.inspect(f"[Local {first}] Memory free: starting\n")
+        self.assertEqual(run.worker_states[first], {"state": "starting"})
+        run.inspect(f"[Local {first}] No part left for it now\n")
+        run.inspect(f"[Local {second}] Stopped (exit code 1)\n")
+        self.assertEqual(run.worker_states, {first: {"state": "done"}, second: {"state": "stopped"}})
         # A new narration (a retry) starts from nothing it said before.
         run.set_phase("narration", "Narration")
         self.assertEqual(run.worker_states, {})
