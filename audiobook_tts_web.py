@@ -24842,6 +24842,13 @@ button.danger.with-icon svg { width:15px; height:15px; }
 .where { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px 6px; min-width:0;
          overflow-wrap:anywhere; }
 .where .note { font-size:13px; }
+/* The Stopped card's models: each badge a button that opens the other models for its role. */
+button.where-change { display:inline-flex; align-items:center; gap:6px; min-height:32px; padding:4px 10px;
+                      background:none; border:1px dashed var(--line); border-radius:8px; color:inherit;
+                      font:inherit; text-align:left; cursor:pointer; }
+button.where-change:hover:not(:disabled), button.where-change[aria-expanded="true"] { border-style:solid;
+                                                                                      border-color:var(--accent); }
+button.where-change .where-change-hint { color:var(--accent); font-size:13px; }
 #change-voice-dialog .field { margin-bottom:12px; }
 #change-voice-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
 #change-voice-text { overflow-wrap:anywhere; }
@@ -35626,7 +35633,9 @@ function fillFailureCard(card, entry) {
   // Rebuilt only on change, so the two-second poll keeps focus and an open details.
   const key = entry ? JSON.stringify([problemKey(entry), known === undefined ? "" : known === null ? "none"
     : known === "loading" ? "loading" : "done", submitting, state.audiobook.adapt, state.audiobook.model,
-    paperCatalog.loaded, (paperCatalog.models || []).map((model) => model.selector)]) : "";
+    state.audiobook.figure_model, state.audiobook.verify_model, state.audiobook.interpret_figures,
+    state.audiobook.verify, perOptionModels, paperCatalog.loaded,
+    (paperCatalog.models || []).map((model) => model.selector)]) : "";
   if (card.dataset.key === key) return;
   card.dataset.key = key;
   if (!entry) { card.replaceChildren(); return; }
@@ -35702,8 +35711,15 @@ function fillFailureCard(card, entry) {
     condition.textContent = "Changing the settings or the voice since then starts the changed steps again.";
     const places = document.createElement("div");
     places.className = "line";
-    places.append(...sendOutBadges(entry.mode === "voice" ? "voice" : entry.mode));
-    resume.append(button, condition, places);
+    const changes = stoppedModelChoices(entry);
+    if (changes) {
+      const speech = speechWhere("clone", "Narration");
+      places.append(...changes.buttons, ...(speech ? [speech] : []));
+    } else places.append(...sendOutBadges(entry.mode === "voice" ? "voice" : entry.mode));
+    // same_but_models(): another model writes only the parts not finished yet.
+    if (changes) condition.textContent = "Another model chosen here writes only the parts not finished yet; the "
+      + "finished ones stay. Changing other settings or the voice since then starts the changed steps again.";
+    resume.append(button, condition, places, ...(changes ? [changes.list] : []));
   }
   const details = document.createElement("details");
   details.className = "technical";
@@ -35727,6 +35743,59 @@ function fillFailureCard(card, entry) {
   warned.textContent = (entry.warnings || []).map((text) => `⚠ ${text}`).join("\n");
   card.replaceChildren(title, subject, where, ...(entry.warnings && entry.warnings.length ? [warned] : []),
                        finished, resume, details, actions);
+}
+// The Stopped card's Text, Figures and Checking models (Ümit, 3 Nov: she clicked
+// them to change the model before Continue): each a button that opens the
+// other usable models for its role, as a paused job's "Continue with another
+// model…" does. One click makes that model this browser's choice for the role
+// (setPickerModel()), which Continue then sends; nothing starts until Continue.
+// Returns { buttons, list } (the list shared by them), or null with no model to change.
+function stoppedModelChoices(entry) {
+  if (!["create", "recreate"].includes(entry.mode) || !state.audiobook.adapt) return null;
+  const roles = [["book", "Text", true], ["figure", "Figures", state.audiobook.interpret_figures],
+                 ["verify", "Checking", state.audiobook.verify]].filter(([, , on]) => on);
+  const list = document.createElement("div");
+  list.className = "alternatives hidden";
+  list.setAttribute("role", "group");
+  const buttons = roles.map(([name, label]) => {
+    const { model, unreachable } = pickerChoice(name);
+    const shown = model || unreachable;
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "where-change";
+    button.dataset.picker = name;
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", `${label}: ${shown ? `${shown.short}, ${shown.badge}` : "no model yet"}`
+      + `${unreachable ? ", unreachable" : ""}. Change`);
+    button.disabled = submitting;
+    const hint = document.createElement("span");
+    hint.className = "where-change-hint"; hint.textContent = "Change";
+    button.append(shown ? whereElement(label, shown.short, unreachable ? "⚠ unreachable" : shown.badge, PICKERS[name].why)
+      : whereElement(label, "", "No model yet"), hint);
+    button.addEventListener("click", () => {
+      const open = button.getAttribute("aria-expanded") !== "true";
+      for (const other of buttons) other.setAttribute("aria-expanded", "false");
+      list.classList.add("hidden");
+      if (!open) return;
+      button.setAttribute("aria-expanded", "true");
+      const models = pickerAlternatives(name, shown ? shown.selector : "");
+      list.dataset.signature = "";
+      list.dataset.picker = name;
+      list.setAttribute("aria-label", `Another model for ${label}`);
+      renderAlternatives(name, models, list, Infinity);
+      if (!models.length) list.textContent = "No other model is available: add a local server or connect a provider.";
+      list.classList.remove("hidden");
+    });
+    return button;
+  });
+  list.addEventListener("click", (event) => {
+    const choice = event.target.closest("button[data-value]");
+    if (!choice) return;
+    const name = list.dataset.picker;
+    // Figures or checking with a model of their own: the per-option pickers show it in Create too.
+    if (name !== "book" && !perOptionModels) { perOptionModels = true; store("perOptionModels", true); }
+    setPickerModel(name, choice.dataset.value);
+  });
+  return { buttons, list };
 }
 // A paused job goes on with the model clicked: the one that stopped
 // answering (Retry, after the model list is asked again) or another, which
