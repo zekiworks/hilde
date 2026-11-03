@@ -1515,7 +1515,11 @@ Each page:
      "All local servers" (`local`), or Cloud (`cloud`); a model's place is the
      server the catalog routes it to, else the one an offline row names
      (`placeOf()`), and the list shows only that place's models and rows
-     (`inPlace()`). Choosing a place opens that place's model list
+     (`inPlace()`), except that with one local server as the place the other
+     local servers' models follow under "On other local servers" (`elsewhere`
+     in `renderPickerList()`; Ümit, 3 Nov: on Spark3 she saw only Qwen), so
+     picking one there makes Runs on its server (`setPickerModel()` drops the
+     switch and `pickerKind()` follows the model). Choosing a place opens that place's model list
      (`pickerKinds`); closing it unchosen takes the switch back. Cloud with no
      cloud model in the catalog (`needsProvider()`, `noCloudModel()`) opens no
      list: the switch stays and the Model box reads **Connect a provider**

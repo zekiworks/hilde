@@ -199,7 +199,10 @@ on**, **Local** (open models on your own machines, a green **Local · <server
 name>** badge with a chip) or **Cloud** (cloud providers, a purple **Cloud:
 <Provider> · Subscription** or **Cloud: <Provider> · API key** badge with a
 cloud), and **Model**, which lists only models of that kind; **Change** beside
-them opens the model list. Switching Runs on sends nothing: it opens the list
+them opens the model list. With **Runs on** set to one of your local servers,
+the list also shows the other local servers' models under **On other local
+servers**: picking one there chooses it and moves **Runs on** to its server.
+Switching Runs on sends nothing: it opens the list
 of that kind, and closing it without a choice keeps the model you had.
 Choosing Cloud while no provider is connected opens no empty list: the Model
 box reads **Connect a provider** (in Settings, which only assigns models, it

@@ -35139,13 +35139,19 @@ function renderPickerList(name, typed = false) {
   // out, not greyed. Its note under the boxes says so (IMAGES_ONLY_NOTE).
   const imagesOnly = !!picker.images;
   const models = (paperCatalog.models || []).filter((model) => inPlace(model, kind) && !(imagesOnly && model.images !== true));
+  // Runs on is one local server: the other local servers' models are listed
+  // after its own, so a model is found wherever it runs; picking one moves
+  // Runs on to its server (setPickerModel() drops the switch, pickerKind()
+  // follows the model). Ümit, 3 Nov: with Runs on Spark3 she saw only Qwen.
+  const elsewhere = mode === "model" && placeServer(kind) ? (paperCatalog.models || []).filter((model) =>
+    model.kind === "local" && !inPlace(model, kind) && !(imagesOnly && model.images !== true)) : [];
   const rows = (paperCatalog.rows || []).filter((row) => inPlace(row, kind)
     && !(imagesOnly && row.row === "offline" && row.images !== true));
   const searching = mode === "model" && models.length > PICKER_SEARCH_FROM;
   search.classList.toggle("hidden", !searching);
   if (!searching) search.value = "";
   const query = search.value.trim().toLowerCase();
-  const signature = JSON.stringify([mode, kind, models, rows, pickerValue(name), pickerValue("book"),
+  const signature = JSON.stringify([mode, kind, models, elsewhere, rows, pickerValue(name), pickerValue("book"),
     paperCatalog.first_use, paperCatalog.defaults, paperCatalog.suggestions, perOptionModels, query]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
@@ -35213,7 +35219,8 @@ function renderPickerList(name, typed = false) {
     if (fallback) nodes.push(option(fallback, ["Default"]));
     if (recent.length) nodes.push(pickerHeading(name, "recent", "Recently used"), ...recent.map((model) => option(model)));
     const rest = shown.filter((model) => model !== fallback && !recent.includes(model));
-    if (rest.length && (fallback || recent.length)) nodes.push(pickerHeading(name, "all",
+    const others = elsewhere.filter((model) => matches(model.name, model.endpoint, model.selector, modelSource(model)));
+    if (rest.length && (fallback || recent.length || others.length)) nodes.push(pickerHeading(name, "all",
       placeServer(kind) ? `All models on ${placeServer(kind)}` : MODEL_KINDS[placeKind(kind)].all));
     nodes.push(...rest.map((model) => option(model)));
     for (const row of rows) {
@@ -35234,6 +35241,8 @@ function renderPickerList(name, typed = false) {
             text:row.label, sub:row.note, offer:true, problem:!!row.problem,
             actionText:row.refused ? "Use an API key instead" : "Connect" }));
     }
+    if (others.length) nodes.push(pickerHeading(name, "elsewhere", "On other local servers"),
+                                  ...others.map((model) => option(model)));
     if (placeKind(kind) === "local")
       nodes.push(pickerOption(name, index++, { key:"add-local", action:"add-local", text:"Add local",
                                                sub:"A model server on your own machines", link:true }));
