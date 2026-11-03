@@ -25879,6 +25879,9 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 .chat-live { display:flex; align-items:center; gap:10px; min-height:42px; padding:5px 6px 5px 12px;
              background:var(--field); border:1px solid var(--accent); border-radius:8px; }
 .chat-live-wave { flex:1; min-width:0; width:100%; height:32px; }
+/* The microphone: "System default" unless one is chosen; narrow so the wave keeps the room. */
+.chat-live-mic { flex:0 1 auto; min-width:0; max-width:150px; min-height:26px; padding:2px 4px; font-size:13px;
+                 border:1px solid #5a5a5a; border-radius:6px; background:var(--field); color:var(--text); }
 .chat-live-end { flex:0 0 auto; min-height:26px; padding:2px 12px; border:1px solid #5a5a5a; border-radius:6px;
                  background:transparent; box-shadow:none; color:var(--text); font-size:13px; }
 /* A kept spoken conversation: a callout among the messages, never one of them. */
@@ -27526,6 +27529,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <!-- Talk: in the question box's place while a spoken conversation runs. -->
             <div id="chat-live" class="chat-live hidden" role="group" aria-label="Talking with Hilde">
               <canvas id="chat-live-wave" class="chat-live-wave" aria-hidden="true"></canvas>
+              <select id="chat-live-mic" class="chat-live-mic" aria-label="Microphone" title="Microphone"
+                onchange="chooseTalkMic(this.value)"></select>
               <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
               <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
             </div>
@@ -31263,10 +31268,9 @@ async function startTalk() {
   try {
     const session = await jsonRequest("/api/live/start", { method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify(chatMode === "help" ? { help:true, model } : { book:state.player.book, model }) });
-    let stream;
+    let opened;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio:{
-        echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 } });
+      opened = await openTalkMic(stored("talkMicrophone") || "");
     } catch (error) {
       end(session.session);
       chatHint("Hilde needs the microphone to talk: allow it for this page, then press Talk again.", true);
@@ -31275,20 +31279,25 @@ async function startTalk() {
     const capture = new AudioContext(), playback = new AudioContext();
     await Promise.all([capture.resume(), playback.resume()]);
     await capture.audioWorklet.addModule(URL.createObjectURL(new Blob([TALK_TAP], { type:"text/javascript" })));
-    const source = capture.createMediaStreamSource(stream), tap = new AudioWorkletNode(capture, "talk-tap");
+    const source = capture.createMediaStreamSource(opened.stream), tap = new AudioWorkletNode(capture, "talk-tap");
     const mute = capture.createGain();
     mute.gain.value = 0;
     source.connect(tap); tap.connect(mute); mute.connect(capture.destination);
     const analyser = playback.createAnalyser();
     analyser.fftSize = 512; analyser.connect(playback.destination);
-    talk = { session:session.session, scope, inRate:session.in_rate, outRate:session.out_rate, stream, capture,
+    talk = { session:session.session, scope, inRate:session.in_rate, outRate:session.out_rate, stream:opened.stream,
+             source, tap, micChoice:opened.choice, switching:false, capture,
              playback, analyser, resampler:new TalkResampler(capture.sampleRate, session.in_rate),
              pending:new Float32Array(0), preroll:[], frames:[], held:[], floorDb:null, voicedRun:0, silenceMs:0,
              speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
              scheduled:[], cut:null };
     tap.port.onmessage = (event) => talkSamples(event.data);
-    chatHint();
+    watchTalkTrack(talk, opened.stream);
+    navigator.mediaDevices.addEventListener("devicechange", onTalkDeviceChange);
+    renderTalkMics();
+    if (stored("talkMicrophone") && !opened.choice) chatHint("The microphone chosen for Talk isn't connected: it uses the system default.");
+    else chatHint();
     $("chat-compose").classList.add("hidden");
     $("chat-live").classList.remove("hidden");
     $("chat-live-status").textContent = "Talking with Hilde. Speak whenever you like; press End to stop.";
@@ -31300,6 +31309,85 @@ async function startTalk() {
     talkStarting = false;
     renderChatControls();
   }
+}
+// Talk's microphone: the system's default unless one is chosen in the strip (kept in this browser,
+// hilde.talkMicrophone; Can, 3 Nov). A chosen one that is not connected falls back to the default for now and
+// is taken again when it is plugged in; on "System default" Talk follows the system when its default changes
+// (Chrome names that device "default"), and a microphone unplugged mid-conversation falls back to the default.
+const TALK_AUDIO = { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 };
+async function openTalkMic(choice) {
+  if (choice) {
+    try {
+      return { stream:await navigator.mediaDevices.getUserMedia({ audio:{ ...TALK_AUDIO, deviceId:{ exact:choice } } }), choice };
+    } catch (error) {
+      if (error.name === "NotAllowedError") throw error;
+    }
+  }
+  return { stream:await navigator.mediaDevices.getUserMedia({ audio:TALK_AUDIO }), choice:"" };
+}
+async function talkMics() {
+  return (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput");
+}
+async function renderTalkMics() {
+  const owner = talk;
+  if (!owner) return;
+  const devices = await talkMics();
+  if (talk !== owner) return;
+  const system = devices.find((device) => device.deviceId === "default");
+  const named = system && system.label ? system.label.replace(/^Default\s*-\s*/, "") : "";
+  const options = [["", named ? `System default (${named})` : "System default"],
+    ...devices.filter((device) => device.deviceId && !["default", "communications"].includes(device.deviceId))
+      .map((device, index) => [device.deviceId, device.label || `Microphone ${index + 1}`])];
+  const select = $("chat-live-mic");
+  select.replaceChildren(...options.map(([value, label]) => new Option(label, value)));
+  select.value = owner.micChoice;
+  select.title = `Microphone: ${select.selectedOptions[0] ? select.selectedOptions[0].text : "System default"}`;
+}
+function watchTalkTrack(owner, stream) {
+  const [track] = stream.getAudioTracks();
+  if (track) track.addEventListener("ended", () => {
+    if (talk === owner && owner.stream === stream) switchTalkMic("");
+  });
+}
+// The new microphone replaces the old one under the same tap; the background is learned again.
+async function switchTalkMic(choice) {
+  const owner = talk;
+  if (!owner || owner.switching) return;
+  owner.switching = true;
+  try {
+    const opened = await openTalkMic(choice);
+    if (talk !== owner) { for (const track of opened.stream.getTracks()) track.stop(); return; }
+    const source = owner.capture.createMediaStreamSource(opened.stream);
+    owner.source.disconnect();
+    source.connect(owner.tap);
+    for (const track of owner.stream.getTracks()) track.stop();
+    Object.assign(owner, { stream:opened.stream, source, micChoice:opened.choice, floorDb:null });
+    watchTalkTrack(owner, opened.stream);
+    chatHint(choice && !opened.choice ? "That microphone isn't connected: Talk uses the system default." : "");
+  } catch (error) {
+    if (talk === owner) chatHint(`The microphone couldn't be opened: ${error.message}`, true);
+  } finally {
+    owner.switching = false;
+    renderTalkMics();
+  }
+}
+function chooseTalkMic(choice) {
+  store("talkMicrophone", choice || null);
+  switchTalkMic(choice);
+}
+async function onTalkDeviceChange() {
+  const owner = talk;
+  if (!owner || owner.switching) return;
+  const devices = await talkMics();
+  if (talk !== owner) return;
+  const preferred = stored("talkMicrophone") || "";
+  const system = devices.find((device) => device.deviceId === "default");
+  const [track] = owner.stream.getAudioTracks();
+  const group = track ? track.getSettings().groupId : "";
+  if (preferred && owner.micChoice !== preferred && devices.some((device) => device.deviceId === preferred))
+    switchTalkMic(preferred);
+  else if (!owner.micChoice && system && system.groupId && group && group !== system.groupId) switchTalkMic("");
+  else renderTalkMics();
 }
 function talkSamples(samples) {
   if (!talk) return;
@@ -31470,6 +31558,7 @@ async function endTalk() {
   if (ending.request) ending.request.abort();
   for (const source of ending.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
   for (const track of ending.stream.getTracks()) track.stop();
+  navigator.mediaDevices.removeEventListener("devicechange", onTalkDeviceChange);
   ending.capture.close(); ending.playback.close();
   $("chat-live").classList.add("hidden");
   $("chat-compose").classList.remove("hidden");

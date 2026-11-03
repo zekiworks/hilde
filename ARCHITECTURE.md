@@ -4044,8 +4044,21 @@ text, only the book's title in `LIVE_SYSTEM`. `startTalk()` asks
 `/api/live/start` for a session (`LiveSession` in `LiveRegistry`, forgotten
 after `LIVE_SESSION_SECONDS` alone), opens the microphone with the browser's
 echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave
-(`drawTalk()`: Hilde's output level in `--accent`, the listener's in `--text`)
-and **End**. Nothing said is shown while it runs.
+(`drawTalk()`: Hilde's output level in `--accent`, the listener's in `--text`),
+the microphone
+(`#chat-live-mic`), and **End**. Nothing said is shown while it runs.
+
+The microphone (`openTalkMic()`, `TALK_AUDIO`) is the system default unless
+one is chosen in `#chat-live-mic` (`chooseTalkMic()`, kept as
+`hilde.talkMicrophone`); a chosen one opens with `deviceId: {exact}` and, when
+that fails for any reason but permission, falls back to the default with a
+hint. `renderTalkMics()` lists "System default (its label)" first, then each
+input but Chrome's `default` and `communications` aliases. `switchTalkMic()`
+opens the new stream, moves the tap to it, stops the old one, and relearns the
+background (`floorDb`). On `devicechange` (`onTalkDeviceChange()`) a chosen
+microphone that is back is taken again, and on "System default" a new system
+default (the `default` entry's `groupId` differs from the track's) is
+followed; a track that ends (unplugged) falls back to the default.
 
 Turns are found in the page, with the voice test page's rules as tuned on
 3 Nov: an AudioWorklet tap, resampled to the session's `in_rate`

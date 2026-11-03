@@ -842,7 +842,11 @@ the server has a speech server, `--live-voice`; see
 for the microphone once. Then just talk: Hilde answers out loud a moment
 after you stop, in a few spoken sentences, and you can talk over her at your
 normal voice to stop her. While it runs the question box gives way to a
-moving wave and **End**; nothing of what is said shows. **End** (or opening
+moving wave, the microphone, and **End**; nothing of what is said shows. The
+microphone is the system's default (and follows it when that changes, say a
+headset plugged in) unless you pick another there: the pick switches at once
+and this browser keeps it for next time; when it isn't connected, Talk uses the
+default and says so, and takes it again once it is plugged in. **End** (or opening
 another book) ends it: your words are tidied once by the same model (misheard
 words mended, "uh"s dropped) and the conversation is kept as a box, **Spoken
 conversation**, among the messages, with Hilde's answers as far as you let her
