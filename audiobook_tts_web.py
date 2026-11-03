@@ -19216,7 +19216,7 @@ class JobQueue:
                     **({"detail": self.unavailable[consumer["id"]]} if consumer["id"] in self.unavailable else {}),
                     "status": snapshot["status"],
                     "job_id": snapshot["job_id"],
-                    **({"doing": self._doing_locked(consumer["id"])} if snapshot["status"] == "running" else {}),
+                    **({"doing": self._doing_locked(consumer)} if snapshot["status"] == "running" else {}),
                     **({"memory": memory[consumer["id"][4:]]}
                        if consumer["kind"] == "local" and consumer["id"][4:] in memory and consumer["id"].startswith("GPU-")
                        else {}),
@@ -19226,24 +19226,29 @@ class JobQueue:
                 )
             ]
 
-    def _doing_locked(self, consumer_id):
+    def _doing_locked(self, consumer):
         """What a worker a job holds really does: before and after its
         narration only held for it ("reserved", with the job's phase), and in
         its narration what its own lines said (AudiobookRun.worker_states):
         loading the model ("starting"), model loaded ("ready"), "narrating" a
-        part, "waiting_memory", or "left_out"."""
-        record = self.active.get(consumer_id) or {}
+        part, "waiting_memory", "done", "stopped", or "left_out"."""
+        record = self.active.get(consumer["id"]) or {}
         run = record.get("run")
         phase = getattr(run, "current_phase", None)
-        if phase == "narration":
-            return dict(getattr(run, "worker_states", {}).get(consumer_id) or {"state": "starting"})
-        return {"state": "reserved", "phase": phase or "", "phase_label": getattr(run, "phase_label", None) or ""}
+        if phase != "narration":
+            return {"state": "reserved", "phase": phase or "", "phase_label": getattr(run, "phase_label", None) or ""}
+        # A speech server or the one generic worker prints no worker lines:
+        # in the narration it just narrates.
+        if consumer["kind"] not in ("local", "ssh", "computer"):
+            return {"state": "narrating"}
+        return dict(getattr(run, "worker_states", {}).get(consumer["id"]) or {"state": "starting"})
 
     def text_work_snapshot(self):
-        """The text steps running now, for Settings' Text models: per model
-        server a job's text step uses, {endpoint, model, book, done, total,
-        unit}. Only the routes the step has already taken (PaperRun.local_routes),
-        so this asks no server anything."""
+        """The text steps running now, for Settings' Text models and each
+        job's Progress card: {job_id, endpoint, model, book, done, total,
+        unit} per model server a step has used (PaperRun.local_routes, so this
+        asks no server anything), or with endpoint "" for its model when it
+        used none yet (a cloud model, or before its first paragraph)."""
         with self.lock:
             records = self._active_records_locked()
         work = []
@@ -19253,10 +19258,14 @@ class JobQueue:
             if getattr(run, "current_phase", None) != "extraction" or paper is None:
                 continue
             count = getattr(run, "last_count", None) or {}
-            for model, route in dict(getattr(paper, "local_routes", None) or {}).items():
-                if route and route.get("name"):
-                    work.append({"endpoint": route["name"], "model": model, "book": record.get("document") or "",
-                                 "done": count.get("done"), "total": count.get("total"), "unit": count.get("unit") or ""})
+            routes = [(model, route["name"]) for model, route in dict(getattr(paper, "local_routes", None) or {}).items()
+                      if route and route.get("name")]
+            if not routes and getattr(paper, "model", ""):
+                routes = [(paper.model, "")]
+            for model, endpoint in routes:
+                work.append({"job_id": record.get("id"), "endpoint": endpoint, "model": model,
+                             "book": record.get("document") or "", "done": count.get("done"),
+                             "total": count.get("total"), "unit": count.get("unit") or ""})
         return work
 
     def snapshot(self):
@@ -35446,6 +35455,41 @@ function renderSummary(voiceOnly) {
   $("create-summary").replaceChildren(...rows);
 }
 
+// Where a job's text is being prepared (/api/jobs' text_work): " · on Spark3 ·
+// Qwen3.8 27B", a cloud model with its provider, or "" (Ümit, 3 Nov).
+function textWhere(jobId) {
+  const work = textWork.find((item) => item.job_id === jobId);
+  if (!work) return "";
+  const model = textModel(work.model) || {};
+  const where = work.endpoint || (model.badge && !String(model.badge).startsWith("Local") ? model.badge : "");
+  return ` · on ${[where, model.short].filter(Boolean).join(" · ")}`;
+}
+// What a job's workers really do (each one's `doing`, JobQueue._doing_locked()):
+// held for its audio while its text is prepared, then each one's own state.
+// Never "narrating" before its narration (Ümit, 3 Nov).
+function progressWorkersText(workers) {
+  if (!workers.length) return "";
+  const by = (state) => workers.filter((worker) => (worker.doing || {}).state === state);
+  const reserved = by("reserved");
+  const names = (list) => list.map((worker) => worker.label).join(", ");
+  if (reserved.length === workers.length)
+    return `${(workers[0].doing || {}).phase === "alignment" ? "Held until the book is done" : "Reserved for audio"}: `
+      + names(workers);
+  const groups = [];
+  const add = (title, list, text = (worker) => worker.label) => {
+    if (list.length) groups.push(`${title}: ${list.map(text).join(", ")}`);
+  };
+  add("Narrating", by("narrating"),
+      (worker) => worker.doing.part ? `${worker.label} (part ${worker.doing.part}/${worker.doing.parts})` : worker.label);
+  add("Loading the model", by("starting"));
+  add("Model loaded", by("ready"));
+  add("Waiting for memory", by("waiting_memory"));
+  add("Done with their parts", by("done"));
+  add("Stopped", by("stopped"));
+  add("Left out", by("left_out"));
+  add("Reserved", reserved);
+  return groups.join(" · ");
+}
 // The job this browser follows: its stages, its real counts, and an estimate
 // only from the current stage's own pace.
 function renderProgress() {
@@ -35462,7 +35506,7 @@ function renderProgress() {
       node.classList.toggle(`is-${name}`, status === name);
     node.querySelector(".stage-icon").textContent = status === "done" ? "✓" : status === "skipped" ? "–" : "";
     node.querySelector(".stage-note").textContent = status === "skipped" ? "Skipped"
-      : status === "active" ? runHistory.detail
+      : status === "active" ? runHistory.detail + (stage === "prepare" ? textWhere(currentJobId) : "")
       : status === "done" ? countText(runHistory.counts[stage]) : "";
   });
   const latest = runHistory.latest;
@@ -35478,8 +35522,7 @@ function renderProgress() {
   $("progress-detail").textContent = runHistory.current ? "" : runHistory.detail;
   // A worker left out as narration started still shows here as a warning.
   const workers = consumers.filter((consumer) => consumer.job_id === currentJobId && consumer.status !== "left_out");
-  $("progress-workers").textContent = workers.length
-    ? `Narrating on ${workers.map((worker) => worker.label).join(", ")}` : "";
+  $("progress-workers").textContent = progressWorkersText(workers);
   const run = runs.find((item) => item.job_id === currentJobId);
   const warnings = run && run.warnings ? run.warnings : [];
   $("progress-warning").textContent = warnings.map((text) => `⚠ ${text}`).join("\n");

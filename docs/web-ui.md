@@ -373,7 +373,7 @@ The progress view opens from the **Progress** tab or **View progress**, and by
 itself when a book you start begins at once. **Create another book** returns to
 **Create** with the first step empty. The view lists every job on this server
 under **Running** and **Queued**, each with its document and voice; a running
-one also names the workers narrating it, and a queued one its place in line.
+one also names the workers it holds, and a queued one its place in line.
 
 The book you follow shows five stages: **Reading the document**, **Preparing
 the text for listening**, **Generating audio**, **Aligning text and audio**,
@@ -389,6 +389,12 @@ listening: 287 of 302 paragraphs done`) all count the paragraphs finished so
 far, including those finished ahead of earlier ones, so they agree and never
 go back. A time estimate, "About N min left at the current pace", appears
 only once the current stage has made headway; there is none before.
+While **Preparing the text for listening** runs, its line also says where:
+"… · on Spark3 · Qwen3.8 27B" (or a cloud model and its provider). Under the
+bar, the book's GPUs say what they really do: "Reserved for audio: GPU 0,
+GPU 1, …" while the text is prepared (they narrate nothing yet), then
+"Narrating: GPU 0 (part 40/310) · Waiting for memory: GPU 1 · Loading the
+model: GPU 3" and so on during narration.
 
 **Stop** ends a running book after you confirm ("Stop making '<title>'?");
 what is finished is kept. **Cancel** takes a waiting one out of the queue. A

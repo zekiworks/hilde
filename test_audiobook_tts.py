@@ -13829,9 +13829,13 @@ class LiveWorkStatusTests(unittest.TestCase):
         self.assertEqual([(now[device]["status"], now[device]["doing"]) for device in ("cuda:0", "cuda:1")],
                          [("running", {"state": "reserved", "phase": "extraction", "phase_label": "Extraction"})] * 2)
         self.assertEqual((now["cuda:0"]["memory"], now["cuda:1"]["memory"]), (memory[first[4:]], memory[second[4:]]))
-        self.assertEqual(jobs.text_work_snapshot(), [{"endpoint": "Spark3", "model": "lm-studio/qwen3.8-27b",
-                                                      "book": "harness.txt", "done": 22, "total": 202,
-                                                      "unit": "paragraph"}])
+        self.assertEqual(jobs.text_work_snapshot(), [{"job_id": record["id"], "endpoint": "Spark3",
+                                                      "model": "lm-studio/qwen3.8-27b", "book": "harness.txt",
+                                                      "done": 22, "total": 202, "unit": "paragraph"}])
+        # A cloud model uses no local server: the step still names its model.
+        run.paper_run.model, run.paper_run.local_routes = "openai/gpt-test", {}
+        self.assertEqual([(item["endpoint"], item["model"]) for item in jobs.text_work_snapshot()],
+                         [("", "openai/gpt-test")])
 
         # Its narration: what each worker's lines said; one not heard from yet loads the model.
         run.set_phase("narration", "Narration")
@@ -13849,6 +13853,23 @@ class LiveWorkStatusTests(unittest.TestCase):
         now = workers()
         self.assertEqual((now["cuda:1"]["status"], "doing" in now["cuda:1"], now["cuda:1"]["memory"]),
                          ("idle", False, memory[second[4:]]))
+
+    def test_a_speech_server_narrating_is_never_said_to_load_a_model(self):
+        jobs = web.JobQueue(web.audiobook_consumers(
+            {"source": "server", "server": "http://speech.test", "server_model": "tts"}))
+        self.addCleanup(jobs.shutdown)
+        record, _ = JobQueueTests.reserve(self, jobs, "spoken")
+        run = JobQueueTests.ControlledRun("spoken.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        run.set_phase("extraction", "Extraction")
+        [worker] = jobs.public_consumers_snapshot()
+        self.assertEqual(worker["doing"]["state"], "reserved")
+        # It prints no worker lines: in the narration it narrates.
+        run.set_phase("narration", "Narration")
+        [worker] = jobs.public_consumers_snapshot()
+        self.assertEqual(worker["doing"], {"state": "narrating"})
+        run.close(0)
 
     def test_gpu_memory_is_read_from_nvidia_smi_at_most_every_few_seconds(self):
         answer = subprocess.CompletedProcess([], 0, "GPU-aaaa, 41, 97887\nGPU-bbbb, 1430, 97887\nnot a GPU line\n", "")
