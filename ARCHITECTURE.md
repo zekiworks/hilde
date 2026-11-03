@@ -2345,8 +2345,12 @@ wait while the session runs (status `helping`); every exit or failure lets go
 fenced on it at the moment the worker would be spawned, and output is sent
 only under the pairing that made it, so Stop helping (or a new pairing) never
 starts a worker from a poll already on its way and never sends old output with
-new credentials. Teardown is scoped by generation too (`_stop_sessions(which)`):
-Stop and a new pairing end only older pairings' workers, and a late 401/403 to
+new credentials. Teardown is scoped by generation too: Stop and a new pairing
+choose the older pairings' workers in the same locked step that moves the
+generation on (`_superseded()`), and Stop deletes the saved record in that step
+(a pairing begun later saves its own under the same lock), so however late
+their cleanup runs it never ends a newer worker or deletes a newer record;
+`_stop_sessions(which)` ends one generation's. A late 401/403 to
 a pairing already replaced ends only that pairing's own, never the current
 one's workers, reservations or record. Each send attempt, retries included, is
 admitted under the link lock against its batch's generation, so none starts

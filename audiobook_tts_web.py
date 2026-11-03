@@ -2752,8 +2752,8 @@ class ComputerLink:
             self.offered = ""
             self.lost.clear()
             self._run(self._check, "checking")
-            current = self.generation
-        self._stop_sessions(lambda made: made != current)
+            superseded = self._superseded()
+        self._terminate(superseded)
 
     def confirm(self, fingerprint):
         """The user saw the same fingerprint on the other Hilde: trust that one
@@ -2775,10 +2775,12 @@ class ComputerLink:
             self.saved = {"url": "", "name": "", "ca": "", "token": ""}
             self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
             self.lost.clear()
-            current = self.generation
-        self._stop_sessions(lambda made: made != current)
-        with contextlib.suppress(OSError):
-            self.path.unlink()
+            superseded = self._superseded()
+            # Forgotten in the same step: a pairing begun after it saves its
+            # record under this lock too (_request()), so it is never deleted.
+            with contextlib.suppress(OSError):
+                self.path.unlink()
+        self._terminate(superseded)
         if saved["token"]:
             with contextlib.suppress(OSError, ValueError):
                 self._call("/api/computers/forget", {}, saved=saved, timeout=10)
@@ -3028,11 +3030,21 @@ class ComputerLink:
             self.outbox.put((generation, {"session": session, key: line.rstrip("\r\n")}))
         stream.close()
 
+    def _superseded(self):
+        """Under self.lock, in the step that moved the generation on: the
+        workers of every older pairing, chosen now, so a pairing begun after
+        this step is never among them however late they are ended."""
+        return [item["process"] for item in self.sessions.values() if item["generation"] < self.generation]
+
     def _stop_sessions(self, which):
         """End the sessions whose pairing generation `which` accepts, never
         another pairing's."""
         with self.lock:
             processes = [item["process"] for item in self.sessions.values() if which(item["generation"])]
+        self._terminate(processes)
+
+    @staticmethod
+    def _terminate(processes):
         for process in processes:
             with contextlib.suppress(OSError):
                 process.terminate()

@@ -13551,6 +13551,56 @@ for line in sys.stdin:
                 self.wait_for(lambda: process.poll() is not None and released == ["new-session"],
                               "pairing B's worker did not end with its own Stop")
 
+    def test_an_old_stop_held_after_its_step_ends_no_newer_worker_and_deletes_no_newer_record(self):
+        held, release, started = threading.Event(), threading.Event(), set()
+
+        def call(path, body=None, saved=None, timeout=30):
+            token = (saved or link.saved)["token"]
+            if path == "/api/computers/poll" and token not in started:
+                started.add(token)
+                return {"messages": [self.start(f"{token}-session")]}
+            time.sleep(0.05)
+            return {"messages": []}
+
+        link = self.helper_link(worker_command=lambda *args: [sys.executable, "-c", "import time; time.sleep(30)"])
+        link._call = call
+        terminate = link._terminate
+
+        def held_terminate(processes):
+            # The first ending is the old Stop's: hold it after its step.
+            if not held.is_set():
+                held.set()
+                release.wait(10)
+            terminate(processes)
+
+        link._terminate = held_terminate
+        # Pairing A runs a worker and has its record saved.
+        with link.lock:
+            link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "old"}
+            link._save()
+        link._run(link._serve, "connected")
+        self.wait_for(lambda: "old-session" in link.sessions, "pairing A's worker never started")
+        old = link.sessions["old-session"]["process"]
+        # A's Stop takes its step, then is held before ending anything...
+        stopper = threading.Thread(target=link.stop)
+        stopper.start()
+        self.assertTrue(held.wait(5))
+        # ...while pairing B saves its record and starts a worker...
+        with link.lock:
+            link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "new"}
+            link._save()
+        link._run(link._serve, "connected")
+        self.wait_for(lambda: "new-session" in link.sessions, "pairing B's worker never started")
+        new = link.sessions["new-session"]["process"]
+        # ...and only then does A's Stop go on.
+        release.set()
+        stopper.join(10)
+        self.wait_for(lambda: old.poll() is not None, "pairing A's worker was not ended by its Stop")
+        time.sleep(0.2)
+        self.assertIsNone(new.poll())
+        self.assertEqual(json.loads(link.path.read_text(encoding="utf-8"))["token"], "new")
+        self.assertEqual((link.saved["token"], link.snapshot()["state"]), ("new", "connected"))
+
     def test_a_cancelled_batch_makes_no_send_attempt_after_stop_and_the_new_pairings_output_goes_out(self):
         attempts, held, release = [], threading.Event(), threading.Event()
 
