@@ -80,6 +80,7 @@ import yaml
 from markdown_it import MarkdownIt
 
 from audiobook_tts import (
+    NARRATION_MIN_FREE_MIB,
     RELAY_KEYS_ENV,
     VOICE_DESCRIPTION_FILE,
     VOICE_PREVIEW_FILE,
@@ -524,6 +525,13 @@ SAVED_LINE = re.compile(r"^Saved voice: (.+) \([\d.]+s, \d+ Hz\)$")
 LEFT_OUT_LINE = re.compile(r"^Narration worker left out: (.+?): (.+)$")
 # The reason the narration command gives when it stops with an error.
 NARRATION_ERROR_LINE = re.compile(r"^audiobook_tts\.py: error: (.+)$")
+# One worker's own line in a narration ("[<label>] …"), and what Settings
+# shows from it: its model loaded ("Ready"), the part it narrates
+# ("Generating chunks 3/20", batches "3,4/20"), or that it waits for memory
+# ("1.4 GiB free; waiting for 6 GiB…", or "Out of GPU memory…").
+WORKER_LINE = re.compile(r"^\[(.+?)\] (.+)$")
+NARRATING_LINE = re.compile(r"^Generating chunks (\d+)[\d,]*/(\d+)$")
+MEMORY_WAIT_LINE = re.compile(r"^([\d.]+) GiB free; waiting for (\d+) GiB")
 READER_BLOCK_PATTERN = re.compile(
     r"^<!-- audiobook-tts:block=(\d+) -->[ \t]*$",
     flags=re.MULTILINE,
@@ -1597,6 +1605,40 @@ def audiobook_consumers(clone_model, devices=None, nodes=()):
     ]
     consumers.extend(remote_consumers(nodes))
     return tuple(consumers)
+
+
+# How long Settings' GPU memory figures are reused (gpu_memory()).
+GPU_MEMORY_SECONDS = 5
+_GPU_MEMORY = {"at": float("-inf"), "value": {}}
+_GPU_MEMORY_LOCK = threading.Lock()
+
+
+def gpu_memory():
+    """Free and total memory of each GPU, by UUID (no "GPU-"), in GiB to a
+    tenth: {uuid: {"free_gib", "total_gib"}}, from nvidia-smi at most every
+    GPU_MEMORY_SECONDS, {} without it. For Settings: what each GPU has free
+    now, whoever uses it. nvidia-smi opens no CUDA context."""
+    with _GPU_MEMORY_LOCK:
+        if time.monotonic() - _GPU_MEMORY["at"] < GPU_MEMORY_SECONDS:
+            return _GPU_MEMORY["value"]
+        value = {}
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=uuid,memory.free,memory.total", "--format=csv,noheader,nounits"],
+                check=True, capture_output=True, text=True, timeout=10)
+            lines = result.stdout.splitlines()
+        except (OSError, subprocess.SubprocessError):
+            lines = []
+        for line in lines:
+            parts = [part.strip() for part in line.split(",")]
+            try:
+                value[parts[0].removeprefix("GPU-")] = {"free_gib": round(int(parts[1]) / 1024, 1),
+                                                        "total_gib": round(int(parts[2]) / 1024, 1)}
+            except (IndexError, ValueError):
+                continue
+        _GPU_MEMORY.update(at=time.monotonic(), value=value)
+        return value
+
 
 
 def local_device_id(choice):
@@ -19161,7 +19203,11 @@ class JobQueue:
         """Return each worker's device and state without hosts or paths.
 
         `kind` is "node" for a workers.yaml node, else "local" (this
-        machine's GPUs, its one generic worker, or the speech server)."""
+        machine's GPUs, its one generic worker, or the speech server). A
+        worker a job holds says what it really does (`doing`, _doing_locked());
+        a GPU of this machine says its free and total memory (`memory`)."""
+        consumers = self.consumers
+        memory = (gpu_memory() if any(str(item["id"]).startswith("GPU-") for item in consumers) else {})
         with self.lock:
             return [
                 {
@@ -19170,11 +19216,48 @@ class JobQueue:
                     **({"detail": self.unavailable[consumer["id"]]} if consumer["id"] in self.unavailable else {}),
                     "status": snapshot["status"],
                     "job_id": snapshot["job_id"],
+                    **({"doing": self._doing_locked(consumer["id"])} if snapshot["status"] == "running" else {}),
+                    **({"memory": memory[consumer["id"][4:]]}
+                       if consumer["kind"] == "local" and consumer["id"][4:] in memory and consumer["id"].startswith("GPU-")
+                       else {}),
                 }
                 for consumer, snapshot in zip(
                     self.consumers, self.consumers_snapshot(), strict=True
                 )
             ]
+
+    def _doing_locked(self, consumer_id):
+        """What a worker a job holds really does: before and after its
+        narration only held for it ("reserved", with the job's phase), and in
+        its narration what its own lines said (AudiobookRun.worker_states):
+        loading the model ("starting"), model loaded ("ready"), "narrating" a
+        part, "waiting_memory", or "left_out"."""
+        record = self.active.get(consumer_id) or {}
+        run = record.get("run")
+        phase = getattr(run, "current_phase", None)
+        if phase == "narration":
+            return dict(getattr(run, "worker_states", {}).get(consumer_id) or {"state": "starting"})
+        return {"state": "reserved", "phase": phase or "", "phase_label": getattr(run, "phase_label", None) or ""}
+
+    def text_work_snapshot(self):
+        """The text steps running now, for Settings' Text models: per model
+        server a job's text step uses, {endpoint, model, book, done, total,
+        unit}. Only the routes the step has already taken (PaperRun.local_routes),
+        so this asks no server anything."""
+        with self.lock:
+            records = self._active_records_locked()
+        work = []
+        for record in records:
+            run = record.get("run")
+            paper = getattr(run, "paper_run", None)
+            if getattr(run, "current_phase", None) != "extraction" or paper is None:
+                continue
+            count = getattr(run, "last_count", None) or {}
+            for model, route in dict(getattr(paper, "local_routes", None) or {}).items():
+                if route and route.get("name"):
+                    work.append({"endpoint": route["name"], "model": model, "book": record.get("document") or "",
+                                 "done": count.get("done"), "total": count.get("total"), "unit": count.get("unit") or ""})
+        return work
 
     def snapshot(self):
         with self.lock:
@@ -20921,6 +21004,9 @@ class AudiobookRun(Run):
         # warnings its card shows, and their pool IDs.
         self.worker_warnings = []
         self.left_out = set()
+        # Each narration worker's state from its own lines (inspect()), by
+        # worker ID, for Settings (JobQueue._doing_locked()).
+        self.worker_states = {}
         # Why the narration command stopped, as it said (inspect()).
         self.narration_error = ""
 
@@ -20931,6 +21017,7 @@ class AudiobookRun(Run):
         """Leave one of this job's narration workers out: why, and which
         narrate now, in its log, on its card, and in the server's log."""
         self.left_out.add(worker_key(worker))
+        self.worker_states[worker.get("id")] = {"state": "left_out"}
         remaining = [
             worker_name(item) for item in self.values.get("workers") or ()
             if worker_key(item) not in self.left_out
@@ -20943,6 +21030,11 @@ class AudiobookRun(Run):
         self.publish("log", f"Warning: {text} [{worker_key(worker)}]\n")
         history_log(self.job_id, f"narration worker {worker_key(worker)} left out: {reason}")
 
+    def set_phase(self, phase, label):
+        if phase == "narration":
+            self.worker_states = {}
+        super().set_phase(phase, label)
+
     def inspect(self, line):
         super().inspect(line)
         left = LEFT_OUT_LINE.match(line)
@@ -20952,6 +21044,23 @@ class AudiobookRun(Run):
         error = NARRATION_ERROR_LINE.match(line)
         if error is not None:
             self.narration_error = error.group(1)
+        said = WORKER_LINE.match(line)
+        if said is not None:
+            label, text = said.groups()
+            narrating, waiting = NARRATING_LINE.match(text), MEMORY_WAIT_LINE.match(text)
+            state = (
+                {"state": "ready"} if text == "Ready"
+                else {"state": "narrating", "part": int(narrating.group(1)), "parts": int(narrating.group(2))}
+                if narrating
+                else {"state": "waiting_memory", "free_gib": float(waiting.group(1)), "need_gib": int(waiting.group(2))}
+                if waiting
+                else {"state": "waiting_memory", "free_gib": None, "need_gib": NARRATION_MIN_FREE_MIB // 1024}
+                if text.startswith("Out of GPU memory")
+                else None
+            )
+            key = self._worker_labelled(label).get("id")
+            if state is not None and key:
+                self.worker_states[key] = state
 
     def _worker_labelled(self, label):
         """The worker of this job that the narration command calls `label`:
@@ -21958,6 +22067,8 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": self.server.jobs.snapshot(),
                     "recent": self.server.jobs.recent_snapshot(),
                     "consumers": self.server.jobs.public_consumers_snapshot(),
+                    # The text steps running now and the model server each uses (Settings' Text models).
+                    "text_work": self.server.jobs.text_work_snapshot(),
                     # The device of a voice design started since the last poll.
                     "configuration": self.configuration_payload(),
                     # Whether this browser may change devices, so an approval shows without a reload.
@@ -27244,6 +27355,8 @@ const TRASH_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stro
 const PENCIL_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" '
   + 'stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3L5 14H2v-3z"/></svg>';
 let state = null, facts = {}, assets = {}, caps = {}, jobs = [], runs = [], consumers = [];
+// The books' text steps running now and the model server each uses (/api/jobs' text_work).
+let textWork = [];
 // Jobs this server process finished, newest first: done, failed, or stopped.
 let recent = [];
 let configuration = {}, voices = [], books = [];
@@ -35885,6 +35998,7 @@ async function refreshJobs() {
     if (restart) { await startPage(); return; }
     jobs = current.queue || []; runs = current.runs || [];
     consumers = current.consumers || []; recent = current.recent || [];
+    textWork = current.text_work || [];
     configuration = current.configuration || configuration;
     if (current.devices) applyDeviceAccess(current.devices);
     followMaking();
@@ -36850,7 +36964,7 @@ function deviceName(value) {
 // off in Settings or not found is listed but can't be chosen. Shown with two
 // devices or more; the job poll keeps it current, but never rebuilds a menu
 // that is open. Create's summary names a chosen device.
-const DEVICE_DOING = { idle:"free", running:"narrating", reserved:"designing a voice", off:"off in Settings",
+const DEVICE_DOING = { idle:"free", reserved:"designing a voice", off:"off in Settings",
                        left_out:"left out of the current book", missing:"not found", offline:"not connected",
                        helping:"narrating for another Hilde" };
 let deviceChoicesSignature = "";
@@ -36859,14 +36973,14 @@ function renderDeviceChoices() {
   const gpus = (machine.devices || []).filter((device) => device.kind === "cuda");
   const workers = consumers.filter((worker) => worker.kind === "local" && worker.device);
   const nodes = consumers.filter((worker) => (worker.kind === "node" || worker.kind === "computer") && worker.choice);
-  const signature = JSON.stringify([gpus, workers.map((worker) => [worker.device, worker.status]),
-    nodes.map((worker) => [worker.choice, worker.label, worker.status, worker.shared]),
+  const signature = JSON.stringify([gpus, workers.map((worker) => [worker.device, worker.status, worker.doing]),
+    nodes.map((worker) => [worker.choice, worker.label, worker.status, worker.shared, worker.doing]),
     state.audiobook.device, state.voice.device, configuration.clone, configuration.design]);
   if (signature === deviceChoicesSignature) return;
   deviceChoicesSignature = signature;
   const doing = (gpu) => {
     const worker = workers.find((item) => item.device === gpu.device);
-    return worker ? DEVICE_DOING[worker.status] || worker.status : "";
+    return !worker ? "" : worker.status === "running" ? workerNow(worker, false) : DEVICE_DOING[worker.status] || worker.status;
   };
   const usable = (gpu) => !["off in Settings", "not found", ""].includes(doing(gpu));
   const fill = (group, id, show, auto, blocked, extra = []) => {
@@ -36884,7 +36998,7 @@ function renderDeviceChoices() {
     for (const worker of extra) {
       // A paired computer that cannot take work says why (not connected, another model).
       const now = worker.status === "offline" ? worker.detail || DEVICE_DOING.offline
-        : DEVICE_DOING[worker.status] || worker.status;
+        : worker.status === "running" ? workerNow(worker, false) : DEVICE_DOING[worker.status] || worker.status;
       const option = new Option(`${worker.label}${now ? ` · ${now}` : ""}${worker.shared ? "" : " · only when chosen"}`,
                                 worker.choice);
       option.disabled = (worker.status === "off" || worker.status === "offline") && worker.choice !== chosen;
@@ -36901,7 +37015,8 @@ function renderDeviceChoices() {
       : !gpu ? `${deviceName(chosen)} was not found by the last device check: choose another.`
       : blocked(gpu) ? `${deviceName(chosen)} does not narrate now (${doing(gpu) || "no narration worker"}): `
         + "choose another GPU, or turn it on in Settings › Machines and devices."
-      : group === "audiobook" && doing(gpu) === "narrating" ? `${deviceName(chosen)} is narrating: your book waits for it.`
+      : group === "audiobook" && (workers.find((item) => item.device === gpu.device) || {}).status === "running"
+        ? `${deviceName(chosen)} is busy with a book (${doing(gpu)}): yours waits for it.`
       : "";
     $(`${id}-note`).textContent = note;
     $(`${id}-note`).classList.toggle("hidden", !note);
@@ -36962,9 +37077,26 @@ function renderWorkers() {
 // only when the server says so; nothing is assumed from another job.
 let machinesSignature = "";
 const DEVICE_KINDS = { cuda:"CUDA GPU", mps:"Apple GPU (MPS)", cpu:"CPU" };
-const WORKER_STATES = { idle:"idle", running:"narrating", reserved:"held while a voice is designed",
+const WORKER_STATES = { idle:"idle", reserved:"held while a voice is designed",
                         off:"off, excluded in settings", left_out:"left out of the current book: it could not start",
                         missing:"not found by the last device check" };
+// What a worker that a job holds really does (/api/jobs' doing, JobQueue._doing_locked()),
+// and a GPU's free and total memory: "narrating" only while it narrates a part
+// (Ümit, 3 Nov: Settings said "narrating" on every GPU while the book's text was
+// still being prepared).
+function workerNow(worker, memory = true) {
+  const doing = worker.doing || {};
+  const text = worker.status !== "running" ? WORKER_STATES[worker.status] || worker.status
+    : doing.state === "narrating" ? `narrating · part ${doing.part}/${doing.parts}`
+    : doing.state === "waiting_memory" ? "waiting for memory · "
+      + (doing.free_gib == null ? "" : `${doing.free_gib} GiB free, `) + `${doing.need_gib} GiB needed`
+    : doing.state === "ready" ? "model loaded · waiting for its next part"
+    : doing.state === "starting" ? "loading the model"
+    : doing.state === "left_out" ? WORKER_STATES.left_out
+    : doing.phase === "alignment" ? "reserved · word alignment"
+    : "reserved · waiting for text";
+  return text + (memory && worker.memory ? ` · ${worker.memory.free_gib} of ${worker.memory.total_gib} GiB free` : "");
+}
 // A device of another machine: workers.yaml names it, nothing more.
 function nodeDevice(value) {
   return { device:value, kind:value.startsWith("cuda:") ? "cuda" : value, name:"", memory:"", id:"" };
@@ -37000,7 +37132,7 @@ function deviceItem(device, worker, own, reported) {
     line.className = "device-meta"; line.textContent = "model and ID not reported";
     item.append(line);
   }
-  const doing = worker ? WORKER_STATES[worker.status] || worker.status : "";
+  const doing = worker ? workerNow(worker) : "";
   if (own) {
     const label = document.createElement("label");
     label.className = "check";
@@ -37167,10 +37299,14 @@ function renderModelServers(choices) {
     const name = document.createElement("span");
     name.className = "server-name"; name.textContent = endpoint.name;
     name.title = localServerLabel(endpoint.server);
-    const status = endpoint.off ? "off" : endpoint.running ? "on" : "down";
+    // The server a book's text step runs on says so, with its progress (Ümit, 3 Nov).
+    const work = textWork.find((item) => item.endpoint === endpoint.name);
+    const status = endpoint.off ? "off" : work || endpoint.running ? "on" : "down";
     const state = document.createElement("span");
     state.className = "server-state"; state.dataset.state = status;
-    state.textContent = status === "off" ? "off on this device" : status === "on" ? "answering" : "not answering";
+    state.textContent = status === "off" ? "off on this device"
+      : work ? `preparing ${work.book}` + (work.total ? ` · ${work.done}/${work.total}${work.unit ? ` ${work.unit}s` : ""}` : "")
+      : status === "on" ? "answering · idle" : "not answering";
     const label = document.createElement("label");
     label.className = "check";
     const box = document.createElement("input");
@@ -37192,7 +37328,7 @@ function renderMachines(force = false) {
   const manage = !!caps.manage_workers;
   const models = (paperCatalog.models || []).length;
   const choices = MODEL_CHOICES.map(([label, name]) => [label, modelHome(pickerChoice(name)), name]);
-  const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes,
+  const signature = JSON.stringify([manage, machine, consumers, configuration, workerNodes, textWork,
     paperCatalog.loaded, paperCatalog.error, models, paperCatalog.endpoints, choices, deviceAccess]);
   if (!force && signature === machinesSignature) return;
   machinesSignature = signature;

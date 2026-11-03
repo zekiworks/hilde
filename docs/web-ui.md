@@ -1340,6 +1340,11 @@ change it. The groups:
   it says why: "GPUs unknown: the device check failed on this server; its
   log says why." (the reason itself stays in the server's log), or that the
   server was started with `CUDA_VISIBLE_DEVICES` hiding some or all of them.
+  Each GPU's narration worker says what it really does, with the GPU's free and
+  total memory: "idle", "reserved · waiting for text" while a book it is held
+  for is still having its text prepared, "loading the model", "narrating ·
+  part 40/310", "waiting for memory · 1.4 GiB free, 6 GiB needed", or "model
+  loaded · waiting for its next part"; "narrating" only while it narrates.
   On the server's own machine
   each narration worker has a box: untick it and it takes no book until ticked
   again (applies now). With two narration devices or more, two menus under it
@@ -1353,7 +1358,8 @@ change it. The groups:
   says so under the menu; and **Design my voices on**, **The GPU
   with the most free memory** or one GPU. **Text models** lists the model
   servers added under **Providers**, one line each: its name (the address
-  shows when you point at it), whether it answers, and **Use**: untick it and,
+  shows when you point at it), whether it answers ("answering · idle"), or
+  "preparing <book> · 22/202 paragraphs" while a book's text is prepared on it, and **Use**: untick it and,
   for this browser only, Hilde neither asks that server nor sends it your text;
   it shows as "off on this device" in **Providers** and in every **Runs on**
   list until ticked again (a model two servers offer then runs on the other).

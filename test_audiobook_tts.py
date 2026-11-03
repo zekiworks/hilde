@@ -13743,6 +13743,99 @@ for line in sys.stdin:
                       "its worker or its copy of the voice stayed")
 
 
+class LiveWorkStatusTests(unittest.TestCase):
+    """What Settings › Machines and devices says each GPU and model server
+    really does (Ümit, 3 Nov: every GPU said "narrating" while the book's
+    text was still being prepared). No model, no GPU, no process."""
+
+    CLONE = {"source": "local", "model": "/local/Base", "allow_downloads": False}
+    GPUS = ("GPU-0a0a0a0a-1111-2222-3333-444444444444", "GPU-1b1b1b1b-1111-2222-3333-444444444444")
+
+    def test_a_workers_state_comes_from_its_own_narration_lines(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        storage = web.SharedStorage(Path(temporary.name))
+        storage.ensure()
+        first, second = self.GPUS
+        run = web.AudiobookRun({"workers": [{"kind": "local", "id": first, "device": "cuda:0"},
+                                            {"kind": "local", "id": second, "device": "cuda:1"}]},
+                               storage, "document-version", "voice-version", "j" * 64)
+        run.set_phase("narration", "Narration")
+        run.inspect(f"[Local {first}] Ready\n")
+        self.assertEqual(run.worker_states[first], {"state": "ready"})
+        run.inspect(f"[Local {first}] Generating chunks 3,4/20\n")
+        run.inspect(f"[Local {second}] 1.4 GiB free; waiting for 6 GiB, checked every minute\n")
+        run.inspect(f"[Local {second}] Loading the speech model\n")  # a worker's own log line changes nothing
+        self.assertEqual(run.worker_states, {
+            first: {"state": "narrating", "part": 3, "parts": 20},
+            second: {"state": "waiting_memory", "free_gib": 1.4, "need_gib": 6}})
+        run.inspect(f"[Local {first}] Out of GPU memory; chunks 3,4 return to the queue, and the GPU is checked again\n")
+        self.assertEqual(run.worker_states[first], {"state": "waiting_memory", "free_gib": None, "need_gib": 6})
+        # A new narration (a retry) starts from nothing it said before.
+        run.set_phase("narration", "Narration")
+        self.assertEqual(run.worker_states, {})
+
+    def test_the_queue_says_reserved_before_narration_and_names_the_server_preparing_the_text(self):
+        first, second = self.GPUS
+        jobs = web.JobQueue(web.audiobook_consumers(self.CLONE, [
+            {"value": "cuda:0", "label": "CUDA 0", "uuid": first[4:]},
+            {"value": "cuda:1", "label": "CUDA 1", "uuid": second[4:]}]))
+        self.addCleanup(jobs.shutdown)
+        memory = {first[4:]: {"free_gib": 95.5, "total_gib": 95.6}, second[4:]: {"free_gib": 1.4, "total_gib": 95.6}}
+        patch = mock.patch.object(web, "gpu_memory", return_value=memory)
+        patch.start()
+        self.addCleanup(patch.stop)
+        record, _ = JobQueueTests.reserve(self, jobs, "harness")
+        run = JobQueueTests.ControlledRun("harness.mp3")
+        jobs.commit(record, run)
+        self.assertTrue(run.started.wait(1))
+        workers = lambda: {item["device"]: item for item in jobs.public_consumers_snapshot() if item["kind"] == "local"}
+
+        # The text step: both GPUs are held for the book, and say so; neither narrates.
+        run.set_phase("extraction", "Extraction")
+        run.paper_run = web.PaperRun.__new__(web.PaperRun)
+        run.paper_run.model = "lm-studio/qwen3.8-27b"
+        run.paper_run.local_routes = {"lm-studio/qwen3.8-27b": {"name": "Spark3", "server": "http://spark3"}}
+        run.publish("progress", {"done": 22, "total": 202, "unit": "paragraph"})
+        now = workers()
+        self.assertEqual([(now[device]["status"], now[device]["doing"]) for device in ("cuda:0", "cuda:1")],
+                         [("running", {"state": "reserved", "phase": "extraction", "phase_label": "Extraction"})] * 2)
+        self.assertEqual((now["cuda:0"]["memory"], now["cuda:1"]["memory"]), (memory[first[4:]], memory[second[4:]]))
+        self.assertEqual(jobs.text_work_snapshot(), [{"endpoint": "Spark3", "model": "lm-studio/qwen3.8-27b",
+                                                      "book": "harness.txt", "done": 22, "total": 202,
+                                                      "unit": "paragraph"}])
+
+        # Its narration: what each worker's lines said; one not heard from yet loads the model.
+        run.set_phase("narration", "Narration")
+        run.worker_states = {first: {"state": "narrating", "part": 3, "parts": 20}}
+        now = workers()
+        self.assertEqual((now["cuda:0"]["doing"], now["cuda:1"]["doing"]),
+                         ({"state": "narrating", "part": 3, "parts": 20}, {"state": "starting"}))
+        self.assertEqual(jobs.text_work_snapshot(), [])
+
+        # Done: free GPUs say only their memory.
+        run.close(0)
+        deadline = time.monotonic() + 5
+        while jobs.busy_consumer_ids() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        now = workers()
+        self.assertEqual((now["cuda:1"]["status"], "doing" in now["cuda:1"], now["cuda:1"]["memory"]),
+                         ("idle", False, memory[second[4:]]))
+
+    def test_gpu_memory_is_read_from_nvidia_smi_at_most_every_few_seconds(self):
+        answer = subprocess.CompletedProcess([], 0, "GPU-aaaa, 41, 97887\nGPU-bbbb, 1430, 97887\nnot a GPU line\n", "")
+        with mock.patch.object(web, "_GPU_MEMORY", {"at": float("-inf"), "value": {}}), \
+                mock.patch.object(web.subprocess, "run", return_value=answer) as smi:
+            first, again = web.gpu_memory(), web.gpu_memory()
+        self.assertEqual(first, {"aaaa": {"free_gib": 0.0, "total_gib": 95.6}, "bbbb": {"free_gib": 1.4, "total_gib": 95.6}})
+        self.assertIs(again, first)
+        self.assertEqual(smi.call_count, 1)
+        # Without nvidia-smi (a Mac, a CPU-only machine): no figures, no error.
+        with mock.patch.object(web, "_GPU_MEMORY", {"at": float("-inf"), "value": {}}), \
+                mock.patch.object(web.subprocess, "run", side_effect=FileNotFoundError("nvidia-smi")):
+            self.assertEqual(web.gpu_memory(), {})
+
+
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else
     reported by its server, else one small test picture, found out in the
