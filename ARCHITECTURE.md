@@ -960,11 +960,10 @@ call: a written one gives the part its narration (`text`), `summary`, and
 entries to the books, sorted together by `modified` (for a book being made,
 `at`): `voices` empty, `has_text` false, `thumbnail` from the stage's PDF,
 and `making` (`making_progress()`: `status` `running`, `queued`, or `stopped`
-(stopped, failed, canceled, or unknown to this process), `phase`, and
-`percent`, the current phase's `Run.last_count`, the progress view's count,
-else the share of batches written). A published one, or one whose job is
-`done`, is not listed. The card (`bookStatus()` kind `making`) reads
-**In progress · N%** or **Stopped · N%** in the New chip's gray, has no play
+(stopped, failed, canceled, or unknown to this process) and `phase`; no count:
+how far it is shows on Progress only, Ümit, 3 Nov). A published one, or one
+whose job is `done`, is not listed. The card (`bookStatus()` kind `making`)
+reads **In progress** or **Stopped** in the New chip's gray, has no play
 button (Space opens it), and **⋯** holds **Delete…** alone. `openAudiobook()`
 hands a making id to `openMaking()`: no audio, `readerMaking` set,
 `#book-view.making` hiding `.listen-bar`, `.player-dock`, and Back to reading

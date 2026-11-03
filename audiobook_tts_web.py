@@ -5164,7 +5164,7 @@ def mark_place(anchor, units, chosen=None):
 # A new book's job (Create, adapted) is readable once its document has been
 # converted, its first step: the job writes MAKING_FILE into its stage, and
 # until the book is published the Library lists it as "making-<job id>"
-# ("In progress · N%", no play button), its reading view shows the paper's own
+# ("In progress" or "Stopped", no play button; how far it is shows on Progress), its reading view shows the paper's own
 # text and figures (no player), and Ask Hilde answers about it from the stage:
 # the paper's text at once, each part's narration, summary and tags as its
 # batch's checkpoint is written. Its conversation (chat.json, 0600, and
@@ -5396,30 +5396,18 @@ def making_passages(stage, marker):
     return current, list(blocks)
 
 
-def making_progress(jobs, stage, marker):
-    """How far a book being made is: its job's `status` ("running",
+def making_progress(jobs, stage):
+    """Where a book being made stands: its job's `status` ("running",
     "queued", "done", or "stopped": stopped, failed, or no longer known to
-    this server), `phase`, and `percent`, the current phase's real count
-    (the progress view's), else the share of its parts prepared."""
-    state = jobs.making_state(stage.name) if jobs is not None else None
-    status = (state or {}).get("status")
-    count = (state or {}).get("count") or {}
-    percent = None
-    if isinstance(count.get("total"), int) and count["total"] > 0:
-        percent = min(100, count["done"] * 100 // count["total"])
-    if percent is None:
-        try:
-            total = len(_making_document(stage, marker)[0])
-        except (OSError, UnicodeError, ValueError):
-            total = 0
-        prepared = len(list((stage / "extraction" / "paragraph-checkpoints").glob("*.json")))
-        percent = min(100, prepared * 100 // total) if total else 0
+    this server) and `phase`. How far it is shows on Progress only (Ümit,
+    3 Nov)."""
+    state = (jobs.making_state(stage.name) if jobs is not None else None) or {}
+    status = state.get("status")
     return {
         "job": stage.name,
         "status": "running" if status == "running" else "queued" if status in ("preparing", "queued")
         else "done" if status == "done" else "stopped",
-        "phase": (state or {}).get("phase") or "",
-        "percent": percent,
+        "phase": state.get("phase") or "",
     }
 
 
@@ -5437,7 +5425,7 @@ def making_catalog(storage, jobs=None):
                 continue
         except (OSError, ValueError):
             continue
-        progress = making_progress(jobs, stage, marker)
+        progress = making_progress(jobs, stage)
         if progress["status"] == "done":
             continue
         pdf = making_pdf(stage)
@@ -19375,16 +19363,13 @@ class JobQueue:
                 self.records.pop(job_id, None)
 
     def making_state(self, job_id):
-        """A job's `status`, its run's current `phase`, and that phase's
-        last real `count` ({done, total, unit}), or None for a job this
-        server does not know."""
+        """A job's `status` and its run's current `phase`, or None for a job
+        this server does not know."""
         with self.lock:
             record = self.records.get(job_id)
             if record is None:
                 return None
-            run = record["run"]
-            return {"status": record["status"], "phase": getattr(run, "current_phase", None),
-                    "count": getattr(run, "last_count", None)}
+            return {"status": record["status"], "phase": getattr(record["run"], "current_phase", None)}
 
     def stop_all(self):
         with self.lock:
@@ -22214,8 +22199,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(HTTPStatus.OK, {"moved": making_published(book)},
                                           extra=(("Cache-Control", "no-store"),))
                     payload = making_reader_payload(self.server.storage, book)
-                    stage, marker = making_stage(self.server.storage, book)
-                    payload["making"] = making_progress(self.server.jobs, stage, marker)
+                    stage, _ = making_stage(self.server.storage, book)
+                    payload["making"] = making_progress(self.server.jobs, stage)
                 else:
                     payload = audiobook_reader_payload(
                         self.server.storage, book, query.get("voice", [""])[0] or None,
@@ -29615,12 +29600,12 @@ async function openMaking(id, focus) {
     $("reader-unavailable").classList.remove("hidden");
   }
 }
-// How far the book being made is, from its card: "In progress · 42%" (Ümit, 3 Nov; the
-// job's own count, as the progress view shows it), and what can be done now.
+// Where the book being made stands: "In progress" or "Stopped", with no count (Ümit, 3 Nov: the
+// percentages and steps are on Progress), and what can be done now.
 function renderMakingNote() {
   const making = (bookById(readerMaking) || {}).making;
   const stopped = !!making && making.status === "stopped";
-  const where = making ? `${stopped ? "Stopped" : "In progress"} · ${making.percent}%` : "In progress";
+  const where = stopped ? "Stopped" : "In progress";
   $("reader-meta").textContent = `· ${where}`;
   $("paper-bar-meta").textContent = where;
   setText($("reader-making"), stopped
@@ -32784,9 +32769,9 @@ function cell(className, label) {
 // voice no longer reads the book). Finished: it reached the end (`finished`,
 // written as its audio ended). Else in progress: the share heard of that
 // voice's length (1-99%) and when it was last heard (`played`, Unix ms).
-// A book being made (`making`) is "making", with its job's percent.
+// A book being made (`making`) is "making", with no percent (Progress shows how far it is).
 function bookStatus(book, place) {
-  if (book.making) return { kind:"making", percent:book.making.percent, voice:null, played:0 };
+  if (book.making) return { kind:"making", percent:0, voice:null, played:0 };
   const voice = book.voices.find((item) => item.name === place.voice && item.status === "ready") || null;
   const time = Number(place.time), played = Number(place.played) || 0;
   if (voice && place.finished === true) return { kind:"finished", percent:100, voice, played };
@@ -32807,7 +32792,7 @@ const PAGE_ICON = '<svg class="page-icon" viewBox="0 0 56 72" aria-hidden="true"
 // in progress, the status chip, the round play button, and ⋯. The title is
 // the card's one Tab stop (Enter opens the book, Space plays or pauses it); a
 // click anywhere else on the card opens it too. A book being made says
-// "In progress · N%" (or "Stopped · N%"), has no play button, and opens to
+// "In progress" (or "Stopped"), has no play button, and opens to
 // be read and asked about.
 function bookCard(book) {
   let card = bookCards.get(book.id);
@@ -32853,7 +32838,8 @@ function updateCard(card, book, status) {
   card.dataset.book = book.id;
   card.dataset.status = status.kind;
   const open = card.querySelector(".book-open");
-  open.setAttribute("aria-label", book.making ? `Read ${book.title}, in progress` : `Listen to ${book.title}`);
+  open.setAttribute("aria-label", book.making
+    ? `Read ${book.title}, ${book.making.status === "stopped" ? "stopped" : "in progress"}` : `Listen to ${book.title}`);
   open.title = book.title;
   setText(card.querySelector(".book-name"), book.title);
   const voice = status.voice || book.voices.find((item) => item.name === book.voice) || null;
@@ -32868,7 +32854,7 @@ function updateCard(card, book, status) {
     line.append(part);
   }
   setText(card.querySelector(".book-chip"), playing ? `Playing · ${percent}%`
-    : kind === "making" ? `${book.making.status === "stopped" ? "Stopped" : "In progress"} · ${percent}%`
+    : kind === "making" ? (book.making.status === "stopped" ? "Stopped" : "In progress")
     : kind === "progress" ? `${percent}% listened` : kind === "finished" ? "✓ Finished" : "New");
   const bar = card.querySelector(".book-bar");
   bar.classList.toggle("hidden", !(kind === "progress" || playing && status.kind !== "finished"));

@@ -15179,19 +15179,18 @@ class AskWhileMakingTests(unittest.TestCase):
         self.assertEqual({key: card[key] for key in ("id", "title", "source", "voice", "voices", "has_text")},
                          {"id": making, "title": "A Making Paper", "source": "paper.md", "voice": "Mimir",
                           "voices": [], "has_text": False})
-        # No job on this server: stopped, at the share of its parts prepared.
-        self.assertEqual(card["making"], {"job": "b" * 64, "status": "stopped", "phase": "",
-                                          "percent": 100 // len(batches)})
+        # No job on this server: stopped. No count: how far it is shows on Progress only.
+        self.assertEqual(card["making"], {"job": "b" * 64, "status": "stopped", "phase": ""})
         payload = web.making_reader_payload(self.storage, making)
         self.assertEqual(len(payload["blocks"]), len(batches))
         self.assertEqual(payload["block_passages"], list(range(1, len(batches) + 1)))
         self.assertEqual((payload["cues"], payload["voices"], payload["originals"]), ([], [], []))
         self.assertIn("Dams hold rivers back", " ".join(block["html"] for block in payload["blocks"]))
-        # A job that is running says so, with its own count.
+        # A job that is running says so, with its phase.
         jobs = mock.Mock()
-        jobs.making_state.return_value = {"status": "running", "phase": "extraction",
-                                          "count": {"done": 3, "total": 4, "unit": "paragraph"}}
-        self.assertEqual(web.making_catalog(self.storage, jobs)[0]["making"]["percent"], 75)
+        jobs.making_state.return_value = {"status": "running", "phase": "extraction"}
+        self.assertEqual(web.making_catalog(self.storage, jobs)[0]["making"],
+                         {"job": "b" * 64, "status": "running", "phase": "extraction"})
         # Published: it is the book now, never listed twice.
         web.note_making_published(making, "a-making-paper--" + "b" * 12)
         self.addCleanup(web._MAKING_PUBLISHED.pop, making, None)

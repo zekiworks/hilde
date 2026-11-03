@@ -999,9 +999,9 @@ are on:
 A new book can be read and asked about as soon as its document has been
 converted, the first step of making it, while Hilde prepares the text and
 narrates it. Its card is in the Library in its usual place (by when it became
-readable), with **In progress · 42%** (the job's own count for the step it is
-on, as on **Progress**; **Stopped · 42%** once it stopped or failed) and no play
-button. A click (or **Enter** or **Space**) opens it: the paper's own text and
+readable), with **In progress** (**Stopped** once it stopped or failed) and no
+play button; how far it is, step by step and in percent, is on **Progress**.
+A click (or **Enter** or **Space**) opens it: the paper's own text and
 its figures, with no player, **Follow along**, or **Narration text | Source
 text** switch, and a line under the title saying that Hilde is still making it
 and you can listen once it's done. **Ask Hilde** in the header asks about it,
