@@ -2020,7 +2020,15 @@ views, and the figure and page already shown stay, so a book loaded in this
 browser plays on. The first poll that answers again, or answers before the
 page ever loaded (served from the browser's cache while the server was down),
 lifts it and runs `startPage()`, which takes the state, catalogs, and workers
-afresh, since the server may have restarted.
+afresh, since the server may have restarted. Each answer also names the page
+code the server serves (`page`, `PAGE_VERSION`: the first 16 hex digits of the
+SHA-256 of `PAGE`, put into the page as it is served). A page left open across
+an update, whose own `PAGE_VERSION` differs, reloads itself (`pageOutdated()`)
+instead of running its old code against answers it was not written for (on
+3 Nov an old page read "Stopped · undefined%" from a server that no longer
+sent the percent); while audio plays, a question is typed, or a dialog is
+open it shows `#page-outdated` with **Reload this page**, and a later poll
+reloads once none is.
 
 Buttons that start work disable themselves while their request is in flight
 (`submitting`), so a double click starts one job or voice, and the job ID (a
@@ -2642,8 +2650,13 @@ With its own text, `/api/reader` places the reader in the book's passages
 passage's `type`, PDF `page`, `section` (the text of the nearest heading
 passage at or before it, "" before the first), `label` ("Figure 2", "Table 1",
 from a caption opening with its number, else ""), `caption` (its caption
-sources' text without Markdown marks, else ""), and `sources` (`type`, `page`,
-`text`). `figures` (`reader_figures()`) lists each figure or table passage with
+sources' text without Markdown marks but with its `<sub>` and `<sup>` and
+what they hold, `_caption_text()`, else ""; the page draws only those two
+tags, `scriptedText()`), and `sources` (`type`, `page`, `text`). A passage
+whose only visual is a captionless table whose picture text lists contents
+(`_is_contents_picture()`: entries ending in page numbers that never go back,
+dot leaders in a third at least) is `contents`, never a figure; its requests
+keep `_visual_type()`'s "table", so checkpoints stay valid. `figures` (`reader_figures()`) lists each figure or table passage with
 pictures: `label`, `page`, `composite` (`/api/figure?book=…&passage=N`, or
 `null`) and `panels`, one per crop in reader order: its `block`, `image` (its
 index among the block's pictures), `position` among the others
@@ -2872,7 +2885,13 @@ closing the panel never resumes the book.
 
 Figures: a figure or table passage with pictures (`figures`) shows them on a
 light paper card that is never inverted, at their own aspect ratio, with its
-caption under **From the paper · PDF p. N**. When all its crops are in one
+caption under **From the paper · PDF p. N**, unless the reading text already
+shows the paper's own caption of it (`captionInText()`: a book being made, or
+Source text), which would put it twice. An equation, table, or contents
+picture also carries its picture text beside it, visually hidden
+(`pictureText()`: a table's rows as a table, a formula with its scripts), so
+copying and screen readers get the formula or the cells; its picture
+then has no alt text of its own. When all its crops are in one
 block and the PDF layout was found, a wide screen shows `composite` (the
 `/api/figure` picture of its region) instead of the crops; below 768 px a
 figure of several panels stacks them, each its `picture` (its own region of
@@ -4010,7 +4029,7 @@ read aloud by **Read answers aloud**.
 | --- | --- |
 | `GET /` | Embedded HTML/CSS/JS page served with `Cache-Control: no-store` so a refresh cannot retain an obsolete player implementation. |
 | `GET /api/state` | Normalized cookie state, derived validation/names, shared catalog, active-run list, queue, `recent` (as for `/api/jobs`), per-worker device descriptions and state (each with `kind`, `local` or `node`), active model names, non-sensitive capabilities (`airdrop`, `manage_workers` and `manage_providers`: `may_manage()`, and `certificate`: the server has its own certificate authority to install), `devices` (`Handler.device_access()`), `notes_enabled` (`--enable-notes`), and `ask_reading` (how Ask Hilde reads a book now, `ask_reading_text()`, for Settings). |
-| `GET /api/jobs` | Active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, `devices` (`Handler.device_access()`: `access` `server` with `pending`, `granted`, and `problem` for a browser that may manage; else `granted`, `pending` with its `code`, or `none`), and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; for a `running` worker `doing` (`JobQueue._doing_locked()`: `{state: "reserved", phase, phase_label}` outside its job's narration, else what its own narration lines said, `AudiobookRun.worker_states` from `WORKER_LINE`, reset as each narration starts: `starting` (also "Memory free: starting" after a wait), `ready`, `narrating` with `part`/`parts`, `waiting_memory` with `free_gib`/`need_gib`, `done` ("No part left for it now", which the coordinator says once as a worker goes idle), `stopped` (an idle worker that exited), or `left_out`; so a worker is never left "narrating" after its part; a speech server or the generic worker, which print no worker lines, are `{state: "narrating"}` in the narration); for this machine's GPUs `memory` `{free_gib, total_gib}` (`gpu_memory()`, nvidia-smi by UUID, kept `GPU_MEMORY_SECONDS`); never a host); `text_work` (`JobQueue.text_work_snapshot()`): each running text step's model server from its `PaperRun.local_routes` (no server is asked) with `{job_id, endpoint, model, book, done, total, unit}`, or `endpoint` "" with its model when it has used no local server yet (a cloud model, or before its first paragraph). Settings' Text models shows a server's as "preparing <book> · done/total" and any other server that answers as "answering · not used by a book now", since Hilde cannot know whether something else uses it; the Progress card (`textWhere()`, `progressWorkersText()`) adds " · on <server> · <model>" to its preparing step and, under the bar, "Reserved for audio: …" while the text is prepared, then the workers grouped by `doing` (never "Narrating" before the narration); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
+| `GET /api/jobs` | The page code the server serves (`page`, `PAGE_VERSION`), active-run list (`runs`), preparing/running/waiting audiobook records (`queue`), `recent`, `devices` (`Handler.device_access()`: `access` `server` with `pending`, `granted`, and `problem` for a browser that may manage; else `granted`, `pending` with its `code`, or `none`), and consumer state (`consumers`: `label`, `detail`, `kind` (`node` for a `workers.yaml` node, else `local`), `status` (`idle`, `running`, `reserved`, `off`, `missing` when the last device check did not find it, or `left_out` of the job it is reserved for), `job_id`; for a `running` worker `doing` (`JobQueue._doing_locked()`: `{state: "reserved", phase, phase_label}` outside its job's narration, else what its own narration lines said, `AudiobookRun.worker_states` from `WORKER_LINE`, reset as each narration starts: `starting` (also "Memory free: starting" after a wait), `ready`, `narrating` with `part`/`parts`, `waiting_memory` with `free_gib`/`need_gib`, `done` ("No part left for it now", which the coordinator says once as a worker goes idle), `stopped` (an idle worker that exited), or `left_out`; so a worker is never left "narrating" after its part; a speech server or the generic worker, which print no worker lines, are `{state: "narrating"}` in the narration); for this machine's GPUs `memory` `{free_gib, total_gib}` (`gpu_memory()`, nvidia-smi by UUID, kept `GPU_MEMORY_SECONDS`); never a host); `text_work` (`JobQueue.text_work_snapshot()`): each running text step's model server from its `PaperRun.local_routes` (no server is asked) with `{job_id, endpoint, model, book, done, total, unit}`, or `endpoint` "" with its model when it has used no local server yet (a cloud model, or before its first paragraph). Settings' Text models shows a server's as "preparing <book> · done/total" and any other server that answers as "answering · not used by a book now", since Hilde cannot know whether something else uses it; the Progress card (`textWhere()`, `progressWorkersText()`) adds " · on <server> · <model>" to its preparing step and, under the bar, "Reserved for audio: …" while the text is prepared, then the workers grouped by `doing` (never "Narrating" before the narration); each active run's `warnings`, its workers left out as narration started. `recent` (`JobQueue.recent_snapshot()`) lists this process's finished audiobook jobs that `JobQueue` still keeps (`FINISHED_LIMIT`), newest first: `{id, document, voice, book, mode, status, stage, progress, paused, warnings, part_models, finished_at}`, `status` `done`, `failed`, or `stopped` (a canceled queued job is not listed), `book` the made book's ID once done, `stage` the last phase (`extraction`, `narration`, `alignment`, or null), `progress` that phase's last real count `{done, total, unit}` (`Run.last_count`; `unit` `page`, `paragraph`, `join`, `sentence`, or null for narration parts; never the `document` placeholder) or null, and `finished_at` a UTC timestamp. A restart forgets them. |
 | `POST /api/sync` | Normalize state, replace cookies, return derived state and shared catalog. |
 | `POST /api/documents/upload?name=...[&paste=1]` | Stream up to 64 MiB into shared Documents using atomic replacement. With `paste=1` (Create's Text tab, sent as a `.txt` or `.md`), under `_PASTE_LOCK`, `pasted_document_name()`: a document with the same bytes keeps its name and nothing is written; a taken name becomes `<stem> 2<suffix>`, `<stem> 3<suffix>`…; the answer's `name` says which. |
 | `POST /api/documents/download` | Fetch a direct HTTP(S) PDF/text/Markdown URL; infer a safe filename and extension when omitted. |

@@ -15197,6 +15197,48 @@ class AskWhileMakingTests(unittest.TestCase):
         self.assertEqual(web.making_catalog(self.storage), [])
         self.assertEqual(web.chat_key(making), "a-making-paper--" + "b" * 12)
 
+    def test_captions_keep_their_scripts_and_a_contents_page_is_no_figure(self):
+        # Harness-Zero (arXiv 2609.24974, Can 3 Nov): its Figure 1 caption lost
+        # the star of h⋆ (another harness than h) and kept π<sub>H</sub> as
+        # text, and its appendix contents, cut as a captionless "Table", was
+        # shown as a figure.
+        contents = "\n".join([
+            "<!-- Start of picture text -->",
+            "|A Skil|l-guided harness evolution|14|", "|---|---|---|",
+            "|A.1|Evolution methods . . . . . . . .|. . . . . . 14|",
+            "|B Har|ness adaptation|16|",
+            "|B.1|Reference harness inventory . . . . . .|. . . . . 16|",
+            "|B.2|Worked example . . . . . . . . . . .|. . . . . 20|",
+            "<!-- End of picture text -->"])
+        years = "\n".join(["<!-- Start of picture text -->", "|Year|Runs|", "|---|---|",
+                           "|2019|5|", "|2020|7|", "|2021|9|", "<!-- End of picture text -->"])
+        results = "\n".join(["<!-- Start of picture text -->", "|Model|Pass|", "|---|---|",
+                             "|A . . . . . .|12|", "|B . . . . . .|14|", "|C . . . . . .|20|",
+                             "<!-- End of picture text -->"])
+        text = "\n\n".join([
+            "# A Making Paper", "We evolve a harness _h_<sup>_⋆_</sup> on training tasks.",
+            "![](images/document.pdf-0001-01.png)",
+            "Figure 1: We evolve a student-side harness _h_<sup>_⋆_</sup> under _h_; "
+            "the agent _π<sub>H</sub>_ reviews it.",
+            "## Appendix", "![Table](images/page-0002-table-1.png)", contents,
+            "Some prose between them.", "![Table](images/page-0003-table-1.png)", years,
+            "More prose here.", "Table 1: Pass rates by model.", "![Table 1: Pass rates by model.](images/page-0004-table-1.png)",
+            results, "The end of the paper."])
+        stage, making = making_stage(self.storage, text=text, per_worker=1)
+        passages = web.making_reader_payload(self.storage, making)["passages"]
+        figure = next(item for item in passages.values() if item["label"] == "Figure 1")
+        self.assertEqual(figure["caption"], "Figure 1: We evolve a student-side harness h<sup>⋆</sup> under h; "
+                                            "the agent π<sub>H</sub> reviews it.")
+        kinds = {item["type"] for item in passages.values()}
+        self.assertIn("contents", kinds)
+        listed = next(item for item in passages.values() if item["type"] == "contents")
+        self.assertEqual((listed["label"], listed["caption"]), ("", ""))
+        self.assertIn("Evolution methods", " ".join(source["text"] for source in listed["sources"]))
+        # A captionless table whose last column happens to rise is still a table, and
+        # so is a captioned one with dots and rising numbers.
+        tables = [item for item in passages.values() if item["type"] == "table"]
+        self.assertEqual(sorted(item["label"] for item in tables), ["", "Table 1"])
+
     def test_a_job_marks_its_book_readable_once_converted(self):
         job = "d" * 64
         stage = self.storage.in_progress / job

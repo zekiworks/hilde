@@ -6245,6 +6245,17 @@ def _narration_passage(number, text, start, paragraphs, kinds, pages, original, 
     types = {source["type"] for source in sources}
     if _describes_visual(set(kinds)):
         kind = visual
+        # A captionless "table" that lists contents entries is a page of
+        # contents (the PDF's appendix contents, cut as a table), never a
+        # figure: Harness-Zero's page 13 read "The figure, as laid out in the
+        # paper" (Can, 3 Nov). For the reader and Ask Hilde only: the model's
+        # requests keep _visual_type(), so checkpoints stay valid.
+        if kind == "table" and "caption" not in kinds and any(
+                _is_contents_picture(paragraph) for paragraph in paragraphs):
+            kind = "contents"
+            for source in sources:
+                if source["type"] == "table":
+                    source["type"] = "contents"
     elif len(types) == 1 and types <= {"heading", "footnote", "caption"}:
         kind = next(iter(types))
     else:
@@ -6980,7 +6991,7 @@ def passage_details(passages):
             heading = passage.get("original_text") or " ".join(source["text"] for source in sources)
             section = " ".join(_layout_text(heading).split())
         caption = " ".join(
-            " ".join(_layout_text(source["text"]).split()) for source in sources if source["type"] == "caption"
+            " ".join(_caption_text(source["text"]).split()) for source in sources if source["type"] == "caption"
         )
         named = CAPTION_NUMBER_PATTERN.match(caption)
         details[number] = {
@@ -11320,6 +11331,38 @@ def _layout_text(paragraph):
     if heading is not None:
         text = heading.group(2)
     return re.sub(r"[*_]", "", text).strip()
+
+
+def _caption_text(paragraph):
+    """A caption as the reader shows it and Ask Hilde reads it: without
+    heading marks or emphasis, but with its <sub> and <sup> and what they hold,
+    and no other markup. _layout_text() drops superscripts, which turned
+    Harness-Zero's "harness h⋆" into "harness h", another harness (Can,
+    3 Nov); the page draws the two tags (scriptedText())."""
+    text = paragraph.strip()
+    heading = MARKDOWN_HEADING_PATTERN.fullmatch(text)
+    if heading is not None:
+        text = heading.group(2)
+    text = re.sub(r"</?(?!su[bp]>)[A-Za-z][^<>]*>", "", text)
+    return re.sub(r"[*_]", "", text).strip()
+
+
+def _is_contents_picture(paragraph):
+    """Whether a picture's printed text (between the picture-text markers) is
+    a list of contents: rows of entries ending in page numbers
+    (_is_contents_entry()), at least three, whose page numbers never go back,
+    with dot leaders in a third of them at least. A data table's last column
+    is numbers too, but neither pages in order nor led to by dots."""
+    match = PICTURE_TEXT_PATTERN.search(paragraph)
+    if match is None:
+        return False
+    text = re.sub(r"<!-- (?:Start|End) of picture text -->", "", match.group(0)).strip()
+    if not _is_contents_entry(text):
+        return False
+    pages = [int(found.group(1)) for line in text.splitlines()
+             if (found := re.search(r"(\d{1,4})[\s*_|]*$", line))]
+    leaders = sum(1 for line in text.splitlines() if re.search(r"(?:\.\s*){4,}|…", line))
+    return len(pages) >= 3 and pages == sorted(pages) and 3 * leaders >= len(pages)
 
 
 def _layout_kinds(paragraphs):
@@ -22069,6 +22112,8 @@ class Handler(BaseHTTPRequestHandler):
                     "consumers": self.server.jobs.public_consumers_snapshot(),
                     # The text steps running now and the model server each uses (Settings' Text models).
                     "text_work": self.server.jobs.text_work_snapshot(),
+                    # The page code this server serves (PAGE_VERSION): one left open across an update reloads.
+                    "page": PAGE_VERSION,
                     # The device of a voice design started since the last poll.
                     "configuration": self.configuration_payload(),
                     # Whether this browser may change devices, so an approval shows without a reload.
@@ -25978,6 +26023,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   <p id="server-down" class="notice problem hidden" role="alert">Hilde's server is not
     answering, so creating, saving, and deleting are off until it is back. This page checks
     every few seconds and turns them on again by itself.</p>
+  <p id="page-outdated" class="notice hidden" role="status">Hilde was updated on the server.
+    <button type="button" class="link" onclick="location.reload()">Reload this page</button> to use the
+    new version; it reloads by itself once nothing is playing or typed.</p>
 
   <section id="page-settings" class="page settings hidden" aria-labelledby="settings-title">
     <div class="page-head">
@@ -28611,6 +28659,20 @@ function listenFromFocus() {
   if (focus) listenFromSelection({ range:focusRange(focus), first:chatAbout.about.start });
 }
 
+// A caption's text with its <sub> and <sup> (_caption_text(): the only
+// markup it keeps) as nodes, so "h<sup>⋆</sup>" shows as h⋆ and never as tags.
+function scriptedText(text) {
+  const root = document.createDocumentFragment(), open = [root];
+  for (const part of String(text || "").split(/(<\/?su[bp]>)/)) {
+    const tag = /^<(\/?)(su[bp])>$/.exec(part);
+    if (!tag) { if (part) open[open.length - 1].append(part); continue; }
+    if (!tag[1]) {
+      const node = document.createElement(tag[2]);
+      open[open.length - 1].append(node); open.push(node);
+    } else if (open.length > 1) open.pop();
+  }
+  return root;
+}
 // A figure as printed in the PDF: one picture of its region of the page
 // (shown on a wide screen, and on a phone for a figure of one panel), its
 // panels, each its own region named by its place in the source figure
@@ -28624,8 +28686,57 @@ function figureCaption(number) {
   label.className = "source-label";
   label.textContent = ["From the paper", detail.page ? `PDF p. ${detail.page}` : ""]
     .filter(Boolean).join(" · ");
-  caption.append(label, detail.caption || "");
+  caption.append(label, scriptedText(detail.caption));
   return caption;
+}
+// Whether the reading text already shows the paper's own caption of this
+// figure (a book being made, or Source text): a paragraph of its blocks that
+// starts "Figure 1:" or "Table 1.". The card then adds none of its own, which
+// put every caption twice (Can, 3 Nov).
+function captionInText(number) {
+  const label = (readerPayload.passages[number] || {}).label;
+  if (!label) return false;
+  const template = document.createElement("template");
+  return readerPayload.blocks.some((block) => {
+    if (passageOfBlock(block.id) !== number) return false;
+    template.innerHTML = block.html;
+    return [...template.content.querySelectorAll("p, h1, h2, h3, h4, h5, h6")].some((node) => {
+      const text = node.textContent.trim();
+      return text.startsWith(label) && /^[:.]/.test(text.slice(label.length).trim());
+    });
+  });
+}
+// An equation, table, or contents page shows as its picture; the text
+// extraction read from it (the passage's picture text) goes beside it,
+// visually hidden, so copying, searching, and a screen reader get the
+// formula or the cells too (Harness-Zero's five equations and eleven tables
+// copied as nothing, Can, 3 Nov). The picture then needs no text of its own.
+const PICTURE_TEXT_TYPES = new Set(["equation", "table", "contents"]);
+function pictureText(number) {
+  const detail = readerPayload.passages[number] || {};
+  // By each source's type: an equation printed inside a passage of prose (Harness-Zero's Equation 1) counts too.
+  const text = (detail.sources || [])
+    .filter((source) => PICTURE_TEXT_TYPES.has(source.type) && (source.text || "").includes("<!-- Start of picture text -->"))
+    .map((source) => source.text.replace(/<!-- (?:Start|End) of picture text -->/g, "").trim()).join("\n").trim();
+  if (!text) return null;
+  const holder = document.createElement("div");
+  holder.className = "picture-text visually-hidden";
+  const rows = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (rows.every((row) => row.startsWith("|"))) {
+    const table = document.createElement("table");
+    for (const row of rows) {
+      const cells = row.replace(/^\||\|$/g, "").split("|");
+      if (cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell))) continue;
+      const line = table.insertRow();
+      for (const cell of cells) line.insertCell().append(scriptedText(cell.trim()));
+    }
+    holder.append(table);
+  } else for (const row of rows) {
+    const line = document.createElement("p");
+    line.append(scriptedText(row));
+    holder.append(line);
+  }
+  return holder;
 }
 function panelName(position) {
   return position && position !== "whole"
@@ -28681,7 +28792,7 @@ function buildFigureCard(visual, number, block) {
     visual.classList.add("has-composite");
     visual.prepend(composite);
   }
-  visual.append(figureCaption(number));
+  if (!captionInText(number)) visual.append(figureCaption(number));
   visual.addEventListener("click", () => openFigure(number));
   visual.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -28695,7 +28806,7 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
   // sentence shares its cue, click target, and highlight. A paragraph knows
   // its passage (the ¶ number), which source paragraphs and chat use.
   const content = $("reader-content");
-  const parts = [];
+  const parts = [], texted = new Set();
   let paragraph = null, paragraphId = null, line = null;
   for (const item of blocks) {
     const passage = passageOfBlock(item.id);
@@ -28752,6 +28863,12 @@ function renderReaderBlocks(blocks, wordCuesByBlock) {
       // A picture stays in Source text: it is the document's own.
       part.classList.add("reader-picture");
       if (passage && readerPayload.figures[passage]) buildFigureCard(part, passage, item.id);
+      const text = passage && !texted.has(passage) ? pictureText(passage) : null;
+      if (text) {
+        texted.add(passage);
+        for (const image of part.querySelectorAll("img")) if (!image.classList.contains("figure-composite")) image.alt = "";
+        part.append(text);
+      }
     }
     parts[item.id] = own;
   }
@@ -30122,7 +30239,7 @@ function openFigure(number) {
     image.src = figure.composite;
     large.replaceChildren(image);
   } else large.replaceChildren(...crops());
-  $("figure-caption").textContent = detail.caption || "The paper gives no caption.";
+  $("figure-caption").replaceChildren(detail.caption ? scriptedText(detail.caption) : "The paper gives no caption.");
   const page = $("figure-page");
   page.textContent = figure.page ? `Show PDF p. ${figure.page}` : "";
   page.classList.toggle("hidden", !figure.page);
@@ -36022,6 +36139,18 @@ const SERVER_PARTS = [
   "#figure-view .panel-actions", "#selection-ask", "#dock-ask",
 ];
 let serverDown = false;
+// This page's own code (PAGE_VERSION, put in by the server): /api/jobs names
+// the code the server serves now, and a page left open across an update
+// reloads rather than read answers its old code does not know ("Stopped ·
+// undefined%", 3 Nov). Not while audio plays or a question is typed: a notice
+// says so, and the next poll reloads once they are done.
+const PAGE_VERSION = "__PAGE_VERSION__";
+function pageOutdated() {
+  const playing = !!readerAudio && !readerAudio.paused;
+  const typing = [...document.querySelectorAll("textarea")].some((field) => field.value.trim());
+  if (!playing && !typing && !document.querySelector("dialog[open]")) { location.reload(); return; }
+  $("page-outdated").classList.remove("hidden");
+}
 function setServerDown(down) {
   if (down === serverDown) return;
   serverDown = down;
@@ -36036,6 +36165,7 @@ function setServerDown(down) {
 async function refreshJobs() {
   try {
     const current = await jsonRequest("/api/jobs");
+    if (current.page && current.page !== PAGE_VERSION) pageOutdated();
     // Back again, or never loaded: the server may have restarted, so take its state afresh.
     const restart = serverDown || !state;
     setServerDown(false);
@@ -38786,6 +38916,12 @@ setInterval(refreshJobs, 2000);
 </body>
 </html>
 """.replace("__DOCUMENT_TYPES__", json.dumps(DOCUMENT_TYPES))
+# The page's own identity, which /api/jobs answers too: a page left open
+# across an update reloads itself (refreshJobs(), pageOutdated()) instead of
+# running its old code against answers it was not written for. Harness-Zero's
+# page, open across the 3 Nov switch, read "Stopped · undefined%".
+PAGE_VERSION = hashlib.sha256(PAGE.encode("utf-8")).hexdigest()[:16]
+PAGE = PAGE.replace("__PAGE_VERSION__", PAGE_VERSION)
 
 # HTTPS (--https): browsers flag downloads from a page served over plain HTTP,
 # except from this machine (localhost), and no public authority certifies a

@@ -658,7 +658,14 @@ on again. The pill appears too, once the word is out of sight, after you open
 a figure or a page, follow a ¶ link, or click the paper bar's title. With
 **Follow along** off, the page never scrolls by itself.
 
-A figure shows on a light card with its caption under **From the paper**. On
+A figure shows on a light card with its caption under **From the paper**
+(where the text already shows the paper's own caption, as while a book is being
+made, the card adds no second one). Symbols in a caption keep their marks:
+h⋆ stays h⋆, and subscripts and superscripts show as such. An equation or a
+table shows as its picture from the PDF, and the text Hilde read from it goes
+with it unseen, so copying the page or a screen reader gets the formula or the
+table's cells too. A page of contents (such as an appendix's) shows as it is
+printed, never as a figure. On
 a wide screen it shows as printed in the PDF: its part of the page, with the
 titles, labels and legend printed around its panels, without the caption or
 the text around it; on a phone the panels of a figure of several stack, each
