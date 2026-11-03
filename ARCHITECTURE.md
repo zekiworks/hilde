@@ -1709,16 +1709,10 @@ Each page:
   the progress view (`#progress-failure`), so it survives a reload: "Stopped:"
   or "Couldn't finish: <title>", the stage it ended in, what was finished
   (`finishedText()`, e.g. "Reading the document: done · Preparing the text: 212
-  of 840 paragraphs"), **Continue from the last completed part**
-  (`continueJob()` resubmits the same document or book, voice, and mode, so
-  the same job and its checkpoints) with its send-out badges and "Changing
-  the settings or the voice since then starts the changed steps again."; for
-  an adapted create/recreate the Text, Figures and Checking badges are
-  buttons (`stoppedModelChoices()`, Ümit, 3 Nov) that open the role's other
-  usable models (`pickerAlternatives()`, `renderAlternatives()`), a click
-  being `setPickerModel()` (this browser's choice; nothing starts), and the
-  note then says another model writes only the unfinished parts
-  (`same_but_models()` keeps the checkpoints), **Technical
+  of 840 paragraphs"), **Continue from the last completed part** with "Changing
+  the settings or the voice since then starts the changed steps again." and
+  its send-out badges (`continueJob()` resubmits the same document or book,
+  voice, and mode, so the same job and its checkpoints), **Technical
   details** (the job's log, replayed from `/api/events?job=`; "The server no
   longer has this job's log." once it is gone), and **Dismiss**, which adds
   `<id>@<finished_at>` to `hilde.dismissedJobs`. A server restart empties

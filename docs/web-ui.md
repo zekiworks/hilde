@@ -420,16 +420,13 @@ card for the latest one, also after a reload: the stage it stopped or failed
 in, what was finished (for example `Reading the document: done · Preparing the
 text: 212 of 840 paragraphs`), **Continue from the last completed part** (filled
 on the progress view; outlined on **Create**, where the step's own button is
-the one filled button), **Technical details** with its last log lines, and
-**Dismiss**, which hides the card in this browser only. Under **Continue**,
-each model of an adapted book (**Text**, **Figures**, **Checking**) is a
-button with **Change**: it lists the other models that can do that part, and
-one click makes the one you pick this browser's choice, which **Continue**
-then uses. Another model writes only the parts not finished yet; the finished
-ones stay as their model wrote them. Changing other settings or the voice
-since then starts the changed steps again. The server forgets these cards
-when it restarts; a job you were following then says "The server restarted,
-so this work stopped", and starting it again continues where it left off.
+the one filled button; with
+"Changing the settings or the voice since then starts the changed steps
+again." and where the text goes), **Technical details** with its last log
+lines, and **Dismiss**, which hides the card in this browser only. The server
+forgets these when it restarts; a job you were following then says "The
+server restarted, so this work stopped", and starting it again continues
+where it left off.
 
 A model that stops answering during a book (still refused after the retries)
 pauses the job instead: the card reads **Paused**, with a red "⚠ <model>
