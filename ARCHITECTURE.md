@@ -2345,7 +2345,13 @@ wait while the session runs (status `helping`); every exit or failure lets go
 fenced on it at the moment the worker would be spawned, and output is sent
 only under the pairing that made it, so Stop helping (or a new pairing) never
 starts a worker from a poll already on its way and never sends old output with
-new credentials. A batch the computer cannot send after `COMPUTER_SEND_TRIES`
+new credentials. Teardown is scoped by generation too (`_stop_sessions(which)`):
+Stop and a new pairing end only older pairings' workers, and a late 401/403 to
+a pairing already replaced ends only that pairing's own, never the current
+one's workers, reservations or record. Each send attempt, retries included, is
+admitted under the link lock against its batch's generation, so none starts
+after Stop or a new pairing (one already sent is not recalled), and a
+cancelled batch's failure marks nothing lost. A batch the computer cannot send after `COMPUTER_SEND_TRIES`
 ends its sessions there and is named in the next poll (`lost`); the main ends
 their relays with `COMPUTER_OUTPUT_LOST` at once (`ComputerLinks.lose()`), so a
 live poll never hides lost output. A computer that loses its link or output mid-chunk exits its relay

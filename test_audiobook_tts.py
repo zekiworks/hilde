@@ -13052,6 +13052,9 @@ for line in sys.stdin:
 
     def setUp(self):
         self.links = web.ComputerLinks(offline_seconds=1.0)
+        # Voice copies a helper makes (hilde-computer-*) that were there before
+        # this test: only new ones left behind count against it.
+        self.before = set(Path(tempfile.gettempdir()).glob("hilde-computer-*"))
         for patch in (mock.patch.object(web, "COMPUTER_LINKS", self.links),
                       mock.patch.object(web, "COMPUTER_POLL_SECONDS", 2)):
             patch.start()
@@ -13061,6 +13064,10 @@ for line in sys.stdin:
         server, origin = WorkerNodeTests.serve(self, tls=True)
         web.setup_computers(server, server.storage, server.tts_models)
         return server, origin
+
+    def leftovers(self):
+        """The helpers' copies of a voice this test left in the temp folder."""
+        return sorted(set(Path(tempfile.gettempdir()).glob("hilde-computer-*")) - self.before)
 
     def wait_for(self, done, why, seconds=10):
         deadline = time.monotonic() + seconds
@@ -13381,9 +13388,9 @@ for line in sys.stdin:
         for helper in helpers.values():
             helper.stop()
         deadline = time.monotonic() + 10
-        while list(Path(tempfile.gettempdir()).glob("hilde-computer-*")) and time.monotonic() < deadline:
+        while self.leftovers() and time.monotonic() < deadline:
             time.sleep(0.1)
-        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+        self.assertEqual(self.leftovers(), [])
 
     def test_pairing_requests_follow_no_redirect_and_never_use_plain_http(self):
         trap, seen = self.trap()
@@ -13475,7 +13482,7 @@ for line in sys.stdin:
         answer.set()
         time.sleep(0.5)
         self.assertEqual((started, link.sessions, sent), ([], {}, []))
-        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+        self.assertEqual(self.leftovers(), [])
 
         # In a current pairing the start does start; after Stop helping, nothing of it is sent.
         polls.clear()
@@ -13489,6 +13496,89 @@ for line in sys.stdin:
         self.wait_for(lambda: not link.sessions, "the worker never ended")
         time.sleep(0.5)
         self.assertEqual(sent[before:], [])
+
+    def test_a_replaced_pairings_late_refusal_ends_only_its_own_workers(self):
+        for refusal in (401, 403):
+            with self.subTest(refusal=refusal):
+                held, release, stopping, refused_new = threading.Event(), threading.Event(), [], []
+                reserved, released = [], []
+
+                def call(path, body=None, saved=None, timeout=30):
+                    token = (saved or link.saved)["token"]
+                    if path == "/api/computers/poll" and token == "old":
+                        held.set()
+                        release.wait(10)
+                        raise urllib.error.HTTPError("https://main.test/api/computers/poll", refusal, "refused", {}, None)
+                    if path == "/api/computers/poll" and token == "new":
+                        if not refused_new:
+                            refused_new.append(True)
+                            return {"messages": [self.start("new-session")]}
+                        time.sleep(0.05)
+                    return {"messages": []}
+
+                link = self.helper_link(
+                    f"link-{refusal}.json",
+                    worker_command=lambda *args: [sys.executable, "-c", "import time; time.sleep(30)"],
+                    reserve=lambda device, session: reserved.append(session) or True,
+                    release=lambda session: released.append(session))
+                link._call = call
+                stop_sessions = link._stop_sessions
+                link._stop_sessions = lambda which: (stopping.append(which), stop_sessions(which))
+                # Pairing A's poll is out...
+                link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "old"}
+                link._run(link._serve, "connected")
+                self.assertTrue(held.wait(5))
+                old = link.generation
+                # ...when A is stopped and pairing B starts and runs a worker.
+                link.stop()
+                with link.lock:
+                    link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "new"}
+                link._run(link._serve, "connected")
+                self.wait_for(lambda: "new-session" in link.sessions, "pairing B's worker never started")
+                current = link.generation
+                process = link.sessions["new-session"]["process"]
+                calls = len(stopping)
+                # Only now does A's poll come back refused.
+                release.set()
+                self.wait_for(lambda: len(stopping) > calls, "A's refusal was never handled")
+                self.assertTrue(stopping[-1](old) and not stopping[-1](current))
+                time.sleep(0.2)
+                self.assertIsNone(process.poll())
+                self.assertEqual((link.saved["token"], link.snapshot()["state"]), ("new", "connected"))
+                self.assertEqual((reserved, released), (["new-session"], []))
+                self.assertTrue(all(item["generation"] == current for item in link.sessions.values()))
+                link.stop()
+                self.wait_for(lambda: process.poll() is not None and released == ["new-session"],
+                              "pairing B's worker did not end with its own Stop")
+
+    def test_a_cancelled_batch_makes_no_send_attempt_after_stop_and_the_new_pairings_output_goes_out(self):
+        attempts, held, release = [], threading.Event(), threading.Event()
+
+        def call(path, body=None, saved=None, timeout=30):
+            if path != "/api/computers/send":
+                return {}
+            attempts.append((saved["token"], [message["session"] for message in body["messages"]]))
+            if saved["token"] == "old":
+                held.set()
+                release.wait(10)
+                raise OSError("fixture: the send fails")
+            return {}
+
+        link = self.helper_link()
+        link._call = call
+        link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "old"}
+        link.outbox.put((link.generation, {"session": "old-session", "out": "x"}))
+        self.assertTrue(held.wait(5))
+        # Stop, and a new pairing, while the old batch's first attempt is out.
+        link.stop()
+        with link.lock:
+            link.saved = {"url": "https://main.test", "name": "Mac", "ca": "", "token": "new"}
+        link.outbox.put((link.generation, {"session": "new-session", "out": "y"}))
+        release.set()
+        # One sender thread: once the new batch is sent, the old one is done with.
+        self.wait_for(lambda: ("new", ["new-session"]) in attempts, "the new pairing's output was never sent")
+        self.assertEqual(attempts, [("old", ["old-session"]), ("new", ["new-session"])])
+        self.assertEqual(link.lost, set())
 
     def test_output_a_computer_cannot_send_ends_its_session_and_its_chunk_goes_to_another(self):
         server, origin = self.serve()
@@ -13574,7 +13664,7 @@ for line in sys.stdin:
         self.wait_for(lambda: any("exit" in message for message in said("served")), "the session never ended")
         self.assertEqual([message.get("out") for message in said("served") if "out" in message], ["done"])
         idle()
-        self.assertEqual(list(Path(tempfile.gettempdir()).glob("hilde-computer-*")), [])
+        self.assertEqual(self.leftovers(), [])
 
     def test_a_paired_worker_that_fails_before_ready_is_shown_fails_the_book_and_leaves_nothing(self):
         server, origin = self.serve()
@@ -13599,7 +13689,7 @@ for line in sys.stdin:
         self.assertIn("exited with code 3 before its model loaded: Cannot load the fixture model", state["failed"])
         [worker] = [item for item in server.jobs.public_consumers_snapshot() if item["kind"] == "computer"]
         self.assertEqual((worker["loaded"], worker["failed"]), (False, state["failed"]))
-        self.wait_for(lambda: not helper.sessions and not list(Path(tempfile.gettempdir()).glob("hilde-computer-*")),
+        self.wait_for(lambda: not helper.sessions and not self.leftovers(),
                       "its worker or its copy of the voice stayed")
 
 

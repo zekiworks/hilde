@@ -2752,7 +2752,8 @@ class ComputerLink:
             self.offered = ""
             self.lost.clear()
             self._run(self._check, "checking")
-        self._stop_sessions()
+            current = self.generation
+        self._stop_sessions(lambda made: made != current)
 
     def confirm(self, fingerprint):
         """The user saw the same fingerprint on the other Hilde: trust that one
@@ -2774,7 +2775,8 @@ class ComputerLink:
             self.saved = {"url": "", "name": "", "ca": "", "token": ""}
             self.view = {"state": "idle", "error": "", "code": "", "fingerprint": ""}
             self.lost.clear()
-        self._stop_sessions()
+            current = self.generation
+        self._stop_sessions(lambda made: made != current)
         with contextlib.suppress(OSError):
             self.path.unlink()
         if saved["token"]:
@@ -2914,7 +2916,10 @@ class ComputerLink:
                         if generation == self.generation:
                             self.saved["token"] = ""
                             self._save()
-                    self._stop_sessions()
+                    # Only this pairing's own workers end: a late refusal of a
+                    # pairing already stopped or replaced never touches the
+                    # current one's workers, reservations or record.
+                    self._stop_sessions(lambda made: made == generation)
                     return self._set(generation, state="removed",
                                      error="The other Hilde removed this computer. Pair again to help it.")
                 self._set(generation, state="reconnecting", error=self._said(exc))
@@ -3023,9 +3028,11 @@ class ComputerLink:
             self.outbox.put((generation, {"session": session, key: line.rstrip("\r\n")}))
         stream.close()
 
-    def _stop_sessions(self):
+    def _stop_sessions(self, which):
+        """End the sessions whose pairing generation `which` accepts, never
+        another pairing's."""
         with self.lock:
-            processes = [item["process"] for item in self.sessions.values()]
+            processes = [item["process"] for item in self.sessions.values() if which(item["generation"])]
         for process in processes:
             with contextlib.suppress(OSError):
                 process.terminate()
@@ -3051,21 +3058,33 @@ class ComputerLink:
                         if made == generation and message["session"] not in lost]
             if not messages or not saved["token"]:
                 continue
+            sent = cancelled = False
             for attempt in range(COMPUTER_SEND_TRIES):
+                with self.lock:
+                    # Each attempt is admitted here, under the lock that Stop
+                    # and a new pairing change the generation under: none
+                    # starts after them (one already sent is not recalled).
+                    cancelled = generation != self.generation
+                if cancelled:
+                    break
                 try:
                     self._call("/api/computers/send", {"messages": messages}, saved=saved, timeout=60)
+                    sent = True
                     break
                 except (OSError, ValueError):
                     time.sleep(min(1 + attempt, self.retry_seconds))
-            else:
-                sessions = {message["session"] for message in messages}
-                with self.lock:
-                    if generation == self.generation:
-                        self.lost |= sessions
-                    processes = [self.sessions[session]["process"] for session in sessions if session in self.sessions]
-                for process in processes:
-                    with contextlib.suppress(OSError):
-                        process.terminate()
+            if sent or cancelled:
+                continue
+            sessions = {message["session"] for message in messages}
+            with self.lock:
+                if generation != self.generation:
+                    continue  # that pairing ended meanwhile, and its sessions with it
+                self.lost |= sessions
+                processes = [item["process"] for session, item in self.sessions.items()
+                             if session in sessions and item["generation"] == generation]
+            for process in processes:
+                with contextlib.suppress(OSError):
+                    process.terminate()
 
 
 def is_ready_line(line):
