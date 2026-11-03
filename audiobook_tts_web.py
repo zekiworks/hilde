@@ -37094,8 +37094,11 @@ function workerNow(worker, memory = true) {
   const doing = worker.doing || {};
   const text = worker.status !== "running" ? WORKER_STATES[worker.status] || worker.status
     : doing.state === "narrating" ? `narrating · part ${doing.part}/${doing.parts}`
-    : doing.state === "waiting_memory" ? "waiting for memory · "
-      + (doing.free_gib == null ? "" : `${doing.free_gib} GiB free, `) + `${doing.need_gib} GiB needed`
+    // The free memory a waiting worker logged is from when it began waiting:
+    // shown only, and named so, when the GPU's current figure is not shown
+    // beside it (Zeki #987), so two measurements never look current at once.
+    : doing.state === "waiting_memory" ? `waiting for memory · ${doing.need_gib} GiB needed`
+      + (memory && worker.memory || doing.free_gib == null ? "" : ` (${doing.free_gib} GiB free when it began waiting)`)
     : doing.state === "ready" ? "model loaded · waiting for its next part"
     : doing.state === "starting" ? "loading the model"
     : doing.state === "done" ? "done with its parts · the others finish"

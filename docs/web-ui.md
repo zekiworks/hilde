@@ -1343,7 +1343,7 @@ change it. The groups:
   Each GPU's narration worker says what it really does, with the GPU's free and
   total memory: "idle", "reserved · waiting for text" while a book it is held
   for is still having its text prepared, "loading the model", "narrating ·
-  part 40/310", "waiting for memory · 1.4 GiB free, 6 GiB needed", "model
+  part 40/310", "waiting for memory · 6 GiB needed" (the free memory beside it is the GPU's now), "model
   loaded · waiting for its next part", "done with its parts · the others
   finish", or "stopped"; "narrating" only while it narrates a part.
   On the server's own machine
