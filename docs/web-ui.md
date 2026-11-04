@@ -841,7 +841,9 @@ the server has a speech server, `--live-voice`; see
 [Talking with Hilde](configuration.md#talking-with-hilde)). The browser asks
 for the microphone once. Then just talk: Hilde answers out loud a moment
 after you stop, in a few spoken sentences, and you can talk over her at your
-normal voice to stop her. About a book she knows it as written Ask Hilde
+normal voice to stop her: she gets quieter at once and stops about a second
+later, once Hilde has heard that the words are yours; her own voice coming back
+from your speakers into the microphone doesn't stop her. About a book she knows it as written Ask Hilde
 does: its abstract, and the book's paragraphs that match what you just said
 (help mode knows nothing of the help yet). While it runs the question box gives way to a
 moving wave, the microphone, and **End**; nothing of what is said shows. The

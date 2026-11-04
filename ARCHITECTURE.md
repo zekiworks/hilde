@@ -4075,8 +4075,21 @@ neither speaks; a turn starts after `TALK_START_FRAMES` voiced frames, keeps
 `TALK_PREROLL_MS` from before, and ends after `TALK_HANG_MS` of quiet. While
 an answer is pending or playing only sound above
 `max(background + 18 dB, TALK_BARGE_MIN_DB)` (-38: her echo peaked at -41)
-counts, and `TALK_CONFIRM_BARGE_MS` of it stops her (`stopTalkReply()`: the
-request aborted, its sources stopped). Each turn goes as raw 16-bit PCM to
+counts (`TALK_ECHO_BOOST_DB` more once her echo was heard in this answer).
+`TALK_CONFIRM_BARGE_MS` of it before any of her answer plays stops her at once
+(`stopTalkReply()`: the request aborted, its sources stopped); over her voice
+it only turns her down to `TALK_DUCK` (`confirmTalkTurn()`, her sources run
+through `talk.voice`, a gain), and its first `TALK_CHECK_MS` go to
+`/api/live/check` (`sendTalkCheck()`). The server hears them and sets their
+words against her latest answer (`LiveSession.is_echo()`: at least
+`LIVE_ECHO_SHARE` of them in her order by difflib's matching blocks, at most
+`LIVE_ECHO_NEW` besides, fillers dropped, no words at all a sound): her echo
+brings her back up and the sound, or the turn it ended as meanwhile, is
+dropped; anything else stops her, cut where it began (`check.cut`), and a turn
+that ended meanwhile goes then. The log keeps `Talk check:` with the verdict,
+share, and word count, never the words (Ümit, 4 Nov: her Mac's speakers came
+back above -38 dB, and "So, a heart..." heard over "So, a harness…" stopped her
+four times). Each turn goes as raw 16-bit PCM to
 `/api/live/turn`, which hears it (`live_transcribe()`), asks the model with
 the conversation so far (`LiveSession.history()`, at most
 `LIVE_HISTORY_TURNS`), and speaks sentence by sentence as it is written
@@ -4160,6 +4173,7 @@ question. **New conversation** deletes `live.json` with `chat.json`.
 | `POST /api/live/start` | With `--live-voice` only (else 409, `LIVE_UNAVAILABLE`). JSON `book` (or `help: true`) and `model`; returns `{session, in_rate, out_rate}`. 400 without a model, 404 for an unknown book. See [Talk](#talk-spoken-conversation). |
 | `POST /api/live/turn?session=ID[&joins=1][&cut=S]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool}`, `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played. 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
 | `POST /api/live/end` | JSON `session` and optionally `cut`; keeps the edited transcript in `live.json` and returns `{live}` (as `GET /api/chat` shows it), or `{live: null}` when nothing was said. 404 for an unknown session. |
+| `POST /api/live/check?session=ID` | Body: sound heard over Hilde as 16-bit mono PCM at `in_rate`, at most `LIVE_CHECK_MAX_SECONDS`; `{echo}`, whether it is her own voice (`LiveSession.is_echo()`). 404 for an unknown session, 400 for a bad body, 502 when the speech server cannot hear it. |
 | `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
 | `POST /api/marks/save` | With `--enable-notes` only (else 404). JSON `{book, item}`: creates or updates the mark by `item.id` under the book's lock (`save_mark()`) and returns `{item}` as stored, with `place`. HTTP 409 `{error, item}` with the stored item when `item.base_updated_at` is not its `updated_at`, or when it was deleted; 400 for an invalid item (`clean_mark()`), a changed `kind`, or an invalid book id; 404 for a book not in the library; 500 when the marks file can't be read or written, with nothing changed. |
 | `POST /api/marks/delete` | With `--enable-notes` only (else 404). JSON `{book, id}`: leaves a tombstone (`delete_mark()`) and returns it as `{item}`; 400 for an id that is no UUID v4. |

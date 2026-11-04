@@ -13976,6 +13976,23 @@ class LiveTalkTests(unittest.TestCase):
         # Only the first piece may end at a comma: later ones wait for the sentence.
         self.assertEqual(web.live_sentences(clause, False), ([], clause))
 
+    def test_her_own_voice_heard_over_her_is_echo_and_a_listener_is_not(self):
+        """Ümit, 4 Nov: on her Mac Hilde's voice came back through the
+        microphone and stopped her again and again. Those lines, against
+        what Hilde was saying, are echo; a listener cutting in is not."""
+        session = web.LiveSession("a-book--" + "a" * 12, "lm-studio/model", {}, "")
+        turn = session.begin()
+        turn.text = ("So, a harness is the external system that sits between the model and its environment—"
+                     "it's what mediates all the interactions, like the tools it can call.")
+        for heard in ("So, uh.", "So, a heart...", "So often.", "So.", "", "Um."):
+            self.assertTrue(session.is_echo(heard)[0], heard)
+        for heard in ("Stop. What is two plus two?", "Wait, what is a harness?",
+                      "Hold on, I don't follow the part about tools."):
+            self.assertFalse(session.is_echo(heard)[0], heard)
+        # Kept once answered: the echo of an answer still playing is judged against it.
+        session.keep(turn, "What is harness?", False)
+        self.assertTrue(session.is_echo("the external system that sits between")[0])
+
     def test_each_turn_brings_the_books_paragraphs_found_for_it(self):
         """About a book Talk sends its abstract and, with each turn, the
         paragraphs found for what was said and the turn before (Can, 3 Nov:

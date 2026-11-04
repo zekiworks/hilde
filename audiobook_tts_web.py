@@ -18075,6 +18075,15 @@ LIVE_TURN_MAX_SECONDS = 120
 LIVE_SESSION_SECONDS = 3600
 LIVE_REPLY_MAX_TOKENS = 600
 LIVE_HISTORY_TURNS = 20
+# Her own voice in the listener's microphone (Ümit, 4 Nov: on her Mac it stopped
+# her again and again; the page heard "So, a heart..." as she said "So, a
+# harness"): sound over Hilde is judged by its words, against what she is saying
+# (LiveSession.is_echo()): at least LIVE_ECHO_SHARE of them, in her order, and at
+# most LIVE_ECHO_NEW of their own, is her echo. Fillers count for nothing.
+LIVE_ECHO_SHARE = 0.5
+LIVE_ECHO_NEW = 2
+LIVE_CHECK_MAX_SECONDS = 5
+LIVE_FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "mm", "oh"})
 LIVE_UNAVAILABLE = "Talking with Hilde needs its speech server: start Hilde with --live-voice."
 LIVE_ENDED = "This conversation has ended: press Talk to start another."
 LIVE_SYSTEM = (
@@ -18406,6 +18415,23 @@ class LiveSession:
         if failure and not isinstance(failure[0], InterruptedError):
             raise failure[0]
         return live_spoken(turn.text)
+
+    def is_echo(self, heard):
+        """Whether `heard` (words heard over Hilde) is her own voice: her
+        latest answer's words in her order (difflib's matching blocks),
+        LIVE_ECHO_SHARE of them at least and at most LIVE_ECHO_NEW besides;
+        words that are all fillers, or none, are a sound, not the listener.
+        Return (echo, share)."""
+        words = [word for word in re.findall(r"[\w']+", heard.lower()) if word not in LIVE_FILLERS]
+        if not words:
+            return True, 1.0
+        with self.lock:
+            turn = self.current or (self.turns[-1]["turn"] if self.turns else None)
+        said = re.findall(r"[\w']+", live_spoken(turn.text).lower()) if turn is not None else []
+        matched = sum(block.size for block in difflib.SequenceMatcher(None, words, said, autojunk=False)
+                      .get_matching_blocks())
+        share = matched / len(words)
+        return share >= LIVE_ECHO_SHARE and len(words) - matched <= LIVE_ECHO_NEW, share
 
     def keep(self, turn, heard, joins):
         """Keep a finished turn in the transcript. With `joins` the page sends
@@ -22897,9 +22923,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(
                 HTTPStatus.FORBIDDEN, "cross-origin request refused"
             )
-        # A live turn's audio is its body (16-bit mono PCM), not JSON.
+        # A live turn's audio, and an echo check's, is its body (16-bit mono PCM), not JSON.
         if route == "/api/live/turn":
             return self.live_turn(query)
+        if route == "/api/live/check":
+            return self.live_check(query)
         if route == "/api/documents/upload":
             return self.upload_document(
                 query.get("name", ["document.txt"])[0],
@@ -23838,6 +23866,34 @@ class Handler(BaseHTTPRequestHandler):
         if document is not None:
             threading.Thread(target=session.warm, name="live-index", daemon=True).start()
         return self.reply(HTTPStatus.OK, {"session": session.id, "in_rate": LIVE_IN_RATE, "out_rate": LIVE_OUT_RATE})
+
+    def live_check(self, query):
+        """Whether sound heard over Hilde is her own voice from the
+        listener's speaker: its words (live_transcribe()) against what she is
+        saying (LiveSession.is_echo()). The page turns her down as it hears
+        the sound and stops her only when this says it is not her: {"echo"}."""
+        origin = getattr(self.server, "live_voice", "")
+        if not origin:
+            return self.fail(HTTPStatus.CONFLICT, LIVE_UNAVAILABLE)
+        session = self.server.live.get(query.get("session", [""])[0])
+        if session is None:
+            return self.fail(HTTPStatus.NOT_FOUND, LIVE_ENDED)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not 0 < length <= LIVE_IN_RATE * 2 * LIVE_CHECK_MAX_SECONDS or length % 2:
+            return self.fail(HTTPStatus.BAD_REQUEST, f"A check is 16-bit audio of at most {LIVE_CHECK_MAX_SECONDS} seconds.")
+        pcm = self.rfile.read(length)
+        try:
+            heard = live_transcribe(origin, pcm)
+        except RuntimeError as exc:
+            return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+        echo, share = session.is_echo(heard)
+        # Words heard are the listener's: the log keeps only how they compared.
+        print(f"Talk check: session={session.id[:12]} echo={str(echo).lower()} share={share:.2f} "
+              f"words={len(heard.split())}", flush=True)
+        return self.reply(HTTPStatus.OK, {"echo": echo})
 
     def live_turn(self, query):
         """One turn: its audio heard, then the answer spoken as it is
@@ -31302,6 +31358,10 @@ function liveCallout(record) {
 // Nothing shows while it runs but the wave; End keeps the transcript (after the model's edit pass) as a callout.
 const TALK_FRAME_MS = 20, TALK_PREROLL_MS = 300, TALK_START_FRAMES = 3, TALK_JITTER_S = 0.03, TALK_HANG_MS = 700;
 const TALK_CONFIRM_IDLE_MS = 200, TALK_CONFIRM_BARGE_MS = 250, TALK_BARGE_EXTRA_DB = 6, TALK_BARGE_MIN_DB = -38;
+// Sound over Hilde (Ümit, 4 Nov: her own voice from a Mac's speakers stopped her again and again): she is turned
+// down to TALK_DUCK at once, and TALK_CHECK_MS of it go to /api/live/check, which says whether it is her echo;
+// only when it is not does she stop. Echo heard raises the bar by TALK_ECHO_BOOST_DB until she is done.
+const TALK_DUCK = 0.2, TALK_CHECK_MS = 800, TALK_ECHO_BOOST_DB = 6;
 const TALK_TAP = `class TalkTap extends AudioWorkletProcessor {
   process(inputs) { const channel = inputs[0][0]; if (channel) this.port.postMessage(channel.slice(0)); return true; }
 }
@@ -31355,15 +31415,16 @@ async function startTalk() {
     const mute = capture.createGain();
     mute.gain.value = 0;
     source.connect(tap); tap.connect(mute); mute.connect(capture.destination);
-    const analyser = playback.createAnalyser();
-    analyser.fftSize = 512; analyser.connect(playback.destination);
+    // Hilde's voice goes through a gain (turned down while sound over her is checked), then the wave's analyser.
+    const analyser = playback.createAnalyser(), voice = playback.createGain();
+    analyser.fftSize = 512; voice.connect(analyser); analyser.connect(playback.destination);
     talk = { session:session.session, scope, inRate:session.in_rate, outRate:session.out_rate, stream:opened.stream,
              source, tap, micChoice:opened.choice, switching:false, capture,
              playback, analyser, resampler:new TalkResampler(capture.sampleRate, session.in_rate),
              pending:new Float32Array(0), preroll:[], frames:[], held:[], floorDb:null, voicedRun:0, silenceMs:0,
              speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
-             scheduled:[], cut:null };
+             scheduled:[], cut:null, voice, check:null, echoBoost:false };
     tap.port.onmessage = (event) => talkSamples(event.data);
     watchTalkTrack(talk, opened.stream);
     navigator.mediaDevices.addEventListener("devicechange", onTalkDeviceChange);
@@ -31479,12 +31540,16 @@ function onTalkFrame(frame) {
   // The background is learned while neither speaks: Hilde's echo must not raise the bar.
   if (!talk.speaking && !talkReplyAudible())
     talk.floorDb = db < talk.floorDb ? 0.9 * talk.floorDb + 0.1 * db : talk.floorDb + 0.01 * (db - talk.floorDb);
+  if (!talkReplyBusy()) talk.echoBoost = false;
   const threshold = talkReplyBusy()
     ? Math.max(talk.floorDb + (talk.speaking ? 8 : 12) + TALK_BARGE_EXTRA_DB, TALK_BARGE_MIN_DB)
+      + (talk.echoBoost ? TALK_ECHO_BOOST_DB : 0)
     : Math.max(talk.floorDb + (talk.speaking ? 8 : 12), -60);
   const voiced = db > threshold;
   if (talk.speaking) {
     (talk.tentative ? talk.held : talk.frames).push(frame);
+    if (talk.check && !talk.check.sent && talk.frames.length * TALK_FRAME_MS >= TALK_CHECK_MS)
+      sendTalkCheck(talkJoined(talk.frames));
     if (voiced) {
       talk.silenceMs = 0; talk.voicedMs += TALK_FRAME_MS;
       if (talk.tentative
@@ -31507,16 +31572,26 @@ function onTalkFrame(frame) {
 }
 function confirmTalkTurn() {
   talk.tentative = false;
-  if (talk.bargeTurn) stopTalkReply(talk.beforeReply);
   talk.frames = talk.held; talk.held = [];
+  if (!talk.bargeTurn) return;
+  // Before any of her answer plays nothing can echo: she stops at once (what was said joins the next turn).
+  if (talk.beforeReply || !talkReplyAudible()) { stopTalkReply(talk.beforeReply); return; }
+  // Over her voice: turned down now, stopped only once the check says it is not her (sendTalkCheck()).
+  talk.voice.gain.setTargetAtTime(TALK_DUCK, talk.playback.currentTime, 0.03);
+  talk.check = { sent:false, pending:null, cut:talkPlayed() };
 }
 function endTalkTurn() {
   talk.speaking = false;
   const length = talk.frames.reduce((sum, frame) => sum + frame.length, 0);
-  if (length < talk.inRate * 0.25) { talk.frames = []; return; }  // a tap, not a turn
-  let samples = new Float32Array(length), at = 0;
-  for (const frame of talk.frames) { samples.set(frame, at); at += frame.length; }
+  if (length < talk.inRate * 0.25 && !talk.check) { talk.frames = []; return; }  // a tap, not a turn
+  let samples = talkJoined(talk.frames);
   talk.frames = [];
+  // Said over Hilde and not judged yet: it goes once the check says it is the listener's.
+  if (talk.check) {
+    talk.check.pending = samples;
+    if (!talk.check.sent) sendTalkCheck(samples);
+    return;
+  }
   const joins = !!talk.joinAudio;
   if (joins) {
     const both = new Float32Array(talk.joinAudio.length + samples.length);
@@ -31542,10 +31617,50 @@ function stopTalkReply(join) {
   talk.sources = []; talk.playNext = 0; talk.scheduled = [];
   if (join && talk.lastAudio) talk.joinAudio = talk.lastAudio;
 }
-async function sendTalkTurn(samples, joins, cut) {
-  const owner = talk, request = new AbortController();
+function talkPcm(samples) {
   const pcm = new Int16Array(samples.length);
   for (let i = 0; i < samples.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+  return pcm;
+}
+function talkJoined(frames) {
+  const samples = new Float32Array(frames.reduce((sum, frame) => sum + frame.length, 0));
+  let at = 0;
+  for (const frame of frames) { samples.set(frame, at); at += frame.length; }
+  return samples;
+}
+// Is the sound over Hilde her own voice? Echo: she comes back up, the sound is dropped (and the turn it
+// became, if it ended meanwhile). Not echo, or no answer: she stops where the listener began, and a turn that
+// ended meanwhile goes now.
+async function sendTalkCheck(samples) {
+  const owner = talk, check = owner.check;
+  check.sent = true;
+  let echo = false;
+  try {
+    const answer = await fetch(`/api/live/check?session=${encodeURIComponent(owner.session)}`, {
+      method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:talkPcm(samples).buffer });
+    if (answer.ok) echo = (await answer.json()).echo === true;
+  } catch (error) { /* unanswered: count it as the listener's */ }
+  if (talk !== owner || owner.check !== check) return;
+  owner.check = null;
+  if (echo) {
+    owner.voice.gain.setTargetAtTime(1, owner.playback.currentTime, 0.05);
+    owner.echoBoost = true;
+    if (owner.speaking) Object.assign(owner, { speaking:false, tentative:false, frames:[], held:[], voicedMs:0 });
+    return;
+  }
+  stopTalkReply(false);
+  owner.cut = check.cut;
+  owner.voice.gain.setValueAtTime(1, owner.playback.currentTime);
+  if (check.pending) {
+    const cut = owner.cut;
+    owner.cut = null;
+    owner.lastAudio = check.pending;
+    sendTalkTurn(check.pending, false, cut);
+  }
+}
+async function sendTalkTurn(samples, joins, cut) {
+  const owner = talk, request = new AbortController();
+  const pcm = talkPcm(samples);
   owner.request = request;
   try {
     owner.scheduled = [];
@@ -31586,7 +31701,7 @@ function playTalk(base64) {
   buffer.copyToChannel(samples, 0);
   const source = talk.playback.createBufferSource();
   source.buffer = buffer;
-  source.connect(talk.analyser);
+  source.connect(talk.voice);
   const now = talk.playback.currentTime;
   if (talk.playNext < now) talk.playNext = now + TALK_JITTER_S;
   source.start(talk.playNext);
