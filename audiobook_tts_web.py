@@ -26246,8 +26246,12 @@ button.note-marker:hover:not(:disabled) { border-color:var(--dim); background:va
 .selection-actions .sel-handle-sep { width:1px; align-self:stretch; margin:6px 2px 6px 0; background:var(--line); }
 .selection-actions.mark-mode :is([data-act=highlight], [data-act=ask], [data-act=copy], .sel-sep),
 .selection-actions:not(.mark-mode) [data-act=remove] { display:none; }
-/* ×: closes the bar (and clears the selection); never touches a saved highlight. */
-.selection-actions button.sel-close { width:34px; padding:0; justify-content:center; font-size:18px; color:var(--dim); }
+/* The close: shuts the bar (and lets go of the selection), never touches a saved highlight. It says what it does
+   (Ümit, 4 Nov: a bare × left the selected paragraph looking stuck): Unselect on a selection, Close on a
+   highlight's choices (.mark-mode). */
+.selection-actions button.sel-close { min-width:34px; padding:0 10px; justify-content:center; font-size:13px;
+                                      color:var(--text); }
+.selection-actions.mark-mode .sel-close-unselect, .selection-actions:not(.mark-mode) .sel-close-mark { display:none; }
 /* A touch selection's bar (below it): no Copy (the phone's own is there) and no handle; two rows where one is too
    narrow, never wider than the screen. */
 .selection-actions.touch :is(.sel-handle, .sel-handle-sep, [data-act=copy], .sel-sep) { display:none; }
@@ -26666,7 +26670,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   .player-bar .player-mark { width:44px; height:44px; }
   .selection-actions .mark-dots button { width:40px; height:44px; }
   .selection-actions button { min-height:44px; }
-  .selection-actions button.sel-close { width:44px; }
+  .selection-actions button.sel-close { min-width:44px; }
   /* The speed pill keeps its small look; an invisible frame around it makes the target at least 44 × 44. */
   .player-bar .player-speed { min-width:0; min-height:0; }
   .player-bar .player-speed::before { content:""; position:absolute; inset:-11px -4px; }
@@ -27566,7 +27570,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
         <span class="sel-sep" aria-hidden="true"></span>
         <button type="button" data-act="copy"><svg viewBox="0 0 16 16" aria-hidden="true"><path
           d="M5.5 5.5h8v8.75h-8zM10.5 5.5V1.75h-8.75v8.75H5.5"/></svg><span>Copy</span></button>
-        <button type="button" class="sel-close" data-act="close" aria-label="Close these actions">×</button>
+        <button type="button" class="sel-close" data-act="close"><span class="sel-close-unselect">Unselect</span><span
+          class="sel-close-mark">Close</span></button>
       </div>
     </div>
   </section>
@@ -28234,6 +28239,7 @@ let readerDownload = null;
 // A book being made, open in the reading view ("making-<job id>"): its text
 // and Ask Hilde, no audio (openMaking()); "" otherwise.
 let readerMaking = "";
+let readerMakingNoted = "";  // the book being made whose "nothing to play yet" note was shown
 function makingBook(id) { return String(id || "").startsWith("making-"); }
 // Notes (Listen Part 2): highlights, notes and saved answers, only with the
 // server's notes_enabled (--enable-notes; see "Notes" further down). `marks`:
@@ -29205,6 +29211,15 @@ function tapReaderText(event) {
       || event.timeStamp - press.at >= READER_LONG_PRESS
       || Math.hypot(event.clientX - press.x, event.clientY - press.y) > READER_TAP_SLOP) return;
   readerLastTap = { at:event.timeStamp, x:event.clientX, y:event.clientY };
+  // A book being made has no audio: a click there says so, once per book (Ümit, 4 Nov: nothing answered her
+  // clicks, so she clicked again, and a double or triple click selected the paragraph).
+  if (!readerAudio && readerMaking && !readerSelection() && !press.target.closest(READER_SKIP)) {
+    if (readerMakingNoted !== readerMaking) {
+      readerMakingNoted = readerMaking;
+      showToast("This book is still being made, so there is nothing to play yet. Select text to ask Hilde about it.");
+    }
+    return;
+  }
   if (!readerAudio || readerDownload?.restoring || press.target.closest(READER_SKIP) || readerSelection()) return;
   const part = press.target.closest(".reader-sentence, .reader-block, .reader-original");
   if (!part) return;

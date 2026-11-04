@@ -646,8 +646,11 @@ paragraphs; Hilde can attach at most 8,000 characters from 6 paragraphs.
 Select less."), shows the whole selection under its details, and attaches
 nothing until you select less (then **Change**) or remove it with **Remove**.
 
-Escape, or a click in the reading view beside the text, closes the selection's
-bar and lets go of the selection. Closing Ask Hilde opened from the player puts
+The selection's bar ends with **Unselect** (**Close** on a highlight's
+choices); Escape, a click on the selected text, or a click in the reading view
+beside the text does the same, letting go of the selection. In a book still
+being made a click in the text plays nothing (it has no audio yet), and the
+first one says so. Closing Ask Hilde opened from the player puts
 the keyboard on **Play**, so Space goes on reading.
 
 Nothing else you do in the view moves the audio or your place: closing the chat,

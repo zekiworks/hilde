@@ -3071,9 +3071,14 @@ selection, else that copy while the bar has the focus or, after a finger
 pressed it, for `BAR_PRESS_LINGER` (600 ms) after the press: `barPressed()`,
 since iOS clears the selection as a button is touched, before its click; a
 finger's `pointerdown` on the bar is not cancelled, WebKit then sending no
-click). The bar's **×** (`data-act=close`, `closeSelectionBar()`) closes it and
+click). The bar's close (`data-act=close`, `closeSelectionBar()`), labelled
+**Unselect** on a selection and **Close** on a highlight's menu (`.mark-mode`;
+a bare × read as nothing, Ümit, 4 Nov), closes it and
 clears the selection (`clearReaderSelection()`); a mouse's highlight menu just
-closes; no mark changes. With notes on, a touch selection gets the same bar
+closes; no mark changes. In a book being made (no audio) a tap in the text says
+once per book, as a toast, that there is nothing to play yet and that selecting
+text asks Hilde (`readerMakingNoted`, `tapReaderText()`): nothing answered her
+clicks, so she clicked again and a triple click selected the paragraph. With notes on, a touch selection gets the same bar
 (`barBySelection()`; `.touch`: below the selection first, 30 px from it, where
 the phone's own Copy menu and handles are not; no Copy or handle; two rows
 where one is too narrow, never wider than the screen; 44 px targets), and also
