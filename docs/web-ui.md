@@ -1045,9 +1045,13 @@ narrates it. Its card is in the Library in its usual place (by when it became
 readable), with **In progress** (**Stopped** once it stopped or failed) and no
 play button; how far it is, step by step and in percent, is on **Progress**.
 A click (or **Enter** or **Space**) opens it: the paper's own text and
-its figures, with no player, **Follow along**, or **Narration text | Source
+its figures, with no **Follow along** or **Narration text | Source
 text** switch, and a line under the title saying that Hilde is still making it
-and you can listen once it's done. **Ask Hilde** in the header asks about it,
+and you can listen once it's done. The bar at the bottom stays, saying the book
+is not narrated yet: with **Progress** while it is being made, or **Continue…**
+once it stopped, which opens **Create** with its document and voice chosen (you
+can change the models, then **Create audiobook** goes on with it). **Ask
+Hilde**, in that bar or in the header, asks about it,
 with the same cards, ¶ links, figures and source pages as a finished book. Hilde
 reads the paper's text at once; each part's narration, description and summary
 arrive as Hilde prepares that part, and a part not ready yet says so. The

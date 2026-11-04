@@ -25722,8 +25722,15 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 #book-view.dock-only > :not(.reading-column), #book-view.dock-only .reading-column > :not(.player-dock),
 #book-view.dock-only .ask-hilde { display:none !important; }
 #book-view.dock-only :is(.player-dock, .dock-slot) { right:0; }
-/* A book being made: its text and Ask Hilde, no player, Follow along, or text switch (openMaking()). */
-#book-view.making :is(.listen-bar, .player-dock, .back-to-listening) { display:none !important; }
+/* A book being made: its text and Ask Hilde, no Follow along or text switch (openMaking()). The bottom bar stays
+   where it is on every book (Ümit, 4 Nov: she looked for it): instead of the seek bar, Play, speed, and
+   Highlight/Note (which need the finished book), it says the book is not narrated yet, with Progress; Ask Hilde
+   keeps its place. */
+#book-view.making :is(.listen-bar, .back-to-listening, .player-track, #player-play, .player-speed-wrap,
+                       #player-marks) { display:none !important; }
+#book-view:not(.making) .player-making { display:none; }
+.player-making { display:flex; flex:1; align-items:center; gap:10px; min-width:0; color:var(--dim); font-size:14px; }
+.player-making span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .reader-making { margin:0; }
 .player-bar { display:grid; gap:8px; max-width:560px; margin:0 auto; padding:8px 0 12px; }
 .player-bar > * { font-size:15px; }
@@ -27516,6 +27523,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="player-total" class="player-time">0:00</span>
             </div>
             <div class="player-controls">
+              <div class="player-making"><span id="player-making-text">Not narrated yet</span><button
+                id="player-making-progress" type="button" onclick="openProgress()">Progress</button><button
+                id="player-making-continue" class="hidden" type="button" onclick="continueMaking()">Continue…</button></div>
               <button id="player-play" class="player-play" type="button" aria-label="Play"
                 onclick="togglePlayback()"></button>
               <div class="menu-wrap player-speed-wrap">
@@ -30495,10 +30505,30 @@ function renderMakingNote() {
   const where = stopped ? "Stopped" : "In progress";
   $("reader-meta").textContent = `· ${where}`;
   $("paper-bar-meta").textContent = where;
+  $("player-making-text").textContent = `${where} · not narrated yet`;
+  // Running or waiting: Progress shows it. Stopped (or forgotten by a restart): Continue… goes on from Create.
+  $("player-making-progress").classList.toggle("hidden", stopped);
+  $("player-making-continue").classList.toggle("hidden", !stopped);
   setText($("reader-making"), stopped
-    ? "Making this audiobook stopped. You can still read it and ask Hilde about it; Continue on the Progress tab "
-      + "finishes it, keeping the conversation."
+    ? "Making this audiobook stopped. You can still read it and ask Hilde about it; Continue… at the bottom opens "
+      + "Create with its document and voice to finish it, keeping the conversation."
     : "Hilde is still making this audiobook. Read it and ask Hilde about it now; you can listen once it's done.");
+}
+// A stopped book being made goes on from Create with its own document and voice chosen and nothing started: the
+// models can be seen and changed first (Ümit, 3 Nov: she wanted Gemma), then Create audiobook goes on with the same
+// job (continueJob() starts at once; a restart forgets the stopped job, so the book's own record is used).
+function continueMaking() {
+  const book = bookById(readerMaking);
+  if (!book) return;
+  state.audiobook.source = "saved";
+  state.audiobook.document = book.source;
+  state.audiobook[facts.clone_server ? "server_voice" : "voice"] = book.voice;
+  state.audiobook.step = "create";
+  overwriting = "";
+  for (const [id, path] of FIELDS) $(id).value = at(path);
+  populateAssets();
+  setTab("audiobook");
+  queueSync();
 }
 // The same passage where it was on screen (after the reading view changed under it).
 function keepReadingPlace(keep) {

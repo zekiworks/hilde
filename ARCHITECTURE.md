@@ -976,8 +976,14 @@ whose job is `done`, is not listed. The card (`bookStatus()` kind `making`)
 reads **In progress** or **Stopped** in the New chip's gray, has no play
 button (Space opens it), and **⋯** holds **Delete…** alone. `openAudiobook()`
 hands a making id to `openMaking()`: no audio, `readerMaking` set,
-`#book-view.making` hiding `.listen-bar`, `.player-dock`, and Back to reading
-position, `#reader-making` saying what can be done now, and
+`#book-view.making` hiding `.listen-bar` and Back to reading position but
+keeping the bottom bar (Ümit, 4 Nov: she looked for it): there its seek bar,
+Play, speed, and Highlight/Note (marks need a finished book) give way to
+`.player-making`, "In progress · not narrated yet" with **Progress**
+(`openProgress()`), or "Stopped · not narrated yet" with **Continue…**
+(`continueMaking()`: Create with the book's own `source` and `voice` chosen,
+step `create`, nothing started, as a restart forgets the stopped job), and
+**Ask Hilde** where it always is (`renderMakingNote()`); `#reader-making` saying what can be done now, and
 `making_reader_payload()` as `/api/reader`: the blocks, one per part, in
 `render_reader_original()`, `block_passages` 1…N, `passages`
 (`passage_details()`), and `figures` (`reader_figures()`, so figure cards,
