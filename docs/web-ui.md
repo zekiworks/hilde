@@ -628,9 +628,12 @@ from the bottom, from just below the slim paper bar down to the player) with a
 card headed **Selected text**: your words in quotes, and under
 **Context details** the section they are in, all of your selection, and the
 sentence around it as context. The card's **Word | Sentence | Paragraph**
-switch widens what you ask about, and the book marks it in gray; **Listen from
-here** on the card plays from the start of it. On a phone the card is compact:
-one line **Selected “…” ×**, then **Word | Sentence | Paragraph** and
+switch widens what you ask about, and the book tints it in the accent colour
+while Ask Hilde is open; **Listen from here** on the card plays from the start
+of it. **Remove** on the card asks about the whole book instead, with nothing
+attached; **Change** attaches other text you select in the book (with nothing
+new selected it says so). On a phone the card is compact:
+one line **Selected “…” Remove**, then **Word | Sentence | Paragraph** and
 **Context** on one row (no **Change** or **Listen from here** there: a tap in the
 text plays from that word). A question you had already
 typed stays in the box; otherwise the box is empty and the button reads
@@ -641,7 +644,11 @@ One question can bring at most 8,000 characters of selected text from at most
 it is and what fits (for example "This selection is 8,001 characters over 9
 paragraphs; Hilde can attach at most 8,000 characters from 6 paragraphs.
 Select less."), shows the whole selection under its details, and attaches
-nothing until you select less (then **Change**) or remove it with **×**.
+nothing until you select less (then **Change**) or remove it with **Remove**.
+
+Escape, or a click in the reading view beside the text, closes the selection's
+bar and lets go of the selection. Closing Ask Hilde opened from the player puts
+the keyboard on **Play**, so Space goes on reading.
 
 Nothing else you do in the view moves the audio or your place: closing the chat,
 switching between Narration and Source text, opening a figure or a

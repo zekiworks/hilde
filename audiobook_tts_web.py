@@ -23928,11 +23928,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         lock = threading.Lock()
+        started, first = time.monotonic(), []
 
         def emit(line):
             with lock:
                 if turn.stopped.is_set() and "audio" in line:
                     raise InterruptedError("talked over")
+                if "audio" in line and not first:
+                    first.append(time.monotonic() - started)
                 try:
                     self.wfile.write((json.dumps(line) + "\n").encode("utf-8"))
                     self.wfile.flush()
@@ -23940,7 +23943,7 @@ class Handler(BaseHTTPRequestHandler):
                     turn.stop()
                     raise InterruptedError("talked over") from exc
 
-        heard = ""
+        heard, failed = "", ""
         try:
             heard = live_transcribe(origin, pcm)
             emit({"heard": bool(heard)})
@@ -23948,12 +23951,19 @@ class Handler(BaseHTTPRequestHandler):
                 session.answer(turn, heard, origin, emit)
             emit({"done": True})
         except InterruptedError:
-            pass
+            failed = "talked over"
         except (RuntimeError, OSError, ValueError) as exc:
+            failed = str(exc)
             with contextlib.suppress(InterruptedError):
                 emit({"error": str(exc)})
         finally:
             session.keep(turn, heard, query.get("joins", [""])[0] == "1")
+            # How the turn went, never its words (Ümit, 4 Nov: nothing told whether Hilde was silent on the
+            # server or in the browser): the browser's audio state, what was spoken and when it began.
+            print(f"Talk turn: session={session.id[:12]} words={len(heard.split())} "
+                  f"spoken={sum(seconds for _, seconds in turn.said):.1f}s "
+                  f"first_audio={f'{first[0]:.1f}s' if first else '-'} "
+                  f"audio={query.get('audio', ['?'])[0][:20]}{f' error={failed[:160]}' if failed else ''}", flush=True)
 
     def live_end(self, body):
         """End a live conversation: its transcript, after the edit pass, kept
@@ -24671,8 +24681,9 @@ a { color:var(--accent-light); }
 :focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
 /* Selected text: a neutral gray fill, never the accent (the word being read owns the blue). */
 ::selection { background:#5c5c5c; color:var(--text); }
-/* What a click in the text asks about (the card's focus): the same gray. */
-::highlight(reader-focus) { background-color:#5c5c5c; color:var(--text); }
+/* What Ask Hilde has attached: tinted with the accent, never the selection's grey (Ümit, 4 Nov: the two looked the
+   same, so a paragraph seemed selected for good), and shown only while the panel is open (renderFocus()). */
+::highlight(reader-focus) { background-color:color-mix(in srgb, var(--accent) 28%, transparent); color:var(--text); }
 .hidden { display:none !important; }
 .visually-hidden { position:absolute !important; width:1px; height:1px; margin:-1px;
                    padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap;
@@ -26039,7 +26050,7 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
                 white-space:nowrap; color:var(--dim); }
 .chip-head button { min-height:22px; padding:0 6px; font-size:12px; }
 .chip-head button.link { padding:0 4px; color:var(--dim); }
-.chip-head .chip-remove { border-color:transparent; background:transparent; box-shadow:none; color:var(--dim); }
+.chip-head .chip-remove { border-color:transparent; background:transparent; box-shadow:none; }
 .chip-preview { color:var(--text); overflow-wrap:anywhere; }
 /* The card's focus: Word | Sentence | Paragraph, and Listen from here. */
 .chip-focus { display:flex; flex-wrap:wrap; align-items:center; gap:2px 10px; margin:2px 0; }
@@ -27660,6 +27671,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <select id="chat-live-mic" class="chat-live-mic" aria-label="Microphone" title="Microphone"
                 onchange="chooseTalkMic(this.value)"></select>
               <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
+              <button id="chat-live-hear" class="chat-live-end hidden" type="button" onclick="resumeTalkAudio()">Hear Hilde</button>
               <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
             </div>
             <p id="chat-disclaimer" class="chat-disclaimer">Hilde can make mistakes. Check the source text.</p>
@@ -29389,7 +29401,7 @@ function selectionFocus(picked) {
 function renderFocus() {
   if (!window.CSS || !CSS.highlights) return;
   const focus = chatAbout && chatAbout.focus;
-  if (focus) CSS.highlights.set("reader-focus", new Highlight(focusRange(focus)));
+  if (focus && panelOpen) CSS.highlights.set("reader-focus", new Highlight(focusRange(focus)));
   else CSS.highlights.delete("reader-focus");
 }
 function setFocusScope(scope) {
@@ -30801,7 +30813,7 @@ function renderPanel() {
   if (panelView === "notes" && !notesAvailable()) panelView = "chat";
   $("side-panel").classList.toggle("hidden", !panelOpen);
   // Closed by any path (×, a new book), a phone's sheet forgets its size.
-  if (!panelOpen && sheetSized) sheetSize("");
+  if (!panelOpen) sheetSize("");
   $("panel-backdrop").classList.toggle("hidden", !panelOpen);
   $("book-view").classList.toggle("panel-open", panelOpen);
   document.querySelector("main").classList.toggle("help-panel-open", panelOpen && chatMode === "help");
@@ -30847,13 +30859,17 @@ function setPanel(open, view = panelView) {
     log.scrollTop = chatScroll.atEnd ? log.scrollHeight : chatScroll.top;
   }
   if (panelOpen) renderChatHeader();
+  renderFocus();
   placeSelectionSoon();
 }
 function showPanelView(view) { setPanel(true, view); }
 function closePanel() {
   setPanel(false);
   stopSpeaking();
-  const back = panelOpener && shown(panelOpener) ? panelOpener : $(chatMode === "book" ? "ask-hilde" : "header-ask");
+  let back = panelOpener && shown(panelOpener) ? panelOpener : $(chatMode === "book" ? "ask-hilde" : "header-ask");
+  // From the player's Ask Hilde the focus goes to Play, so Space resumes the book instead of asking again
+  // (Ümit, 4 Nov: closing Ask Hilde, she could not get back to listening).
+  if (back === $("ask-hilde") && shown($("player-play"))) back = $("player-play");
   panelOpener = null;
   back.focus({ preventScroll:true });
 }
@@ -31395,6 +31411,15 @@ async function startTalk() {
   if (!model) { chatHint("Choose a model for Chat first, then press Talk.", true); return; }
   talkStarting = true; renderChatControls();
   const scope = chatScope();
+  // Safari (Ümit, 4 Nov: with AirPods the wave moved but Hilde was never heard): the one audio context that
+  // hears and speaks is made and started here, in the click itself, before any await, while the browser still
+  // counts it as the listener's gesture; a silent sample unlocks it as Safari asks.
+  const audio = new AudioContext();
+  audio.resume().catch(() => {});
+  const silence = audio.createBufferSource();
+  silence.buffer = audio.createBuffer(1, 1, audio.sampleRate);
+  silence.connect(audio.destination);
+  silence.start();
   const end = (session) => jsonRequest("/api/live/end", { method:"POST", headers:{ "Content-Type":"application/json" },
     body:JSON.stringify({ session }) }).catch(() => {});
   try {
@@ -31408,8 +31433,9 @@ async function startTalk() {
       chatHint("Hilde needs the microphone to talk: allow it for this page, then press Talk again.", true);
       return;
     }
-    const capture = new AudioContext(), playback = new AudioContext();
-    await Promise.all([capture.resume(), playback.resume()]);
+    if (audio.state !== "running")
+      await Promise.race([audio.resume().catch(() => {}), new Promise((done) => setTimeout(done, 1500))]);
+    const capture = audio, playback = audio;
     await capture.audioWorklet.addModule(URL.createObjectURL(new Blob([TALK_TAP], { type:"text/javascript" })));
     const source = capture.createMediaStreamSource(opened.stream), tap = new AudioWorkletNode(capture, "talk-tap");
     const mute = capture.createGain();
@@ -31426,6 +31452,8 @@ async function startTalk() {
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
              scheduled:[], cut:null, voice, check:null, echoBoost:false };
     tap.port.onmessage = (event) => talkSamples(event.data);
+    audio.addEventListener("statechange", () => { if (talk && talk.playback === audio) talkAudible(); });
+    talkAudible();
     watchTalkTrack(talk, opened.stream);
     navigator.mediaDevices.addEventListener("devicechange", onTalkDeviceChange);
     renderTalkMics();
@@ -31440,8 +31468,36 @@ async function startTalk() {
     chatHint(`Talk couldn't start: ${error.message}`, true);
   } finally {
     talkStarting = false;
+    if (!talk || talk.playback !== audio) audio.close().catch(() => {});
     renderChatControls();
   }
+}
+// Hilde must stay audible: a context the browser paused or interrupted (Safari, when AirPods switch to their
+// microphone) is resumed; one that stays silent offers "Hear Hilde", a click that may resume it.
+function talkAudible() {
+  const audio = talk.playback, owner = talk;
+  if (audio.state === "running") {
+    clearTimeout(owner.mutedTimer);
+    owner.mutedTimer = null;
+    $("chat-live-hear").classList.add("hidden");
+    if (owner.muted) { owner.muted = false; chatHint(); }
+    return;
+  }
+  if (audio.state === "closed") return;
+  audio.resume().catch(() => {});
+  // Started once: each chunk that arrives meanwhile must not put it off.
+  if (owner.mutedTimer || owner.muted) return;
+  owner.mutedTimer = setTimeout(() => {
+    owner.mutedTimer = null;
+    if (talk !== owner || audio.state === "running") return;
+    owner.muted = true;
+    $("chat-live-hear").classList.remove("hidden");
+    chatHint("The browser paused Hilde's sound: press Hear Hilde.", true);
+  }, 1000);
+}
+function resumeTalkAudio() {
+  if (!talk) return;
+  talk.playback.resume().then(() => talk && talkAudible()).catch(() => {});
 }
 // Talk's microphone: the system's default unless one is chosen in the strip (kept in this browser,
 // hilde.talkMicrophone; Can, 3 Nov). A chosen one that is not connected falls back to the default for now and
@@ -31664,8 +31720,9 @@ async function sendTalkTurn(samples, joins, cut) {
   owner.request = request;
   try {
     owner.scheduled = [];
+    // `audio`: the browser's audio state as the turn goes, kept in the server log (Talk turn:).
     const asked = `session=${encodeURIComponent(owner.session)}${joins ? "&joins=1" : ""}`
-      + (cut === null ? "" : `&cut=${cut.toFixed(2)}`);
+      + (cut === null ? "" : `&cut=${cut.toFixed(2)}`) + `&audio=${encodeURIComponent(owner.playback.state)}`;
     const response = await fetch(`/api/live/turn?${asked}`, {
       method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:pcm.buffer, signal:request.signal });
     if (!response.ok) {
@@ -31697,6 +31754,7 @@ function playTalk(base64) {
   const bytes = atob(base64), samples = new Float32Array(bytes.length >> 1);
   for (let i = 0; i < samples.length; i++)
     samples[i] = ((bytes.charCodeAt(2 * i) | (bytes.charCodeAt(2 * i + 1) << 8)) << 16 >> 16) / 32768;
+  if (talk.playback.state !== "running") talkAudible();
   const buffer = talk.playback.createBuffer(1, samples.length, talk.outRate);
   buffer.copyToChannel(samples, 0);
   const source = talk.playback.createBufferSource();
@@ -31746,7 +31804,9 @@ async function endTalk() {
   for (const source of ending.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
   for (const track of ending.stream.getTracks()) track.stop();
   navigator.mediaDevices.removeEventListener("devicechange", onTalkDeviceChange);
-  ending.capture.close(); ending.playback.close();
+  clearTimeout(ending.mutedTimer);
+  ending.playback.close().catch(() => {});
+  $("chat-live-hear").classList.add("hidden");
   $("chat-live").classList.add("hidden");
   $("chat-compose").classList.remove("hidden");
   renderChatControls();
@@ -32449,11 +32509,18 @@ function chipHead(title, editable) {
     const picked = changeSelection || readerSelection();
     changeSelection = null;
     const focus = picked ? selectionFocus(picked) : null;
-    attachAbout(focus ? focusAbout(focus) : playingAbout(), focus);
+    const about = focus ? focusAbout(focus) : playingAbout();
+    // Nothing else to attach (Ümit, 4 Nov: Change seemed to do nothing): say how it works.
+    if (!about || (!focus && chatAbout && JSON.stringify(about) === JSON.stringify(chatAbout.about))) {
+      chatHint("Select other text in the book, then press Change.");
+      return;
+    }
+    attachAbout(about, focus);
   });
   const remove = document.createElement("button");
-  remove.type = "button"; remove.className = "chip-remove";
-  remove.textContent = "×";
+  remove.type = "button"; remove.className = "link chip-remove";
+  remove.textContent = "Remove";
+  remove.title = "Ask about the whole book, with nothing attached";
   remove.setAttribute("aria-label", "Remove the attached part");
   remove.addEventListener("click", () => { clearAbout(); focusChatInput(); });
   head.append(change, remove);
@@ -39752,7 +39819,8 @@ document.addEventListener("focusin", (event) => {
   if (popup && !popupHas(event.target) && !(event.target instanceof HTMLDialogElement)) closePopup();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !selectionButton().classList.contains("hidden")) hideSelectionAsk();
+  // Escape closes the bar and lets go of the selection (Ümit, 4 Nov: Safari kept it, so the bar came back).
+  if (event.key === "Escape" && !selectionButton().classList.contains("hidden")) closeSelectionBar();
 });
 // A row's menu stays under its button only while nothing scrolls.
 window.addEventListener("scroll", () => {
@@ -39762,6 +39830,12 @@ document.addEventListener("pointerdown", (event) => {
   pointerHeld = true;
   lastPointerType = event.pointerType;
   if (!event.target.closest("#selection-ask, #selection-actions")) { hideSelectionAsk(); selBarMoved = null; }
+  // A press in the reading view but off its text lets go of the selection: Safari keeps it there, and the bar
+  // came straight back on release (Ümit, 4 Nov).
+  const inText = event.target.closest("#reader-content") && event.target.id !== "reader-content";
+  if (!event.shiftKey && !inText && event.target.closest("#book-view") && !event.target.closest(
+    "#player-dock, #dock-ask, #selection-pill, #mark-bar, #side-panel, button, a, input, textarea, select, summary"))
+    clearReaderSelection();
   // A tapped highlight's choices close with a press anywhere else.
   if ($("mark-bar").classList.contains("tapped") && !event.target.closest("#mark-bar")) hideMarkBar();
   // The page's own scroll bar: held until the press ends.

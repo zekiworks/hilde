@@ -2885,8 +2885,13 @@ takes a narrated sentence by its parts (`data-block`) and its
 within the printed paragraph. `focusAbout()` sends it as a `selection`
 `about` (`rangeText()`, `selectedPassages()`), with `sentence`, the sentence
 around a focus smaller than a sentence, as context. The book marks the focus
-with the CSS Custom Highlight `reader-focus` in the selection's gray
-(`renderFocus()`, from `renderChatAbout()`); it goes when the card does.
+with the CSS Custom Highlight `reader-focus`, the accent at 28% (never the
+selection's gray: on 4 Nov the two looked alike, so a paragraph seemed selected
+for good), only while the panel is open (`renderFocus()`, from
+`renderChatAbout()` and `setPanel()`); it goes when the card does. The card's
+**Remove** (`.chip-remove`, a link-styled word) detaches it (`clearAbout()`);
+**Change** with nothing selected and the same playing part says "Select other
+text in the book, then press Change." instead of attaching the same again.
 In the text, seeking is only: a tap on a word outside the sentence being read
 (which also plays) and **Listen from here** on the card (`listenFromFocus()`,
 the start of the focus, seek only). Scrolling, dragging, selecting, long
@@ -3050,8 +3055,12 @@ stays there, also on scroll; when a resize or the panel narrows the column,
 `showMovedSelectionBar()` clamps where it is shown and keeps the chosen place
 for when the room comes back. It returns beside the selection when the target
 changes (`selBarTarget()`: the range's boundary points, or `markMenuId`;
-`sameSelBarTarget()`) or a `pointerdown` lands outside the bar; Escape on a
-moved bar returns it
+`sameSelBarTarget()`) or a `pointerdown` lands outside the bar; Escape closes
+the bar and lets go of the selection (`closeSelectionBar()`), and a
+`pointerdown` in `#book-view` off the text (not inside `#reader-content` but
+the container itself, nor on the dock, panel, or a control) lets go of it
+(`clearReaderSelection()`), since WebKit keeps a selection there and the bar
+came back on release (Ümit, 4 Nov); Escape on a moved bar returns it
 (`selectionBarHome()`, stopping propagation). The bar's click handler
 ignores `data-act=move`. WebKit drops the page's selection when a button takes
 the keyboard focus: the bar keeps a copy (`selBarRange`, set by
@@ -3298,7 +3307,10 @@ next paragraph does not attach it. The panel's header (`#panel-head`) is the
 tablist, whose **Ask Hilde** tab carries the sparkle (`.ask-icon`, the bar
 button's own, teal) and neutral text while the chat is shown; then, while
 the chat is shown, its model box (`#chat-model-pick`) and **⋯**
-(`#chat-more`); and **×** (`closePanel()`) at the right on every size, in one
+(`#chat-more`); and **×** (`closePanel()`: the focus goes back to the button
+that opened it, the player's **Ask Hilde** giving it to **Play** instead, so Space
+resumes the book rather than asking again; a phone's sheet forgets its size
+however it closed) at the right on every size, in one
 row. In a panel narrower than 420 px (`.narrow-head`, set by a
 `ResizeObserver` on the panel: a phone's sheet, a 900–1099 px window) or with
 more than one tab shown (`.has-tabs`, `fitPanelHead()` from `renderPanel()` and
@@ -4048,11 +4060,18 @@ and the turn before (`LiveSession.found()`: `ask_retrieve()` with `ask.yaml`'s
 `k` over the same texts, under `LIVE_KEYWORD_HEAD`), formatted by
 `ask_item_text()` and logged as `Talk reading:`; only the turn being answered
 carries them. `live_start()` warms the book's index in a thread
-(`LiveSession.warm()`). Help mode reads nothing yet. `startTalk()` asks
+(`LiveSession.warm()`). Help mode reads nothing yet. `startTalk()` first makes
+the one `AudioContext` that both hears and speaks and starts it inside the
+click, before any await (with a one-sample silent buffer), so Safari still
+counts the listener's gesture (Ümit, 4 Nov: with AirPods the wave moved and
+Hilde was never heard); then asks
 `/api/live/start` for a session (`LiveSession` in `LiveRegistry`, forgotten
 after `LIVE_SESSION_SECONDS` alone), opens the microphone with the browser's
 echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave
 (`drawTalk()`: Hilde's output level in `--accent`, the listener's in `--text`),
+**Hear Hilde** (`#chat-live-hear`, shown with a hint when the context stays
+paused or interrupted for a second: `talkAudible()` on every `statechange` and
+before each chunk resumes it, `resumeTalkAudio()` from the click),
 the microphone
 (`#chat-live-mic`), and **End**. Nothing said is shown while it runs.
 
@@ -4089,7 +4108,9 @@ dropped; anything else stops her, cut where it began (`check.cut`), and a turn
 that ended meanwhile goes then. The log keeps `Talk check:` with the verdict,
 share, and word count, never the words (Ümit, 4 Nov: her Mac's speakers came
 back above -38 dB, and "So, a heart..." heard over "So, a harness…" stopped her
-four times). Each turn goes as raw 16-bit PCM to
+four times). After every turn the log keeps `Talk turn:` with its word count,
+the seconds spoken, when the first audio went out, the browser's audio state
+as the page sent it (`audio`), and any error, never the words. Each turn goes as raw 16-bit PCM to
 `/api/live/turn`, which hears it (`live_transcribe()`), asks the model with
 the conversation so far (`LiveSession.history()`, at most
 `LIVE_HISTORY_TURNS`), and speaks sentence by sentence as it is written
