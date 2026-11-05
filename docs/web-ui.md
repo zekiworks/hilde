@@ -831,7 +831,7 @@ keeps trying by itself, and never blocks your next question meanwhile.
 
 **🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
 own voice (or, when the Hilde voice is gone from **Voices**, the first voice
-there by name); the answer stays plain text while it is read, kept in view.
+there by name); the part being read is tinted, and kept in view.
 While it is read, pause it with the chat's bottom button (below), which then
 offers **Resume**; under a paused answer, **Start over** reads it from the
 beginning. Listening to another answer keeps
@@ -854,9 +854,11 @@ after you stop, in a few spoken sentences, and you can talk over her at your
 normal voice to stop her: she gets quieter at once and stops about a second
 later, once Hilde has heard that the words are yours; her own voice coming back
 from your speakers into the microphone doesn't stop her. About a book she knows it as written Ask Hilde
-does: its abstract, and the book's paragraphs that match what you just said
-(help mode knows nothing of the help yet). While it runs the question box gives way to a
-moving wave, the microphone, and **End**; nothing of what is said shows. The
+does: its abstract, and the book's paragraphs that match what you just said;
+in help she knows Hilde Reader's help. While it runs, a strip at the top of the
+panel shows a moving wave across its width, then the microphone and **End**
+(large enough to press on a phone); the question box and the help's examples
+step aside, the earlier conversation stays below, and nothing of what is said shows. The
 microphone is the system's default (and follows it when that changes, say a
 headset plugged in) unless you pick another there: the pick switches at once
 and this browser keeps it for next time; when it isn't connected, Talk uses the
@@ -869,7 +871,8 @@ Spoken conversations are kept apart: a written question never sends them to
 the model. **New conversation** deletes them with the written one.
 
 Under the question box one small gray line always says "Hilde can make
-mistakes. Check the source text." (on a phone too, on one line).
+mistakes. Check the source text." (in help: "Hilde can make mistakes. Trust what
+the app shows."; on a phone too, on one line).
 
 At the bottom of the chat, just above the question box, one blue button with a
 short gray note beside it says what Hilde is doing and stays in place while

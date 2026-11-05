@@ -18061,7 +18061,7 @@ class ChatRegistry:
 # written. No tools (each round would delay her first word): about a book, its
 # abstract is in the instructions and each turn comes with the book's
 # paragraphs found for it as written Ask Hilde finds them (ask_retrieve(),
-# LiveSession.found()); the help mode reads nothing yet.
+# LiveSession.found()); in help mode Hilde Reader's help is in them whole (LIVE_HELP_PROMPT).
 # Nothing of it shows while it runs; when it ends its transcript, after one
 # pass by the same model that mends what speech recognition misheard, is kept
 # beside the conversation (LIVE_FILE), shown in the chat panel as a callout,
@@ -18103,6 +18103,23 @@ LIVE_BOOK_PROMPT = (
 )
 # Above a turn's paragraphs when the similarity search is unavailable (no embedding model): BM25 found them.
 LIVE_KEYWORD_HEAD = "Paragraphs of the open document that share the most telling words with this message, best first:"
+# In help mode (Ümit, 5 Nov: asked how to change the voice, Hilde described an icon that does not exist): Hilde
+# Reader's help, whole (docs/help.md, ask_help()), after LIVE_SYSTEM. It is the same every turn, so a model server
+# keeps it cached.
+LIVE_HELP_PROMPT = (
+    "\n\nHilde Reader's help follows: the only source for how the app works. Name tabs, buttons and controls exactly "
+    "as it does and say where they are; never describe one it does not mention. When it does not cover the question, "
+    "say so.\n\n"
+)
+
+
+def live_help_text():
+    """Hilde Reader's help as one text, section after section, for Talk in help mode."""
+    document = ask_help()
+    return "\n\n".join(item["text"] for number in range(1, len(document.paragraphs) + 1)
+                       for item in document.items(number))
+
+
 LIVE_EDIT_SYSTEM = (
     "You tidy the transcript of a spoken conversation between a reader and Hilde. Each READER line was written "
     "by speech recognition and may have misheard words, broken sentences, or false starts; HILDE's lines are "
@@ -18261,6 +18278,8 @@ class LiveSession:
             self.system += LIVE_BOOK_PROMPT.format(
                 title=document.title, what=f"{what}, {abstract.get('label', ASK_LABELS['paper'])}",
                 abstract=abstract["text"])
+        elif key == HELP_DOCUMENT:
+            self.system += LIVE_HELP_PROMPT + live_help_text()
         self.started = utc_timestamp()
         self.seen = time.monotonic()
         self.turns = []
@@ -25944,6 +25963,10 @@ button.help-example:hover:not(:disabled) { background:var(--hover); }
                   background:var(--raised); white-space:pre-wrap; overflow-wrap:anywhere; }
 .chat-assistant { line-height:1.55; overflow-wrap:anywhere; }
 .chat-assistant.live { white-space:pre-wrap; }
+/* The block of an answer being read aloud (Ümit, 5 Nov: the reading could not be followed): tinted with the
+   accent, as the book tints its sentence. */
+.chat-assistant .chat-speaking { border-radius:4px; background:color-mix(in srgb, var(--accent) 16%, transparent);
+                                 box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
 .chat-assistant > * { margin:0; }
 .chat-assistant > * + * { margin-top:.6em; }
 .chat-assistant table { border-collapse:collapse; }
@@ -26016,20 +26039,32 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
                        border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
                        color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
 .chat-compose button:hover:not(:disabled) { background:var(--hover); }
-/* Talk (--live-voice): the sound-wave button beside Send starts a spoken conversation. While it runs the question
-   box gives way to a wave that moves with whoever speaks (Hilde in the accent colour, the listener in the text's)
-   and End; nothing of what is said shows until it ends. */
+/* Talk (--live-voice): the sound-wave button beside Send starts a spoken conversation. While it runs, a strip at the
+   top of the panel, just under its head (Ümit, 5 Nov: at the bottom it sat far from everything, its wave a thumb
+   wide on a phone), holds the wave on a row of its own as wide as the panel (Hilde in the accent colour, the
+   listener in the text's), then the microphone and End, then any hint; the question box and the help's intro and
+   examples stay hidden, the earlier conversation in view. Nothing of what is said shows until it ends. */
 .chat-compose button.chat-talk { padding:2px 8px; }
 .chat-talk svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round;
                  vertical-align:middle; }
-.chat-live { display:flex; align-items:center; gap:10px; min-height:42px; padding:5px 6px 5px 12px;
-             background:var(--field); border:1px solid var(--accent); border-radius:8px; }
-.chat-live-wave { flex:1; min-width:0; width:100%; height:32px; }
-/* The microphone: "System default" unless one is chosen; narrow so the wave keeps the room. */
-.chat-live-mic { flex:0 1 auto; min-width:0; max-width:150px; min-height:26px; padding:2px 4px; font-size:13px;
-                 border:1px solid #5a5a5a; border-radius:6px; background:var(--field); color:var(--text); }
-.chat-live-end { flex:0 0 auto; min-height:26px; padding:2px 12px; border:1px solid #5a5a5a; border-radius:6px;
+.chat-live { display:grid; flex:none; grid-template-columns:minmax(0, 1fr) auto auto;
+             grid-template-areas:"wave wave wave" "mic hear end"; align-items:center; gap:8px 10px; margin:0 16px 12px;
+             padding:10px 12px; background:var(--field); border:1px solid var(--accent); border-radius:8px; }
+.chat-live-wave { grid-area:wave; width:100%; height:44px; }
+.chat-live .chat-hint { grid-column:1 / -1; }
+#chat-pane.talking #help-intro { display:none; }
+/* The microphone: "System default" unless one is chosen. */
+.chat-live-mic { grid-area:mic; justify-self:start; min-width:0; max-width:100%; min-height:30px; padding:2px 6px;
+                 font-size:13px; border:1px solid #5a5a5a; border-radius:6px; background:var(--field); color:var(--text); }
+#chat-live-hear { grid-area:hear; }
+.chat-live-end { min-height:30px; padding:2px 14px; border:1px solid #5a5a5a; border-radius:6px;
                  background:transparent; box-shadow:none; color:var(--text); font-size:13px; }
+#chat-live-end { grid-area:end; min-width:80px; }
+/* A phone: 44 px to touch (Ümit, 5 Nov: End was too small to press), End wide. */
+@media (max-width:767.98px), (pointer:coarse) {
+  .chat-live-mic, .chat-live-end { min-height:44px; font-size:14px; }
+  #chat-live-end { min-width:104px; }
+}
 /* A kept spoken conversation: a callout among the messages, never one of them. */
 .chat-live-callout { display:grid; gap:8px; margin:0; padding:10px 12px; border-left:3px solid var(--accent);
                      border-radius:0 8px 8px 0; background:var(--surface); font-size:14px; }
@@ -27649,6 +27684,16 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           </div>
           <!-- A book's conversation read by keyword search (no embedding model, or it failed): said here, plainly. -->
           <p id="chat-reading-note" class="chat-reading-note hidden" role="status"></p>
+          <!-- Talk: at the top of the panel while a spoken conversation runs (Ümit, 5 Nov): the wave on its own row,
+               then the microphone, Hear Hilde (when the browser paused her) and End; the hint moves in below them. -->
+          <div id="chat-live" class="chat-live hidden" role="group" aria-label="Talking with Hilde">
+            <canvas id="chat-live-wave" class="chat-live-wave" aria-hidden="true"></canvas>
+            <select id="chat-live-mic" class="chat-live-mic" aria-label="Microphone" title="Microphone"
+              onchange="chooseTalkMic(this.value)"></select>
+            <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
+            <button id="chat-live-hear" class="chat-live-end hidden" type="button" onclick="resumeTalkAudio()">Hear Hilde</button>
+            <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
+          </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
           <!-- Help mode only: what the panel is for and three questions to start with; a click puts one in the
                box and sends nothing. Kept at the top of the conversation (applyChat()), scrolling with it. -->
@@ -27680,15 +27725,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                 d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></button>
               <button id="chat-send" type="submit">Send</button>
             </form>
-            <!-- Talk: in the question box's place while a spoken conversation runs. -->
-            <div id="chat-live" class="chat-live hidden" role="group" aria-label="Talking with Hilde">
-              <canvas id="chat-live-wave" class="chat-live-wave" aria-hidden="true"></canvas>
-              <select id="chat-live-mic" class="chat-live-mic" aria-label="Microphone" title="Microphone"
-                onchange="chooseTalkMic(this.value)"></select>
-              <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
-              <button id="chat-live-hear" class="chat-live-end hidden" type="button" onclick="resumeTalkAudio()">Hear Hilde</button>
-              <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
-            </div>
             <p id="chat-disclaimer" class="chat-disclaimer">Hilde can make mistakes. Check the source text.</p>
           </div>
         </section>
@@ -30856,6 +30892,9 @@ function fitHelpRoom() {
 }
 function renderPanel() {
   if (panelView === "notes" && !notesAvailable()) panelView = "chat";
+  // Help has no source text to check against (Ümit, 5 Nov).
+  $("chat-disclaimer").textContent = chatMode === "help" ? "Hilde can make mistakes. Trust what the app shows."
+    : "Hilde can make mistakes. Check the source text.";
   $("side-panel").classList.toggle("hidden", !panelOpen);
   // Closed by any path (×, a new book), a phone's sheet forgets its size.
   if (!panelOpen) sheetSize("");
@@ -31505,6 +31544,9 @@ async function startTalk() {
     if (stored("talkMicrophone") && !opened.choice) chatHint("The microphone chosen for Talk isn't connected: it uses the system default.");
     else chatHint();
     $("chat-compose").classList.add("hidden");
+    // The strip at the panel's top takes the hint while Talk runs; the help's intro steps aside.
+    $("chat-live").append($("chat-hint"));
+    $("chat-pane").classList.add("talking");
     $("chat-live").classList.remove("hidden");
     $("chat-live-status").textContent = "Talking with Hilde. Speak whenever you like; press End to stop.";
     $("chat-live-end").focus();
@@ -31853,6 +31895,8 @@ async function endTalk() {
   ending.playback.close().catch(() => {});
   $("chat-live-hear").classList.add("hidden");
   $("chat-live").classList.add("hidden");
+  document.querySelector("#chat-pane .chat-foot").prepend($("chat-hint"));
+  $("chat-pane").classList.remove("talking");
   $("chat-compose").classList.remove("hidden");
   renderChatControls();
   chatHint("Keeping the conversation's transcript…");
@@ -31911,7 +31955,7 @@ function renderSendButton() {
 
 // Reading answers aloud: one audio element plays an answer's clips in turn,
 // fetching the next while one plays, and keeps the block each clip reads in
-// view (`.chat-speaking`, unstyled: the answer stays plain text).
+// view (`.chat-speaking`, tinted with the accent: the answer stays plain text).
 // Pause keeps the answer's place (clip and time); Resume goes on from it.
 // A tap (Read aloud, or Send with Read answers aloud on) starts it, so a
 // phone lets an answer finished later play too.

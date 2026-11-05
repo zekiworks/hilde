@@ -14038,6 +14038,16 @@ class LiveTalkTests(unittest.TestCase):
             self.assertTrue(attached.startswith(web.LIVE_KEYWORD_HEAD))
             self.assertIn("Rivers carry silt to the sea", attached.split("</paragraph>")[0])
 
+    def test_talk_in_help_mode_knows_the_help(self):
+        """Ümit, 5 Nov: asked how to change the voice, Hilde described an icon
+        the app does not have. In help mode the help comes whole with the
+        instructions; about a book it does not."""
+        helping = web.LiveSession(web.HELP_DOCUMENT, "lm-studio/model", {}, " about Hilde Reader")
+        self.assertIn("Change voice", helping.system)
+        self.assertIn(web.LIVE_HELP_PROMPT.strip(), helping.system)
+        reading = web.LiveSession("a-book--" + "a" * 12, "lm-studio/model", {}, "")
+        self.assertNotIn(web.LIVE_HELP_PROMPT.strip(), reading.system)
+
 
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else

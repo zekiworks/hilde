@@ -4011,7 +4011,7 @@ The page plays clips through one `Audio` element, fetching the next while
 one plays (7 to 9 ms between clips). `/api/chat/speak` returns each clip's
 block; `chatBlocks()` finds the page's blocks in the same order (`p`,
 `h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and the playing one
-is marked `.chat-speaking` (unstyled: the answer stays plain text) and
+is marked `.chat-speaking` (tinted with the accent at 16%, Ümit, 5 Nov: the reading could not be followed) and
 scrolls into view. Under an answer, `setVoiceButton()` shows only the dashed
 **🔈 Read aloud** pill (unlike the book's round play button) while the answer
 is not being read, or only **Start over** once it is paused partway; pausing
@@ -4071,7 +4071,15 @@ and the turn before (`LiveSession.found()`: `ask_retrieve()` with `ask.yaml`'s
 `k` over the same texts, under `LIVE_KEYWORD_HEAD`), formatted by
 `ask_item_text()` and logged as `Talk reading:`; only the turn being answered
 carries them. `live_start()` warms the book's index in a thread
-(`LiveSession.warm()`). Help mode reads nothing yet. `startTalk()` first makes
+(`LiveSession.warm()`). In help mode the instructions carry Hilde Reader's
+help whole (`LIVE_HELP_PROMPT` + `live_help_text()`, from `ask_help()`, the same
+every turn so a model server keeps it cached; Ümit, 5 Nov: asked how to change
+the voice, Hilde described an icon the app does not have). The strip
+`#chat-live` sits at the top of `#chat-pane`, above `#chat-log` (Ümit, 5 Nov):
+a grid whose first row is the wave, as wide as the panel, then the microphone,
+**Hear Hilde** and **End** (44 px tall on a phone, End at least 104 px wide);
+`startTalk()` moves `#chat-hint` into it and sets `#chat-pane.talking`, which
+hides the help's intro, and `endTalk()` puts both back. `startTalk()` first makes
 the one `AudioContext` that both hears and speaks and starts it inside the
 click, before any await (with a one-sample silent buffer), so Safari still
 counts the listener's gesture (Ümit, 4 Nov: with AirPods the wave moved and
