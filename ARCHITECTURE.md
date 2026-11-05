@@ -4181,19 +4181,29 @@ question. **New conversation** deletes `live.json` with `chat.json`.
 unless it was turned off) keeps a microphone open while the page is open
 (`startWake()`, its own `AudioContext`, made in the click). The page cuts what
 it hears into sounds (`onWakeFrame()`: `TALK_START_FRAMES` voiced frames start
-one, `WAKE_HANG_MS` of quiet ends it) and posts only those of `WAKE_MIN_MS` to
-`WAKE_MAX_MS` to `/api/live/wake`, which this machine's speech server hears;
-longer sounds, the book's voice included, never leave the page, and nothing
-goes to a cloud. `live_is_wake()` takes the first word after a greeting or
-filler (`LIVE_WAKE_LEAD`) as Hilde when it matches `LIVE_WAKE_WORD` (as
-LFM3-Audio writes it: Hilde, Hilda, Hildy) in at most `LIVE_WAKE_MAX_WORDS`
-words. On a wake the page plays a 0.2 s chime (`playChime()`; `wakeTimes`
-keeps the milliseconds from the sound's end), opens the panel and starts Talk
-with the book's place to resume (`onWake()`). Nothing is heard while Talk
-runs. A page loaded with the switch on starts listening at its first tap or
-click (`wakeAutoTried`), as browsers need one; until then the switch shows it
-armed (`data-state`). The log keeps `Talk wake:` with the word count, never the
-words.
+one, `WAKE_HANG_MS` of quiet ends it) and posts each one's first `WAKE_HEAD_MS`
+(1.5 s, with `WAKE_PREROLL_MS` before it) at most to `/api/live/wake`, which this
+machine's speech server hears, never a cloud: a sound of `WAKE_MIN_MS` or more
+that ends sooner when it ends, a longer one while it goes on, once (Zeki #1427:
+"Hilde, …" in one breath must work). `live_is_wake()` matches `LIVE_WAKE_CALL`:
+past a greeting or filler, the name as LFM3-Audio writes it (Hilde, Hilda,
+Hildy, "hill day") said to her, alone or followed by punctuation; a sentence
+about a Hilde ("Hilda said…") has no comma there and does not wake. On a wake
+the page plays a 0.2 s chime (`playChime()`; `wakeTimes` keeps the milliseconds
+from a short sound's end, `wakeHeadTimes` from a longer one's head being sent),
+opens the panel and starts Talk with the book's place to resume (`onWake()`).
+The whole sound is Talk's first turn (`command`): a sound still going on is
+gathered to its end (`finishCommand()`, at most `WAKE_COMMAND_MAX_MS`) while
+Talk's own microphone starts no turn (`talk.command`), then sent with `wake=1`
+(`sendWakeCommand()`), and the server drops the name (`live_without_wake()`);
+the name alone leaves nothing to answer. Otherwise nothing is heard while Talk
+runs. Measured on 5 Nov (LFM3's two voices, a fake microphone): 11 of 12
+one-breath calls woke (the miss was transcribed "Hilda read faster." with no
+comma), none of 8 sentences about a Hilde or near it, and none in 15 minutes of
+the book's own narration at -25 and -40 dB (13 and 24 checks a minute). A page
+loaded with the switch on starts listening at its first tap or click
+(`wakeAutoTried`), as browsers need one; until then the switch shows it armed
+(`data-state`). The log keeps `Talk wake:` with the word count, never the words.
 
 **The speech server not answering** (Ümit, 5 Nov: it is paused for other GPU
 work some nights): `live_voice_down()` asks its `/health` at most every
@@ -4262,10 +4272,10 @@ keeps the network error (`Talk: the speech server could not …`).
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are this browser's (`Handler.local_servers()`). Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and `live.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` and `live.json` alone (`chat_key()`: only that flag reaches the help conversation). |
 | `POST /api/live/start` | With `--live-voice` only (else 409, `LIVE_UNAVAILABLE`). JSON `book` (or `help: true`) and `model`; returns `{session, in_rate, out_rate}`. 400 without a model, 404 for an unknown book, 503 (`LIVE_SPEECH_DOWN`) while the speech server does not answer. See [Talk](#talk-spoken-conversation). |
-| `POST /api/live/turn?session=ID[&joins=1][&cut=S][&audio=STATE]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool, "you": text heard}`, then for each sentence `{"say": text}` before its `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played; `audio`: the browser's audio state, for the log. 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
+| `POST /api/live/turn?session=ID[&joins=1][&cut=S][&audio=STATE][&wake=1]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool, "you": text heard}`, then for each sentence `{"say": text}` before its `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played; `audio`: the browser's audio state, for the log; `wake`: the words said with "Hilde", whose name is dropped (`live_without_wake()`; the name alone is nothing heard). 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
 | `POST /api/live/end` | JSON `session` and optionally `cut`; keeps the edited transcript in `live.json` and returns `{live}` (as `GET /api/chat` shows it), or `{live: null}` when nothing was said. 404 for an unknown session. |
 | `POST /api/live/check?session=ID` | Body: sound heard over Hilde as 16-bit mono PCM at `in_rate`, at most `LIVE_CHECK_MAX_SECONDS`; `{echo}`, whether it is her own voice (`LiveSession.is_echo()`). 404 for an unknown session, 400 for a bad body, 502 when the speech server cannot hear it. |
-| `POST /api/live/wake` | With `--live-voice` only (else 409). Body: one short sound as 16-bit mono PCM at 16 kHz, at most `LIVE_WAKE_MAX_SECONDS`; `{wake}`, whether it is "Hilde" (`live_is_wake()`). 400 for a bad body, 503 (`LIVE_SPEECH_DOWN`) while the speech server does not answer, 502 when it fails to hear it. |
+| `POST /api/live/wake` | With `--live-voice` only (else 409). Body: a sound, or the first 1.5 s of a longer one, as 16-bit mono PCM at 16 kHz, at most `LIVE_WAKE_MAX_SECONDS`; `{wake}`, whether it calls Hilde (`live_is_wake()`). 400 for a bad body, 503 (`LIVE_SPEECH_DOWN`) while the speech server does not answer, 502 when it fails to hear it. |
 | `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
 | `POST /api/marks/save` | With `--enable-notes` only (else 404). JSON `{book, item}`: creates or updates the mark by `item.id` under the book's lock (`save_mark()`) and returns `{item}` as stored, with `place`. HTTP 409 `{error, item}` with the stored item when `item.base_updated_at` is not its `updated_at`, or when it was deleted; 400 for an invalid item (`clean_mark()`), a changed `kind`, or an invalid book id; 404 for a book not in the library; 500 when the marks file can't be read or written, with nothing changed. |
 | `POST /api/marks/delete` | With `--enable-notes` only (else 404). JSON `{book, id}`: leaves a tombstone (`delete_mark()`) and returns it as `{item}`; 400 for an id that is no UUID v4. |

@@ -85,7 +85,7 @@ Pick the model in the panel's header; this browser keeps it. Its badge says **Lo
 
 Drag the sheet's top bar (phone) or the panel's left edge (computer) to resize it.
 
-**Talk with Hilde**, at the panel's top, starts a spoken conversation; the header's **Talk** and the player's microphone do too. Speak, pause, and Hilde answers aloud; talk over her to stop her. **End**, or ten quiet seconds, ends it. The header's **Hilde** switch listens for her name: say "Hilde", pause, and a chime starts Talk.
+**Talk with Hilde** in the panel, the header's **Talk** and the player's microphone start a spoken conversation. Hilde answers when you pause; talk over her to stop her. **End**, or ten quiet seconds, ends it. The **Hilde** switch listens for her name: "Hilde" alone or before a question ("Hilde, what is this?") starts Talk. English only.
 
 **While a book is being made** (**In progress**), open it to read and ask; its bottom bar offers **Progress**, or **Continue…** once it stopped.
 

@@ -14048,15 +14048,21 @@ class LiveTalkTests(unittest.TestCase):
         reading = web.LiveSession("a-book--" + "a" * 12, "lm-studio/model", {}, "")
         self.assertNotIn(web.LIVE_HELP_PROMPT.strip(), reading.system)
 
-    def test_hilde_said_alone_or_first_wakes_talk_and_other_speech_does_not(self):
-        """Ümit, 5 Nov: saying "Hilde" starts Talk. Speech recognition writes
-        the name several ways (as LFM3-Audio heard it, 5 Nov); a sentence that
-        merely begins with it, or sounds near it, must not start anything."""
-        for heard in ("Hilde.", "Hilda!", "hilda.", "Hey Hilda.", "Okay, Hilde?", "Hildy.",
-                      "Hilde, what is this paper about?"):
+    def test_hilde_called_wakes_talk_with_what_followed_and_other_speech_does_not(self):
+        """Ümit, 5 Nov: saying "Hilde" starts Talk; Zeki #1427: "Hilde, …" in
+        one breath too, its words being Talk's first turn. Speech recognition
+        writes the name several ways (as LFM3-Audio heard it, 5 Nov), the start
+        of a longer sound included; a sentence about a Hilde (no comma after the
+        name), or one that sounds near it, must not start anything."""
+        for heard, said in (("Hilde.", ""), ("Hilda!", ""), ("hilda", ""), ("Hey Hilda.", ""), ("Okay, Hilde?", ""),
+                            ("Hildy.", ""), ("Hilda, what is", "what is"),
+                            ("Hey Hilde, how do I add a document?", "how do I add a document?"),
+                            ("Okay, Hilda, summarize this section for me.", "summarize this section for me.")):
             self.assertTrue(web.live_is_wake(heard), heard)
+            self.assertEqual(web.live_without_wake(heard), said, heard)
         for heard in ("", "Uh.", "Hello there.", "The hills were green.", "Children.", "Killed it.",
-                      "Hilda said the model was wrong in chapter three today."):
+                      "Hilda said the model was wrong.", "Hilda Hilbert proved the theorem.", "Hildegard, come.",
+                      "Hilda read faster."):
             self.assertFalse(web.live_is_wake(heard), heard)
 
     def fake_claude(self, folder, wait=0.0):

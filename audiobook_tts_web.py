@@ -18153,27 +18153,30 @@ LIVE_ECHO_SHARE = 0.5
 LIVE_ECHO_NEW = 2
 LIVE_CHECK_MAX_SECONDS = 5
 LIVE_FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "mm", "oh"})
-# The wake word (Ümit, 5 Nov: "Hilde" said aloud starts Talk): a short sound the page heard (0.25 to 1.5 s,
-# LIVE_WAKE_MAX_SECONDS at most) goes to /api/live/wake, is heard by the speech server on this machine (never a
-# cloud), and is the wake word when its first word, after a greeting or a filler, is Hilde as speech recognition
-# writes it (LIVE_WAKE_WORD: Hilde, Hilda, Hildy, Hildie...; "hill day" too), in at most LIVE_WAKE_MAX_WORDS words.
-LIVE_WAKE_WORD = re.compile(r"h[ie]l+d(?:e|a|y|ie|i|ey|ee)?")
-LIVE_WAKE_LEAD = frozenset({"hey", "hi", "hello", "ok", "okay", "oh", "uh", "um", "er", "ah", "hmm", "so"})
-LIVE_WAKE_MAX_WORDS = 6
+# The wake word (Ümit, 5 Nov: "Hilde" said aloud starts Talk): a sound the page heard, or the first 1.5 s of a
+# longer one (LIVE_WAKE_MAX_SECONDS at most), goes to /api/live/wake, is heard by the speech server on this machine
+# (never a cloud), and calls Hilde when it begins, past a greeting or a filler, with her name as speech recognition
+# writes it (Hilde, Hilda, Hildy, Hildie...; "hill day" too) said to her: alone, or followed by punctuation, as in
+# "Hilde, what is this paper about?" (Zeki #1427: one breath must work). A sentence about her ("Hilde said the
+# model...", as a book might read) does not: recognition writes no comma there.
+LIVE_WAKE_CALL = re.compile(
+    r"^\W*(?:(?:hey|hi|hello|ok|okay|oh|uh|um|er|ah|hmm|so)\W+)*"
+    r"(?:h[ie]l+d(?:e|a|y|ie|i|ey|ee)?|hill[\s-]+(?:day|de|dee|da|the|they))"
+    r"(?=\s*[,.!?;:…]|\s*$)", re.IGNORECASE)
 LIVE_WAKE_MAX_SECONDS = 2
 
 
 def live_is_wake(heard):
-    """Whether words heard alone (a short sound) call Hilde: their first word
-    past a greeting or a filler is Hilde as heard (LIVE_WAKE_WORD), or
-    "hill" with "day"/"de"/"dee"/"da"/"the" after it, and they are short."""
-    words = re.findall(r"[a-zà-ÿ']+", heard.lower())
-    while words and words[0] in LIVE_WAKE_LEAD:
-        words.pop(0)
-    if not words or len(words) > LIVE_WAKE_MAX_WORDS:
-        return False
-    return bool(LIVE_WAKE_WORD.fullmatch(words[0])) or (
-        words[0] == "hill" and len(words) > 1 and words[1] in {"day", "de", "dee", "da", "the"})
+    """Whether words heard call Hilde (LIVE_WAKE_CALL)."""
+    return bool(LIVE_WAKE_CALL.match(heard.strip()))
+
+
+def live_without_wake(heard):
+    """Talk's first turn after "Hilde, …": what was said after the name, or "" when it was the name alone."""
+    heard = heard.strip()
+    match = LIVE_WAKE_CALL.match(heard)
+    rest = (heard[match.end():] if match else heard).lstrip(" ,.;:!?…-")
+    return rest if re.search(r"\w", rest) else ""
 
 
 LIVE_UNAVAILABLE = "Talking with Hilde needs its speech server: start Hilde with --live-voice."
@@ -24123,6 +24126,9 @@ class Handler(BaseHTTPRequestHandler):
         heard, failed = "", ""
         try:
             heard = live_transcribe(origin, pcm)
+            # Talk's first turn after "Hilde, …": the name is no part of the question.
+            if query.get("wake", [""])[0] == "1":
+                heard = live_without_wake(heard)
             # `you`: what was heard, for the page's live text.
             emit({"heard": bool(heard), "you": heard})
             if heard:
@@ -31716,15 +31722,19 @@ function renderVoiceButtons() {
 // ---- Listening for "Hilde" (Ümit, 5 Nov) ----
 // The microphone stays open while the page is open and the switch is on; the page cuts what it hears into sounds
 // (a start of TALK_START_FRAMES voiced 20 ms frames above the background, an end after WAKE_HANG_MS of quiet) and
-// sends only those of WAKE_MIN_MS to WAKE_MAX_MS, as long as a spoken "Hilde", to /api/live/wake, which this
-// machine's speech server hears (never a cloud); longer ones (the book's own voice, a conversation) never leave the
-// page. On "Hilde": a 0.2 s chime at once, then the panel opens, the book pauses (and goes on when Talk ends), and
-// Talk starts showing "Listening". Nothing is heard while Talk runs. Off with the header's switch; on again with it
-// or the next Talk. A page loaded with it on starts listening at the first tap or click (browsers need one).
+// sends each one's first WAKE_HEAD_MS at most to /api/live/wake, which this machine's speech server hears (never a
+// cloud): a sound that ends sooner when it ends, a longer one while it goes on, once. On "Hilde" (or "Hilde, …" in
+// one breath, Zeki #1427): a 0.2 s chime at once, then the panel opens, the book pauses (and goes on when Talk
+// ends), and Talk starts showing "Listening"; the whole sound, gathered to its end, is Talk's first turn, so words
+// said after the name are answered (the server drops the name: live_without_wake()). Otherwise nothing is heard
+// while Talk runs. Off with the header's switch; on again with it or the next Talk. A page loaded with it on starts
+// listening at the first tap or click (browsers need one).
 // WAKE_HANG_MS: 120 ms of quiet ends a sound, so the chime can come within 0.3 s of the word's end (Ümit #1367);
 // a spoken "Hilde" has no quiet that long inside it (LFM3 voices, 5 Nov: its only quiet runs were before or after).
-const WAKE_RATE = 16000, WAKE_HANG_MS = 120, WAKE_MIN_MS = 250, WAKE_MAX_MS = 1500, WAKE_PREROLL_MS = 200;
-const wakeTimes = [];  // ms from the end of each "Hilde" to its chime
+const WAKE_RATE = 16000, WAKE_HANG_MS = 120, WAKE_MIN_MS = 250, WAKE_HEAD_MS = 1500, WAKE_PREROLL_MS = 200;
+const WAKE_COMMAND_MAX_MS = 30000;  // the longest first turn "Hilde, …" gathers
+const wakeTimes = [];      // ms from the end of each sound that was "Hilde" to its chime
+const wakeHeadTimes = [];  // ms from the head of a longer sound being sent to its chime
 async function startWake() {
   if (wake || !(caps && caps.live_voice)) return;
   const audio = new AudioContext();
@@ -31753,6 +31763,8 @@ function stopWake() {
   const ending = wake;
   wake = null;
   if (ending) {
+    // Words "Hilde" began go to Talk as far as they were heard.
+    if (ending.command) finishCommand(ending);
     if (ending.stream) for (const track of ending.stream.getTracks()) track.stop();
     ending.audio.close().catch(() => {});
   }
@@ -31784,8 +31796,11 @@ function wakeSamples(owner, samples) {
   owner.pending = all.slice(at);
 }
 function onWakeFrame(owner, frame) {
-  // While Talk runs (or starts) it hears the listener itself.
-  if (talk || talkStarting) { Object.assign(owner, { speaking:false, frames:[], voicedRun:0 }); return; }
+  // While Talk runs (or starts) it hears the listener itself, except for the rest of words "Hilde" began.
+  if ((talk || talkStarting) && !owner.command) {
+    Object.assign(owner, { speaking:false, frames:[], voicedRun:0 });
+    return;
+  }
   let sum = 0;
   for (const value of frame) sum += value * value;
   const db = 10 * Math.log10(sum / frame.length + 1e-12);
@@ -31796,12 +31811,25 @@ function onWakeFrame(owner, frame) {
   if (owner.speaking) {
     owner.frames.push(frame);
     owner.length += TALK_FRAME_MS;
-    if (voiced) { owner.silenceMs = 0; return; }
+    if (voiced) {
+      owner.silenceMs = 0;
+      if (owner.command) {
+        if (owner.length >= WAKE_COMMAND_MAX_MS) finishCommand(owner);
+      } else if (!owner.checked && !owner.busy && owner.length - WAKE_PREROLL_MS >= WAKE_HEAD_MS) {
+        // A longer sound: its head is checked while it goes on.
+        owner.checked = true;
+        checkWake(owner, talkJoined(owner.frames), performance.now(), owner.sound, true);
+      }
+      return;
+    }
     if ((owner.silenceMs += TALK_FRAME_MS) < WAKE_HANG_MS) return;
     owner.speaking = false;
+    if (owner.command) { finishCommand(owner); return; }
     const heard = owner.length - owner.silenceMs - WAKE_PREROLL_MS;
-    if (heard >= WAKE_MIN_MS && heard <= WAKE_MAX_MS && !owner.busy)
-      checkWake(owner, talkJoined(owner.frames), performance.now() - owner.silenceMs);
+    if (!owner.checked && !owner.busy && heard >= WAKE_MIN_MS && heard <= WAKE_HEAD_MS)
+      checkWake(owner, talkJoined(owner.frames), performance.now() - owner.silenceMs, owner.sound, false);
+    // Kept until its check answers: words said with "Hilde" that ended meanwhile still go to Talk.
+    owner.last = { sound:owner.sound, frames:owner.frames };
     owner.frames = [];
     return;
   }
@@ -31810,10 +31838,11 @@ function onWakeFrame(owner, frame) {
   owner.voicedRun = voiced ? owner.voicedRun + 1 : 0;
   if (owner.voicedRun >= TALK_START_FRAMES)
     Object.assign(owner, { speaking:true, silenceMs:0, voicedRun:0, frames:owner.preroll, preroll:[],
-                           length:owner.preroll.length * TALK_FRAME_MS });
+                           length:owner.preroll.length * TALK_FRAME_MS, sound:(owner.sound || 0) + 1, checked:false });
 }
-// `ended`: when the word ended (before the quiet that closed it), which the chime's time is counted from.
-async function checkWake(owner, samples, ended) {
+// `ended`: when the word ended (before the quiet that closed it), or when a longer sound's head was sent (`head`),
+// which the chime's time is counted from.
+async function checkWake(owner, samples, ended, sound, head) {
   owner.busy = true;
   try {
     const answer = await fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" },
@@ -31822,17 +31851,41 @@ async function checkWake(owner, samples, ended) {
     // The speech server not answering shows on the switch until a check gets through again.
     const down = answer.ok ? "" : String(data.error || "Hilde's speech server isn't answering.");
     if (wake === owner && (owner.down || "") !== down) { owner.down = down; renderVoiceButtons(); }
-    if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting) onWake(owner, ended);
+    if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting) onWake(owner, ended, sound, head);
   } catch (error) { /* the next "Hilde" tries again */ }
   finally { owner.busy = false; }
 }
-function onWake(owner, ended) {
+function onWake(owner, ended, sound, head) {
   playChime(owner.audio);
-  wakeTimes.push(Math.round(performance.now() - ended));
+  (head ? wakeHeadTimes : wakeTimes).push(Math.round(performance.now() - ended));
   // The book goes on from the start of its sentence when Talk ends, as "Hilde" paused it.
   const resume = readerAudio && !readerAudio.paused ? { audio:readerAudio, at:readerSentenceStart() } : null;
+  // The words said with "Hilde" are Talk's first turn: a sound still going on is gathered to its end, one that
+  // ended is taken as it was.
+  const command = { samples:null };
+  if (owner.speaking && owner.sound === sound) owner.command = command;
+  else command.samples = owner.last && owner.last.sound === sound ? talkJoined(owner.last.frames) : new Float32Array(0);
+  owner.last = null;
   openTalkPanel($("header-listen"));
-  startTalk({ resume });
+  startTalk({ resume, command });
+}
+function finishCommand(owner) {
+  const command = owner.command;
+  owner.command = null;
+  owner.speaking = false;
+  command.samples = talkJoined(owner.frames);
+  owner.frames = [];
+  if (talk && talk.command === command) sendWakeCommand();
+}
+// Talk's first turn after "Hilde": the words said with it (sent with `wake`, so the server drops the name). Until
+// it goes, Talk's own microphone starts no turn (it would hear the same words' end again).
+function sendWakeCommand() {
+  const { samples } = talk.command;
+  talk.command = null;
+  talk.lastActivity = performance.now();
+  if (!samples.length) return;
+  talk.lastAudio = samples;
+  sendTalkTurn(samples, false, null, true);
 }
 // The chime: 0.2 s, two notes rising, quiet enough not to start a turn.
 function playChime(audio) {
@@ -31944,7 +31997,8 @@ async function startTalk(options = {}) {
              speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
              scheduled:[], cut:null, voice, check:null, echoBoost:false,
-             resumeBook:options.resume || null, lastActivity:performance.now(), sayPending:null };
+             resumeBook:options.resume || null, lastActivity:performance.now(), sayPending:null,
+             command:options.command || null };
     tap.port.onmessage = (event) => talkSamples(event.data);
     audio.addEventListener("statechange", () => { if (talk && talk.playback === audio) talkAudible(); });
     talkAudible();
@@ -31963,6 +32017,7 @@ async function startTalk(options = {}) {
     showLiveYou("");
     $("chat-live-end").focus();
     drawTalk();
+    if (talk.command && talk.command.samples) sendWakeCommand();
   } catch (error) {
     // 503: the speech server is not answering; the note under Talk with Hilde says so until it answers again.
     if (error.status === 503 && chatData) chatData.live_voice_down = error.message;
@@ -32093,6 +32148,7 @@ function onTalkFrame(frame) {
   for (const value of frame) sum += value * value;
   const db = 10 * Math.log10(sum / frame.length + 1e-12);
   talk.micDb = db;
+  if (talk.command) { talk.lastActivity = performance.now(); return; }  // "Hilde, …" is still being gathered
   if (talk.floorDb === null) talk.floorDb = db;
   // The background is learned while neither speaks: Hilde's echo must not raise the bar.
   if (!talk.speaking && !talkReplyAudible())
@@ -32218,14 +32274,14 @@ async function sendTalkCheck(samples) {
     sendTalkTurn(check.pending, false, cut);
   }
 }
-async function sendTalkTurn(samples, joins, cut) {
+async function sendTalkTurn(samples, joins, cut, wakeTurn = false) {
   const owner = talk, request = new AbortController();
   const pcm = talkPcm(samples);
   owner.request = request;
   try {
     owner.scheduled = [];
     // `audio`: the browser's audio state as the turn goes, kept in the server log (Talk turn:).
-    const asked = `session=${encodeURIComponent(owner.session)}${joins ? "&joins=1" : ""}`
+    const asked = `session=${encodeURIComponent(owner.session)}${joins ? "&joins=1" : ""}${wakeTurn ? "&wake=1" : ""}`
       + (cut === null ? "" : `&cut=${cut.toFixed(2)}`) + `&audio=${encodeURIComponent(owner.playback.state)}`;
     const response = await fetch(`/api/live/turn?${asked}`, {
       method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:pcm.buffer, signal:request.signal });
