@@ -31612,7 +31612,9 @@ function renderVoiceButtons() {
 // page. On "Hilde": a 0.2 s chime at once, then the panel opens, the book pauses (and goes on when Talk ends), and
 // Talk starts showing "Listening". Nothing is heard while Talk runs. Off with the header's switch; on again with it
 // or the next Talk. A page loaded with it on starts listening at the first tap or click (browsers need one).
-const WAKE_RATE = 16000, WAKE_HANG_MS = 200, WAKE_MIN_MS = 250, WAKE_MAX_MS = 1500, WAKE_PREROLL_MS = 200;
+// WAKE_HANG_MS: 120 ms of quiet ends a sound, so the chime can come within 0.3 s of the word's end (Ümit #1367);
+// a spoken "Hilde" has no quiet that long inside it (LFM3 voices, 5 Nov: its only quiet runs were before or after).
+const WAKE_RATE = 16000, WAKE_HANG_MS = 120, WAKE_MIN_MS = 250, WAKE_MAX_MS = 1500, WAKE_PREROLL_MS = 200;
 const wakeTimes = [];  // ms from the end of each "Hilde" to its chime
 async function startWake() {
   if (wake || !(caps && caps.live_voice)) return;
@@ -31689,7 +31691,8 @@ function onWakeFrame(owner, frame) {
     if ((owner.silenceMs += TALK_FRAME_MS) < WAKE_HANG_MS) return;
     owner.speaking = false;
     const heard = owner.length - owner.silenceMs - WAKE_PREROLL_MS;
-    if (heard >= WAKE_MIN_MS && heard <= WAKE_MAX_MS && !owner.busy) checkWake(owner, talkJoined(owner.frames));
+    if (heard >= WAKE_MIN_MS && heard <= WAKE_MAX_MS && !owner.busy)
+      checkWake(owner, talkJoined(owner.frames), performance.now() - owner.silenceMs);
     owner.frames = [];
     return;
   }
@@ -31700,8 +31703,8 @@ function onWakeFrame(owner, frame) {
     Object.assign(owner, { speaking:true, silenceMs:0, voicedRun:0, frames:owner.preroll, preroll:[],
                            length:owner.preroll.length * TALK_FRAME_MS });
 }
-async function checkWake(owner, samples) {
-  const ended = performance.now();
+// `ended`: when the word ended (before the quiet that closed it), which the chime's time is counted from.
+async function checkWake(owner, samples, ended) {
   owner.busy = true;
   try {
     const answer = await fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" },
