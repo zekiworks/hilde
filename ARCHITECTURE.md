@@ -4097,9 +4097,15 @@ hides the help's intro, and `endTalk()` puts both back. `startTalk()` first make
 the one `AudioContext` that both hears and speaks and starts it inside the
 click, before any await (with a one-sample silent buffer), so Safari still
 counts the listener's gesture (Ümit, 4 Nov: with AirPods the wave moved and
-Hilde was never heard); then asks
+Hilde was never heard). It does not start while a written answer runs, from any
+button or "Hilde" (`chatData.running`); it pauses a playing book, giving it back
+when Talk cannot start, and stops an answer being read aloud (`stopSpeaking()`;
+Ümit #1432). It then asks
 `/api/live/start` for a session (`LiveSession` in `LiveRegistry`, forgotten
-after `LIVE_SESSION_SECONDS` alone), opens the microphone with the browser's
+after `LIVE_SESSION_SECONDS` alone), hears through the microphone listening for
+"Hilde" already has open when it is the chosen one (`sharedStream`: one capture,
+not two, on an iPhone; End and a microphone switch leave it open) or opens its own
+with the browser's
 echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave
 (`drawTalk()`: Hilde's output level in `--accent`, the listener's in `--text`),
 **Hear Hilde** (`#chat-live-hear`, shown with a hint when the context stays
@@ -4154,7 +4160,7 @@ gaplessly by `playTalk()`. The page sends with the next turn (and with End)
 keeps each sentence's audio length (`LiveTurn.said`), so only sentences begun
 by then count as said (`LiveSession.spoken()`), marked interrupted. A turn
 talked over before any of its answer played is sent again with what follows
-(`joins`), and the earlier one is dropped. The strip's label (`#chat-live-label`)
+(`joins`, with `wake` when it began with "Hilde": `joinWake`), and the earlier one is dropped. The strip's label (`#chat-live-label`)
 says "Listening", "Hearing you" or "Hilde is answering"; under it the live text
 (`#chat-live-text`) shows the last exchange: what was heard (the turn's `you`
 line, `showLiveYou()`) and Hilde's sentences as the server sends them (`say`,
@@ -4177,15 +4183,29 @@ the messages, never one of them, and never sent to the model with a written
 question. **New conversation** deletes `live.json` with `chat.json`.
 
 **Listening for "Hilde"** (Ümit, 5 Nov): the header's switch (`#header-listen`,
-`toggleWake()`, kept as `hilde.listenForHilde`; the first Talk turns it on
-unless it was turned off) keeps a microphone open while the page is open
-(`startWake()`, its own `AudioContext`, made in the click). The page cuts what
+`toggleWake()`, kept as `hilde.listenForHilde`; its label reads "Listen for
+“Hilde”" off and "Listening for “Hilde”" on, Zeki #1439; the first Talk turns it
+on unless it was turned off, and says so in a note, as the switch does each time
+it is pressed, since a phone shows no tooltip) keeps a microphone open while the
+page is open (`startWake()`, its own `AudioContext`, made in the click). The
+switch reads `on` only while that context runs; one the browser pauses is asked
+to go on (`statechange`) and shows `armed` until the next gesture resumes it; a
+microphone track that ends stops listening until the next gesture. Gestures are
+the events browsers count as the listener's (`wakeGesture()`: a mouse's
+`pointerdown`, a finger's or pen's `pointerup`, `touchend`, `click`, `keydown`;
+never `touchstart`, which they do not count); a page loaded with
+the switch on starts listening at the first (`wakeAutoTried`). The page cuts what
 it hears into sounds (`onWakeFrame()`: `TALK_START_FRAMES` voiced frames start
 one, `WAKE_HANG_MS` of quiet ends it) and posts each one's first `WAKE_HEAD_MS`
 (1.5 s, with `WAKE_PREROLL_MS` before it) at most to `/api/live/wake`, which this
-machine's speech server hears, never a cloud: a sound of `WAKE_MIN_MS` or more
-that ends sooner when it ends, a longer one while it goes on, once (Zeki #1427:
-"Hilde, …" in one breath must work). `live_is_wake()` matches `LIVE_WAKE_CALL`:
+machine's speech server hears, never a cloud: a sound of `WAKE_MIN_MS` (150 ms:
+over a fan at -35 dB the quieter end of "Hilde" falls under the bar and what is
+left was under the old 250 ms) or more that ends sooner when it ends, a longer one
+while it goes on, once (Zeki #1427: "Hilde, …" in one breath must work), up to
+`WAKE_CHECKS_AT_ONCE` checks at a time (one under way no longer drops the next).
+Unbroken sound for `WAKE_NOISE_MS` (a fan, music) is background: the sound ends
+and the background is set to it, so "Hilde" can be heard over it and nothing kept
+grows. `live_is_wake()` matches `LIVE_WAKE_CALL`:
 past a greeting or filler, the name as LFM3-Audio writes it (Hilde, Hilda,
 Hildy, "hill day") said to her, alone or followed by punctuation; a sentence
 about a Hilde ("Hilda said…") has no comma there and does not wake. On a wake
@@ -4196,14 +4216,16 @@ The whole sound is Talk's first turn (`command`): a sound still going on is
 gathered to its end (`finishCommand()`, at most `WAKE_COMMAND_MAX_MS`) while
 Talk's own microphone starts no turn (`talk.command`), then sent with `wake=1`
 (`sendWakeCommand()`), and the server drops the name (`live_without_wake()`);
-the name alone leaves nothing to answer. Otherwise nothing is heard while Talk
-runs. Measured on 5 Nov (LFM3's two voices, a fake microphone): 11 of 12
-one-breath calls woke (the miss was transcribed "Hilda read faster." with no
-comma), none of 8 sentences about a Hilde or near it, and none in 15 minutes of
-the book's own narration at -25 and -40 dB (13 and 24 checks a minute). A page
-loaded with the switch on starts listening at its first tap or click
-(`wakeAutoTried`), as browsers need one; until then the switch shows it armed
-(`data-state`). The log keeps `Talk wake:` with the word count, never the words.
+the name alone leaves nothing to answer. What is said after it, before Talk's
+microphone runs (Ümit #1432: it was lost; 1.5 s when the server is slow), is
+kept (`bridge`, at most `WAKE_BRIDGE_MAX_FRAMES`) and heard first by Talk
+(`talkSamples()`, against the background listening learned). Otherwise nothing
+is heard while Talk runs. When Talk that "Hilde" started ends with nothing said,
+a panel it opened closes again (`closePanel`). Measured on 5 Nov (LFM3's two
+voices, a fake microphone): 11 of 12 one-breath calls woke (the miss was
+transcribed "Hilda read faster." with no comma), none of 8 sentences about a
+Hilde or near it, and none in 15 minutes of the book's own narration at -25 and
+-40 dB. The log keeps `Talk wake:` with the word count, never the words.
 
 **The speech server not answering** (Ümit, 5 Nov: it is paused for other GPU
 work some nights): `live_voice_down()` asks its `/health` at most every

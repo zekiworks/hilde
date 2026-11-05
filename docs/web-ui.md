@@ -879,21 +879,26 @@ speak. **As heard** shows your words as the speech recognition wrote them.
 Spoken conversations are kept apart: a written question never sends them to
 the model. **New conversation** deletes them with the written one.
 
-**Hilde**, the switch beside the header's Talk, listens for her name: say
+**Listen for “Hilde”**, the switch beside the header's Talk (it reads **Listening for “Hilde”** while on), listens for her name: say
 "Hilde" (or "Hey Hilde") alone, or with your question in the same breath, as in
 "Hilde, what is this paper about?". A short chime answers, the panel opens, a
 playing book pauses, and Talk starts; a question said with her name is its first
-turn and is answered (she leaves her name out of it). Say her name to her, as
+turn and is answered (she leaves her name out of it), and so is anything you say
+right after the chime, even before Talk is fully running. Say her name to her, as
 at a comma: "Hilda said…", a sentence about someone, does not call her, and in
 tests one question run straight on without that pause ("Hilde read faster") was
 missed. Talk, and listening for her name, understand English only. When Talk
 ends, a book paused this way goes on from the start of its sentence (one you
-paused yourself stays paused). The first Talk turns the switch on; press it to
-turn listening off, and it stays off. Its dot is filled while it listens; after
-a reload it starts again with your first click or tap, as browsers ask. Only
-the first second and a half of each thing heard is checked for her name, by the
-speech server on Hilde's own machine; nothing goes to the cloud, and only what
-follows "Hilde" goes on to the model.
+paused yourself stays paused), and if nothing was said, a panel "Hilde" opened
+closes again. Talk doesn't start while Hilde is writing an answer, and it stops
+an answer being read aloud; if Talk can't start, a book it paused goes on. The
+first Talk turns the switch on, with a note saying so; press it to turn
+listening off, and it stays off (a note says which it did). Its dot is filled
+while it listens and ringed while it waits for your next click or tap (after a
+reload, or when the browser paused it). Only the first second and a half of each
+thing heard is checked for her name, by the speech server on Hilde's own
+machine; nothing goes to the cloud, and only what follows "Hilde" goes on to the
+model.
 
 Under the question box one small gray line always says "Hilde can make
 mistakes. Check the source text." (in help: "Hilde can make mistakes. Trust what

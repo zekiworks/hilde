@@ -288,8 +288,8 @@ voice. It takes about 6.5 GB on one GPU. What you say is sent as audio to the
 speech server and as text to the chosen model; the transcript is kept in the
 book's (or the help's) `live.json` beside its `chat.json`. While the speech
 server isn't answering (stopped to free its GPU, say), Hilde checks it at most
-every 10 seconds and says so under **Talk with Hilde** and on the **Hilde**
-switch; both work again once it answers, without restarting Hilde.
+every 10 seconds and says so under **Talk with Hilde** and on **Listen for
+“Hilde”**; both work again once it answers, without restarting Hilde.
 
 ## Ask Hilde settings
 

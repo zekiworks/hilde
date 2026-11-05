@@ -26991,7 +26991,7 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       M3.75 7.75a4.25 4.25 0 0 0 8.5 0M8 12v2.25"/></svg><span class="header-voice-label">Talk</span></button>
     <button id="header-listen" class="header-voice header-listen hidden" type="button" aria-pressed="false"
       aria-label="Listen for “Hilde”" onclick="toggleWake()"><span class="listen-dot" aria-hidden="true"></span><span
-      class="header-voice-label">Hilde</span></button>
+      class="header-voice-label">Listen for “Hilde”</span></button>
   </header>
 
   <nav class="tabs" aria-label="Main">
@@ -31696,8 +31696,14 @@ let talk = null, talkStarting = false, wake = null;  // wake: listening for "Hil
 function talkFromButton(button) {
   if (talk || talkStarting) return;
   openTalkPanel(button);
-  startTalk();
-  if (stored("listenForHilde") !== false) { store("listenForHilde", true); startWake(); }
+  startTalk({ closePanel:false });
+  if (stored("listenForHilde") !== false) {
+    // Said once, when this first Talk turns it on (Ümit #1432: the switch's meaning did not show on a phone).
+    if (stored("listenForHilde") !== true)
+      showToast("Hilde now also listens for her name: say “Hilde” to talk. Listen for “Hilde” at the top turns it off.");
+    store("listenForHilde", true);
+    startWake();
+  }
 }
 function openTalkPanel(opener) {
   syncAskMode();
@@ -31712,7 +31718,11 @@ function renderVoiceButtons() {
   for (const id of ["header-talk", "header-listen", "player-talk"]) $(id).classList.toggle("hidden", !voice);
   const listen = $("header-listen"), wanted = stored("listenForHilde") === true;
   listen.setAttribute("aria-pressed", String(wanted));
-  listen.dataset.state = !wanted ? "off" : wake && wake.down ? "down" : wake && !wake.starting ? "on" : "armed";
+  // Its label says what it does, on a phone too (Zeki #1439: a dot and "Hilde" did not).
+  setText(listen.querySelector(".header-voice-label"), wanted ? "Listening for “Hilde”" : "Listen for “Hilde”");
+  // On only while its sound runs (Ümit #1432: a paused context looked on); else waiting for a tap or click.
+  const hearing = wake && !wake.starting && wake.audio.state === "running";
+  listen.dataset.state = !wanted ? "off" : wake && wake.down ? "down" : hearing ? "on" : "armed";
   listen.title = !wanted ? "Not listening for “Hilde”: press to listen"
     : listen.dataset.state === "down" ? `${wake.down} Listening for “Hilde” goes on once it answers; press to stop.`
     : listen.dataset.state === "on" ? "Listening for “Hilde”: press to stop"
@@ -31731,8 +31741,15 @@ function renderVoiceButtons() {
 // listening at the first tap or click (browsers need one).
 // WAKE_HANG_MS: 120 ms of quiet ends a sound, so the chime can come within 0.3 s of the word's end (Ümit #1367);
 // a spoken "Hilde" has no quiet that long inside it (LFM3 voices, 5 Nov: its only quiet runs were before or after).
-const WAKE_RATE = 16000, WAKE_HANG_MS = 120, WAKE_MIN_MS = 250, WAKE_HEAD_MS = 1500, WAKE_PREROLL_MS = 200;
+// WAKE_MIN_MS: 150 ms. Over steady noise (a fan at -35 dB, 5 Nov) the quieter end of "Hilde" falls under the bar
+// that keeps a sound going, and what is left of it was under the old 250 ms, so it was never checked.
+const WAKE_RATE = 16000, WAKE_HANG_MS = 120, WAKE_MIN_MS = 150, WAKE_HEAD_MS = 1500, WAKE_PREROLL_MS = 200;
 const WAKE_COMMAND_MAX_MS = 30000;  // the longest first turn "Hilde, …" gathers
+// Unbroken sound this long (a fan, music) is background: the sound ends and the background is learned from it, so
+// "Hilde" can be heard over it and nothing grows (Ümit #1432).
+const WAKE_NOISE_MS = 10000;
+const WAKE_CHECKS_AT_ONCE = 3;  // a check under way no longer drops the next sound (Ümit #1432)
+const WAKE_BRIDGE_MAX_FRAMES = 500;  // 10 s: what is said between "Hilde" and Talk's microphone, kept for Talk
 const wakeTimes = [];      // ms from the end of each sound that was "Hilde" to its chime
 const wakeHeadTimes = [];  // ms from the head of a longer sound being sent to its chime
 async function startWake() {
@@ -31740,7 +31757,13 @@ async function startWake() {
   const audio = new AudioContext();
   audio.resume().catch(() => {});
   const owner = wake = { audio, starting:true, frames:[], preroll:[], floorDb:null, voicedRun:0, speaking:false,
-                         silenceMs:0, length:0, busy:false, pending:new Float32Array(0) };
+                         silenceMs:0, length:0, checks:0, pending:new Float32Array(0), bridge:null };
+  // A context the browser pauses (a call, AirPods switching) is asked to go on, and the switch shows it.
+  audio.addEventListener("statechange", () => {
+    if (wake !== owner) return;
+    if (audio.state !== "running" && audio.state !== "closed") audio.resume().catch(() => {});
+    renderVoiceButtons();
+  });
   renderVoiceButtons();
   try {
     const opened = await openTalkMic(stored("talkMicrophone") || "");
@@ -31750,9 +31773,12 @@ async function startWake() {
     const mute = audio.createGain();
     mute.gain.value = 0;
     source.connect(tap); tap.connect(mute); mute.connect(audio.destination);
-    Object.assign(owner, { stream:opened.stream, source, tap, starting:false,
+    Object.assign(owner, { stream:opened.stream, micChoice:opened.choice, source, tap, starting:false,
                            resampler:new TalkResampler(audio.sampleRate, WAKE_RATE) });
     tap.port.onmessage = (event) => wakeSamples(owner, event.data);
+    // A microphone that ends (unplugged, taken by another app) stops listening; the next tap or click starts it again.
+    for (const track of opened.stream.getAudioTracks())
+      track.addEventListener("ended", () => { if (wake === owner) { stopWake(); wakeAutoTried = false; } });
   } catch (error) {
     if (wake === owner) { wake = null; audio.close().catch(() => {}); }
     showToast(`Listening for “Hilde” could not start: ${error.message}`);
@@ -31774,18 +31800,37 @@ function toggleWake() {
   const wanted = stored("listenForHilde") === true;
   // Waiting for its first tap: the switch's own press starts it.
   if (wanted && !wake) { startWake(); return; }
-  if (wanted) { store("listenForHilde", false); stopWake(); }
-  else { store("listenForHilde", true); startWake(); }
+  if (wanted && wake.audio.state !== "running") { wake.audio.resume().catch(() => {}); return; }
+  // What the switch did, said where a phone shows no tooltip (Ümit #1432).
+  if (wanted) {
+    store("listenForHilde", false); stopWake();
+    showToast("Hilde stopped listening for her name. Press Listen for “Hilde” at the top to listen again.");
+  } else {
+    store("listenForHilde", true); startWake();
+    showToast("Hilde listens for her name: say “Hilde” to talk. Press Listening for “Hilde” at the top to stop.");
+  }
 }
-// A page loaded with listening on starts it at the first tap or click anywhere but the switch (browsers need one);
-// tried once per page load, so a refused microphone does not ask again on every click.
+// A page loaded with listening on starts it at the first tap, click or key anywhere but the switch, and a context
+// the browser paused goes on there: only events browsers count as the listener's gesture (a mouse press, a finger
+// lifted, a key; Ümit #1432: a finger's pointerdown is not one). Started once per page load, so a refused microphone
+// does not ask again on every click.
 let wakeAutoTried = false;
-document.addEventListener("pointerdown", (event) => {
-  if (wakeAutoTried || wake || stored("listenForHilde") !== true || !(caps && caps.live_voice)) return;
+function wakeGesture(event) {
+  if (event.type === "pointerdown" && event.pointerType !== "mouse") return;
+  if (event.type === "pointerup" && event.pointerType === "mouse") return;
+  if (stored("listenForHilde") !== true || !(caps && caps.live_voice)) return;
   if (event.target.closest && event.target.closest("#header-listen")) return;
+  if (wake) {
+    if (!wake.starting && wake.audio.state !== "running") wake.audio.resume().catch(() => {});
+    return;
+  }
+  if (wakeAutoTried) return;
   wakeAutoTried = true;
   startWake();
-}, true);
+}
+// `click` and `touchend` too (Zeki #1439), which browsers also count; never `touchstart`, which they do not.
+for (const type of ["pointerdown", "pointerup", "touchend", "click", "keydown"])
+  document.addEventListener(type, wakeGesture, true);
 function wakeSamples(owner, samples) {
   if (wake !== owner) return;
   const fresh = owner.resampler.push(samples), size = WAKE_RATE * TALK_FRAME_MS / 1000;
@@ -31796,11 +31841,14 @@ function wakeSamples(owner, samples) {
   owner.pending = all.slice(at);
 }
 function onWakeFrame(owner, frame) {
-  // While Talk runs (or starts) it hears the listener itself, except for the rest of words "Hilde" began.
+  // While Talk runs (or starts) it hears the listener itself, except for the rest of words "Hilde" began, and what
+  // is said before Talk's microphone runs (Ümit #1432: it was lost), kept for Talk (`bridge`, talkSamples()).
   if ((talk || talkStarting) && !owner.command) {
+    if (owner.bridge && owner.bridge.length < WAKE_BRIDGE_MAX_FRAMES) owner.bridge.push(frame);
     Object.assign(owner, { speaking:false, frames:[], voicedRun:0 });
     return;
   }
+  if (!talk && !talkStarting) owner.bridge = null;  // Talk did not start
   let sum = 0;
   for (const value of frame) sum += value * value;
   const db = 10 * Math.log10(sum / frame.length + 1e-12);
@@ -31815,7 +31863,9 @@ function onWakeFrame(owner, frame) {
       owner.silenceMs = 0;
       if (owner.command) {
         if (owner.length >= WAKE_COMMAND_MAX_MS) finishCommand(owner);
-      } else if (!owner.checked && !owner.busy && owner.length - WAKE_PREROLL_MS >= WAKE_HEAD_MS) {
+      } else if (owner.length >= WAKE_NOISE_MS) {
+        Object.assign(owner, { speaking:false, frames:[], floorDb:db });
+      } else if (!owner.checked && owner.checks < WAKE_CHECKS_AT_ONCE && owner.length - WAKE_PREROLL_MS >= WAKE_HEAD_MS) {
         // A longer sound: its head is checked while it goes on.
         owner.checked = true;
         checkWake(owner, talkJoined(owner.frames), performance.now(), owner.sound, true);
@@ -31826,7 +31876,7 @@ function onWakeFrame(owner, frame) {
     owner.speaking = false;
     if (owner.command) { finishCommand(owner); return; }
     const heard = owner.length - owner.silenceMs - WAKE_PREROLL_MS;
-    if (!owner.checked && !owner.busy && heard >= WAKE_MIN_MS && heard <= WAKE_HEAD_MS)
+    if (!owner.checked && owner.checks < WAKE_CHECKS_AT_ONCE && heard >= WAKE_MIN_MS && heard <= WAKE_HEAD_MS)
       checkWake(owner, talkJoined(owner.frames), performance.now() - owner.silenceMs, owner.sound, false);
     // Kept until its check answers: words said with "Hilde" that ended meanwhile still go to Talk.
     owner.last = { sound:owner.sound, frames:owner.frames };
@@ -31843,7 +31893,7 @@ function onWakeFrame(owner, frame) {
 // `ended`: when the word ended (before the quiet that closed it), or when a longer sound's head was sent (`head`),
 // which the chime's time is counted from.
 async function checkWake(owner, samples, ended, sound, head) {
-  owner.busy = true;
+  owner.checks += 1;
   try {
     const answer = await fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" },
       body:talkPcm(samples).buffer });
@@ -31853,7 +31903,7 @@ async function checkWake(owner, samples, ended, sound, head) {
     if (wake === owner && (owner.down || "") !== down) { owner.down = down; renderVoiceButtons(); }
     if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting) onWake(owner, ended, sound, head);
   } catch (error) { /* the next "Hilde" tries again */ }
-  finally { owner.busy = false; }
+  finally { owner.checks -= 1; }
 }
 function onWake(owner, ended, sound, head) {
   playChime(owner.audio);
@@ -31861,13 +31911,16 @@ function onWake(owner, ended, sound, head) {
   // The book goes on from the start of its sentence when Talk ends, as "Hilde" paused it.
   const resume = readerAudio && !readerAudio.paused ? { audio:readerAudio, at:readerSentenceStart() } : null;
   // The words said with "Hilde" are Talk's first turn: a sound still going on is gathered to its end, one that
-  // ended is taken as it was.
+  // ended is taken as it was; what is said after it, before Talk's microphone runs, follows (`bridge`).
   const command = { samples:null };
   if (owner.speaking && owner.sound === sound) owner.command = command;
   else command.samples = owner.last && owner.last.sound === sound ? talkJoined(owner.last.frames) : new Float32Array(0);
   owner.last = null;
+  owner.bridge = [];
+  // A panel "Hilde" opened closes again when nothing is said (Ümit #1432: a false "Hilde" left it over the page).
+  const closePanel = !panelOpen || panelView !== "chat";
   openTalkPanel($("header-listen"));
-  startTalk({ resume, command });
+  startTalk({ resume, command, closePanel });
 }
 function finishCommand(owner) {
   const command = owner.command;
@@ -31885,6 +31938,7 @@ function sendWakeCommand() {
   talk.lastActivity = performance.now();
   if (!samples.length) return;
   talk.lastAudio = samples;
+  talk.lastWake = true;
   sendTalkTurn(samples, false, null, true);
 }
 // The chime: 0.2 s, two notes rising, quiet enough not to start a turn.
@@ -31952,9 +32006,17 @@ async function startTalk(options = {}) {
   if (talk || talkStarting) return;
   const model = chatModel();
   if (!model) { chatHint("Choose a model for Chat first, then press Talk.", true); return; }
+  // Not while a written answer runs, from whichever button or "Hilde" (Ümit #1432: only the panel's checked).
+  if (chatData && chatData.running) {
+    chatHint("Hilde is writing an answer: Talk is free once it is done, or after Stop.", true);
+    return;
+  }
   talkStarting = true; renderChatControls();
-  // One sound at a time: the book pauses (and goes on afterwards only when "Hilde" paused it: options.resume).
-  if (readerAudio && !readerAudio.paused) readerAudio.pause();
+  // One sound at a time: the book pauses (and goes on afterwards only when "Hilde" paused it: options.resume, or
+  // when Talk cannot start, Ümit #1432), and an answer being read aloud stops.
+  const bookPaused = readerAudio && !readerAudio.paused ? readerAudio : null;
+  if (bookPaused) bookPaused.pause();
+  if (chatSpeaking) stopSpeaking();
   const scope = chatScope();
   // Safari (Ümit, 4 Nov: with AirPods the wave moved but Hilde was never heard): the one audio context that
   // hears and speaks is made and started here, in the click itself, before any await, while the browser still
@@ -31973,7 +32035,12 @@ async function startTalk(options = {}) {
     if (chatData) chatData.live_voice_down = "";  // it answered: the note under Talk with Hilde goes
     let opened;
     try {
-      opened = await openTalkMic(stored("talkMicrophone") || "");
+      // Listening for "Hilde" already has the chosen microphone open: Talk hears through it rather than opening a
+      // second one (Ümit #1432: two at once on an iPhone).
+      const choice = stored("talkMicrophone") || "";
+      const shared = wake && wake.stream && (wake.micChoice || "") === choice
+        && wake.stream.getAudioTracks().some((track) => track.readyState === "live") ? wake.stream : null;
+      opened = shared ? { stream:shared, choice:wake.micChoice || "", shared:true } : await openTalkMic(choice);
     } catch (error) {
       end(session.session);
       chatHint("Hilde needs the microphone to talk: allow it for this page, then press Talk again.", true);
@@ -31991,14 +32058,14 @@ async function startTalk(options = {}) {
     const analyser = playback.createAnalyser(), voice = playback.createGain();
     analyser.fftSize = 512; voice.connect(analyser); analyser.connect(playback.destination);
     talk = { session:session.session, scope, inRate:session.in_rate, outRate:session.out_rate, stream:opened.stream,
-             source, tap, micChoice:opened.choice, switching:false, capture,
+             source, tap, micChoice:opened.choice, sharedStream:!!opened.shared, switching:false, capture,
              playback, analyser, resampler:new TalkResampler(capture.sampleRate, session.in_rate),
              pending:new Float32Array(0), preroll:[], frames:[], held:[], floorDb:null, voicedRun:0, silenceMs:0,
              speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
              scheduled:[], cut:null, voice, check:null, echoBoost:false,
              resumeBook:options.resume || null, lastActivity:performance.now(), sayPending:null,
-             command:options.command || null };
+             command:options.command || null, closePanel:!!options.closePanel };
     tap.port.onmessage = (event) => talkSamples(event.data);
     audio.addEventListener("statechange", () => { if (talk && talk.playback === audio) talkAudible(); });
     talkAudible();
@@ -32025,6 +32092,8 @@ async function startTalk(options = {}) {
   } finally {
     talkStarting = false;
     if (!talk || talk.playback !== audio) audio.close().catch(() => {});
+    // Talk did not start: a book it paused goes on.
+    if (!talk && bookPaused && readerAudio === bookPaused && bookPaused.paused) bookPaused.play().catch(() => {});
     renderChatControls();
   }
 }
@@ -32105,8 +32174,9 @@ async function switchTalkMic(choice) {
     const source = owner.capture.createMediaStreamSource(opened.stream);
     owner.source.disconnect();
     source.connect(owner.tap);
-    for (const track of owner.stream.getTracks()) track.stop();
-    Object.assign(owner, { stream:opened.stream, source, micChoice:opened.choice, floorDb:null });
+    // One shared with listening for "Hilde" stays open for it; Talk's own is stopped.
+    if (!owner.sharedStream) for (const track of owner.stream.getTracks()) track.stop();
+    Object.assign(owner, { stream:opened.stream, source, micChoice:opened.choice, floorDb:null, sharedStream:false });
     watchTalkTrack(owner, opened.stream);
     chatHint(choice && !opened.choice ? "That microphone isn't connected: Talk uses the system default." : "");
   } catch (error) {
@@ -32136,6 +32206,14 @@ async function onTalkDeviceChange() {
 }
 function talkSamples(samples) {
   if (!talk) return;
+  // What was said between "Hilde" and this microphone running comes first, against the background listening learned.
+  if (wake && wake.bridge && talk.inRate === WAKE_RATE) {
+    const bridged = wake.bridge;
+    wake.bridge = null;
+    if (talk.floorDb === null && wake.floorDb !== null) talk.floorDb = wake.floorDb;
+    for (const frame of bridged) if (talk) onTalkFrame(frame);
+    if (!talk) return;
+  }
   const fresh = talk.resampler.push(samples), size = talk.inRate * TALK_FRAME_MS / 1000;
   const all = new Float32Array(talk.pending.length + fresh.length);
   all.set(talk.pending); all.set(fresh, talk.pending.length);
@@ -32209,15 +32287,18 @@ function endTalkTurn() {
     return;
   }
   const joins = !!talk.joinAudio;
+  // Joined to words that began with "Hilde", the turn goes as they did: the server drops the name.
+  const wakeTurn = joins && !!talk.joinWake;
   if (joins) {
     const both = new Float32Array(talk.joinAudio.length + samples.length);
     both.set(talk.joinAudio); both.set(samples, talk.joinAudio.length);
-    samples = both; talk.joinAudio = null;
+    samples = both; talk.joinAudio = null; talk.joinWake = false;
   }
   talk.lastAudio = samples;
+  talk.lastWake = wakeTurn;
   const cut = talk.cut;
   talk.cut = null;
-  sendTalkTurn(samples, joins, cut);
+  sendTalkTurn(samples, joins, cut, wakeTurn);
 }
 // Seconds of the latest answer that played: what the server keeps as said (LiveSession.cut_last()).
 function talkPlayed() {
@@ -32231,7 +32312,7 @@ function stopTalkReply(join) {
   if (talk.request) { talk.request.abort(); talk.request = null; }
   for (const source of talk.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
   talk.sources = []; talk.playNext = 0; talk.scheduled = [];
-  if (join && talk.lastAudio) talk.joinAudio = talk.lastAudio;
+  if (join && talk.lastAudio) { talk.joinAudio = talk.lastAudio; talk.joinWake = !!talk.lastWake; }
 }
 function talkPcm(samples) {
   const pcm = new Int16Array(samples.length);
@@ -32371,7 +32452,8 @@ async function endTalk() {
   cancelAnimationFrame(ending.raf);
   if (ending.request) ending.request.abort();
   for (const source of ending.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
-  for (const track of ending.stream.getTracks()) track.stop();
+  // A microphone shared with listening for "Hilde" stays open for it.
+  if (!ending.sharedStream) for (const track of ending.stream.getTracks()) track.stop();
   // The book "Hilde" paused goes on from its sentence (Ümit, 5 Nov); a book the listener paused stays paused.
   const resume = ending.resumeBook;
   if (resume && readerAudio === resume.audio && readerAudio.paused) {
@@ -32392,6 +32474,8 @@ async function endTalk() {
     const data = await jsonRequest("/api/live/end", { method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify({ session:ending.session, ...(cut === null ? {} : { cut }) }) });
     chatHint(data.live ? "" : "Nothing was said, so nothing was kept.");
+    // Nothing said after a "Hilde" that opened the panel: it closes again, as before the false start.
+    if (!data.live && ending.closePanel && panelOpen && !talk && !talkStarting) closePanel();
   } catch (error) {
     chatHint(`The transcript couldn't be kept: ${error.message}`, true);
   }
