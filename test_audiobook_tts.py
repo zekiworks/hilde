@@ -14048,6 +14048,17 @@ class LiveTalkTests(unittest.TestCase):
         reading = web.LiveSession("a-book--" + "a" * 12, "lm-studio/model", {}, "")
         self.assertNotIn(web.LIVE_HELP_PROMPT.strip(), reading.system)
 
+    def test_hilde_said_alone_or_first_wakes_talk_and_other_speech_does_not(self):
+        """Ümit, 5 Nov: saying "Hilde" starts Talk. Speech recognition writes
+        the name several ways (as LFM3-Audio heard it, 5 Nov); a sentence that
+        merely begins with it, or sounds near it, must not start anything."""
+        for heard in ("Hilde.", "Hilda!", "hilda.", "Hey Hilda.", "Okay, Hilde?", "Hildy.",
+                      "Hilde, what is this paper about?"):
+            self.assertTrue(web.live_is_wake(heard), heard)
+        for heard in ("", "Uh.", "Hello there.", "The hills were green.", "Children.", "Killed it.",
+                      "Hilda said the model was wrong in chapter three today."):
+            self.assertFalse(web.live_is_wake(heard), heard)
+
 
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else

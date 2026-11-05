@@ -73,21 +73,23 @@ While a book plays, the paragraph being read has a thin line at its left, the se
 
 ## Ask Hilde
 
-**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In an open book it asks about the book, like the player bar's. To ask about a passage, select it, then press **Ask about this** (on a phone, **Ask Hilde** above the player bar). For a figure, click it and press **Ask about this figure**. The book pauses while you ask.
+**Ask Hilde** is at the top right of every page (on a phone, the round sparkle). In a book it asks about the book. To ask about a passage, select it and press **Ask about this** (on a phone, **Ask Hilde** above the player bar); for a figure, click it and press **Ask about this figure**. The book pauses while you ask.
 
-What you asked about shows as a card above the question box. **Context details** lists exactly what goes with your question. **Word | Sentence | Paragraph** widens the selection. Press **Explain this part**, or type your own question.
+A card above the box shows what you asked about; **Context details** lists what goes with it, **Word | Sentence | Paragraph** widens it. Press **Explain this part**, or type a question.
 
-Hilde finds the paragraphs it needs (**⋯** says how) and cites them, such as ¶12; click one to jump there. Hilde can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
+Hilde finds the paragraphs it needs (**⋯** says how) and cites them, such as ¶12; click one to jump there. It can write Markdown notes (**Notes Hilde wrote**) and search the web if the server allows.
 
-On other pages it answers questions about Hilde Reader from this help, else the developer docs or the code (with a link), or says it isn't sure. It only explains, never changes settings.
+On other pages it answers about Hilde Reader from this help, else the developer docs or code, or says it isn't sure. It never changes settings.
 
-Pick the model in the panel's header; this browser keeps it. Its badge says **Local** or **Cloud**, and a gray label under each answer names its model. **🔈 Read aloud** reads an answer aloud. **⋯** › **New conversation** starts over.
+Pick the model in the panel's header; this browser keeps it. Its badge says **Local** or **Cloud**, and a label under each answer names it. **🔈 Read aloud** reads one aloud; **⋯** › **New conversation** starts over.
 
-On a phone, drag the bar at the top of the sheet: up for full height, down for half, further down to close it. On a computer, drag the panel's left edge to resize it; your browser remembers the width.
+Drag the sheet's top bar (phone) or the panel's left edge (computer) to resize it.
 
-**While a book is being made** (its card says **In progress**), open it to read and ask; the player appears when it's done.
+**Talk with Hilde**, at the panel's top, starts a spoken conversation; the header's **Talk** and the player's microphone do too. Speak, pause, and Hilde answers aloud; talk over her to stop her. **End**, or ten quiet seconds, ends it. The header's **Hilde** switch listens for her name: say "Hilde", pause, and a chime starts Talk.
 
-The narration can be wrong; when it differs from the document, Hilde says so and goes by the document.
+**While a book is being made** (**In progress**), open it to read and ask; its bottom bar offers **Progress**, or **Continue…** once it stopped.
+
+When the narration differs from the document, Hilde goes by the document.
 
 <!-- more: docs/web-ui.md › Ask Hilde on every page -->
 <!-- checked (25 Oct): docs/web-ui.md, the side panel's left-edge resize (remembered by the browser) and the phone sheet's drag bar (full, half, closed); the "being made" and New conversation sentences shortened for the 1,650-word cap -->

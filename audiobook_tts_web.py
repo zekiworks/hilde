@@ -18084,6 +18084,29 @@ LIVE_ECHO_SHARE = 0.5
 LIVE_ECHO_NEW = 2
 LIVE_CHECK_MAX_SECONDS = 5
 LIVE_FILLERS = frozenset({"uh", "um", "er", "erm", "ah", "hmm", "mm", "oh"})
+# The wake word (Ümit, 5 Nov: "Hilde" said aloud starts Talk): a short sound the page heard (0.25 to 1.5 s,
+# LIVE_WAKE_MAX_SECONDS at most) goes to /api/live/wake, is heard by the speech server on this machine (never a
+# cloud), and is the wake word when its first word, after a greeting or a filler, is Hilde as speech recognition
+# writes it (LIVE_WAKE_WORD: Hilde, Hilda, Hildy, Hildie...; "hill day" too), in at most LIVE_WAKE_MAX_WORDS words.
+LIVE_WAKE_WORD = re.compile(r"h[ie]l+d(?:e|a|y|ie|i|ey|ee)?")
+LIVE_WAKE_LEAD = frozenset({"hey", "hi", "hello", "ok", "okay", "oh", "uh", "um", "er", "ah", "hmm", "so"})
+LIVE_WAKE_MAX_WORDS = 6
+LIVE_WAKE_MAX_SECONDS = 2
+
+
+def live_is_wake(heard):
+    """Whether words heard alone (a short sound) call Hilde: their first word
+    past a greeting or a filler is Hilde as heard (LIVE_WAKE_WORD), or
+    "hill" with "day"/"de"/"dee"/"da"/"the" after it, and they are short."""
+    words = re.findall(r"[a-zà-ÿ']+", heard.lower())
+    while words and words[0] in LIVE_WAKE_LEAD:
+        words.pop(0)
+    if not words or len(words) > LIVE_WAKE_MAX_WORDS:
+        return False
+    return bool(LIVE_WAKE_WORD.fullmatch(words[0])) or (
+        words[0] == "hill" and len(words) > 1 and words[1] in {"day", "de", "dee", "da", "the"})
+
+
 LIVE_UNAVAILABLE = "Talking with Hilde needs its speech server: start Hilde with --live-voice."
 LIVE_ENDED = "This conversation has ended: press Talk to start another."
 LIVE_SYSTEM = (
@@ -18388,6 +18411,8 @@ class LiveSession:
                         continue
                     spoken = live_spoken(sentence)
                     if spoken:
+                        # The page shows each sentence as it begins (live text), then its audio.
+                        emit({"say": spoken})
                         samples = [0]
                         live_speak(origin, spoken, lambda pcm: (
                             emit({"audio": base64.b64encode(pcm).decode("ascii")}),
@@ -22706,6 +22731,8 @@ class Handler(BaseHTTPRequestHandler):
                         "manage_providers": self.may_manage(),
                         # Hilde's own certificate authority, to install on a device.
                         "certificate": self.authority() is not None,
+                        # Talk and the wake word (--live-voice).
+                        "live_voice": bool(getattr(self.server, "live_voice", "")),
                     },
                     # Listen's highlights and notes (--enable-notes); off, /api/marks* answer 404.
                     "notes_enabled": self.notes_enabled(),
@@ -22945,6 +22972,8 @@ class Handler(BaseHTTPRequestHandler):
         # A live turn's audio, and an echo check's, is its body (16-bit mono PCM), not JSON.
         if route == "/api/live/turn":
             return self.live_turn(query)
+        if route == "/api/live/wake":
+            return self.live_wake()
         if route == "/api/live/check":
             return self.live_check(query)
         if route == "/api/documents/upload":
@@ -23886,6 +23915,29 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=session.warm, name="live-index", daemon=True).start()
         return self.reply(HTTPStatus.OK, {"session": session.id, "in_rate": LIVE_IN_RATE, "out_rate": LIVE_OUT_RATE})
 
+    def live_wake(self):
+        """Whether a short sound the page heard is the wake word (live_is_wake()),
+        heard by this machine's speech server: {"wake"}. The log keeps the
+        verdict and the word count, never the words."""
+        origin = getattr(self.server, "live_voice", "")
+        if not origin:
+            return self.fail(HTTPStatus.CONFLICT, LIVE_UNAVAILABLE)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not 0 < length <= LIVE_IN_RATE * 2 * LIVE_WAKE_MAX_SECONDS or length % 2:
+            return self.fail(HTTPStatus.BAD_REQUEST, f"A wake check is 16-bit audio of at most {LIVE_WAKE_MAX_SECONDS} seconds.")
+        pcm = self.rfile.read(length)
+        try:
+            heard = live_transcribe(origin, pcm)
+        except RuntimeError as exc:
+            return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
+        wake = live_is_wake(heard)
+        if wake:
+            print(f"Talk wake: words={len(heard.split())}", flush=True)
+        return self.reply(HTTPStatus.OK, {"wake": wake})
+
     def live_check(self, query):
         """Whether sound heard over Hilde is her own voice from the
         listener's speaker: its words (live_transcribe()) against what she is
@@ -23965,7 +24017,8 @@ class Handler(BaseHTTPRequestHandler):
         heard, failed = "", ""
         try:
             heard = live_transcribe(origin, pcm)
-            emit({"heard": bool(heard)})
+            # `you`: what was heard, for the page's live text.
+            emit({"heard": bool(heard), "you": heard})
             if heard:
                 session.answer(turn, heard, origin, emit)
             emit({"done": True})
@@ -24738,6 +24791,26 @@ body.server-down [inert] { opacity:.5; }
   .header-ask { width:44px; height:44px; min-height:44px; padding:0; }
   .header-ask .ask-icon { width:18px; height:18px; }
   .header-ask-label { display:none; }
+}
+/* Talk and listening for "Hilde" in the header, beside Ask Hilde (Ümit, 5 Nov), with a speech server only: Talk, a
+   microphone pill (the microphone alone, round, on a phone), and the listening switch, a dot and "Hilde": hollow when
+   off, the accent and breathing while listening, ringed while it waits for the first tap. */
+.header-voice { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:7px; min-height:40px;
+                padding:0 14px; border:1px solid #5a5a5a; border-radius:999px; background:var(--surface);
+                box-shadow:none; color:var(--text); font-size:15px; font-weight:600; white-space:nowrap; }
+.header-voice:hover:not(:disabled) { background:var(--hover); }
+.mic-icon { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round;
+            stroke-linejoin:round; }
+.listen-dot { width:9px; height:9px; border:1.5px solid var(--dim); border-radius:50%; }
+.header-listen[data-state=on] .listen-dot { border-color:var(--accent); background:var(--accent);
+                                            animation:listen-breathe 2.4s ease-in-out infinite; }
+.header-listen[data-state=armed] .listen-dot { border-color:var(--accent); }
+@keyframes listen-breathe { 50% { opacity:.35; } }
+@media (prefers-reduced-motion:reduce) { .header-listen[data-state=on] .listen-dot { animation:none; } }
+@media (max-width:599.98px) {
+  .header-voice { min-height:44px; }
+  #header-talk { width:44px; padding:0; }
+  #header-talk .header-voice-label { display:none; }
 }
 input[type=text], input[type=search], input[type=number], select, textarea {
   background:var(--field); color:var(--text); border:1px solid var(--line);
@@ -26039,19 +26112,33 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
                        border:1px solid #5a5a5a; border-radius:6px; background:transparent; box-shadow:none;
                        color:var(--text); font-size:13px; line-height:1.2; white-space:normal; }
 .chat-compose button:hover:not(:disabled) { background:var(--hover); }
-/* Talk (--live-voice): the sound-wave button beside Send starts a spoken conversation. While it runs, a strip at the
-   top of the panel, just under its head (Ümit, 5 Nov: at the bottom it sat far from everything, its wave a thumb
-   wide on a phone), holds the wave on a row of its own as wide as the panel (Hilde in the accent colour, the
-   listener in the text's), then the microphone and End, then any hint; the question box and the help's intro and
-   examples stay hidden, the earlier conversation in view. Nothing of what is said shows until it ends. */
-.chat-compose button.chat-talk { padding:2px 8px; }
-.chat-talk svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round;
-                 vertical-align:middle; }
+/* Talk (--live-voice): Talk with Hilde, at the panel's top, starts a spoken conversation. While it runs, a strip in its
+   place, just under the panel's head (Ümit, 5 Nov: at the bottom it sat far from everything, its wave a thumb wide on
+   a phone), holds what Talk is doing ("Listening", "Hearing you", "Hilde is answering"), the wave on a row of its own
+   as wide as the panel (Hilde in the accent colour, the listener in the text's), the microphone and End, any hint,
+   and the live text of the last exchange; the question box and the help's intro and examples stay hidden. */
+/* The panel's Talk with Hilde: full width at the top, a microphone and its name (44 px on a phone); when it cannot
+   start it stays, dimmed, with the reason under it. */
+.chat-talk-row { display:grid; flex:none; gap:6px; margin:0 16px 12px; }
+.chat-talk { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:40px;
+             border:1px solid var(--accent); border-radius:8px; background:transparent; box-shadow:none;
+             color:var(--text); font-size:15px; font-weight:600; }
+.chat-talk:hover:not(:disabled) { background:var(--hover); }
+.chat-talk-why { margin:0; color:var(--dim); font-size:13px; }
+@media (max-width:767.98px), (pointer:coarse) { .chat-talk { min-height:44px; } }
 .chat-live { display:grid; flex:none; grid-template-columns:minmax(0, 1fr) auto auto;
-             grid-template-areas:"wave wave wave" "mic hear end"; align-items:center; gap:8px 10px; margin:0 16px 12px;
-             padding:10px 12px; background:var(--field); border:1px solid var(--accent); border-radius:8px; }
+             grid-template-areas:"label label label" "wave wave wave" "mic hear end"; align-items:center;
+             gap:8px 10px; margin:0 16px 12px; padding:10px 12px; background:var(--field); border:1px solid var(--accent);
+             border-radius:8px; }
+.chat-live-label { grid-area:label; margin:0; color:var(--dim); font-size:13px; font-weight:600; }
 .chat-live-wave { grid-area:wave; width:100%; height:44px; }
-.chat-live .chat-hint { grid-column:1 / -1; }
+.chat-live .chat-hint, .chat-live-text { grid-column:1 / -1; }
+/* The live text: the last thing heard and Hilde's answer, the sentence being spoken tinted as the book tints its
+   sentence. */
+.chat-live-text { display:grid; gap:6px; margin:0; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
+.chat-live-text p { margin:0; }
+#chat-live-you { color:var(--dim); }
+.live-sentence.active { border-radius:3px; background:color-mix(in srgb, var(--accent) 22%, transparent); }
 #chat-pane.talking #help-intro { display:none; }
 /* The microphone: "System default" unless one is chosen. */
 .chat-live-mic { grid-area:mic; justify-self:start; min-width:0; max-width:100%; min-height:30px; padding:2px 6px;
@@ -26784,6 +26871,13 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       aria-expanded="false"><svg class="ask-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"
       focusable="false"><path d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"
       /></svg><span class="header-ask-label">Ask Hilde</span></button>
+    <button id="header-talk" class="header-voice hidden" type="button" aria-label="Talk with Hilde" title="Talk with Hilde"
+      aria-controls="side-panel" onclick="talkFromButton(this)"><svg class="mic-icon" viewBox="0 0 16 16"
+      aria-hidden="true"><path d="M8 1.75a2.25 2.25 0 0 1 2.25 2.25v4a2.25 2.25 0 0 1-4.5 0V4A2.25 2.25 0 0 1 8 1.75z
+      M3.75 7.75a4.25 4.25 0 0 0 8.5 0M8 12v2.25"/></svg><span class="header-voice-label">Talk</span></button>
+    <button id="header-listen" class="header-voice header-listen hidden" type="button" aria-pressed="false"
+      aria-label="Listen for “Hilde”" onclick="toggleWake()"><span class="listen-dot" aria-hidden="true"></span><span
+      class="header-voice-label">Hilde</span></button>
   </header>
 
   <nav class="tabs" aria-label="Main">
@@ -27579,6 +27673,10 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
                   aria-hidden="true"><path d="M4 1.75h5.25L12.5 5v9.25H4z M9 1.75V5.25h3.5M6.25 8.25h4M6.25 10.75h4"
                   /></svg></button>
               </div>
+              <button id="player-talk" class="player-mark hidden" type="button" aria-label="Talk with Hilde"
+                title="Talk with Hilde" aria-controls="side-panel" onclick="talkFromButton(this)"><svg class="mic-icon"
+                viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.75a2.25 2.25 0 0 1 2.25 2.25v4a2.25 2.25 0 0 1-4.5 0V4A2.25
+                2.25 0 0 1 8 1.75zM3.75 7.75a4.25 4.25 0 0 0 8.5 0M8 12v2.25"/></svg></button>
               <button id="ask-hilde" class="ask-hilde" type="button" aria-controls="side-panel"><svg class="ask-icon"
                 viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path
                 d="M8 1.5C8.5 5.4 10.6 7.5 14.5 8C10.6 8.5 8.5 10.6 8 14.5C7.5 10.6 5.4 8.5 1.5 8C5.4 7.5 7.5 5.4 8 1.5z"/></svg><span
@@ -27686,13 +27784,23 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <p id="chat-reading-note" class="chat-reading-note hidden" role="status"></p>
           <!-- Talk: at the top of the panel while a spoken conversation runs (Ümit, 5 Nov): the wave on its own row,
                then the microphone, Hear Hilde (when the browser paused her) and End; the hint moves in below them. -->
+          <!-- Talk with Hilde, where the strip opens (renderChatControls()). -->
+          <div id="chat-talk-row" class="chat-talk-row">
+            <button id="chat-talk" class="chat-talk" type="button" aria-describedby="chat-talk-why"
+              onclick="talkFromButton(this)"><svg class="mic-icon" viewBox="0 0 16 16" aria-hidden="true"><path
+              d="M8 1.75a2.25 2.25 0 0 1 2.25 2.25v4a2.25 2.25 0 0 1-4.5 0V4A2.25 2.25 0 0 1 8 1.75zM3.75 7.75a4.25 4.25 0
+              0 0 8.5 0M8 12v2.25"/></svg><span>Talk with Hilde</span></button>
+            <p id="chat-talk-why" class="chat-talk-why hidden"></p>
+          </div>
           <div id="chat-live" class="chat-live hidden" role="group" aria-label="Talking with Hilde">
+            <p id="chat-live-label" class="chat-live-label" aria-live="polite">Listening</p>
             <canvas id="chat-live-wave" class="chat-live-wave" aria-hidden="true"></canvas>
             <select id="chat-live-mic" class="chat-live-mic" aria-label="Microphone" title="Microphone"
               onchange="chooseTalkMic(this.value)"></select>
             <span id="chat-live-status" class="visually-hidden" role="status" aria-live="polite"></span>
             <button id="chat-live-hear" class="chat-live-end hidden" type="button" onclick="resumeTalkAudio()">Hear Hilde</button>
             <button id="chat-live-end" class="chat-live-end" type="button" onclick="endTalk()">End</button>
+            <div id="chat-live-text" class="chat-live-text hidden"><p id="chat-live-you"></p><p id="chat-live-hilde"></p></div>
           </div>
           <div id="chat-log" class="chat-log" aria-live="polite"></div>
           <!-- Help mode only: what the panel is for and three questions to start with; a click puts one in the
@@ -27720,9 +27828,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
             <form id="chat-compose" class="chat-compose" onsubmit="sendChat(event)">
               <label for="chat-input" class="visually-hidden">Message</label>
               <textarea id="chat-input" rows="1" maxlength="8000" placeholder="Type a question"></textarea>
-              <button id="chat-talk" class="chat-talk hidden" type="button" onclick="startTalk()"
-                aria-label="Talk with Hilde" title="Talk with Hilde"><svg viewBox="0 0 24 24" aria-hidden="true"><path
-                d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></button>
               <button id="chat-send" type="submit">Send</button>
             </form>
             <p id="chat-disclaimer" class="chat-disclaimer">Hilde can make mistakes. Check the source text.</p>
@@ -28453,6 +28558,7 @@ function pickDocument(name) {
 function load(data) {
   state = data.state; facts = data.derived; assets = data.assets || assets;
   caps = data.capabilities || caps; jobs = data.queue || [];
+  renderVoiceButtons();
   deviceAccess = data.devices || deviceAccess;
   configuration = data.configuration || configuration;
   machine = data.machine || machine;
@@ -31462,11 +31568,196 @@ const TALK_CONFIRM_IDLE_MS = 200, TALK_CONFIRM_BARGE_MS = 250, TALK_BARGE_EXTRA_
 // down to TALK_DUCK at once, and TALK_CHECK_MS of it go to /api/live/check, which says whether it is her echo;
 // only when it is not does she stop. Echo heard raises the bar by TALK_ECHO_BOOST_DB until she is done.
 const TALK_DUCK = 0.2, TALK_CHECK_MS = 800, TALK_ECHO_BOOST_DB = 6;
+// Ten seconds with nobody speaking, and Hilde silent, ends Talk by itself (Ümit, 5 Nov: hands busy, or a false
+// "Hilde"); End still ends it at once.
+const TALK_IDLE_MS = 10000;
 const TALK_TAP = `class TalkTap extends AudioWorkletProcessor {
   process(inputs) { const channel = inputs[0][0]; if (channel) this.port.postMessage(channel.slice(0)); return true; }
 }
 registerProcessor("talk-tap", TalkTap);`;
-let talk = null, talkStarting = false;
+let talk = null, talkStarting = false, wake = null;  // wake: listening for "Hilde" (below)
+// Talk from anywhere (the panel's Talk with Hilde, the header's and the player's microphone): the panel opens in
+// the mode the page is in and Talk starts in the same click, whose gesture its audio needs. That first Talk also
+// turns on listening for "Hilde" (Ümit, 5 Nov), unless it was turned off.
+function talkFromButton(button) {
+  if (talk || talkStarting) return;
+  openTalkPanel(button);
+  startTalk();
+  if (stored("listenForHilde") !== false) { store("listenForHilde", true); startWake(); }
+}
+function openTalkPanel(opener) {
+  syncAskMode();
+  if (opener) panelOpener = opener;
+  if (!panelOpen || panelView !== "chat") setPanel(true, "chat");
+  if (!chatData) loadChat();
+}
+// The Talk buttons: the panel's (shown with its reason when Talk cannot start), and the header's and the player's
+// microphone and the header's listening switch, shown only with a speech server (--live-voice).
+function renderVoiceButtons() {
+  const voice = !!(caps && caps.live_voice);
+  for (const id of ["header-talk", "header-listen", "player-talk"]) $(id).classList.toggle("hidden", !voice);
+  const listen = $("header-listen"), wanted = stored("listenForHilde") === true;
+  listen.setAttribute("aria-pressed", String(wanted));
+  listen.dataset.state = !wanted ? "off" : wake && !wake.starting ? "on" : "armed";
+  listen.title = !wanted ? "Not listening for “Hilde”: press to listen"
+    : listen.dataset.state === "on" ? "Listening for “Hilde”: press to stop"
+    : "Listening for “Hilde” starts with your next tap or click";
+}
+
+// ---- Listening for "Hilde" (Ümit, 5 Nov) ----
+// The microphone stays open while the page is open and the switch is on; the page cuts what it hears into sounds
+// (a start of TALK_START_FRAMES voiced 20 ms frames above the background, an end after WAKE_HANG_MS of quiet) and
+// sends only those of WAKE_MIN_MS to WAKE_MAX_MS, as long as a spoken "Hilde", to /api/live/wake, which this
+// machine's speech server hears (never a cloud); longer ones (the book's own voice, a conversation) never leave the
+// page. On "Hilde": a 0.2 s chime at once, then the panel opens, the book pauses (and goes on when Talk ends), and
+// Talk starts showing "Listening". Nothing is heard while Talk runs. Off with the header's switch; on again with it
+// or the next Talk. A page loaded with it on starts listening at the first tap or click (browsers need one).
+const WAKE_RATE = 16000, WAKE_HANG_MS = 200, WAKE_MIN_MS = 250, WAKE_MAX_MS = 1500, WAKE_PREROLL_MS = 200;
+const wakeTimes = [];  // ms from the end of each "Hilde" to its chime
+async function startWake() {
+  if (wake || !(caps && caps.live_voice)) return;
+  const audio = new AudioContext();
+  audio.resume().catch(() => {});
+  const owner = wake = { audio, starting:true, frames:[], preroll:[], floorDb:null, voicedRun:0, speaking:false,
+                         silenceMs:0, length:0, busy:false, pending:new Float32Array(0) };
+  renderVoiceButtons();
+  try {
+    const opened = await openTalkMic(stored("talkMicrophone") || "");
+    if (wake !== owner) { for (const track of opened.stream.getTracks()) track.stop(); return; }
+    await audio.audioWorklet.addModule(URL.createObjectURL(new Blob([TALK_TAP], { type:"text/javascript" })));
+    const source = audio.createMediaStreamSource(opened.stream), tap = new AudioWorkletNode(audio, "talk-tap");
+    const mute = audio.createGain();
+    mute.gain.value = 0;
+    source.connect(tap); tap.connect(mute); mute.connect(audio.destination);
+    Object.assign(owner, { stream:opened.stream, source, tap, starting:false,
+                           resampler:new TalkResampler(audio.sampleRate, WAKE_RATE) });
+    tap.port.onmessage = (event) => wakeSamples(owner, event.data);
+  } catch (error) {
+    if (wake === owner) { wake = null; audio.close().catch(() => {}); }
+    showToast(`Listening for “Hilde” could not start: ${error.message}`);
+  }
+  renderVoiceButtons();
+}
+function stopWake() {
+  const ending = wake;
+  wake = null;
+  if (ending) {
+    if (ending.stream) for (const track of ending.stream.getTracks()) track.stop();
+    ending.audio.close().catch(() => {});
+  }
+  renderVoiceButtons();
+}
+function toggleWake() {
+  const wanted = stored("listenForHilde") === true;
+  // Waiting for its first tap: the switch's own press starts it.
+  if (wanted && !wake) { startWake(); return; }
+  if (wanted) { store("listenForHilde", false); stopWake(); }
+  else { store("listenForHilde", true); startWake(); }
+}
+// A page loaded with listening on starts it at the first tap or click anywhere but the switch (browsers need one);
+// tried once per page load, so a refused microphone does not ask again on every click.
+let wakeAutoTried = false;
+document.addEventListener("pointerdown", (event) => {
+  if (wakeAutoTried || wake || stored("listenForHilde") !== true || !(caps && caps.live_voice)) return;
+  if (event.target.closest && event.target.closest("#header-listen")) return;
+  wakeAutoTried = true;
+  startWake();
+}, true);
+function wakeSamples(owner, samples) {
+  if (wake !== owner) return;
+  const fresh = owner.resampler.push(samples), size = WAKE_RATE * TALK_FRAME_MS / 1000;
+  const all = new Float32Array(owner.pending.length + fresh.length);
+  all.set(owner.pending); all.set(fresh, owner.pending.length);
+  let at = 0;
+  for (; at + size <= all.length; at += size) onWakeFrame(owner, all.slice(at, at + size));
+  owner.pending = all.slice(at);
+}
+function onWakeFrame(owner, frame) {
+  // While Talk runs (or starts) it hears the listener itself.
+  if (talk || talkStarting) { Object.assign(owner, { speaking:false, frames:[], voicedRun:0 }); return; }
+  let sum = 0;
+  for (const value of frame) sum += value * value;
+  const db = 10 * Math.log10(sum / frame.length + 1e-12);
+  if (owner.floorDb === null) owner.floorDb = db;
+  if (!owner.speaking)
+    owner.floorDb = db < owner.floorDb ? 0.9 * owner.floorDb + 0.1 * db : owner.floorDb + 0.01 * (db - owner.floorDb);
+  const voiced = db > Math.max(owner.floorDb + (owner.speaking ? 8 : 12), -55);
+  if (owner.speaking) {
+    owner.frames.push(frame);
+    owner.length += TALK_FRAME_MS;
+    if (voiced) { owner.silenceMs = 0; return; }
+    if ((owner.silenceMs += TALK_FRAME_MS) < WAKE_HANG_MS) return;
+    owner.speaking = false;
+    const heard = owner.length - owner.silenceMs - WAKE_PREROLL_MS;
+    if (heard >= WAKE_MIN_MS && heard <= WAKE_MAX_MS && !owner.busy) checkWake(owner, talkJoined(owner.frames));
+    owner.frames = [];
+    return;
+  }
+  owner.preroll.push(frame);
+  while (owner.preroll.length > WAKE_PREROLL_MS / TALK_FRAME_MS) owner.preroll.shift();
+  owner.voicedRun = voiced ? owner.voicedRun + 1 : 0;
+  if (owner.voicedRun >= TALK_START_FRAMES)
+    Object.assign(owner, { speaking:true, silenceMs:0, voicedRun:0, frames:owner.preroll, preroll:[],
+                           length:owner.preroll.length * TALK_FRAME_MS });
+}
+async function checkWake(owner, samples) {
+  const ended = performance.now();
+  owner.busy = true;
+  try {
+    const answer = await fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" },
+      body:talkPcm(samples).buffer });
+    if (answer.ok && (await answer.json()).wake === true && wake === owner && !talk && !talkStarting)
+      onWake(owner, ended);
+  } catch (error) { /* the next "Hilde" tries again */ }
+  finally { owner.busy = false; }
+}
+function onWake(owner, ended) {
+  playChime(owner.audio);
+  wakeTimes.push(Math.round(performance.now() - ended));
+  // The book goes on from the start of its sentence when Talk ends, as "Hilde" paused it.
+  const resume = readerAudio && !readerAudio.paused ? { audio:readerAudio, at:readerSentenceStart() } : null;
+  openTalkPanel($("header-listen"));
+  startTalk({ resume });
+}
+// The chime: 0.2 s, two notes rising, quiet enough not to start a turn.
+function playChime(audio) {
+  const now = audio.currentTime, tone = audio.createOscillator(), level = audio.createGain();
+  tone.type = "sine";
+  tone.frequency.setValueAtTime(880, now);
+  tone.frequency.setValueAtTime(1175, now + 0.09);
+  level.gain.setValueAtTime(0.0001, now);
+  level.gain.exponentialRampToValueAtTime(0.25, now + 0.015);
+  level.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+  tone.connect(level); level.connect(audio.destination);
+  tone.start(now); tone.stop(now + 0.21);
+}
+// The start of the sentence being read (readerCues are the book's sentence cues), where the book goes on after Talk.
+function readerSentenceStart() {
+  const time = readerAudio.currentTime;
+  if (!readerSampleRate || !readerCues.length) return time;
+  const cue = readerCueAt(Math.round(time * readerSampleRate));
+  return cue ? cue.start_sample / readerSampleRate : time;
+}
+// Live text under the strip: what was heard, and Hilde's sentences, the one being spoken marked.
+function showLiveYou(text) {
+  setText($("chat-live-you"), text ? `You: ${text}` : "");
+  $("chat-live-hilde").replaceChildren();
+  $("chat-live-text").classList.toggle("hidden", !text);
+}
+function addLiveSay(text) {
+  const holder = $("chat-live-hilde");
+  if (!holder.childNodes.length) holder.append("Hilde: ");
+  const sentence = document.createElement("span");
+  sentence.className = "live-sentence";
+  sentence.textContent = text;
+  holder.append(sentence, " ");
+  $("chat-live-text").classList.remove("hidden");
+  talk.sayPending = sentence;
+}
+function markLiveSay(sentence) {
+  for (const node of $("chat-live-hilde").querySelectorAll(".live-sentence.active")) node.classList.remove("active");
+  sentence.classList.add("active");
+}
 // The microphone's rate down to the server's: each output sample averages its span of input.
 class TalkResampler {
   constructor(from, to) { this.step = from / to; this.t = 0; this.buffer = new Float32Array(0); }
@@ -31489,11 +31780,13 @@ class TalkResampler {
 function talkReplyAudible() { return !!talk && talk.playNext > talk.playback.currentTime; }
 function talkReplyBusy() { return !!talk && (!!talk.request || talkReplyAudible()); }
 
-async function startTalk() {
+async function startTalk(options = {}) {
   if (talk || talkStarting) return;
   const model = chatModel();
   if (!model) { chatHint("Choose a model for Chat first, then press Talk.", true); return; }
   talkStarting = true; renderChatControls();
+  // One sound at a time: the book pauses (and goes on afterwards only when "Hilde" paused it: options.resume).
+  if (readerAudio && !readerAudio.paused) readerAudio.pause();
   const scope = chatScope();
   // Safari (Ümit, 4 Nov: with AirPods the wave moved but Hilde was never heard): the one audio context that
   // hears and speaks is made and started here, in the click itself, before any await, while the browser still
@@ -31534,7 +31827,8 @@ async function startTalk() {
              pending:new Float32Array(0), preroll:[], frames:[], held:[], floorDb:null, voicedRun:0, silenceMs:0,
              speaking:false, tentative:false, bargeTurn:false, beforeReply:false, voicedMs:0, request:null,
              sources:[], playNext:0, lastAudio:null, joinAudio:null, micDb:-100, level:0, raf:0,
-             scheduled:[], cut:null, voice, check:null, echoBoost:false };
+             scheduled:[], cut:null, voice, check:null, echoBoost:false,
+             resumeBook:options.resume || null, lastActivity:performance.now(), sayPending:null };
     tap.port.onmessage = (event) => talkSamples(event.data);
     audio.addEventListener("statechange", () => { if (talk && talk.playback === audio) talkAudible(); });
     talkAudible();
@@ -31549,6 +31843,8 @@ async function startTalk() {
     $("chat-pane").classList.add("talking");
     $("chat-live").classList.remove("hidden");
     $("chat-live-status").textContent = "Talking with Hilde. Speak whenever you like; press End to stop.";
+    $("chat-live-label").textContent = "Listening";
+    showLiveYou("");
     $("chat-live-end").focus();
     drawTalk();
   } catch (error) {
@@ -31689,6 +31985,9 @@ function onTalkFrame(frame) {
       + (talk.echoBoost ? TALK_ECHO_BOOST_DB : 0)
     : Math.max(talk.floorDb + (talk.speaking ? 8 : 12), -60);
   const voiced = db > threshold;
+  const now = performance.now();
+  if (talk.speaking || talkReplyBusy() || talk.check) talk.lastActivity = now;
+  else if (now - talk.lastActivity > TALK_IDLE_MS) { endTalk(); return; }
   if (talk.speaking) {
     (talk.tentative ? talk.held : talk.frames).push(frame);
     if (talk.check && !talk.check.sent && talk.frames.length * TALK_FRAME_MS >= TALK_CHECK_MS)
@@ -31829,6 +32128,8 @@ async function sendTalkTurn(samples, joins, cut) {
         const event = JSON.parse(line);
         if (event.audio) playTalk(event.audio);
         else if (event.error) chatHint(event.error, true);
+        else if (typeof event.you === "string") showLiveYou(event.you);
+        else if (event.say) addLiveSay(event.say);
       }
     }
   } catch (error) {
@@ -31850,6 +32151,12 @@ function playTalk(base64) {
   const now = talk.playback.currentTime;
   if (talk.playNext < now) talk.playNext = now + TALK_JITTER_S;
   source.start(talk.playNext);
+  // The sentence this audio begins is marked as it starts to play.
+  if (talk.sayPending) {
+    const sentence = talk.sayPending, wait = Math.max(0, (talk.playNext - now) * 1000);
+    talk.sayPending = null;
+    setTimeout(() => markLiveSay(sentence), wait);
+  }
   talk.scheduled.push([talk.playNext, buffer.duration]);
   talk.playNext += buffer.duration;
   talk.sources.push(source);
@@ -31878,6 +32185,7 @@ function drawTalk() {
     const tall = Math.max(3 * ratio, height * (0.1 + 0.9 * talk.level * (0.3 + 0.7 * swing)));
     context.fillRect(i * (bar + gap), (height - tall) / 2, bar, tall);
   }
+  $("chat-live-label").textContent = talkReplyBusy() ? "Hilde is answering" : talk.speaking ? "Hearing you" : "Listening";
   talk.raf = requestAnimationFrame(drawTalk);
 }
 // End: the microphone and Hilde's voice stop, and the transcript is kept (after the edit pass) as a callout.
@@ -31890,6 +32198,12 @@ async function endTalk() {
   if (ending.request) ending.request.abort();
   for (const source of ending.sources) { try { source.stop(); } catch (error) { /* already ended */ } }
   for (const track of ending.stream.getTracks()) track.stop();
+  // The book "Hilde" paused goes on from its sentence (Ümit, 5 Nov); a book the listener paused stays paused.
+  const resume = ending.resumeBook;
+  if (resume && readerAudio === resume.audio && readerAudio.paused) {
+    readerAudio.currentTime = resume.at;
+    readerAudio.play().catch(() => {});
+  }
   navigator.mediaDevices.removeEventListener("devicechange", onTalkDeviceChange);
   clearTimeout(ending.mutedTimer);
   ending.playback.close().catch(() => {});
@@ -31920,9 +32234,15 @@ function renderChatControls() {
   renderChatAction();
   renderSendButton();
   $("chat-send").disabled = chatSending || !!(chatData && chatData.problem);
-  // Talk, with the server's speech server (--live-voice); not while a written answer runs.
-  $("chat-talk").classList.toggle("hidden", !(chatData && chatData.live_voice) || !!talk);
-  $("chat-talk").disabled = running || !!(chatData && chatData.problem) || talkStarting;
+  // Talk with Hilde, at the panel's top: with its reason when it cannot start; hidden while Talk runs (the strip
+  // takes its place).
+  $("chat-talk-row").classList.toggle("hidden", !!talk);
+  const talkWhy = !(caps && caps.live_voice) ? "Talk needs Hilde's speech server, which this server does not run."
+    : running ? "Hilde is writing an answer: Talk is free once it is done, or after Stop." : "";
+  $("chat-talk").disabled = !!talkWhy || talkStarting;
+  setText($("chat-talk-why"), talkWhy);
+  $("chat-talk-why").classList.toggle("hidden", !talkWhy);
+  renderVoiceButtons();
   // The box stays the listener's own; with a part attached, Enter on an
   // empty box asks Hilde to explain it.
   $("chat-input").placeholder = !chatAbout || chatAbout.error ? CHAT_PLACEHOLDER

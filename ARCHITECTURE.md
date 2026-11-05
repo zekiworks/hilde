@@ -4059,9 +4059,16 @@ read aloud by **Read answers aloud**.
 ### Talk (spoken conversation)
 
 With `--live-voice` (an LFM3-Audio llama-server: `/v1/audio/transcriptions`
-to hear, `/tts` to speak; `live_voice_origin()`), `GET /api/chat` says
-`live_voice` and the composer shows **Talk** (`#chat-talk`, a sound-wave icon
-between the box and Send; Can, 3 Nov). It talks with the chat model the panel
+to hear, `/tts` to speak; `live_voice_origin()`), `GET /api/chat` and the
+state's `capabilities` say `live_voice`, and Talk is offered in three places
+(Ümit, 5 Nov, #1370: the composer's small wave icon went unseen): **Talk with
+Hilde** (`#chat-talk` in `#chat-talk-row`, full width at the panel's top; without
+a speech server, or while a written answer runs, it stays dimmed with its
+reason in `#chat-talk-why`), and, with a speech server only, the header's
+**Talk** (`#header-talk`, the microphone alone on a phone) and the player's
+microphone (`#player-talk`); `renderVoiceButtons()`. Each calls
+`talkFromButton()`: the panel opens in the page's mode (`openTalkPanel()`) and
+Talk starts in the same click, whose gesture its audio needs. It talks with the chat model the panel
 has chosen (`chatModel()`), without tools (each round would delay her first
 word). About a book it reads the book as written Ask Hilde does: the book's
 abstract (`chat_abstract()`) in the instructions (`LIVE_BOOK_PROMPT` after
@@ -4092,7 +4099,7 @@ echo cancelling, and swaps `#chat-compose` for `#chat-live`: a canvas wave
 paused or interrupted for a second: `talkAudible()` on every `statechange` and
 before each chunk resumes it, `resumeTalkAudio()` from the click),
 the microphone
-(`#chat-live-mic`), and **End**. Nothing said is shown while it runs.
+(`#chat-live-mic`), and **End**; the live text follows (below).
 
 The microphone (`openTalkMic()`, `TALK_AUDIO`) is the system default unless
 one is chosen in `#chat-live-mic` (`chooseTalkMic()`, kept as
@@ -4140,7 +4147,15 @@ gaplessly by `playTalk()`. The page sends with the next turn (and with End)
 keeps each sentence's audio length (`LiveTurn.said`), so only sentences begun
 by then count as said (`LiveSession.spoken()`), marked interrupted. A turn
 talked over before any of its answer played is sent again with what follows
-(`joins`), and the earlier one is dropped.
+(`joins`), and the earlier one is dropped. The strip's label (`#chat-live-label`)
+says "Listening", "Hearing you" or "Hilde is answering"; under it the live text
+(`#chat-live-text`) shows the last exchange: what was heard (the turn's `you`
+line, `showLiveYou()`) and Hilde's sentences as the server sends them (`say`,
+`addLiveSay()`), each marked `.active` as its audio starts to play
+(`markLiveSay()`). Ten seconds with nobody speaking and Hilde silent
+(`TALK_IDLE_MS`) end Talk by itself; Talk pauses a playing book, which goes on
+from the start of its sentence (`readerSentenceStart()`, the sentence cue's
+start) only when "Hilde" paused it (`resumeBook`).
 
 **End** (`endTalk()`, also when the panel moves to another book or help)
 posts `/api/live/end`: the transcript's listener lines go through one edit
@@ -4153,6 +4168,25 @@ as `live` (`live_display()`); the page draws each as a callout
 (`liveCallout()`, **As heard** shows the untidied lines) placed by time among
 the messages, never one of them, and never sent to the model with a written
 question. **New conversation** deletes `live.json` with `chat.json`.
+
+**Listening for "Hilde"** (Ümit, 5 Nov): the header's switch (`#header-listen`,
+`toggleWake()`, kept as `hilde.listenForHilde`; the first Talk turns it on
+unless it was turned off) keeps a microphone open while the page is open
+(`startWake()`, its own `AudioContext`, made in the click). The page cuts what
+it hears into sounds (`onWakeFrame()`: `TALK_START_FRAMES` voiced frames start
+one, `WAKE_HANG_MS` of quiet ends it) and posts only those of `WAKE_MIN_MS` to
+`WAKE_MAX_MS` to `/api/live/wake`, which this machine's speech server hears;
+longer sounds, the book's voice included, never leave the page, and nothing
+goes to a cloud. `live_is_wake()` takes the first word after a greeting or
+filler (`LIVE_WAKE_LEAD`) as Hilde when it matches `LIVE_WAKE_WORD` (as
+LFM3-Audio writes it: Hilde, Hilda, Hildy) in at most `LIVE_WAKE_MAX_WORDS`
+words. On a wake the page plays a 0.2 s chime (`playChime()`; `wakeTimes`
+keeps the milliseconds from the sound's end), opens the panel and starts Talk
+with the book's place to resume (`onWake()`). Nothing is heard while Talk
+runs. A page loaded with the switch on starts listening at its first tap or
+click (`wakeAutoTried`), as browsers need one; until then the switch shows it
+armed (`data-state`). The log keeps `Talk wake:` with the word count, never the
+words.
 
 ## HTTP routes
 
@@ -4211,9 +4245,10 @@ question. **New conversation** deletes `live.json` with `chat.json`.
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are this browser's (`Handler.local_servers()`). Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and `live.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` and `live.json` alone (`chat_key()`: only that flag reaches the help conversation). |
 | `POST /api/live/start` | With `--live-voice` only (else 409, `LIVE_UNAVAILABLE`). JSON `book` (or `help: true`) and `model`; returns `{session, in_rate, out_rate}`. 400 without a model, 404 for an unknown book. See [Talk](#talk-spoken-conversation). |
-| `POST /api/live/turn?session=ID[&joins=1][&cut=S]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool}`, `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played. 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
+| `POST /api/live/turn?session=ID[&joins=1][&cut=S][&audio=STATE]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool, "you": text heard}`, then for each sentence `{"say": text}` before its `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played; `audio`: the browser's audio state, for the log. 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
 | `POST /api/live/end` | JSON `session` and optionally `cut`; keeps the edited transcript in `live.json` and returns `{live}` (as `GET /api/chat` shows it), or `{live: null}` when nothing was said. 404 for an unknown session. |
 | `POST /api/live/check?session=ID` | Body: sound heard over Hilde as 16-bit mono PCM at `in_rate`, at most `LIVE_CHECK_MAX_SECONDS`; `{echo}`, whether it is her own voice (`LiveSession.is_echo()`). 404 for an unknown session, 400 for a bad body, 502 when the speech server cannot hear it. |
+| `POST /api/live/wake` | With `--live-voice` only (else 409). Body: one short sound as 16-bit mono PCM at 16 kHz, at most `LIVE_WAKE_MAX_SECONDS`; `{wake}`, whether it is "Hilde" (`live_is_wake()`). 400 for a bad body, 502 when the speech server cannot hear it. |
 | `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
 | `POST /api/marks/save` | With `--enable-notes` only (else 404). JSON `{book, item}`: creates or updates the mark by `item.id` under the book's lock (`save_mark()`) and returns `{item}` as stored, with `place`. HTTP 409 `{error, item}` with the stored item when `item.base_updated_at` is not its `updated_at`, or when it was deleted; 400 for an invalid item (`clean_mark()`), a changed `kind`, or an invalid book id; 404 for a book not in the library; 500 when the marks file can't be read or written, with nothing changed. |
 | `POST /api/marks/delete` | With `--enable-notes` only (else 404). JSON `{book, id}`: leaves a tombstone (`delete_mark()`) and returns it as `{item}`; 400 for an id that is no UUID v4. |

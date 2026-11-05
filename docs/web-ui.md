@@ -845,20 +845,25 @@ frees its GPU. Code, web addresses, and Markdown are not read; a citation such
 as ¶12 is read as "paragraph 12". Reading aloud needs the server's own
 narration model (`--voice-clone-model`); without it, neither shows.
 
-**Talk**, the sound-wave button between the question box and **Send**, starts
-a spoken conversation with the model chosen for Ask Hilde (shown only when
-the server has a speech server, `--live-voice`; see
-[Talking with Hilde](configuration.md#talking-with-hilde)). The browser asks
-for the microphone once. Then just talk: Hilde answers out loud a moment
+**Talk with Hilde**, the button across the top of the Ask Hilde panel, starts
+a spoken conversation with the model chosen for Ask Hilde (it needs the
+server's speech server, `--live-voice`, see
+[Talking with Hilde](configuration.md#talking-with-hilde); without one it stays
+dimmed and says so). With a speech server the header's **Talk** (a microphone
+on a phone) and the microphone in the player do the same from anywhere,
+opening the panel. The browser asks for the microphone once. Then just talk: Hilde answers out loud a moment
 after you stop, in a few spoken sentences, and you can talk over her at your
 normal voice to stop her: she gets quieter at once and stops about a second
 later, once Hilde has heard that the words are yours; her own voice coming back
 from your speakers into the microphone doesn't stop her. About a book she knows it as written Ask Hilde
 does: its abstract, and the book's paragraphs that match what you just said;
 in help she knows Hilde Reader's help. While it runs, a strip at the top of the
-panel shows a moving wave across its width, then the microphone and **End**
-(large enough to press on a phone); the question box and the help's examples
-step aside, the earlier conversation stays below, and nothing of what is said shows. The
+panel says what is happening (Listening, Hearing you, Hilde is answering) over
+a moving wave across its width, then the microphone and **End** (large enough
+to press on a phone); under it the last exchange shows as text, the sentence
+Hilde is saying marked. The question box and the help's examples step aside,
+and the earlier conversation stays below. Ten quiet seconds end Talk by
+itself. A playing book pauses while you talk. The
 microphone is the system's default (and follows it when that changes, say a
 headset plugged in) unless you pick another there: the pick switches at once
 and this browser keeps it for next time; when it isn't connected, Talk uses the
@@ -869,6 +874,17 @@ conversation**, among the messages, with Hilde's answers as far as you let her
 speak. **As heard** shows your words as the speech recognition wrote them.
 Spoken conversations are kept apart: a written question never sends them to
 the model. **New conversation** deletes them with the written one.
+
+**Hilde**, the switch beside the header's Talk, listens for her name: say
+"Hilde" (or "Hey Hilde"), then pause, and a short chime answers, the panel
+opens, a playing book pauses, and Talk starts listening; when Talk ends, a book
+paused this way goes on from the start of its sentence (one you paused
+yourself stays paused). The first Talk turns the switch on; press it to turn
+listening off, and it stays off. Its dot is filled while it listens; after a
+reload it starts again with your first click or tap, as browsers ask. Only
+short sounds, as long as a name, are checked, by the speech server on Hilde's
+own machine; nothing else you say leaves the page, and nothing goes to the
+cloud.
 
 Under the question box one small gray line always says "Hilde can make
 mistakes. Check the source text." (in help: "Hilde can make mistakes. Trust what
