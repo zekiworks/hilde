@@ -280,13 +280,16 @@ needs a speech server that hears and speaks: LiquidAI's LFM3-Audio-2B run by
 llama.cpp's `llama-server`, which answers `/v1/audio/transcriptions` (speech to
 text) and `/tts` (text to speech). Start Hilde with
 `--live-voice http://127.0.0.1:9941` (that server's address, host and port
-only). The answers come from the model chosen for Ask Hilde, about a book with
-the paragraphs [Ask Hilde settings](#ask-hilde-settings)' `retrieval` finds for
-each thing you say; the speech server
-only hears and speaks, in English, in its own female voice. It takes about
-6.5 GB on one GPU. What you say is sent as audio to the speech server and as
-text to the chosen model; the transcript is kept in the book's (or the help's)
-`live.json` beside its `chat.json`.
+only). The answers come from the model chosen for Ask Hilde, local or cloud,
+Claude Code included, about a book with the paragraphs
+[Ask Hilde settings](#ask-hilde-settings)' `retrieval` finds for each thing you
+say; the speech server only hears and speaks, in English, in its own female
+voice. It takes about 6.5 GB on one GPU. What you say is sent as audio to the
+speech server and as text to the chosen model; the transcript is kept in the
+book's (or the help's) `live.json` beside its `chat.json`. While the speech
+server isn't answering (stopped to free its GPU, say), Hilde checks it at most
+every 10 seconds and says so under **Talk with Hilde** and on the **Hilde**
+switch; both work again once it answers, without restarting Hilde.
 
 ## Ask Hilde settings
 

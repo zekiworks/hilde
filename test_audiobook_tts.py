@@ -14059,6 +14059,67 @@ class LiveTalkTests(unittest.TestCase):
                       "Hilda said the model was wrong in chapter three today."):
             self.assertFalse(web.live_is_wake(heard), heard)
 
+    def fake_claude(self, folder, wait=0.0):
+        """A stand-in for Claude Code's print mode: it notes its arguments and message, then streams two pieces
+        of text and its result as stream-json (after `wait` seconds)."""
+        script = Path(folder) / "claude"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys, time\n"
+            "message = sys.stdin.read()\n"
+            f"open({str(Path(folder) / 'asked.json')!r}, 'w').write(json.dumps({{'argv': sys.argv[1:], 'message': message}}))\n"
+            f"time.sleep({wait})\n"
+            "for piece in ('Paris', ' is the capital.'):\n"
+            "    print(json.dumps({'type': 'stream_event', 'event': {'delta': {'type': 'text_delta', 'text': piece}}}), flush=True)\n"
+            "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Paris is the capital.'}))\n",
+            encoding="utf-8")
+        script.chmod(0o755)
+        return script
+
+    def test_talk_with_claude_code_hears_the_conversation_and_speaks_as_it_writes(self):
+        """Ümit, 5 Nov: with Claude chosen, Talk must answer (it said Claude Code can't use Hilde's tools, though
+        Talk passes none). Written Chat, which passes tools, still refuses."""
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(web, "claude_code_command", return_value=str(self.fake_claude(folder))), \
+                mock.patch.object(web, "HILDE_HOME", Path(folder) / "home"):
+            pieces, stopped = [], threading.Event()
+            entries = [{"role": "user", "text": "Hi."}, {"role": "assistant", "text": "Hello."},
+                       {"role": "user", "text": "And the capital of France?", "attached": "Paragraphs found."}]
+            text, calls, _ = web.chat_model_reply("claude-code/sonnet", {}, "Be Hilde.", entries, (), pieces.append,
+                                                  None, stopped.wait)
+            self.assertEqual((text, calls, pieces), ("Paris is the capital.", [], ["Paris", " is the capital."]))
+            asked = json.loads((Path(folder) / "asked.json").read_text(encoding="utf-8"))
+            self.assertEqual(asked["argv"][asked["argv"].index("--system-prompt") + 1], "Be Hilde.")
+            self.assertIn("--include-partial-messages", asked["argv"])
+            said = json.loads(asked["message"])["message"]["content"][0]["text"]
+            for part in ("Reader: Hi.", "You: Hello.", "Paragraphs found.", "The reader now says: And the capital of France?"):
+                self.assertIn(part, said)
+            with self.assertRaisesRegex(RuntimeError, "tools"):
+                web.chat_model_reply("claude-code/sonnet", {}, "Be Hilde.", entries, ({"name": "read"},),
+                                     pieces.append, None, stopped.wait)
+        # Talked over before it answers: Claude Code is ended, not waited for.
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(web, "claude_code_command", return_value=str(self.fake_claude(folder, wait=20))), \
+                mock.patch.object(web, "HILDE_HOME", Path(folder) / "home"):
+            stopped = threading.Event()
+            threading.Timer(0.5, stopped.set).start()
+            started = time.monotonic()
+            with self.assertRaises(InterruptedError):
+                web.chat_model_reply("claude-code/sonnet", {}, "Be Hilde.", entries, (), lambda piece: None, None,
+                                     stopped.wait)
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_speech_server_that_does_not_answer_is_said_plainly(self):
+        """Ümit, 5 Nov: with the speech server paused for other work, Talk failed with a network error."""
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        origin = f"http://127.0.0.1:{closed.getsockname()[1]}"
+        closed.close()
+        with mock.patch("sys.stdout", io.StringIO()):
+            self.assertEqual(web.live_voice_down(origin), web.LIVE_SPEECH_DOWN)
+            with self.assertRaisesRegex(RuntimeError, "isn't answering"):
+                web.live_transcribe(origin, b"\0\0" * 1600)
+
 
 class ImageCheckTests(unittest.TestCase):
     """Whether a local model reads images, model by model: set by hand, else

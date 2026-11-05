@@ -849,7 +849,11 @@ narration model (`--voice-clone-model`); without it, neither shows.
 a spoken conversation with the model chosen for Ask Hilde (it needs the
 server's speech server, `--live-voice`, see
 [Talking with Hilde](configuration.md#talking-with-hilde); without one it stays
-dimmed and says so). With a speech server the header's **Talk** (a microphone
+dimmed and says so; when the speech server isn't answering, say while it is
+paused for other work, a line under the button says so, and pressing it asks
+again). Any model chosen for Ask Hilde can talk, Claude through Claude Code
+included (written questions can't use Claude Code); a cloud model gets only the
+words heard, never your voice. With a speech server the header's **Talk** (a microphone
 on a phone) and the microphone in the player do the same from anywhere,
 opening the panel. The browser asks for the microphone once. Then just talk: Hilde answers out loud a moment
 after you stop, in a few spoken sentences, and you can talk over her at your

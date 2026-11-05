@@ -17446,10 +17446,79 @@ def chat_model_reply(selector, local_servers, system, entries, tools, on_text, o
 
         return xai_request(provider, payload, open_stream, pause, read(answer)), list(calls), {}
     if provider == CLAUDE_CODE_MODEL_PROVIDER:
-        raise RuntimeError(
-            "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
-        )
+        if tools:
+            raise RuntimeError(
+                "Claude Code can't use Hilde's tools to read the book; choose another model for Chat."
+            )
+        return _chat_claude_code(model, system, entries, on_text, pause), [], {}
     raise RuntimeError(f"{selector} can't be used for Chat; choose another model.")
+
+
+def _chat_claude_code(model, system, entries, on_text, pause):
+    """A reply without tools from the user's own Claude Code (Talk; Ümit, 5 Nov: "Claude" must work there too; its
+    first words come in about 0.8 s): print mode as claude_code_request() runs it, its partial messages streamed to
+    `on_text`. Print mode takes one message, so the conversation so far goes in it as a transcript. Stopped
+    (`pause`), Claude Code is ended and InterruptedError raised."""
+    earlier, last = entries[:-1], (entries[-1] if entries else {})
+    lines = [f"{'Reader' if item.get('role') == 'user' else 'You'}: {item.get('text') or ''}" for item in earlier]
+    parts = [f"The conversation so far:\n" + "\n".join(lines)] if lines else []
+    if last.get("attached"):
+        parts.append(str(last["attached"]))
+    parts.append(("The reader now says: " if lines else "") + str(last.get("text") or ""))
+    command, message = claude_code_request(model, system, "\n\n".join(parts), ())
+    command.append("--include-partial-messages")
+    HILDE_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    errors = tempfile.TemporaryFile(mode="w+")
+    try:
+        # Outside the project, so no instructions files are picked up.
+        child = subprocess.Popen(command, cwd=HILDE_HOME, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=errors, text=True)
+    except OSError as exc:
+        errors.close()
+        raise RuntimeError(f"Claude Code could not start: {exc}") from exc
+
+    def watch():
+        while child.poll() is None:
+            if pause(0.1):
+                child.kill()
+                return
+
+    threading.Thread(target=watch, name="claude-code-stop", daemon=True).start()
+    written, result = [], None
+    try:
+        child.stdin.write(message)
+        child.stdin.close()
+        for line in child.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "stream_event":
+                delta = (event.get("event") or {}).get("delta") or {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    written.append(delta["text"])
+                    on_text(delta["text"])
+            elif event.get("type") == "result":
+                result = event
+    finally:
+        if child.poll() is None:
+            child.kill()
+        code = child.wait()
+        errors.seek(0)
+        stderr = errors.read()
+        errors.close()
+    if pause(0):
+        raise InterruptedError("stopped")
+    if result is None or result.get("is_error") or result.get("subtype") != "success":
+        detail = (result or {}).get("result") or (result or {}).get("subtype") or stderr.strip()[-500:] or f"exit {code}"
+        raise RuntimeError(f"Claude Code: {detail}")
+    if not written and isinstance(result.get("result"), str):
+        written.append(result["result"])
+        on_text(result["result"])
+    return "".join(written)
+
 
 
 class ChatTurn:
@@ -18108,6 +18177,32 @@ def live_is_wake(heard):
 
 
 LIVE_UNAVAILABLE = "Talking with Hilde needs its speech server: start Hilde with --live-voice."
+# The speech server not answering (Ümit, 5 Nov: it is paused for other GPU work some nights): Talk and listening for
+# "Hilde" say so instead of failing with a network error; its /health is asked at most every LIVE_HEALTH_SECONDS.
+LIVE_SPEECH_DOWN = ("Hilde's speech server isn't answering right now (it may be paused for other work), so Talk "
+                    "can't hear or speak; written questions still work.")
+LIVE_HEALTH_SECONDS = 10
+_LIVE_HEALTH = {}
+_LIVE_HEALTH_LOCK = threading.Lock()
+
+
+def live_voice_down(origin):
+    """LIVE_SPEECH_DOWN when the speech server at `origin` does not answer its /health, else ""."""
+    now = time.monotonic()
+    with _LIVE_HEALTH_LOCK:
+        known = _LIVE_HEALTH.get(origin)
+        if known and now - known[0] < LIVE_HEALTH_SECONDS:
+            return known[1]
+    try:
+        with urllib.request.urlopen(f"{origin}/health", timeout=1.5) as response:
+            down = "" if response.status == 200 else LIVE_SPEECH_DOWN
+    except (OSError, ValueError):
+        down = LIVE_SPEECH_DOWN
+    with _LIVE_HEALTH_LOCK:
+        _LIVE_HEALTH[origin] = (time.monotonic(), down)
+    return down
+
+
 LIVE_ENDED = "This conversation has ended: press Talk to start another."
 LIVE_SYSTEM = (
     "You are Hilde, talking out loud with the reader{about}. Their words reach you through speech recognition "
@@ -18188,7 +18283,9 @@ def live_transcribe(origin, pcm, timeout=30):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             answer = json.load(response)
     except (OSError, ValueError) as exc:
-        raise RuntimeError(f"The speech server could not hear the turn: {exc}") from exc
+        print(f"Talk: the speech server could not hear: {exc}", flush=True)
+        raise RuntimeError(LIVE_SPEECH_DOWN if isinstance(exc, OSError) else
+                           f"The speech server could not hear the turn: {exc}") from exc
     return " ".join(str(answer.get("text") or "").split()) if isinstance(answer, dict) else ""
 
 
@@ -18220,7 +18317,8 @@ def live_speak(origin, text, write, stopped, timeout=60):
                     write(pcm.tobytes())
     except OSError as exc:
         if not stopped():
-            raise RuntimeError(f"The speech server could not speak: {exc}") from exc
+            print(f"Talk: the speech server could not speak: {exc}", flush=True)
+            raise RuntimeError(LIVE_SPEECH_DOWN) from exc
 
 
 def live_sentences(buffer, first):
@@ -23763,6 +23861,8 @@ class Handler(BaseHTTPRequestHandler):
         payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE
         # Its kept live conversations, shown as callouts among the messages, and whether Talk is offered.
         payload["live_voice"] = bool(getattr(self.server, "live_voice", ""))
+        # Its speech server not answering: Talk with Hilde says so (and tries again when pressed).
+        payload["live_voice_down"] = live_voice_down(self.server.live_voice) if payload["live_voice"] else ""
         try:
             payload["live"] = [live_display(record) for record in read_live(live_folder(self.server.storage, book))]
         except (OSError, ValueError):
@@ -23891,6 +23991,9 @@ class Handler(BaseHTTPRequestHandler):
         origin = getattr(self.server, "live_voice", "")
         if not origin:
             return self.fail(HTTPStatus.CONFLICT, LIVE_UNAVAILABLE)
+        down = live_voice_down(origin)
+        if down:
+            return self.fail(HTTPStatus.SERVICE_UNAVAILABLE, down)
         model = str(body.get("model") or "").strip()
         if not model:
             return self.fail(HTTPStatus.BAD_REQUEST, "Choose a model for Chat.")
@@ -23929,6 +24032,9 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= LIVE_IN_RATE * 2 * LIVE_WAKE_MAX_SECONDS or length % 2:
             return self.fail(HTTPStatus.BAD_REQUEST, f"A wake check is 16-bit audio of at most {LIVE_WAKE_MAX_SECONDS} seconds.")
         pcm = self.rfile.read(length)
+        down = live_voice_down(origin)
+        if down:
+            return self.fail(HTTPStatus.SERVICE_UNAVAILABLE, down)
         try:
             heard = live_transcribe(origin, pcm)
         except RuntimeError as exc:
@@ -24805,6 +24911,8 @@ body.server-down [inert] { opacity:.5; }
 .header-listen[data-state=on] .listen-dot { border-color:var(--accent); background:var(--accent);
                                             animation:listen-breathe 2.4s ease-in-out infinite; }
 .header-listen[data-state=armed] .listen-dot { border-color:var(--accent); }
+/* Listening while the speech server is not answering: the dot in the problem colour, the reason in its title. */
+.header-listen[data-state=down] .listen-dot { border-color:var(--bad); }
 @keyframes listen-breathe { 50% { opacity:.35; } }
 @media (prefers-reduced-motion:reduce) { .header-listen[data-state=on] .listen-dot { animation:none; } }
 @media (max-width:599.98px) {
@@ -31598,8 +31706,9 @@ function renderVoiceButtons() {
   for (const id of ["header-talk", "header-listen", "player-talk"]) $(id).classList.toggle("hidden", !voice);
   const listen = $("header-listen"), wanted = stored("listenForHilde") === true;
   listen.setAttribute("aria-pressed", String(wanted));
-  listen.dataset.state = !wanted ? "off" : wake && !wake.starting ? "on" : "armed";
+  listen.dataset.state = !wanted ? "off" : wake && wake.down ? "down" : wake && !wake.starting ? "on" : "armed";
   listen.title = !wanted ? "Not listening for “Hilde”: press to listen"
+    : listen.dataset.state === "down" ? `${wake.down} Listening for “Hilde” goes on once it answers; press to stop.`
     : listen.dataset.state === "on" ? "Listening for “Hilde”: press to stop"
     : "Listening for “Hilde” starts with your next tap or click";
 }
@@ -31709,8 +31818,11 @@ async function checkWake(owner, samples, ended) {
   try {
     const answer = await fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" },
       body:talkPcm(samples).buffer });
-    if (answer.ok && (await answer.json()).wake === true && wake === owner && !talk && !talkStarting)
-      onWake(owner, ended);
+    const data = await answer.json().catch(() => ({}));
+    // The speech server not answering shows on the switch until a check gets through again.
+    const down = answer.ok ? "" : String(data.error || "Hilde's speech server isn't answering.");
+    if (wake === owner && (owner.down || "") !== down) { owner.down = down; renderVoiceButtons(); }
+    if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting) onWake(owner, ended);
   } catch (error) { /* the next "Hilde" tries again */ }
   finally { owner.busy = false; }
 }
@@ -31805,6 +31917,7 @@ async function startTalk(options = {}) {
   try {
     const session = await jsonRequest("/api/live/start", { method:"POST", headers:{ "Content-Type":"application/json" },
       body:JSON.stringify(chatMode === "help" ? { help:true, model } : { book:state.player.book, model }) });
+    if (chatData) chatData.live_voice_down = "";  // it answered: the note under Talk with Hilde goes
     let opened;
     try {
       opened = await openTalkMic(stored("talkMicrophone") || "");
@@ -31851,6 +31964,8 @@ async function startTalk(options = {}) {
     $("chat-live-end").focus();
     drawTalk();
   } catch (error) {
+    // 503: the speech server is not answering; the note under Talk with Hilde says so until it answers again.
+    if (error.status === 503 && chatData) chatData.live_voice_down = error.message;
     chatHint(`Talk couldn't start: ${error.message}`, true);
   } finally {
     talkStarting = false;
@@ -32242,9 +32357,11 @@ function renderChatControls() {
   $("chat-talk-row").classList.toggle("hidden", !!talk);
   const talkWhy = !(caps && caps.live_voice) ? "Talk needs Hilde's speech server, which this server does not run."
     : running ? "Hilde is writing an answer: Talk is free once it is done, or after Stop." : "";
+  // Its speech server not answering (/api/chat's live_voice_down) is said, but the button stays: pressing asks again.
+  const talkNote = talkWhy || (chatData && chatData.live_voice_down) || "";
   $("chat-talk").disabled = !!talkWhy || talkStarting;
-  setText($("chat-talk-why"), talkWhy);
-  $("chat-talk-why").classList.toggle("hidden", !talkWhy);
+  setText($("chat-talk-why"), talkNote);
+  $("chat-talk-why").classList.toggle("hidden", !talkNote);
   renderVoiceButtons();
   // The box stays the listener's own; with a part attached, Enter on an
   // empty box asks Hilde to explain it.
