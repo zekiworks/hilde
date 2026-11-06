@@ -207,7 +207,10 @@ each browser changes only its own settings, under **Settings**.
 - [suggested models](docs/configuration.md#suggested-models): the ratings file
   `~/.hilde/ratings.json`, written by `qa/rate_models.py` from Hilde's own
   checks, from which every model picker suggests at most three models for its
-  job.
+  job;
+- [talking with Hilde away from home and on another computer](docs/remote-and-local-voice.md):
+  through Tailscale from a phone on mobile data, or with the speech server on a
+  computer's own CPU.
 
 [Text adaptation](docs/text-adaptation.md) covers the models that rewrite a
 document for listening: a local model server, ChatGPT, Claude Code, or an
@@ -260,8 +263,9 @@ time; continue to the page), choose **Settings**, then under **Models and connec
 
 Then restart the browser. If you have a certificate of your own, for a domain
 or from Tailscale, pass `--tls-cert` and `--tls-key` instead; nothing needs
-installing then. Deleting `~/.hilde/tls` makes a new authority, which each
-device must install again.
+installing then ([away from home, through Tailscale](docs/remote-and-local-voice.md#away-from-home-through-tailscale)).
+Deleting `~/.hilde/tls` makes a new authority, which each device must install
+again.
 
 ## Web UI
 
@@ -289,8 +293,8 @@ the panel say; it reads others by number, never the whole book; see
 a help conversation of its own, about Hilde Reader itself (from
 [the help](docs/help.md), then the developer docs and the code, linking the
 exact lines at the commit the server runs), and writes Markdown notes about a
-book, in a panel at the right from 900 px wide (below
-that, a sheet rising from the bottom) with its model in the header and a **⋯**
+book, in a sheet rising from the bottom over the page on every screen, the page
+above it still to be read and scrolled, with its model in the header and a **⋯**
 menu for **Read answers aloud** and **New conversation**. A **Progress** tab, there while audiobooks are being
 made or one stopped or failed, follows them, and the **Settings** tab with a
 gear at the right end of the tabs opens **Settings**, which holds the

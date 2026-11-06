@@ -293,6 +293,9 @@ book's (or the help's) `live.json` beside its `chat.json`. While the speech
 server isn't answering (stopped to free its GPU, say), Hilde checks it at most
 every 10 seconds and says so under **Talk with Hilde** and on **Listen for
 “Hilde”**; both work again once it answers, without restarting Hilde.
+[Talking with Hilde away from home and on another computer](remote-and-local-voice.md)
+gives the steps for a phone on mobile data (through Tailscale) and for a speech
+server on a computer's own CPU.
 
 ## Ask Hilde settings
 
