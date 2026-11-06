@@ -18624,6 +18624,16 @@ class LiveRegistry:
         with self.lock:
             return self.sessions.pop(str(session_id or ""), None)
 
+    def active(self):
+        """The conversations still open, for a restart to wait on (Zeki #1506: a restart must not end one): each
+        one's id (12 characters, as the log writes it), seconds since its last turn began, and whether a turn is
+        being answered now. One the page left without End is gone once LIVE_SESSION_SECONDS pass."""
+        now = time.monotonic()
+        with self.lock:
+            sessions = [item for item in self.sessions.values() if now - item.seen <= LIVE_SESSION_SECONDS]
+        return [{"id": item.id[:12], "idle": round(now - item.seen), "answering": item.current is not None}
+                for item in sessions]
+
 
 def live_folder(storage, key):
     """Where a chat's live transcripts are kept: beside its conversation."""
@@ -22901,6 +22911,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(HTTPStatus.NOT_FOUND, f"no route for {route}")
             book = query.get("book", [""])[0]
             return self.marks_reply(lambda: {"items": list_marks(self.server.storage, book)}, book)
+        if route == "/api/live/active":
+            # For a restart on this machine to wait on (Zeki #1506); nobody else learns who is talking.
+            if not self.local_client():
+                return self.fail(HTTPStatus.FORBIDDEN, "Only Hilde's own machine may ask this.")
+            return self.reply(HTTPStatus.OK, {"sessions": self.server.live.active()},
+                              extra=(("Cache-Control", "no-store"),))
         if route == "/api/chat":
             return self.reply_chat(chat_key(query.get("book", [""])[0], query.get("help", [""])[0] == "1"))
         if route == "/api/chat/events":
@@ -32488,6 +32504,12 @@ function drawTalk() {
   $("chat-live-label").textContent = talkReplyBusy() ? "Hilde is answering" : talk.speaking ? "Hearing you" : "Listening";
   talk.raf = requestAnimationFrame(drawTalk);
 }
+// A page that goes away (closed, reloaded, left) ends its conversation, so the server does not keep it open until it
+// is forgotten (Zeki #1506: a restart waits for open conversations). Not on hiding: a phone switching apps comes back.
+window.addEventListener("pagehide", () => {
+  if (!talk) return;
+  navigator.sendBeacon("/api/live/end", new Blob([JSON.stringify({ session:talk.session })], { type:"application/json" }));
+});
 // End: the microphone and Hilde's voice stop, and the transcript is kept (after the edit pass) as a callout.
 async function endTalk() {
   const ending = talk;
