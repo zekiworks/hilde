@@ -4230,8 +4230,10 @@ Hilde or near it, and none in 15 minutes of the book's own narration at -25 and
 **The speech server not answering** (Ümit, 5 Nov: it is paused for other GPU
 work some nights): `live_voice_down()` asks its `/health` at most every
 `LIVE_HEALTH_SECONDS` and gives `LIVE_SPEECH_DOWN` when it fails. `GET /api/chat`
-carries it as `live_voice_down`, shown under **Talk with Hilde** (which stays
-pressable: pressing asks again); `/api/live/start` and `/api/live/wake` answer
+carries it as `live_voice_down`, shown under **Talk with Hilde** as one short
+line, the whole sentence its tooltip, so a phone's sheet keeps room for the
+model note (`.chat-model-notes` no longer shrinks) and the conversation; the
+button stays pressable (pressing asks again). `/api/live/start` and `/api/live/wake` answer
 503 with it, so Talk does not start and the listening switch shows `down` (the
 dot in `--bad`, the reason in its title) until a check gets through again; a
 turn whose hearing or speech fails mid-conversation says the same, and the log

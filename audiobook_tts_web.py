@@ -26077,7 +26077,9 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 .chat-model-pick button.picker-box[aria-expanded=true] { border-color:var(--dim); }
 .chat-more { min-width:36px; min-height:36px; padding:0 8px; border-color:transparent; background:transparent;
              box-shadow:none; color:var(--dim); font-size:20px; line-height:1; }
-.chat-model-notes { display:grid; flex:0 1 auto; gap:6px; min-height:0; overflow:auto; padding:8px 16px;
+/* It keeps its height (a phone's sheet squeezed it to a clipped sliver under Talk with Hilde, 6 Nov), scrolling
+   only past a third of the panel. */
+.chat-model-notes { display:grid; flex:0 0 auto; gap:6px; max-height:35%; overflow:auto; padding:8px 16px;
                     border-bottom:1px solid var(--line); font-size:13px; }
 .chat-model-notes:not(:has(> :not(.hidden))) { display:none; }
 .chat-model-notes > * { margin:0; }
@@ -32498,9 +32500,13 @@ function renderChatControls() {
   const talkWhy = !(caps && caps.live_voice) ? "Talk needs Hilde's speech server, which this server does not run."
     : running ? "Hilde is writing an answer: Talk is free once it is done, or after Stop." : "";
   // Its speech server not answering (/api/chat's live_voice_down) is said, but the button stays: pressing asks again.
-  const talkNote = talkWhy || (chatData && chatData.live_voice_down) || "";
+  // The speech server not answering is one short line here (a phone's sheet has little room), the whole sentence
+  // its tooltip.
+  const talkNote = talkWhy || (chatData && chatData.live_voice_down
+    ? "Speech server off for now; written questions still work." : "");
   $("chat-talk").disabled = !!talkWhy || talkStarting;
   setText($("chat-talk-why"), talkNote);
+  $("chat-talk-why").title = !talkWhy && chatData && chatData.live_voice_down ? chatData.live_voice_down : "";
   $("chat-talk-why").classList.toggle("hidden", !talkNote);
   renderVoiceButtons();
   // The box stays the listener's own; with a part attached, Enter on an
