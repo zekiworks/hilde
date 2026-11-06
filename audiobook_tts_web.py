@@ -24032,12 +24032,16 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if not 0 < length <= LIVE_IN_RATE * 2 * LIVE_WAKE_MAX_SECONDS or length % 2:
+        if not 0 <= length <= LIVE_IN_RATE * 2 * LIVE_WAKE_MAX_SECONDS:
             return self.fail(HTTPStatus.BAD_REQUEST, f"A wake check is 16-bit audio of at most {LIVE_WAKE_MAX_SECONDS} seconds.")
-        pcm = self.rfile.read(length)
+        pcm = self.rfile.read(length) if length else b""
+        # The speech server's state comes first, so an empty body asks only that (the page does when listening
+        # starts, to say at once that it is off; Zeki #1473).
         down = live_voice_down(origin)
         if down:
             return self.fail(HTTPStatus.SERVICE_UNAVAILABLE, down)
+        if not pcm or len(pcm) % 2:
+            return self.fail(HTTPStatus.BAD_REQUEST, f"A wake check is 16-bit audio of at most {LIVE_WAKE_MAX_SECONDS} seconds.")
         try:
             heard = live_transcribe(origin, pcm)
         except RuntimeError as exc:
@@ -24045,7 +24049,9 @@ class Handler(BaseHTTPRequestHandler):
         wake = live_is_wake(heard)
         if wake:
             print(f"Talk wake: words={len(heard.split())}", flush=True)
-        return self.reply(HTTPStatus.OK, {"wake": wake})
+        # `more`: whether words followed the name in this sound, so the page sends no empty first turn for the name
+        # said alone (its question, after a pause, comes as Talk's own turn).
+        return self.reply(HTTPStatus.OK, {"wake": wake, "more": bool(wake and live_without_wake(heard))})
 
     def live_check(self, query):
         """Whether sound heard over Hilde is her own voice from the
@@ -31781,6 +31787,17 @@ async function startWake() {
     // A microphone that ends (unplugged, taken by another app) stops listening; the next tap or click starts it again.
     for (const track of opened.stream.getAudioTracks())
       track.addEventListener("ended", () => { if (wake === owner) { stopWake(); wakeAutoTried = false; } });
+    // The speech server off: said at once, on the switch and in a note, rather than listening in silence (Zeki
+    // #1473: Ümit pressed it while it was off and nothing told her why "Hilde" got no answer).
+    fetch("/api/live/wake", { method:"POST", headers:{ "Content-Type":"application/octet-stream" }, body:new ArrayBuffer(0) })
+      .then(async (answer) => {
+        if (answer.status !== 503 || wake !== owner) return;
+        const data = await answer.json().catch(() => ({}));
+        owner.down = String(data.error || "Hilde's speech server isn't answering.");
+        renderVoiceButtons();
+        showToast("Hilde's speech server is off for now, so she can't hear her name yet; listening works again once it is back.");
+      })
+      .catch(() => {});
   } catch (error) {
     if (wake === owner) { wake = null; audio.close().catch(() => {}); }
     showToast(`Listening for “Hilde” could not start: ${error.message}`);
@@ -31903,20 +31920,23 @@ async function checkWake(owner, samples, ended, sound, head) {
     // The speech server not answering shows on the switch until a check gets through again.
     const down = answer.ok ? "" : String(data.error || "Hilde's speech server isn't answering.");
     if (wake === owner && (owner.down || "") !== down) { owner.down = down; renderVoiceButtons(); }
-    if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting) onWake(owner, ended, sound, head);
+    if (answer.ok && data.wake === true && wake === owner && !talk && !talkStarting)
+      onWake(owner, ended, sound, head, data.more !== false);
   } catch (error) { /* the next "Hilde" tries again */ }
   finally { owner.checks -= 1; }
 }
-function onWake(owner, ended, sound, head) {
+function onWake(owner, ended, sound, head, more) {
   playChime(owner.audio);
   (head ? wakeHeadTimes : wakeTimes).push(Math.round(performance.now() - ended));
   // The book goes on from the start of its sentence when Talk ends, as "Hilde" paused it.
   const resume = readerAudio && !readerAudio.paused ? { audio:readerAudio, at:readerSentenceStart() } : null;
   // The words said with "Hilde" are Talk's first turn: a sound still going on is gathered to its end, one that
-  // ended is taken as it was; what is said after it, before Talk's microphone runs, follows (`bridge`).
+  // ended is taken as it was, unless it held the name alone (`more` false: nothing to answer, and the question
+  // that follows after a pause goes as Talk's own turn); what is said before Talk's microphone runs follows
+  // (`bridge`).
   const command = { samples:null };
   if (owner.speaking && owner.sound === sound) owner.command = command;
-  else command.samples = owner.last && owner.last.sound === sound ? talkJoined(owner.last.frames) : new Float32Array(0);
+  else command.samples = more && owner.last && owner.last.sound === sound ? talkJoined(owner.last.frames) : new Float32Array(0);
   owner.last = null;
   owner.bridge = [];
   // A panel "Hilde" opened closes again when nothing is said (Ümit #1432: a false "Hilde" left it over the page).
