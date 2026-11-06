@@ -2138,10 +2138,17 @@ player (`narrowLayout()`). On every width the side panel (the chat, a figure,
 a source page) is a bottom sheet (Ümit via Zeki #1567, 6 Nov; it was a docked
 right column on wide screens): fixed at the foot of the visual viewport, the full
 width up to 720 px (centred beyond), 60% of the visible height
-(`--vv-height`), rounded at the top with a grabber (`button#sheet-grabber`), the page
-dimmed above it by `#panel-backdrop` (50% black; a tap there closes the
-panel), and `html.sheet-open` stopping the page from scrolling beneath; **×**
-closes it. The text never moves aside or narrows. Its height is `--sheet-size` (else
+(`--vv-height`), rounded at the top with a grabber (`button#sheet-grabber`); **×**
+closes it. The page above it stays as it is (Zeki #1581): not dimmed, and it
+scrolls, selects, highlights and takes clicks, the header's too. The text never
+moves aside or narrows; the page leaves room beneath its text for the sheet
+(`--sheet-h`, `fitSheetRoom()` on every panel render, the panel's
+`ResizeObserver` and a resize: how far the sheet reaches above the player's top
+or the screen's bottom), so all of it can be scrolled above the sheet, and the
+text's part of the screen ends at the sheet's top (`textBottom()`, which
+`readingViewport()`, Follow along's `placeListening()`, the stack above the
+player and the note editor use; `#dock-slot` and the text's `scroll-margin-bottom`
+add `--sheet-h` too). Its height is `--sheet-size` (else
 `--sheet-default`: 60%, or 70% above the player) above its floor
 (`--sheet-floor`); `sheetSize()` sets `.sheet-tall` (from `--sheet-edge`, the
 slim paper bar's bottom, set by `observePaperBar()`, down to the floor), as
@@ -3243,7 +3250,7 @@ Notes sheet at it (`openNotes(id)`).
 
 In a book (`body:has(main.reading)`), on every width and with notes on or
 off, the sheet (Notes and Ask Hilde alike) ends at the player's top
-(`--sheet-floor: var(--dock-h)`) and `#panel-backdrop` stops there too, so
+(`--sheet-floor: var(--dock-h)`), so
 Play/Pause, Highlight, Note, Talk's microphone and Ask Hilde stay in reach;
 with the keyboard open the sheet takes the visual viewport as before.
 
@@ -3251,7 +3258,7 @@ with the keyboard open the sheet takes the visual viewport as before.
 
 One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
 a source page (`#page-view`), with a tab for each one opened. It belongs to no
-page (it and `#panel-backdrop` are children of `main`, after the pages), so it
+page (it is a child of `main`, after the pages), so it
 opens on every screen, always as the bottom sheet described under UI contract;
 the text never moves aside or narrows for it. Each view keeps its state while another
 shows or the panel is closed, until another book opens (`resetChatFor()`):

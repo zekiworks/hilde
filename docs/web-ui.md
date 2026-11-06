@@ -683,11 +683,14 @@ about this figure**.
 
 **Ask Hilde** opens the chat as a sheet rising from the bottom, on every
 screen (Ümit via Zeki #1567, 6 Nov): at most 720 px wide and centred, about
-60% of the screen high, with a grabber and rounded top, the page dimmed above
-it. **×** or a tap on the dimmed page closes it; with the keyboard open it grows
-so **Send** stays in view. In a book it always stops above the player bar, and
-the dimmed part leaves the bar uncovered, so **Play**/**Pause**, **Highlight**,
-**Note**, the microphone and **Ask Hilde** stay in reach while it is open. From
+60% of the screen high, with a grabber and rounded top. The page above it stays
+as it is (Zeki #1581): you can scroll and read the text there, select and
+highlight it, and press the header's buttons; the text can always be scrolled
+fully above the sheet. **×** closes it; with the keyboard open it grows so
+**Send** stays in view. In a book it always stops above the player bar, so
+**Play**/**Pause**, **Highlight**, **Note**, the microphone and **Ask Hilde**
+stay in reach while it is open, and Follow along keeps the sentence being read
+above the sheet. From
 a selection, and while you talk with Hilde, it opens tall, up to just below the
 slim paper bar. Drag the grabber at its top with a finger or the mouse (or
 just above it, or the free part of the header's first row): up to make the sheet

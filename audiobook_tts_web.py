@@ -25805,7 +25805,7 @@ html { scrollbar-gutter:stable; }
    Source text switch). */
 #reader-content, #reader-content * {
   scroll-margin-top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h) + var(--listen-bar-h, 0px));
-  scroll-margin-bottom:calc(var(--dock-h, 0px) + 8px); }
+  scroll-margin-bottom:calc(var(--dock-h, 0px) + var(--sheet-h, 0px) + 8px); }
 /* overflow-anchor: never the browser's scroll anchor, which must be text that moves with the page (a sticky box
    does not), so a layout change (Narration | Source text) keeps the text in place as before. */
 .paper-bar { position:sticky; top:calc(env(safe-area-inset-top, 0px) + var(--paper-bar-h)); z-index:6; height:0;
@@ -25871,7 +25871,10 @@ html { scrollbar-gutter:stable; }
 .player-dock { position:fixed; z-index:15; right:0; bottom:0; left:0;
                padding:0 16px env(safe-area-inset-bottom); background:var(--surface);
                border-top:1px solid var(--line); }
-body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--dock-h, 0px); }
+/* The page leaves room beneath its text for the player and for the open sheet (--sheet-h, fitSheetRoom()), so all of
+   it can be scrolled above them. */
+body { padding-bottom:var(--sheet-h, 0px); }
+body:has(main.reading), body:has(main.library-docked) { padding-bottom:calc(var(--dock-h, 0px) + var(--sheet-h, 0px)); }
 /* A book playing from the Library: of its view only the player bar shows, the full width, without Ask Hilde (which
    asks about an open book). */
 #book-view.dock-only > :not(.reading-column), #book-view.dock-only .reading-column > :not(.player-dock),
@@ -25954,7 +25957,7 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 /* One spot just above the player bar (#dock-slot), centred over the text as the bar's controls are: Back to
    reading position, a small pill, while the word being read is out of sight; Ask Hilde for text selected by touch
    (#dock-ask) shares it, never both at once. */
-.dock-slot { position:fixed; z-index:14; right:0; bottom:calc(var(--dock-h, 0px) + 8px); left:0; display:flex;
+.dock-slot { position:fixed; z-index:14; right:0; bottom:calc(var(--dock-h, 0px) + var(--sheet-h, 0px) + 8px); left:0; display:flex;
              justify-content:center; padding:0 16px; pointer-events:none; }
 .dock-slot > * { pointer-events:auto; }
 .back-to-listening { min-height:32px; padding:4px 14px; border-radius:999px; font-size:14px;
@@ -25966,11 +25969,13 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
             box-shadow:0 6px 20px rgba(0,0,0,.5); }
 .dock-ask:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
 /* The side panel is a bottom sheet on every width (Ümit via Zeki #1567, 6 Nov: the text must never move aside or
-   narrow for it): the full width (720px at most, centred), rounded at the top with a grabber, the page dimmed above
-   it (a tap there closes it). Its height (--sheet-size, from its bottom: the screen's, or the player's top) is 60% of
-   the visible viewport, or as sized (sheetSize()): tall, from just below the slim bar (--sheet-edge,
-   observePaperBar()), as it opens from a selection; half; or where the grabber is being dragged, by a finger or a
-   mouse. With the keyboard open it takes the whole visible viewport, so the box and Send stay in sight. */
+   narrow for it): the full width (720px at most, centred), rounded at the top with a grabber, over the lower part of
+   the page. The page above it stays as it is (Zeki #1581): not dimmed, and it scrolls, selects, highlights and takes
+   clicks, the header's too; its room beneath (--sheet-h) lets all of the text come above the sheet. Its height
+   (--sheet-size, from its bottom: the screen's, or the player's top) is 60% of the visible viewport, or as sized
+   (sheetSize()): tall, from just below the slim bar (--sheet-edge, observePaperBar()), as it opens from a selection;
+   half; or where the grabber is being dragged, by a finger or a mouse. With the keyboard open it takes the whole
+   visible viewport, so the box and Send stay in sight. */
 .side-panel { position:fixed; z-index:20; display:flex; flex-direction:column; background:var(--surface);
               overscroll-behavior:contain;
               --sheet-floor:0px; --sheet-default:calc(var(--vv-height, 100dvh) * .6);
@@ -26007,9 +26012,6 @@ button.sheet-grabber:active:not(:disabled) { transform:none; filter:none; cursor
 .sheet-grabber:focus-visible::before { outline:2px solid var(--accent-light); outline-offset:3px; }
 .side-panel .panel-head { position:relative; pointer-events:none; }
 .side-panel .panel-head > * { pointer-events:auto; }
-.panel-backdrop { display:none; }
-.panel-backdrop:not(.hidden) { display:block; position:fixed; z-index:19; inset:0; background:rgba(0,0,0,.5); }
-html.sheet-open { overflow:hidden; }
 /* One row: the tabs, Ask Hilde's model box and ⋯ (with Ask Hilde shown), ×. With more than one tab (.has-tabs: Ask
    Hilde | Notes, a figure, a page) or in a panel narrower than 420 px (.narrow-head: a phone's sheet, a narrow
    window), two rows: the tabs, ⋯ and × on the first; the model box whole on the second, still in the header: Runs
@@ -26532,10 +26534,6 @@ html.notes-on .dock-slot { flex-direction:column; align-items:center; gap:8px; }
 .mark-bar.tapped .mark-dots { flex-basis:100%; justify-content:center; }
 /* One Ask Hilde while text is selected on a phone: the player's (it acts on the selection); the header's hides. */
 html.notes-selecting #header-ask { visibility:hidden; }
-/* With the sheet open only Saved to Notes (Save to notes under an answer) and the Highlighted bar show, over the
-   sheet's foot. */
-html.sheet-open .dock-slot:has(> :is(#saved-bar, #mark-bar):not(.hidden)) { z-index:21; }
-html.sheet-open .dock-slot > :not(#saved-bar, #mark-bar) { display:none !important; }
 /* The shrunk Notes sheet (Back to note), or choosing a note's place: a small bar just above the player. */
 .notes-mini { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
               width:min(560px, 100%); min-height:52px; padding:12px 10px 8px 16px; border:1px solid var(--line);
@@ -26654,13 +26652,11 @@ button.note-editor-close { min-width:36px; min-height:36px; padding:0 8px; borde
 .notes-outline { position:absolute; border:1.5px solid var(--text); border-radius:5px; pointer-events:none;
                  transition:opacity .4s; }
 @media (prefers-reduced-motion: reduce) { .notes-outline { transition:none; } }
-/* In a book the sheet (Ask Hilde's, or Notes) stops above the player bar (its floor), and the dimmed area leaves the
-   bar uncovered, so Play/Pause, Highlight, Ask Hilde and the seek bar stay in reach (Ümit via Zeki #1567); with the
-   keyboard open it may cover. */
+/* In a book the sheet (Ask Hilde's, or Notes) stops above the player bar (its floor), so Play/Pause, Highlight, Ask
+   Hilde and the seek bar stay in reach (Ümit via Zeki #1567); with the keyboard open it may cover. */
 body:has(main.reading) .side-panel { --sheet-floor:var(--dock-h, 0px);
   --sheet-default:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
 html.keyboard-open body:has(main.reading) .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
-body:has(main.reading) .panel-backdrop:not(.hidden) { bottom:var(--dock-h, 0px); }
 .shortcut-table { border-collapse:collapse; font-size:14px; }
 .shortcut-table th { padding:5px 16px 5px 0; text-align:left; white-space:nowrap; }
 .shortcut-table td { padding:5px 0; color:var(--dim); }
@@ -27765,10 +27761,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
   </section>
   <!-- The side panel (Ask Hilde, a figure, a source page) belongs to no page: the header's Ask Hilde opens it on
        every screen, in help mode or, in a book's reading view, book mode (askMode()). -->
-      <div id="panel-backdrop" class="panel-backdrop hidden" aria-hidden="true" onclick="closePanel()"></div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
-        <!-- On every width the panel is a bottom sheet: its grabber (drag it by finger or mouse, or tap / click /
-             Enter / Space: about half or full height), and the page dimmed above it. -->
+        <!-- On every width the panel is a bottom sheet over the page's lower part: its grabber (drag it by finger or
+             mouse, or tap / click / Enter / Space: about half or full height); the page above stays usable. -->
         <button id="sheet-grabber" class="sheet-grabber" type="button" aria-controls="side-panel"
           aria-label="Make the panel full height"></button>
         <!-- The header: the tabs (Ask Hilde's sparkle and name as its title), then, with Ask Hilde shown, its model
@@ -29923,12 +29918,25 @@ function dockTop() {
   const dock = $("player-dock");
   return shown(dock) ? dock.getBoundingClientRect().top : window.innerHeight;
 }
+// The bottom of the text's part of the screen: the open sheet's top, else the player's (Zeki #1581: the text above
+// the sheet is read, followed and marked while it is open).
+function textBottom() {
+  const panel = $("side-panel");
+  return panelOpen && shown(panel) ? Math.min(dockTop(), panel.getBoundingClientRect().top) : dockTop();
+}
+// The page's room beneath its text for the open sheet (--sheet-h): how far the sheet reaches above the player's top
+// (or the screen's bottom), so all of the text can be scrolled above it.
+function fitSheetRoom() {
+  const room = Math.max(0, Math.round(dockTop() - textBottom()));
+  if (document.documentElement.style.getPropertyValue("--sheet-h") !== `${room}px`)
+    document.documentElement.style.setProperty("--sheet-h", `${room}px`);
+}
 // The part of the screen the text shows in: beneath what is pinned at the
 // top (the slim paper bar once the card has scrolled away, and on a wide
-// screen the view's controls under it) and above the player.
+// screen the view's controls under it) and above the player, or the open sheet.
 function readingViewport() {
   const controls = narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().bottom;
-  return { top:Math.max(controls, paperBarShown ? paperBarEdge : 0, 0), bottom:dockTop() };
+  return { top:Math.max(controls, paperBarShown ? paperBarEdge : 0, 0), bottom:textBottom() };
 }
 function shown(element) { return !!element && element.getClientRects().length > 0; }
 function onScreen(element) {
@@ -30025,7 +30033,7 @@ function placeListening(element, behavior) {
     // Once the text scrolls, the paper bar is pinned to the top, and on a wide
     // screen the controls under it.
     const top = paperBarEdge + (narrowLayout() ? 0 : $("listen-bar").getBoundingClientRect().height);
-    const bottom = dockTop();
+    const bottom = textBottom();
     return element.getBoundingClientRect().top - top - (bottom - top) / 4;
   }, behavior);
 }
@@ -30140,7 +30148,7 @@ function observePaperBar() {
 // word is on screen up there too.
 function paperBarToTop() {
   const element = readerAudio ? readingMark() : null;
-  if (element) setDetached(element.getBoundingClientRect().bottom + window.scrollY > dockTop());
+  if (element) setDetached(element.getBoundingClientRect().bottom + window.scrollY > textBottom());
   glide(() => -window.scrollY, motion());
 }
 
@@ -31039,8 +31047,7 @@ function renderPanel() {
   $("side-panel").classList.toggle("hidden", !panelOpen);
   // Closed by any path (×, a new book), a phone's sheet forgets its size.
   if (!panelOpen) sheetSize("");
-  $("panel-backdrop").classList.toggle("hidden", !panelOpen);
-  document.documentElement.classList.toggle("sheet-open", panelOpen);
+  fitSheetRoom();
   for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"],
                             ["notes", "notes-view"]]) {
     const selected = view === panelView;
@@ -34152,7 +34159,7 @@ function layoutStack() {
   const parts = [...slot.children].filter(shown);
   let lift = 0, hide = false;
   if (menu && shown(menu) && parts.length) {
-    const box = menu.getBoundingClientRect(), bottom = dockTop() - 8, top = bottom - slot.offsetHeight;
+    const box = menu.getBoundingClientRect(), bottom = textBottom() - 8, top = bottom - slot.offsetHeight;
     const left = Math.min(...parts.map((part) => part.getBoundingClientRect().left));
     const right = Math.max(...parts.map((part) => part.getBoundingClientRect().right));
     if (box.top < bottom && box.bottom > top && box.left < right && box.right > left) {
@@ -34229,7 +34236,7 @@ function placeNoteEditor() {
   editor.style.left = `${Math.round(left - origin.left)}px`;
   editor.style.top = `${Math.round(last.bottom + 8 - origin.top)}px`;
   // The editor whole above the player.
-  const box = editor.getBoundingClientRect(), bottom = dockTop() - 8;
+  const box = editor.getBoundingClientRect(), bottom = textBottom() - 8;
   if (box.bottom > bottom) scrollPageBy(Math.min(box.bottom - bottom, box.top - readingViewport().top - 8));
 }
 function hideNoteEditor() {
@@ -38129,7 +38136,6 @@ function render() {
   queuePinned();
   // The screen decides Ask Hilde's mode: a book's reading view, or help (syncAskMode()).
   syncAskMode();
-  document.documentElement.classList.toggle("sheet-open", panelOpen);
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
   // The player bar's speed menu stays while the bar shows under the Library.
@@ -40724,7 +40730,7 @@ window.visualViewport?.addEventListener("resize", fitVisualViewport);
 window.visualViewport?.addEventListener("scroll", fitVisualViewport);
 window.visualViewport?.addEventListener("resize", placeNoteEditor);
 window.addEventListener("resize", () => {
-  fitVisualViewport(); fitDock(); observePaperBar(); queuePinned();
+  fitVisualViewport(); fitDock(); observePaperBar(); queuePinned(); fitSheetRoom();
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
 // The view's controls pinned on a wide screen (none on a phone: display:contents) under the paper bar: what
@@ -40732,9 +40738,12 @@ new ResizeObserver(fitDock).observe($("player-dock"));
 new ResizeObserver(() => document.documentElement.style.setProperty("--listen-bar-h", `${$("listen-bar").offsetHeight}px`))
   .observe($("listen-bar"));
 observePaperBar();
-// Ask Hilde's model box takes a line of its own in a panel narrower than 420 px (a phone's sheet, a narrow window).
-new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side-panel").offsetWidth < 420))
-  .observe($("side-panel"));
+// Ask Hilde's model box takes a line of its own in a panel narrower than 420 px (a phone's sheet, a narrow window);
+// the page's room beneath its text follows the sheet's height (fitSheetRoom()), dragged or sized.
+new ResizeObserver(() => {
+  $("panel-head").classList.toggle("narrow-head", $("side-panel").offsetWidth < 420);
+  fitSheetRoom();
+}).observe($("side-panel"));
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();
