@@ -4088,10 +4088,18 @@ carries them. `live_start()` warms the book's index in a thread
 (`LiveSession.warm()`). In help mode the instructions carry Hilde Reader's
 help whole (`LIVE_HELP_PROMPT` + `live_help_text()`, from `ask_help()`, the same
 every turn so a model server keeps it cached; Ümit, 5 Nov: asked how to change
-the voice, Hilde described an icon the app does not have). The strip
+the voice, Hilde described an icon the app does not have). `LIVE_SYSTEM` also
+says how she talks, with the chosen model's name, so she never guesses it (Ümit,
+6 Nov: asked, she said her voice followed the app's, and changed with the book):
+LFM3-Audio hears and speaks in its one built-in voice, fixed, never a narration
+voice. The strip
 `#chat-live` sits at the top of `#chat-pane`, above `#chat-log` (Ümit, 5 Nov):
 a grid whose first row is the wave, as wide as the panel, then the microphone,
-**Hear Hilde** and **End** (44 px tall on a phone, End at least 104 px wide);
+**Hear Hilde** and **End** (44 px tall on a phone, End at least 104 px wide, the
+picker drawn plain, as iOS draws a native one thinner), then the last exchange,
+which scrolls in its own box (at most 9em, 6em on a phone; Ümit, 6 Nov: a long
+answer pushed the strip past the sheet). On a phone the sheet grows to `tall`
+while Talk runs and End puts back its size (`sheetBefore`);
 `startTalk()` moves `#chat-hint` into it and sets `#chat-pane.talking`, which
 hides the help's intro, and `endTalk()` puts both back. `startTalk()` first makes
 the one `AudioContext` that both hears and speaks and starts it inside the

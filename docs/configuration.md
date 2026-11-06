@@ -283,8 +283,11 @@ text) and `/tts` (text to speech). Start Hilde with
 only). The answers come from the model chosen for Ask Hilde, local or cloud,
 Claude Code included, about a book with the paragraphs
 [Ask Hilde settings](#ask-hilde-settings)' `retrieval` finds for each thing you
-say; the speech server only hears and speaks, in English, in its own female
-voice. It takes about 6.5 GB on one GPU. What you say is sent as audio to the
+say; the speech server only hears and speaks, in English, in its one built-in
+female voice, the same whatever book or narration voice is chosen. It takes
+about 6.5 GB on a GPU, or runs on the CPU (`-ngl 0` with no GPU visible to it):
+measured on 6 Nov with 16 threads, it began speaking in 0.08 s and heard a turn
+in 0.12–0.15 s, as fast as on a GPU, so no GPU need be kept for it. What you say is sent as audio to the
 speech server and as text to the chosen model; the transcript is kept in the
 book's (or the help's) `live.json` beside its `chat.json`. While the speech
 server isn't answering (stopped to free its GPU, say), Hilde checks it at most

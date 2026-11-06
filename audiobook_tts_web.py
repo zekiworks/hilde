@@ -18207,11 +18207,19 @@ def live_voice_down(origin):
 
 
 LIVE_ENDED = "This conversation has ended: press Talk to start another."
+# What Hilde is in Talk, so she never guesses it (Ümit, 6 Nov: asked which voice she speaks with, she said whatever
+# voice was active in the app, and that it changed with the book; it does not): a fixed voice, LFM3-Audio's own.
 LIVE_SYSTEM = (
     "You are Hilde, talking out loud with the reader{about}. Their words reach you through speech recognition "
     "and may contain mistakes, so guess the most likely meaning; if it looks cut off or garbled, say briefly what "
     "you understood and ask. Your reply is read aloud: answer in plain, natural spoken English, as fully as the "
-    "question needs but usually two to four sentences, with no lists, markdown, emojis, or stage directions."
+    "question needs but usually two to four sentences, with no lists, markdown, emojis, or stage directions.\n\n"
+    "How you talk, if asked: Hilde Reader's own speech server, LiquidAI's LFM3-Audio (speech recognition may write "
+    "it as \"Elephant 3\" or similar), runs on the reader's Hilde server; it turns what they say into text and "
+    "speaks your answers in its one built-in voice. That voice is fixed: it never changes with the book, the "
+    "narration voice they chose, or anything else, and it is not one of the narration voices under Voices, which "
+    "read books. Your words come from the chat model they chose in Ask Hilde, {model}. Their voice goes only to "
+    "that speech server, never to a cloud; a cloud model gets only the words heard."
 )
 # About a book (Can, 3 Nov: "we need them to know the document"): its abstract,
 # and what each turn's paragraphs are, after LIVE_SYSTEM.
@@ -18396,7 +18404,7 @@ class LiveSession:
         self.id = secrets.token_hex(16)
         self.key, self.selector, self.local_servers = key, selector, local_servers
         self.storage, self.document, self.keywords = storage, document, None
-        self.system = LIVE_SYSTEM.format(about=about)
+        self.system = LIVE_SYSTEM.format(about=about, model=chat_model_name(selector))
         if document is not None and abstract and abstract.get("text"):
             what = "Its abstract" if abstract["found"] else "Its opening"
             self.system += LIVE_BOOK_PROMPT.format(
@@ -26257,7 +26265,10 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 .chat-live .chat-hint, .chat-live-text { grid-column:1 / -1; }
 /* The live text: the last thing heard and Hilde's answer, the sentence being spoken tinted as the book tints its
    sentence. */
-.chat-live-text { display:grid; gap:6px; margin:0; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
+/* The last exchange scrolls inside its own box, so a long answer never pushes the strip past the panel (Ümit,
+   6 Nov: on a phone it covered the sheet and cut the conversation off). */
+.chat-live-text { display:grid; gap:6px; max-height:9em; margin:0; overflow:auto; font-size:14px; line-height:1.5;
+                  overflow-wrap:anywhere; }
 .chat-live-text p { margin:0; }
 #chat-live-you { color:var(--dim); }
 .live-sentence.active { border-radius:3px; background:color-mix(in srgb, var(--accent) 22%, transparent); }
@@ -26269,10 +26280,16 @@ button.chat-action:hover:not(:disabled) { background:var(--accent); filter:brigh
 .chat-live-end { min-height:30px; padding:2px 14px; border:1px solid #5a5a5a; border-radius:6px;
                  background:transparent; box-shadow:none; color:var(--text); font-size:13px; }
 #chat-live-end { grid-area:end; min-width:80px; }
-/* A phone: 44 px to touch (Ümit, 5 Nov: End was too small to press), End wide. */
+/* A phone: 44 px to touch (Ümit, 5 Nov: End was too small to press), End wide; the microphone picker drawn as a
+   plain box, as iOS draws a native one thinner than its height (6 Nov); a lower wave and a shorter last exchange,
+   so the strip leaves room for the conversation. */
 @media (max-width:767.98px), (pointer:coarse) {
   .chat-live-mic, .chat-live-end { min-height:44px; font-size:14px; }
+  .chat-live-mic { height:44px; padding:0 30px 0 10px; -webkit-appearance:none; appearance:none;
+                   background:var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23999' stroke-width='1.6'/%3E%3C/svg%3E") no-repeat right 10px center; }
   #chat-live-end { min-width:104px; }
+  .chat-live-wave { height:28px; }
+  .chat-live-text { max-height:6em; }
 }
 /* A kept spoken conversation: a callout among the messages, never one of them. */
 .chat-live-callout { display:grid; gap:8px; margin:0; padding:10px 12px; border-left:3px solid var(--accent);
@@ -32100,6 +32117,12 @@ async function startTalk(options = {}) {
     // The strip at the panel's top takes the hint while Talk runs; the help's intro steps aside.
     $("chat-live").append($("chat-hint"));
     $("chat-pane").classList.add("talking");
+    // A phone's sheet grows to its full height while Talk runs, so the strip leaves the conversation room; End puts
+    // it back (Ümit, 6 Nov).
+    if (matchMedia("(max-width:899.98px)").matches && panelOpen) {
+      talk.sheetBefore = sheetSized;
+      if (sheetSized !== "tall") settleSheet("tall");
+    }
     $("chat-live").classList.remove("hidden");
     $("chat-live-status").textContent = "Talking with Hilde. Speak whenever you like; press End to stop.";
     $("chat-live-label").textContent = "Listening";
@@ -32489,6 +32512,7 @@ async function endTalk() {
   $("chat-live").classList.add("hidden");
   document.querySelector("#chat-pane .chat-foot").prepend($("chat-hint"));
   $("chat-pane").classList.remove("talking");
+  if (ending.sheetBefore !== undefined && panelOpen && sheetSized === "tall") settleSheet(ending.sheetBefore);
   $("chat-compose").classList.remove("hidden");
   renderChatControls();
   chatHint("Keeping the conversation's transcript…");

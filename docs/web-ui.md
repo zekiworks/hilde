@@ -865,9 +865,12 @@ in help she knows Hilde Reader's help. While it runs, a strip at the top of the
 panel says what is happening (Listening, Hearing you, Hilde is answering) over
 a moving wave across its width, then the microphone and **End** (large enough
 to press on a phone); under it the last exchange shows as text, the sentence
-Hilde is saying marked. The question box and the help's examples step aside,
-and the earlier conversation stays below. Ten quiet seconds end Talk by
-itself. A playing book pauses while you talk. The
+Hilde is saying marked (a long answer scrolls in its box). On a phone the panel
+grows to full height while you talk and goes back when Talk ends. The question
+box and the help's examples step aside, and the earlier conversation stays
+below. Hilde always talks in the speech server's one voice, whatever book or
+narration voice is chosen. Ten quiet seconds end Talk by itself. A playing book
+pauses while you talk. The
 microphone is the system's default (and follows it when that changes, say a
 headset plugged in) unless you pick another there: the pick switches at once
 and this browser keeps it for next time; when it isn't connected, Talk uses the
