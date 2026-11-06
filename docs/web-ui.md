@@ -548,15 +548,11 @@ play/pause. The bar keeps clear of the phone's home indicator. The bar never
 covers the text: the page leaves room for it below the last paragraph, and a
 control you reach with **Tab** lands between the bars at the top and the player
 (a figure taller than that space shows its top). The page itself scrolls, never
-a box inside it; on a computer its scroll bar is thin and grey, like the side
-panel's, yet wide enough to grab and drag, while a phone keeps
-its own. The text runs in a comfortable reading column; on a wide screen the panel for the
-chat, a figure, or a source page opens beside it, and the player bar then
-stays under the text; the page's scroll bar stays at the window's right edge,
-beyond the panel. The panel starts just under the lowest bar at the top of
-the window: the tab row while you can see it, the slim paper bar (below) once
-it shows, otherwise the top of the window. It never covers the header, the
-tabs, **Settings**, or the paper bar, and its top follows them as you scroll.
+a box inside it; on a computer its scroll bar is thin and grey, yet wide
+enough to grab and drag, while a phone keeps its own. The text runs in a
+comfortable reading column. The panel for the chat, a figure, or a source page
+is a sheet that rises from the bottom over the text, on a computer as on a
+phone; the text never moves aside or narrows for it.
 
 Once the book's header has scrolled away, a slim bar stays at the top of the
 window: the title on one line (cut with "…" when it is long), the voice and
@@ -587,7 +583,7 @@ no longer play against the new one: the book offers **Make <voice> again** for
 each. Notes stay; the conversation is cleared.
 
 Your browser remembers, for each book, where you were (the sentence and the
-time) and the speed you chose, and the width of the side panel: opening the
+time) and the speed you chose: opening the
 book again, or reloading the page, finds it paused at that sentence. This is
 kept in the browser only, never in the book or on the server; the speed never
 changes the audio.
@@ -611,7 +607,8 @@ the book answers at once, without waiting. Only a short, still tap counts:
 scrolling, dragging, selecting, and holding your finger down never start,
 stop, or move the book, nor does the second tap of a double tap, nor a tap
 that only clears a selection. A double tap never asks anything, and it does
-not zoom the text (pinch to zoom instead). To ask about text, select it.
+not zoom the text; a pinch zooms it, and nothing in the page stops that. On a
+computer, the browser's own zoom enlarges the page. To ask about text, select it.
 
 - On a phone or tablet, long-press a word (its handles stretch the selection
   to a phrase or a sentence). A teal **Ask Hilde** button appears just above
@@ -623,7 +620,7 @@ not zoom the text (pinch to zoom instead). To ask about text, select it.
   this** for the mouse, **Ask Hilde** above the player bar for a finger.
 
 Nothing opens until you press that button (or **Ask Hilde** in the
-player): then the book pauses and the chat opens (on a phone, as a tall sheet
+player): then the book pauses and the chat opens (as a tall sheet
 from the bottom, from just below the slim paper bar down to the player) with a
 card headed **Selected text**: your words in quotes, and under
 **Context details** the section they are in, all of your selection, and the
@@ -684,26 +681,22 @@ panel of the source figure". Click a figure to see it large beside the text
 with its caption, a link to its PDF page, **Hilde's description**, and **Ask
 about this figure**.
 
-**Ask Hilde** opens the chat beside the book (on a phone or a window narrower
-than 900 px, as a sheet rising from the bottom over about 60% of the screen,
-with a grabber and rounded top, the book dimmed above it: **×** or a tap on the
-book closes it; with the keyboard open it grows so **Send** stays in view). From
-a selection it opens tall, up to just below the slim paper bar (with highlights
-and notes on it still stops above the player). Drag the grabber at its top (or
+**Ask Hilde** opens the chat as a sheet rising from the bottom, on every
+screen (Ümit via Zeki #1567, 6 Nov): at most 720 px wide and centred, about
+60% of the screen high, with a grabber and rounded top, the page dimmed above
+it. **×** or a tap on the dimmed page closes it; with the keyboard open it grows
+so **Send** stays in view. In a book it always stops above the player bar, and
+the dimmed part leaves the bar uncovered, so **Play**/**Pause**, **Highlight**,
+**Note**, the microphone and **Ask Hilde** stay in reach while it is open. From
+a selection, and while you talk with Hilde, it opens tall, up to just below the
+slim paper bar. Drag the grabber at its top with a finger or the mouse (or
 just above it, or the free part of the header's first row): up to make the sheet
 full height, down to about half, and further down (or a quick flick down from
 half) to close it as **×** does; it settles on the nearest of the three. Dragging
-never scrolls the book or moves the audio, and with highlights and notes on the
-player stays usable at every height. At half height the model box's line steps
-aside, as with the keyboard open. A tap on the grabber, **Enter** or **Space**
-switches between half and full, and the up and down arrows choose. From
-900 px it is a panel at the right, 440 px wide (360 px in a window under
-1100 px, so the text keeps about 50 characters a line beside it). Drag its left
-edge to make it narrower or wider, from 320 to 720 px, always leaving the text
-at least 480 px; the text keeps its place while it reflows. With the edge
-focused, the left and right arrows widen or narrow it by 16 px, **Home** makes
-it as wide as it can be and **End** as narrow. This browser remembers the
-width. Its header is Hilde's sparkle (teal, Ask Hilde's marker)
+never scrolls the book or moves the audio. At half height the model box's line steps
+aside, as with the keyboard open. A tap or click on the grabber, **Enter** or **Space**
+switches between half and full, and the up and down arrows choose. A pinch zoom
+never makes the sheet fill the screen. Its header is Hilde's sparkle (teal, Ask Hilde's marker)
 and **Ask Hilde** in the text's colour, then the chat's model box, **⋯**, and **×** at the
 right. With more than one tab (**Ask Hilde | Notes**, a figure, a page) or in a
 panel under 420 px wide (a phone, a narrow window) the header has two rows: the
@@ -1004,7 +997,7 @@ are on:
   Hilde**, **Copy** and **×**. On a computer it opens just above the selection
   (below it when there is no room above), never over it and never pushing the
   text, inside the text's column and the screen, and it follows the selection
-  when you scroll, resize the window or open, close or resize the side panel;
+  when you scroll, resize the window or open, close or resize the Ask Hilde sheet;
   a new selection brings it beside that one. The six dots at its left move
   it: drag them, or focus them and use the arrow keys (Shift for bigger
   steps), within the text's column and the screen. It stays where you put
@@ -1060,10 +1053,11 @@ are on:
   note** on a highlight) and **Delete**, which asks first.
   Clicking an icon in the text opens the Notes tab at its card, marked as the
   current one. **Show in text** scrolls to
-  the passage and outlines it briefly; it never moves the audio. On a phone
+  the passage and outlines it briefly; it never moves the audio. In a book
   the Notes sheet (like the Ask Hilde sheet) ends above the player, so Pause
   stays in reach; **Show in text** shrinks it to a small bar, and **Back to
-  note** opens it again at the same card.
+  note** opens it again at the same card. Jumping to a cited paragraph closes
+  the sheet too, on every screen.
 - Notes are kept on the Hilde server, one file per book outside the book's
   folder, so every device sees the same notes and recreating a book keeps
   them; nothing of them is kept in the browser (only the last highlight
@@ -1073,8 +1067,9 @@ are on:
   changed on another device meanwhile asks which version to keep.
 - When the book opens, each note finds its passage again. If the passage is
   gone (after a Recreate) or appears more than once, the note stays, marked
-  **Place not confirmed**: press **Choose its place…**, select the passage in
-  the text, then **Use this place**.
+  **Place not confirmed**: press **Choose its place…** (the sheet closes),
+  select the passage in the text, then **Use this place**; the Notes sheet
+  opens again at that note.
 
 ### A book being made
 
@@ -1086,10 +1081,12 @@ play button; how far it is, step by step and in percent, is on **Progress**.
 A click (or **Enter** or **Space**) opens it: the paper's own text and
 its figures, with no **Follow along** or **Narration text | Source
 text** switch, and a line under the title saying that Hilde is still making it
-and you can listen once it's done. The bar at the bottom stays, saying the book
-is not narrated yet: with **Progress** while it is being made, or **Continue…**
-once it stopped, which opens **Create** with its document and voice chosen (you
-can change the models, then **Create audiobook** goes on with it). **Ask
+and you can listen once it's done. Under that note, **Progress** (while it is
+being made) or **Continue…** (once it stopped) opens **Progress**, or
+**Create** with its document and voice chosen (you can change the models, then
+**Create audiobook** goes on with it). The bar at the bottom stays: **Play**,
+**Highlight** and **Note** show but are disabled until it is narrated, and
+the seek bar and speed are hidden. **Ask
 Hilde**, in that bar or in the header, asks about it,
 with the same cards, ¶ links, figures and source pages as a finished book. Hilde
 reads the paper's text at once; each part's narration, description and summary
@@ -1113,15 +1110,15 @@ touched.
 **Voices** lists every saved voice, 50 rows at a time: a green play button,
 the voice (two lines, below), **Modified** (the date its sample, transcript, or
 description last changed, the exact time in its tooltip; hidden on a phone),
-and **Select**. The selected voice comes first, on a faint green row, then
-every other voice A–Z by name, ignoring upper and lower case, with letters
-such as Ö, Ş, and Ü where your browser's language sorts them.
+and **Select**. The voices are A–Z by name, ignoring upper and lower case,
+with letters such as Ö, Ş, and Ü where your browser's language sorts them; the
+selected voice keeps its place, on a faint green row.
 
 Each voice is two lines. The first is its name, then its tags as gray chips:
 at most four on a wide screen and one on a phone, then "+N" for the rest. The
 second is one line of plain gray text that ends in "…" when it is longer: the
 voice's description, or, for a voice made from tags, its **More details**. A
-click on that text (on a phone, a tap anywhere on the row) opens the row: the
+click on its name or that text (on a phone, a tap anywhere on the row) opens the row: the
 whole saved description and every tag; another click folds it. The text is a
 button (Enter or Space opens and folds it too). On a phone (640 px wide or
 less) the line ends in a chevron that turns up while it is open, the opened
@@ -1302,11 +1299,9 @@ At the top right of the header, on every page (Create, Voices, Listen and
 Settings), is **Ask Hilde**: a gray-outlined pill with Hilde's teal sparkle and the words,
 or, on a phone narrower than 600 px, a round 44 px button with the sparkle
 alone (still named "Ask Hilde" for screen readers). It opens the same panel as
-the player bar's **Ask Hilde** and looks pressed while the panel is open. From
-900 px the panel sits at the right under the tab row (or the lowest bar pinned
-at the top), never over the header, the tabs or **Settings**; the page under
-the tabs narrows so nothing of it hides behind the panel. Narrower, it is the
-bottom sheet described under [Listen](#listen); with a phone's keyboard open it
+the player bar's **Ask Hilde** and looks pressed while the panel is open. On
+every screen the panel is the bottom sheet described under [Listen](#listen),
+over the page, which never narrows for it; with a phone's keyboard open it
 takes the visible screen, so the question box and **Send** stay in view.
 
 The screen decides what the panel is for:

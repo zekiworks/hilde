@@ -986,13 +986,15 @@ reads **In progress** or **Stopped** in the New chip's gray, has no play
 button (Space opens it), and **⋯** holds **Delete…** alone. `openAudiobook()`
 hands a making id to `openMaking()`: no audio, `readerMaking` set,
 `#book-view.making` hiding `.listen-bar` and Back to reading position but
-keeping the bottom bar (Ümit, 4 Nov: she looked for it): there its seek bar,
-Play, speed, and Highlight/Note (marks need a finished book) give way to
-`.player-making`, "In progress · not narrated yet" with **Progress**
-(`openProgress()`), or "Stopped · not narrated yet" with **Continue…**
-(`continueMaking()`: Create with the book's own `source` and `voice` chosen,
-step `create`, nothing started, as a restart forgets the stopped job), and
-**Ask Hilde** where it always is (`renderMakingNote()`); `#reader-making` saying what can be done now, and
+keeping the bottom bar (Ümit, 4 Nov: she looked for it): `setMakingBar()`
+shows Play, Highlight and Note disabled (marks need a finished book; titles
+such as "You can play it once it is narrated") and hides only the seek bar and
+the speed, with **Ask Hilde** where it always is. **Progress**
+(`#making-progress`, `openProgress()`) while it is made, or **Continue…**
+(`#making-continue`, `continueMaking()`: Create with the book's own `source`
+and `voice` chosen, step `create`, nothing started, as a restart forgets the
+stopped job) once stopped, are buttons under the note at the top of the book
+(`.reader-making-actions`, `renderMakingNote()`); `#reader-making` saying what can be done now, and
 `making_reader_payload()` as `/api/reader`: the blocks, one per part, in
 `render_reader_original()`, `block_passages` 1…N, `passages`
 (`passage_details()`), and `figures` (`reader_figures()`, so figure cards,
@@ -2103,8 +2105,6 @@ the server:
 
 - `hilde.book.<id>`: a book's place and speed, whether it was heard to the end,
   and when it was last heard (see Reader); the Library's states and order.
-- `hilde.panelWidth`: the side panel's width as last dragged (`setPanelWidth()`; absent until the edge is dragged,
-  then the default applies; a non-number is ignored, a number out of range clamped).
 - `hilde.dismissedJobs`: the `<job id>@<finished_at>` keys of stopped or
   failed jobs dismissed here, newest first, at most 50.
 - `hilde.highlightStyle`: `"A"` or `"B"`, the reading highlight chosen under
@@ -2134,22 +2134,23 @@ visually hidden step states).
 
 Listen below 768 px: the text takes the full width, the view's controls
 (`#listen-bar`, `display: contents`) scroll with it, and menus dock above the
-player (`narrowLayout()`). Below 900 px (`narrowScreen()`) the side panel (the chat, a figure, a
-source page) is a bottom sheet: fixed at the foot of the visual viewport, the
-full width up to 720 px (centred beyond), 60% of the visible height
-(`--vv-height`), rounded at the top with a grabber (`button#sheet-grabber`), the book
+player (`narrowLayout()`). On every width the side panel (the chat, a figure,
+a source page) is a bottom sheet (Ümit via Zeki #1567, 6 Nov; it was a docked
+right column on wide screens): fixed at the foot of the visual viewport, the full
+width up to 720 px (centred beyond), 60% of the visible height
+(`--vv-height`), rounded at the top with a grabber (`button#sheet-grabber`), the page
 dimmed above it by `#panel-backdrop` (50% black; a tap there closes the
 panel), and `html.sheet-open` stopping the page from scrolling beneath; **×**
-closes it as on a wide screen. Its height is `--sheet-size` (else
+closes it. The text never moves aside or narrows. Its height is `--sheet-size` (else
 `--sheet-default`: 60%, or 70% above the player) above its floor
 (`--sheet-floor`); `sheetSize()` sets `.sheet-tall` (from `--sheet-edge`, the
 slim paper bar's bottom, set by `observePaperBar()`, down to the floor), as
-`askAboutSelection()` opens it, or `.sheet-half` (half of the space above the
+`askAboutSelection()` and Talk open it, or `.sheet-half` (half of the space above the
 floor); closing forgets it. The grabber is a button: a 16 px strip with a
 36 × 4 px stroke whose handle (`::after`) reaches 28 px above the sheet and
 44 px down over the header's first row (`.panel-head` lets pointer events
 through to it, its children take their own), so the handle is at least 44 px
-tall at the stroke. A drag (pointer events, captured and followed on the
+tall at the stroke. A drag by finger or mouse (pointer events, captured and followed on the
 window; `touch-action:none` on the grabber only, so the page and the sheet's
 lists keep their own scrolling) sets `--sheet-size` from 48 px up to tall,
 `.sheet-dragging` clipping the sheet to its box (`clip-path`, 32 px spare above
@@ -2160,10 +2161,11 @@ tall or half, whichever is nearer (`settleSheet()`, 150 ms, none with reduced
 motion). The book's audio is never touched. In sheet mode the panel's views
 scroll (`overflow-y:auto`) rather than spill onto the player, and at half the
 model box's line and its notes are left out, as with the keyboard open. A
-tap, Enter or Space switches half ↔ tall, ArrowUp / ArrowDown choose. `fitVisualViewport()`
+tap, click, Enter or Space switches half ↔ tall, ArrowUp / ArrowDown choose. `fitVisualViewport()`
 sets `--vv-height` and
 `--vv-top`; `html.keyboard-open` while a keyboard takes a quarter of the
-screen makes the sheet the whole visual viewport and leaves out the model's
+screen at the page's own scale (`visualViewport.scale < 1.01`, so a pinch zoom
+is never taken for a keyboard) makes the sheet the whole visual viewport and leaves out the model's
 notes (`#chat-model-notes`), the model box's own line in a two-row header, and
 the no-model notice
 (`#chat-problem`; a send then says why in `#chat-hint`), and a context card
@@ -2564,14 +2566,8 @@ in the side panel are thin and grey with the standard properties
 (`scrollbar-width: thin; scrollbar-color: #707070 transparent`: 10 px in
 Chromium, measured on Linux, wide enough to drag); not `::-webkit-scrollbar`,
 which turns Safari's overlay bar into a classic one whose width WebKit leaves
-out of the media queries' width (in Playwright's WebKit the layout then flipped
-between side panel and sheet from 900 to 911 px with the panel open). A phone
-keeps its own; with the panel open the page's bar is at the window's right
-edge, beyond the panel. On a screen
-900 px or wider the side panel's top is the bottom of the lowest bar pinned at
-the top (`--panel-top`, `fitPinned()`): the tab row while it shows, else the
-slim paper bar, else the window's top; it never covers the header, the tabs,
-Settings or the paper bar, and its x, width and bottom are as before. The page scrolls,
+out of the media queries' width). A phone
+keeps its own. The page scrolls,
 never an inner box. The view's controls stay pinned to the top of a wide
 screen while the text scrolls, and the player is docked at the bottom of
 every screen (see the player bar below).
@@ -2607,12 +2603,9 @@ them, or its top just under the bars when it is taller than that space. (Not `sc
 changes Chromium's scroll anchoring, and the Narration | Source switch then
 no longer keeps the sentence in place. The bar's slot also has
 `overflow-anchor: none`.) Updates without layout thrash: an `IntersectionObserver` on the
-mark (root margin minus the bar's edge) and one on the tab row call
-`fitPinned()`, which reads first (the mark's and, with the panel open, the tab
-row's rect) and writes after (the bar's class; `--panel-top` on the panel
-alone, only when changed); a passive scroll listener schedules it, at most once
-a frame (`queuePinned()`, `requestAnimationFrame`), only while the tab row
-shows with the panel open; `render()`, `renderPanel()` and a resize run it too.
+mark (root margin minus the bar's edge) calls
+`fitPinned()`, which reads first (the mark's rect) and writes after (the
+bar's class); `render()`, `renderPanel()` and a resize run it too.
 
 The page's own scrolls toward a place (the title's back to the top,
 `placeListening()` for Follow along, Back to reading position and a restored
@@ -2869,7 +2862,8 @@ acts like any tap and the second does nothing; nothing asks on a double tap
 or a double-click. The text has `touch-action: manipulation`, so a double
 tap does not zoom (it is iOS's own gesture for zoom and the text menu) while
 a pinch still does; the viewport sets no `user-scalable` and no
-`maximum-scale`. A touch held still for `READER_PRESS_SELECT` (650 ms) with nothing
+`maximum-scale`, so nothing in the page limits pinch zoom, and on a computer
+the browser's zoom enlarges the page. A touch held still for `READER_PRESS_SELECT` (650 ms) with nothing
 selected yet selects its word (`selectPressedWord()`): a phone's own long
 press selects first and this then does nothing; Chromium's touch emulation
 has no long press, so there this selects.
@@ -2943,9 +2937,7 @@ description was checked.
 The player bar is the page's own, one bar docked at the bottom of every
 screen (`#player-dock`, `position: fixed`, inside
 `env(safe-area-inset-bottom)`, its `--surface` background the full width
-under a 1 px `--line` top border); with the side panel open beside the text
-(900 px and wider) it ends at the panel (`right: var(--panel-w)`), so it
-stays under the reading column. Its controls sit in one column
+under a 1 px `--line` top border). Its controls sit in one column
 (`.player-bar`, at most 560 px and centred; on a phone the dock's 16 px
 padding leaves them 16 px from the screen's edges), in two rows 8 px apart,
 on every size: `.player-track`, the thin seek bar between the elapsed time
@@ -2974,12 +2966,14 @@ or volume slider (M and ↑/↓ remain). `fitDock()` keeps `--dock-h`, the
 bar's height, on a `ResizeObserver`; the page's bottom padding
 (`body:has(main.reading)`) is that height, so the last paragraph ends above
 the bar, and **Back to reading position** (`#dock-slot`), toasts, and a phone's
-menus sit above it. The `<audio>` element has no controls.
+menus sit above it. A toast without a button (`.toast:not(:has(button))`) lets
+clicks through: the note that listening for "Hilde" started, shown during the
+page's first press, had taken that press's release, so a first click on
+**Send** at the sheet's foot was lost. The `<audio>` element has no controls.
 This browser keeps each book's place and speed in `localStorage`
 (`hilde.book.<id>`: `voice`, `time`, `block`, `passage`, `speed`, `finished`,
 whether the audio had ended there, and `played`, when it was last heard, in
-Unix ms; `saveBookPlace()`), and the panel width (`hilde.panelWidth`; see
-[Browser storage](#browser-storage)); never in the book, the voice, or the
+Unix ms; `saveBookPlace()`); never in the book, the voice, or the
 server. The place is written about every second while the book plays
 (`saveBookPlaceSoon()` on `timeupdate`), on pause, seek, and end, as the book
 closes or another loads (`clearReader()`), and as the page is left or hidden
@@ -3009,9 +3003,8 @@ with the text on screen, scroll the same paragraph to the same height
 it load: loaded when the place was left, they can grow only now, and WebKit
 does not keep the text in place for them; a scroll by the listener or the
 page's own `glide()` elsewhere ends it) and restore `detached` (the pill shows
-again if the listener had scrolled away). **Library** closes the side panel,
-so a wide screen comes back with a wider column: the same paragraph at the
-same height, reflowed. Played from the Library's play button instead, it
+again if the listener had scrolled away). **Library** closes the side panel.
+Played from the Library's play button instead, it
 starts at that time with no text to place.
 The sentence-start rule is for coming back after a while (a reload, another
 tab, another book in between); an immediate return should look as if nothing
@@ -3073,7 +3066,7 @@ selection), or the arrow keys, 16 px (64 with Shift), through
 `moveSelectionBar(left, top)`, which clamps it with the same `selBarClamp()`
 (inside the reading area and the screen, and inside `readingViewport()`) and
 keeps that as its chosen place. A moved bar (`selBarMoved`, for `selBarFor`)
-stays there, also on scroll; when a resize or the panel narrows the column,
+stays there, also on scroll; when a resize leaves the text less room,
 `showMovedSelectionBar()` clamps where it is shown and keeps the chosen place
 for when the room comes back. It returns beside the selection when the target
 changes (`selBarTarget()`: the range's boundary points, or `markMenuId`;
@@ -3240,38 +3233,27 @@ has no other footer. `rowMoreButton()` / `openRowMenu()` take the optional
 after the reload if the focus was lost with the old card. **Show in text**
 (`showMarkInText()`) switches the view if the place is in the other one,
 `glide()`s the passage into the visible text, sets `detached` and outlines it
-briefly (`outlineRange()`), never touching the audio; on a phone (the panel a
-sheet) it closes the sheet and shows `#notes-mini` with **Back to note**.
-**Place not confirmed** cards offer **Choose its place…**: `#notes-mini`
+briefly (`outlineRange()`), never touching the audio; it closes the sheet
+and shows `#notes-mini` with **Back to note**, on every width.
+**Place not confirmed** cards offer **Choose its place…**: it closes the
+sheet, `#notes-mini`
 asks for a selection and **Use this place** saves the new anchor with
-`confirmed_place: true` and the old `updated_at` as the base.
+`confirmed_place: true` and the old `updated_at` as the base, then opens the
+Notes sheet at it (`openNotes(id)`).
 
-Below 900 px with a book open, the sheet (Notes and Ask Hilde alike) ends at
-the player's top (`--sheet-floor`: `--dock-h`) and `#panel-backdrop` stops
-there too, so Play/Pause, the seek bar and speed stay usable; with the keyboard
-open the sheet takes the visual viewport as before.
+In a book (`body:has(main.reading)`), on every width and with notes on or
+off, the sheet (Notes and Ask Hilde alike) ends at the player's top
+(`--sheet-floor: var(--dock-h)`) and `#panel-backdrop` stops there too, so
+Play/Pause, Highlight, Note, Talk's microphone and Ask Hilde stay in reach;
+with the keyboard open the sheet takes the visual viewport as before.
 
 ### Ask Hilde
 
 One side panel (`#side-panel`) holds the chat, a figure (`#figure-view`), and
 a source page (`#page-view`), with a tab for each one opened. It belongs to no
 page (it and `#panel-backdrop` are children of `main`, after the pages), so it
-opens on every screen. On a screen
-900 px or wider it sits fixed at the right from `--panel-top` (see Reader) to the bottom, `--panel-w` wide (on the
-root; by default (`defaultPanelWidth()`, unchanged) 440 px, kept between 400
-(360 in a window under 1100 px) and the window less 700 px; dragged by its left
-edge (`#panel-resize`, a 10 px `col-resize` zone over the border, a 2 px accent
-line on hover, focus and while dragged) or set with its keys (← / → ±16 px,
-Home the widest, End the narrowest), any width in `panelBounds()`: 320 to 720 px,
-leaving the reading column `PANEL_TEXT_LEAST` (480) px. A dragged width is kept as
-`hilde.panelWidth` (`setPanelWidth(width, save, anchor)`) and fitted again, never
-saved, on every resize (`fitPanelWidth()`; without a kept width, the default).
-The text keeps its place while the column reflows: `keepPlace()` restores the
-anchor `readingAnchor()` took as the drag started (the sentence being read and
-followed, else the paragraph at the top); at 900 px the default panel is 360 px
-and the reading column 481 px, about 50 characters a line), and the text moves left
-beside it (`.panel-open`); narrower, it covers the reading view (see the
-phone paragraph under UI contract). Each view keeps its state while another
+opens on every screen, always as the bottom sheet described under UI contract;
+the text never moves aside or narrows for it. Each view keeps its state while another
 shows or the panel is closed, until another book opens (`resetChatFor()`):
 the draft, its chip, the conversation and its scroll position (`chatScroll`,
 restored on return, or the end when it was at the end), and an answer still
@@ -3312,10 +3294,7 @@ sends nothing. Nothing of a book is ever attached or shown there: no card
 (`.chat-where` hidden), no files, and a book playing in the background keeps
 playing (`pauseBookForQuestion()` is book mode's). **⋯** › **New
 conversation** asks "Start a new help conversation?" and clears the help
-conversation alone. On a wide screen `main.help-panel-open` keeps the header
-and the tabs in place and narrows the pages under them by `--help-room`
-(`fitHelpRoom()`: how far the panel reaches into the column, plus 16 px), and
-a book's player bar docked under the Library stays beside the panel. The model
+conversation alone. The help sheet covers the page as the book's does. The model
 picker is the same `chat` picker in both modes.
 
 **Ask Hilde**, in the player bar, and the header's in book mode, are the way
@@ -3336,10 +3315,10 @@ button's own, teal) and neutral text while the chat is shown; then, while
 the chat is shown, its model box (`#chat-model-pick`) and **⋯**
 (`#chat-more`); and **×** (`closePanel()`: the focus goes back to the button
 that opened it, the player's **Ask Hilde** giving it to **Play** instead, so Space
-resumes the book rather than asking again; a phone's sheet forgets its size
+resumes the book rather than asking again; the sheet forgets its size
 however it closed) at the right on every size, in one
 row. In a panel narrower than 420 px (`.narrow-head`, set by a
-`ResizeObserver` on the panel: a phone's sheet, a 900–1099 px window) or with
+`ResizeObserver` on the panel: a phone's sheet) or with
 more than one tab shown (`.has-tabs`, `fitPanelHead()` from `renderPanel()` and
 `renderNotes()`: Notes counts as a figure or page tab does), the header takes
 two rows: the tabs, **⋯** and **×**, then the model box on a line of its own,
@@ -4116,7 +4095,7 @@ a grid whose first row is the wave, as wide as the panel, then the microphone,
 **Hear Hilde** and **End** (44 px tall on a phone, End at least 104 px wide, the
 picker drawn plain, as iOS draws a native one thinner), then the last exchange,
 which scrolls in its own box (at most 9em, 6em on a phone; Ümit, 6 Nov: a long
-answer pushed the strip past the sheet). On a phone the sheet grows to `tall`
+answer pushed the strip past the sheet). On every width the sheet grows to `tall`
 while Talk runs and End puts back its size (`sheetBefore`);
 `startTalk()` moves `#chat-hint` into it and sets `#chat-pane.talking`, which
 hides the help's intro, and `endTalk()` puts both back. `startTalk()` first makes

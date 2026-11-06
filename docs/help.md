@@ -83,16 +83,16 @@ On other pages it answers about Hilde Reader from this help, else the developer 
 
 Pick the model in the panel's header; this browser keeps it. Its badge says **Local** or **Cloud**, and a label under each answer names it. **🔈 Read aloud** reads one aloud; **⋯** › **New conversation** starts over.
 
-Drag the sheet's top bar (phone) or the panel's left edge (computer) to resize it.
+Drag the sheet's top bar to resize it.
 
 **Talk with Hilde** in the panel, the header's **Talk** and the player's microphone start a spoken conversation. Hilde answers when you pause; talk over her to stop her. **End**, or ten quiet seconds, ends it. **Listening for “Hilde”** (top; on from your first tap, press to stop): "Hilde" alone or before a question starts Talk. English only.
 
-**While a book is being made** (**In progress**), open it to read and ask; its bottom bar offers **Progress**, or **Continue…** once it stopped.
+**While a book is being made** (**In progress**), open it to read and ask; **Progress**, or **Continue…** once it stopped, is under the note at the top.
 
 When the narration differs from the document, Hilde goes by the document.
 
 <!-- more: docs/web-ui.md › Ask Hilde on every page -->
-<!-- checked (25 Oct): docs/web-ui.md, the side panel's left-edge resize (remembered by the browser) and the phone sheet's drag bar (full, half, closed); the "being made" and New conversation sentences shortened for the 1,650-word cap -->
+<!-- checked (6 Nov): docs/web-ui.md, the panel is a bottom sheet on every screen with a drag bar (full, half, closed), Ümit via Zeki #1567; Progress / Continue… under the book's top note; the "being made" and New conversation sentences shortened for the 1,650-word cap -->
 <!-- checked (27 Oct): ask-rag, how Hilde finds paragraphs (similarity search or keyword search) is a line of the ⋯ menu, and a note under the header when it is keyword search (docs/configuration.md "Similarity search"); words cut for the cap -->
 <!-- checked: docs/web-ui.md "Listen" (Ask about this, phone Ask Hilde shown while text is selected, Ask about this figure, Selected text card, Context details, Word|Sentence|Paragraph, Explain this part, ¶ links, write_file notes, Web search on, model box badge, model label, Read aloud, New conversation; "A book being made": In progress card (no percent), reading view without player, conversation kept and moved into the book, model per browser in player.chat_model); audiobook_tts_web.py CHAT_TOOLS (search_document, read_paragraphs, write_file, list_files, delete_file) and CHAT_WEB_TOOLS (web_search, read_web_page); the help is the document `help` (ask_help(), ask_system_prompt()); making_passages(), ASK_NOT_READY. -->
 

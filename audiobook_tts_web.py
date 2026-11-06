@@ -25737,6 +25737,9 @@ button.row-more { min-width:40px; padding:0 10px; font-size:18px; line-height:1;
          max-width:calc(100vw - 24px); padding:10px 16px; background:var(--raised);
          border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); }
 .toast button { min-height:0; padding:4px 10px; }
+/* One without a button lets a press through to what is under it: a note shown during a press (listening for "Hilde"
+   starting at the first click) had taken the release, so the click under it (Send, at the sheet's foot) was lost. */
+.toast:not(:has(button)) { pointer-events:none; }
 .confirm-dialog { width:min(520px, calc(100vw - 24px)); min-width:0; }
 .confirm-dialog p { overflow-wrap:anywhere; }
 .confirm-dialog .field { margin-top:12px; }
@@ -25776,12 +25779,10 @@ html { scrollbar-gutter:stable; }
 /* The desktop scroll bars, the page's and the side panel's alike: thin and grey (a #707070 thumb, 3:1 on the
    ground and on the panel, on a clear track); thin is 10px in Chromium (measured on Linux), wide enough to grab and
    drag. Standard properties, not ::-webkit-scrollbar: that turns Safari's overlay bar into a classic one whose width
-   WebKit leaves out of the media queries' width (tested: with the panel open the layout flipped between side panel
-   and sheet from 900 to 911px). A phone (no hover, a coarse pointer) keeps its own. */
+   WebKit leaves out of the media queries' width. A phone (no hover, a coarse pointer) keeps its own. */
 @media (hover:hover) and (pointer:fine) {
   html, .side-panel * { scrollbar-width:thin; scrollbar-color:#707070 transparent; }
 }
-:root { --panel-w:440px; }
 .reading-column { max-width:calc(68ch + 34px); margin:0 auto; font-size:18px; }
 .reading-column > :not(.reader-panel) { font-size:15px; }
 /* The book's title, with the way back to the library at its top right. */
@@ -25876,15 +25877,13 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
 #book-view.dock-only > :not(.reading-column), #book-view.dock-only .reading-column > :not(.player-dock),
 #book-view.dock-only .ask-hilde { display:none !important; }
 #book-view.dock-only :is(.player-dock, .dock-slot) { right:0; }
-/* A book being made: its text and Ask Hilde, no Follow along or text switch (openMaking()). The bottom bar stays
-   where it is on every book (Ümit, 4 Nov: she looked for it): instead of the seek bar, Play, speed, and
-   Highlight/Note (which need the finished book), it says the book is not narrated yet, with Progress; Ask Hilde
-   keeps its place. */
-#book-view.making :is(.listen-bar, .back-to-listening, .player-track, #player-play, .player-speed-wrap,
-                       #player-marks) { display:none !important; }
-#book-view:not(.making) .player-making { display:none; }
-.player-making { display:flex; flex:1; align-items:center; gap:10px; min-width:0; color:var(--dim); font-size:14px; }
-.player-making span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* A book being made: its text and Ask Hilde, no Follow along or text switch (openMaking()). The bottom bar is the
+   same on every book (Ümit, 4 and 6 Nov: she looked for it, then for its Play and Highlight): Play, Highlight and
+   Note show, off until the book is narrated (they need its audio); only the seek bar and speed step aside. Progress,
+   or Continue… once it stopped, sit under the note at the top. */
+#book-view.making :is(.listen-bar, .back-to-listening, .player-track, .player-speed-wrap) { display:none !important; }
+#book-view:not(.making) .reader-making-actions { display:none; }
+.reader-making-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
 .reader-making { margin:0; }
 .player-bar { display:grid; gap:8px; max-width:560px; margin:0 auto; padding:8px 0 12px; }
 .player-bar > * { font-size:15px; }
@@ -25966,19 +25965,51 @@ body:has(main.reading), body:has(main.library-docked) { padding-bottom:var(--doc
             border-radius:999px; background:var(--ask); color:#1b1b1b; font-size:15px; font-weight:650;
             box-shadow:0 6px 20px rgba(0,0,0,.5); }
 .dock-ask:hover:not(:disabled) { background:var(--ask); filter:brightness(1.08); }
-/* The side panel: beside the text on a wide screen, a bottom sheet below 900px. On a wide screen its top is the
-   bottom of the lowest bar pinned at the top (--panel-top, fitPinned()): the tab row while it shows, else the
-   slim paper bar, else the window's top. */
-.side-panel { position:fixed; z-index:20; top:var(--panel-top, 0px); right:0; bottom:0; display:flex;
-              flex-direction:column; width:var(--panel-w); background:var(--surface);
-              border-left:1px solid var(--line); overscroll-behavior:contain; }
-/* Its left edge widens or narrows it (320-720 px, setPanelWidth()): a 10 px zone over the border, a 2 px line in
-   the accent on hover, focus and while dragged. */
-.panel-resize { position:absolute; z-index:1; top:0; bottom:0; left:-5px; width:10px;
-                cursor:col-resize; touch-action:none; }
-.panel-resize:hover, .panel-resize:focus-visible, .panel-resize.dragging { background:linear-gradient(90deg,
-  transparent 4px, var(--accent-light) 4px, var(--accent-light) 6px, transparent 6px); outline:0; }
-.sheet-grabber, .panel-backdrop { display:none; }
+/* The side panel is a bottom sheet on every width (Ümit via Zeki #1567, 6 Nov: the text must never move aside or
+   narrow for it): the full width (720px at most, centred), rounded at the top with a grabber, the page dimmed above
+   it (a tap there closes it). Its height (--sheet-size, from its bottom: the screen's, or the player's top) is 60% of
+   the visible viewport, or as sized (sheetSize()): tall, from just below the slim bar (--sheet-edge,
+   observePaperBar()), as it opens from a selection; half; or where the grabber is being dragged, by a finger or a
+   mouse. With the keyboard open it takes the whole visible viewport, so the box and Send stay in sight. */
+.side-panel { position:fixed; z-index:20; display:flex; flex-direction:column; background:var(--surface);
+              overscroll-behavior:contain;
+              --sheet-floor:0px; --sheet-default:calc(var(--vv-height, 100dvh) * .6);
+              right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2));
+              top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) - var(--sheet-floor)
+                - var(--sheet-size, var(--sheet-default)));
+              height:var(--sheet-size, var(--sheet-default)); border:1px solid var(--line);
+              border-bottom:0; border-radius:16px 16px 0 0; }
+.side-panel.sheet-tall { --sheet-size:calc(var(--vv-height, 100dvh) - var(--sheet-edge, 48px) - var(--sheet-floor)); }
+.side-panel.sheet-half { --sheet-size:calc((var(--vv-height, 100dvh) - var(--sheet-floor)) * .5); }
+/* Nothing of the sheet ever reaches past its bottom (onto the player): a view taller than its share scrolls. At half,
+   the model box's line and its notes step aside (as with the keyboard open), so the conversation, the card and the
+   box fit; while dragged, the sheet is clipped to its own box (and the 32 px above it, the grabber's handle). */
+.side-panel .panel-view { overflow-y:auto; }
+.side-panel.sheet-half :is(.panel-head .chat-model-pick, .chat-model-notes) { display:none; }
+.side-panel.sheet-dragging { clip-path:inset(-32px 0 0 0); }
+.side-panel.sheet-settling { transition:top .15s ease-out, height .15s ease-out; }
+@media (prefers-reduced-motion: reduce) { .side-panel.sheet-settling { transition:none; } }
+html.keyboard-open .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
+/* The grabber: a small stroke at the top; its handle (::after) reaches 28 px above the sheet's edge and down over the
+   header's first row, whose tabs and buttons sit above it, so a press (a finger's or a mouse's) on the stroke (at
+   least 44 px tall there), just above it, or on that row's free part drags the sheet: full, half or closed
+   (sheetSnap()). A tap or click, Enter or Space switches between half and full; ArrowUp and ArrowDown too. */
+button.sheet-grabber { position:relative; display:block; flex:none; width:100%; height:16px; min-height:0; margin:0;
+                       padding:0; border:0; border-radius:16px 16px 0 0; background:transparent; box-shadow:none;
+                       cursor:grab; touch-action:none; -webkit-tap-highlight-color:transparent; }
+button.sheet-grabber:hover:not(:disabled) { background:transparent; }
+button.sheet-grabber:hover::before { background:#7a7a7a; }
+button.sheet-grabber:active:not(:disabled) { transform:none; filter:none; cursor:grabbing; }
+.sheet-grabber::before { content:""; position:absolute; top:8px; left:calc(50% - 18px); width:36px; height:4px;
+                         border-radius:2px; background:#5a5a5a; }
+.sheet-grabber::after { content:""; position:absolute; top:-28px; right:0; left:0; height:calc(100% + 72px); }
+.sheet-grabber:focus-visible { outline:0; }
+.sheet-grabber:focus-visible::before { outline:2px solid var(--accent-light); outline-offset:3px; }
+.side-panel .panel-head { position:relative; pointer-events:none; }
+.side-panel .panel-head > * { pointer-events:auto; }
+.panel-backdrop { display:none; }
+.panel-backdrop:not(.hidden) { display:block; position:fixed; z-index:19; inset:0; background:rgba(0,0,0,.5); }
+html.sheet-open { overflow:hidden; }
 /* One row: the tabs, Ask Hilde's model box and ⋯ (with Ask Hilde shown), ×. With more than one tab (.has-tabs: Ask
    Hilde | Notes, a figure, a page) or in a panel narrower than 420 px (.narrow-head: a phone's sheet, a narrow
    window), two rows: the tabs, ⋯ and × on the first; the model box whole on the second, still in the header: Runs
@@ -26501,12 +26532,10 @@ html.notes-on .dock-slot { flex-direction:column; align-items:center; gap:8px; }
 .mark-bar.tapped .mark-dots { flex-basis:100%; justify-content:center; }
 /* One Ask Hilde while text is selected on a phone: the player's (it acts on the selection); the header's hides. */
 html.notes-selecting #header-ask { visibility:hidden; }
-/* With the phone sheet open only Saved to Notes (Save to notes under an answer) and the Highlighted bar show, over
-   the sheet's foot. */
-@media (max-width:899.98px) {
-  html.sheet-open .dock-slot:has(> :is(#saved-bar, #mark-bar):not(.hidden)) { z-index:21; }
-  html.sheet-open .dock-slot > :not(#saved-bar, #mark-bar) { display:none !important; }
-}
+/* With the sheet open only Saved to Notes (Save to notes under an answer) and the Highlighted bar show, over the
+   sheet's foot. */
+html.sheet-open .dock-slot:has(> :is(#saved-bar, #mark-bar):not(.hidden)) { z-index:21; }
+html.sheet-open .dock-slot > :not(#saved-bar, #mark-bar) { display:none !important; }
 /* The shrunk Notes sheet (Back to note), or choosing a note's place: a small bar just above the player. */
 .notes-mini { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
               width:min(560px, 100%); min-height:52px; padding:12px 10px 8px 16px; border:1px solid var(--line);
@@ -26625,74 +26654,18 @@ button.note-editor-close { min-width:36px; min-height:36px; padding:0 8px; borde
 .notes-outline { position:absolute; border:1.5px solid var(--text); border-radius:5px; pointer-events:none;
                  transition:opacity .4s; }
 @media (prefers-reduced-motion: reduce) { .notes-outline { transition:none; } }
-/* On a phone the Notes sheet (and Ask Hilde's: the same sheet) stops above the player (its floor), and the dimmed
-   area leaves the player uncovered, so Play/Pause, the seek bar and speed stay usable; with the keyboard open it may
-   cover. */
-@media (max-width:899.98px) {
-  html.notes-on body:has(main.reading) .side-panel { --sheet-floor:var(--dock-h, 0px);
-    --sheet-default:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
-  html.notes-on.keyboard-open body:has(main.reading) .side-panel { top:var(--vv-top, 0px);
-    height:var(--vv-height, 100dvh); }
-  html.notes-on body:has(main.reading) .panel-backdrop:not(.hidden) { bottom:var(--dock-h, 0px); }
-}
+/* In a book the sheet (Ask Hilde's, or Notes) stops above the player bar (its floor), and the dimmed area leaves the
+   bar uncovered, so Play/Pause, Highlight, Ask Hilde and the seek bar stay in reach (Ümit via Zeki #1567); with the
+   keyboard open it may cover. */
+body:has(main.reading) .side-panel { --sheet-floor:var(--dock-h, 0px);
+  --sheet-default:calc(var(--vv-height, 100dvh) * .7 - var(--dock-h, 0px)); border-bottom:1px solid var(--line); }
+html.keyboard-open body:has(main.reading) .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
+body:has(main.reading) .panel-backdrop:not(.hidden) { bottom:var(--dock-h, 0px); }
 .shortcut-table { border-collapse:collapse; font-size:14px; }
 .shortcut-table th { padding:5px 16px 5px 0; text-align:left; white-space:nowrap; }
 .shortcut-table td { padding:5px 0; color:var(--dim); }
 .shortcut-table kbd { padding:1px 6px; border:1px solid var(--line); border-radius:4px;
                       background:var(--field); font:13px ui-monospace,SFMono-Regular,Menlo,monospace; }
-/* With the panel open on a wide screen, the text and the player move left to make room. In help mode the header
-   and the tabs stay where they are (the panel starts under them) and the page under them narrows by what the panel
-   would cover (--help-room, fitHelpRoom()); a book playing from the Library keeps its player bar beside the panel. */
-@media (min-width:900px) {
-  .listen-workspace.panel-open { padding-right:calc(var(--panel-w) + 4px); }
-  .listen-workspace.panel-open :is(.player-dock, .dock-slot) { right:var(--panel-w); }
-  main.help-panel-open > :is(.page, #status, #server-down) { margin-right:var(--help-room, 0px); }
-  main.help-panel-open #book-view.dock-only :is(.player-dock, .dock-slot) { right:var(--panel-w); }
-}
-/* Narrower, the panel is a bottom sheet: the full width (720px at most, centred), rounded at the top with a
-   grabber, the book dimmed above it (a tap there closes it). Its height (--sheet-size, from its bottom: the screen's,
-   or the player's top) is 60% of the visible viewport, or as sized (sheetSize()): tall, from just below the slim
-   bar (--sheet-edge, fitPinned()), as it opens from a selection; half; or where the grabber is being dragged. With
-   the keyboard open it takes the whole visible viewport, so the box and Send stay in sight. */
-@media (max-width:899.98px) {
-  .side-panel { --sheet-floor:0px; --sheet-default:calc(var(--vv-height, 100dvh) * .6);
-                right:max(0px, calc((100vw - 720px) / 2)); left:max(0px, calc((100vw - 720px) / 2)); bottom:auto;
-                top:calc(var(--vv-top, 0px) + var(--vv-height, 100dvh) - var(--sheet-floor)
-                  - var(--sheet-size, var(--sheet-default)));
-                width:auto; height:var(--sheet-size, var(--sheet-default)); border:1px solid var(--line);
-                border-bottom:0; border-radius:16px 16px 0 0; }
-  .side-panel.sheet-tall { --sheet-size:calc(var(--vv-height, 100dvh) - var(--sheet-edge, 48px) - var(--sheet-floor)); }
-  .side-panel.sheet-half { --sheet-size:calc((var(--vv-height, 100dvh) - var(--sheet-floor)) * .5); }
-  /* Nothing of the sheet ever reaches past its bottom (onto the player): a view taller than its share scrolls. At
-     half, the model box's line and its notes step aside (as with the keyboard open), so the conversation, the card
-     and the box fit; while dragged, the sheet is clipped to its own box (and the 32 px above it, the grabber's
-     handle). */
-  .side-panel .panel-view { overflow-y:auto; }
-  .side-panel.sheet-half :is(.panel-head .chat-model-pick, .chat-model-notes) { display:none; }
-  .side-panel.sheet-dragging { clip-path:inset(-32px 0 0 0); }
-  .side-panel.sheet-settling { transition:top .15s ease-out, height .15s ease-out; }
-  @media (prefers-reduced-motion: reduce) { .side-panel.sheet-settling { transition:none; } }
-  html.keyboard-open .side-panel { top:var(--vv-top, 0px); height:var(--vv-height, 100dvh); }
-  /* The grabber: a small stroke at the top; its handle (::after) reaches 28 px above the sheet's edge and down over
-     the header's first row, whose tabs and buttons sit above it, so a press on the stroke (at least 44 px tall
-     there), just above it, or on that row's free part drags the sheet: full, half or closed (sheetSnap()). A tap,
-     Enter or Space switches between half and full; ArrowUp and ArrowDown too. */
-  button.sheet-grabber { position:relative; display:block; flex:none; width:100%; height:16px; min-height:0; margin:0;
-                         padding:0; border:0; border-radius:16px 16px 0 0; background:transparent; box-shadow:none;
-                         cursor:grab; touch-action:none; -webkit-tap-highlight-color:transparent; }
-  button.sheet-grabber:hover:not(:disabled) { background:transparent; }
-  button.sheet-grabber:active:not(:disabled) { transform:none; filter:none; cursor:grabbing; }
-  .sheet-grabber::before { content:""; position:absolute; top:8px; left:calc(50% - 18px); width:36px; height:4px;
-                           border-radius:2px; background:#5a5a5a; }
-  .sheet-grabber::after { content:""; position:absolute; top:-28px; right:0; left:0; height:calc(100% + 72px); }
-  .sheet-grabber:focus-visible { outline:0; }
-  .sheet-grabber:focus-visible::before { outline:2px solid var(--accent-light); outline-offset:3px; }
-  .side-panel .panel-head { position:relative; pointer-events:none; }
-  .side-panel .panel-head > * { pointer-events:auto; }
-  .panel-backdrop:not(.hidden) { display:block; position:fixed; z-index:19; inset:0; background:rgba(0,0,0,.5); }
-  html.sheet-open { overflow:hidden; }
-  .panel-resize { display:none; }
-}
 /* A phone: the text takes the width, and the view's controls scroll with it. */
 @media (max-width:767.98px) {
   .reading-column { max-width:none; }
@@ -27616,6 +27589,9 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
           <p id="reader-download" class="note reader-download" aria-live="polite"></p>
           <!-- A book being made (openMaking()): what can be done now, and when it plays. -->
           <p id="reader-making" class="note reader-making hidden"></p>
+          <div class="reader-making-actions"><button id="making-progress" type="button"
+            onclick="openProgress()">Progress</button><button id="making-continue" class="hidden" type="button"
+            onclick="continueMaking()">Continue…</button></div>
           <div id="reader-models" class="book-models note hidden"></div>
           <details id="book-files" class="book-files note hidden">
             <summary id="book-files-summary"></summary>
@@ -27724,9 +27700,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
               <span id="player-total" class="player-time">0:00</span>
             </div>
             <div class="player-controls">
-              <div class="player-making"><span id="player-making-text">Not narrated yet</span><button
-                id="player-making-progress" type="button" onclick="openProgress()">Progress</button><button
-                id="player-making-continue" class="hidden" type="button" onclick="continueMaking()">Continue…</button></div>
               <button id="player-play" class="player-play" type="button" aria-label="Play"
                 onclick="togglePlayback()"></button>
               <div class="menu-wrap player-speed-wrap">
@@ -27794,10 +27767,8 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
        every screen, in help mode or, in a book's reading view, book mode (askMode()). -->
       <div id="panel-backdrop" class="panel-backdrop hidden" aria-hidden="true" onclick="closePanel()"></div>
       <aside id="side-panel" class="side-panel hidden" aria-label="Ask Hilde, figure, and source page">
-        <div id="panel-resize" class="panel-resize" role="separator" aria-orientation="vertical"
-          aria-label="Panel width" aria-valuemin="320" aria-valuemax="720" tabindex="0"></div>
-        <!-- Below 900px the panel is a bottom sheet: its grabber (drag it, or tap / Enter / Space: about half or
-             full height), and the book dimmed above it. -->
+        <!-- On every width the panel is a bottom sheet: its grabber (drag it by finger or mouse, or tap / click /
+             Enter / Space: about half or full height), and the page dimmed above it. -->
         <button id="sheet-grabber" class="sheet-grabber" type="button" aria-controls="side-panel"
           aria-label="Make the panel full height"></button>
         <!-- The header: the tabs (Ask Hilde's sparkle and name as its title), then, with Ask Hilde shown, its model
@@ -29246,6 +29217,7 @@ function clearReader() {
     readerMaking = "";
     $("book-view").classList.remove("making");
     $("reader-making").classList.add("hidden");
+    setMakingBar(false);
     fitDock();
   }
   if ($("change-voice-dialog").open) $("change-voice-dialog").close();
@@ -30125,17 +30097,12 @@ function userScrolled() {
   } else if (detached) renderBackToListening();
 }
 
-// --- Pinned at the top: the slim paper bar and the side panel's top ----------
+// --- Pinned at the top: the slim paper bar ----------------------------------------
 // The bar shows once the line where the view's controls start
 // (#paper-bar-mark) has gone under it, so on a wide screen the controls,
 // pinned under the bar from then on, meet its bottom edge as it appears.
-// The side panel (900 px and wider) starts under the lowest bar pinned at the
-// top: the tab row while it shows, else the paper bar, else the window's top.
-// Two IntersectionObservers say when the mark or the tab row crosses; only
-// while the tab row shows with the panel open does a scroll schedule an
-// update, at most one a frame (requestAnimationFrame). An update reads first
-// and writes after (--panel-top on the panel alone, only when it changed).
-let paperBarShown = false, paperBarEdge = 48, tabsInView = true, pinnedFrame = 0, panelTop = null;
+// An IntersectionObserver says when the mark crosses (observePaperBar()).
+let paperBarShown = false, paperBarEdge = 48, pinnedFrame = 0;
 let paperBarObserver = null;
 function showPaperBar(show) {
   if (show === paperBarShown) return;
@@ -30152,14 +30119,7 @@ function fitPinned() {
   if (pinnedFrame) cancelAnimationFrame(pinnedFrame);
   pinnedFrame = 0;
   const mark = $("paper-bar-mark");
-  const bar = shown(mark) && mark.getBoundingClientRect().top < paperBarEdge;
-  const tabs = panelOpen && tabsInView ? document.querySelector("nav.tabs").getBoundingClientRect().bottom : 0;
-  showPaperBar(bar);
-  if (!panelOpen) return;
-  const top = Math.max(tabs, bar ? paperBarEdge : 0, 0);
-  if (top === panelTop) return;
-  panelTop = top;
-  $("side-panel").style.setProperty("--panel-top", `${top}px`);
+  showPaperBar(shown(mark) && mark.getBoundingClientRect().top < paperBarEdge);
 }
 function queuePinned() {
   if (!pinnedFrame) pinnedFrame = requestAnimationFrame(() => { pinnedFrame = 0; fitPinned(); });
@@ -30684,6 +30644,7 @@ async function openMaking(id, focus) {
   state.tab = "player";
   readerMaking = id; makingPlace = null;
   $("book-view").classList.add("making");
+  setMakingBar(true);
   render(); queueSync();
   resetChatFor(id);
   $("reader-title").textContent = book ? book.title : "In progress";
@@ -30719,14 +30680,26 @@ function renderMakingNote() {
   const where = stopped ? "Stopped" : "In progress";
   $("reader-meta").textContent = `· ${where}`;
   $("paper-bar-meta").textContent = where;
-  $("player-making-text").textContent = `${where} · not narrated yet`;
   // Running or waiting: Progress shows it. Stopped (or forgotten by a restart): Continue… goes on from Create.
-  $("player-making-progress").classList.toggle("hidden", stopped);
-  $("player-making-continue").classList.toggle("hidden", !stopped);
+  $("making-progress").classList.toggle("hidden", stopped);
+  $("making-continue").classList.toggle("hidden", !stopped);
   setText($("reader-making"), stopped
-    ? "Making this audiobook stopped. You can still read it and ask Hilde about it; Continue… at the bottom opens "
-      + "Create with its document and voice to finish it, keeping the conversation."
+    ? "Making this audiobook stopped. You can still read it and ask Hilde about it; Continue… opens Create with its "
+      + "document and voice to finish it, keeping the conversation."
     : "Hilde is still making this audiobook. Read it and ask Hilde about it now; you can listen once it's done.");
+}
+// A book being made keeps the same bottom bar (Ümit via Zeki #1567): its Play, Highlight and Note are there, off until
+// it is narrated (they need its audio), each saying so.
+const MAKING_OFF = { "player-play":"You can play it once it is narrated",
+                     "player-highlight":"You can highlight once it is narrated",
+                     "player-note":"You can add notes once it is narrated" };
+function setMakingBar(making) {
+  for (const [id, why] of Object.entries(MAKING_OFF)) {
+    const button = $(id);
+    button.disabled = making;
+    if (making) { if (button.dataset.title === undefined) button.dataset.title = button.title; button.title = why; }
+    else if (button.dataset.title !== undefined) { button.title = button.dataset.title; delete button.dataset.title; }
+  }
 }
 // A stopped book being made goes on from Create with its own document and voice chosen and nothing started: the
 // models can be seen and changed first (Ümit, 3 Nov: she wanted Gemma), then Create audiobook goes on with the same
@@ -30984,7 +30957,6 @@ function downloadSource() {
 // conversation and its scroll position, and an answer still arriving.
 let panelOpen = false, panelView = "chat", figureShown = 0, pageShown = 0;
 let chatScroll = null;  // { top, atEnd } of the conversation while it is hidden
-function narrowScreen() { return !window.matchMedia("(min-width:900px)").matches; }
 function chatShown() { return panelOpen && panelView === "chat"; }
 
 // --- Ask Hilde's mode: the screen decides ------------------------------------
@@ -31059,15 +31031,6 @@ function headerAsk() {
   focusChatInput();
   refreshPaperModels();
 }
-// Help mode on a wide screen: the page under the tabs narrows by what the
-// panel would cover; the header and the tabs stay.
-function fitHelpRoom() {
-  const main = document.querySelector("main");
-  if (!(panelOpen && chatMode === "help") || narrowScreen()) { main.style.removeProperty("--help-room"); return; }
-  const inner = main.getBoundingClientRect().right - parseFloat(getComputedStyle(main).paddingRight);
-  const room = Math.max(0, Math.ceil(inner - $("side-panel").getBoundingClientRect().left + 16));
-  main.style.setProperty("--help-room", `${room}px`);
-}
 function renderPanel() {
   if (panelView === "notes" && !notesAvailable()) panelView = "chat";
   // Help has no source text to check against (Ümit, 5 Nov).
@@ -31077,9 +31040,7 @@ function renderPanel() {
   // Closed by any path (×, a new book), a phone's sheet forgets its size.
   if (!panelOpen) sheetSize("");
   $("panel-backdrop").classList.toggle("hidden", !panelOpen);
-  $("book-view").classList.toggle("panel-open", panelOpen);
-  document.querySelector("main").classList.toggle("help-panel-open", panelOpen && chatMode === "help");
-  document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
+  document.documentElement.classList.toggle("sheet-open", panelOpen);
   for (const [view, id] of [["chat", "chat-pane"], ["figure", "figure-view"], ["page", "page-view"],
                             ["notes", "notes-view"]]) {
     const selected = view === panelView;
@@ -31096,8 +31057,6 @@ function renderPanel() {
   fitPanelHead();
   $("ask-hilde").setAttribute("aria-expanded", String(chatShown() && chatMode === "book"));
   $("header-ask").setAttribute("aria-expanded", String(chatShown()));
-  if (panelOpen) fitPinned();
-  fitHelpRoom();
 }
 // With more than one tab (Notes counts, as a figure or a page does), the header takes two rows: the tabs, ⋯ and ×,
 // then the model box on a line of its own (as in a panel under 420 px, .narrow-head).
@@ -31185,56 +31144,20 @@ function toggleChatMenu(open = !(popup && popup.panel === $("chat-menu")), at = 
   const items = chatMenuItems();
   (at === "last" ? items.at(-1) : items[0])?.focus({ preventScroll:true });
 }
-// The panel's width. Undragged, as it always was: 440 px, kept between 400
-// (360 in a window under 1100 px) and the window less 700 px, at most 720
-// (defaultPanelWidth()). Dragged by its left edge (or its keys), any width
-// from 320 to 720 px that leaves the reading column PANEL_TEXT_LEAST px
-// (panelBounds()); that width is kept in this browser ("panelWidth") and
-// fitted again, never saved, when the window changes. The text keeps its
-// place meanwhile (keepPlace(), with the anchor taken as a drag starts).
-const PANEL_LEAST = 320, PANEL_MOST = 720, PANEL_TEXT_LEAST = 480;
-function defaultPanelWidth() {
-  const least = window.innerWidth < 1100 ? 360 : 400;
-  return Math.max(least, Math.min(440, Math.max(least, Math.min(PANEL_MOST, window.innerWidth - 700))));
-}
-function panelBounds() {
-  return { least:PANEL_LEAST, most:Math.max(PANEL_LEAST, Math.min(PANEL_MOST, window.innerWidth - PANEL_TEXT_LEAST)) };
-}
-// The width kept in this browser, when it is a number; else none.
-function storedPanelWidth() {
-  const width = Number(stored("panelWidth"));
-  return Number.isFinite(width) && width > 0 ? width : null;
-}
-function fitPanelWidth() {
-  const width = storedPanelWidth();
-  if (width === null) applyPanelWidth(defaultPanelWidth());
-  else setPanelWidth(width, false);
-}
-function setPanelWidth(width, save, anchor) {
-  const { least, most } = panelBounds(), value = Math.round(Math.min(most, Math.max(least, width)));
-  applyPanelWidth(value, anchor);
-  if (save) store("panelWidth", value);
-}
-function applyPanelWidth(value, anchor) {
-  const { least, most } = panelBounds();
-  if (document.documentElement.style.getPropertyValue("--panel-w") !== `${value}px`)
-    keepPlace(() => document.documentElement.style.setProperty("--panel-w", `${value}px`), anchor);
-  fitHelpRoom();
-  const handle = $("panel-resize");
-  handle.setAttribute("aria-valuenow", String(value));
-  handle.setAttribute("aria-valuemin", String(least));
-  handle.setAttribute("aria-valuemax", String(most));
-}
 // A phone's keyboard shrinks only the visual viewport; the panel follows
 // it, and while the keyboard takes a quarter of the screen or more the chat
 // leaves out the model's notes, the no-model notice, and on a phone's sheet
-// the model box's line, so the message box and Send stay in sight.
+// the model box's line, so the message box and Send stay in sight. A pinch
+// zoom shrinks the visual viewport too, without a keyboard: that counts only
+// at the page's own scale (Ümit via Zeki #1567: the text is zoomed with the
+// fingers).
 function fitVisualViewport() {
   const viewport = window.visualViewport;
   if (!viewport) return;
   document.documentElement.style.setProperty("--vv-height", `${viewport.height}px`);
   document.documentElement.style.setProperty("--vv-top", `${viewport.offsetTop}px`);
-  document.documentElement.classList.toggle("keyboard-open", viewport.height < window.innerHeight * 0.75);
+  document.documentElement.classList.toggle("keyboard-open",
+    viewport.scale < 1.01 && viewport.height < window.innerHeight * 0.75);
 }
 // The docked player's height, which the page leaves free beneath the text.
 function fitDock() {
@@ -32056,9 +31979,9 @@ async function startTalk(options = {}) {
     // The strip at the panel's top takes the hint while Talk runs; the help's intro steps aside.
     $("chat-live").append($("chat-hint"));
     $("chat-pane").classList.add("talking");
-    // A phone's sheet grows to its full height while Talk runs, so the strip leaves the conversation room; End puts
-    // it back (Ümit, 6 Nov).
-    if (matchMedia("(max-width:899.98px)").matches && panelOpen) {
+    // The sheet grows to its full height while Talk runs, so the strip leaves the conversation room; End puts it
+    // back (Ümit, 6 Nov).
+    if (panelOpen) {
       talk.sheetBefore = sheetSized;
       if (sheetSized !== "tall") settleSheet("tall");
     }
@@ -33007,7 +32930,7 @@ function jumpToPassage(number) {
     .querySelector(`.reader-paragraph[data-paragraph="${paragraph}"]`);
   const target = textView === "source" ? sourceElement(number) || section : section;
   if (!shown(target)) return;
-  if (narrowScreen()) setPanel(false);
+  setPanel(false);
   placeListening(target, motion());
   setDetached(true);
 }
@@ -34641,7 +34564,7 @@ function showMarkInText(id) {
   const range = markRanges.get(id);
   if (!range.getClientRects().length) return;
   noteCurrent = id;
-  if (panelOpen && narrowScreen()) { setPanel(false); showNotesMini("back", item); }
+  if (panelOpen) { setPanel(false); showNotesMini("back", item); }
   if (readerAudio) setDetached(true);
   glide(() => {
     const box = range.getBoundingClientRect(), view = notesViewport();
@@ -34716,7 +34639,7 @@ function chooseMarkPlace(id) {
   const item = marks.get(id);
   if (!item) return;
   choosingPlace = id; noteCurrent = id;
-  if (panelOpen && narrowScreen()) setPanel(false);
+  if (panelOpen) setPanel(false);
   showNotesMini("choose", item);
   renderNotes();
 }
@@ -34740,8 +34663,7 @@ async function useChosenPlace() {
     hideDockAsk();
     choosingPlace = "";
     hideNotesMini();
-    if (narrowScreen()) openNotes(id);
-    else { renderNotes(); revealNoteCard(id); }
+    openNotes(id);
   } catch (error) {
     // Changed on another device meanwhile: theirs is shown, and choosing again saves over it.
     if (error.status === 409 && error.body && error.body.item && !error.body.item.deleted) {
@@ -38207,7 +38129,7 @@ function render() {
   queuePinned();
   // The screen decides Ask Hilde's mode: a book's reading view, or help (syncAskMode()).
   syncAskMode();
-  document.documentElement.classList.toggle("sheet-open", panelOpen && narrowScreen());
+  document.documentElement.classList.toggle("sheet-open", panelOpen);
   // The book's menus go with the book; a row's ⋯ menu stays open through the
   // two-second poll's repaint until its page changes (setTab, setSettings).
   // The player bar's speed menu stays while the bar shows under the Library.
@@ -40729,45 +40651,7 @@ window.addEventListener("scroll", () => {
   if (readerPress && performance.now() >= expectScrollUntil) stopReaderPress(readerPress, "scrolled");
   userScrolled();
   placeSelectionAsk();
-  // The side panel's top follows the tab row while it scrolls away.
-  if (panelOpen && tabsInView) queuePinned();
 }, { passive:true });
-// The panel's left edge (setPanelWidth()): dragged, the width follows the pointer and is kept once let go; the
-// text's anchor is taken as the drag starts, so the passage at the top (or the one being read, followed) stays put
-// however far the column reflows. ArrowLeft / ArrowRight: 16 px wider / narrower; Home / End: the widest /
-// narrowest.
-let panelDrag = null;
-$("panel-resize").addEventListener("pointerdown", (event) => {
-  event.currentTarget.setPointerCapture(event.pointerId);
-  event.preventDefault();
-  panelDrag = { id:event.pointerId, x:event.clientX, anchor:readingAnchor(), moved:false };
-  event.currentTarget.classList.add("dragging");
-});
-// The panel's right edge is the viewport's, beside any scroll bar.
-const panelWidthAt = (event) => $("side-panel").getBoundingClientRect().right - event.clientX;
-$("panel-resize").addEventListener("pointermove", (event) => {
-  if (!panelDrag || event.pointerId !== panelDrag.id) return;
-  if (!panelDrag.moved && Math.abs(event.clientX - panelDrag.x) < 2) return;
-  panelDrag.moved = true;
-  setPanelWidth(panelWidthAt(event), false, panelDrag.anchor);
-});
-for (const type of ["pointerup", "pointercancel"]) {
-  $("panel-resize").addEventListener(type, (event) => {
-    if (!panelDrag || event.pointerId !== panelDrag.id) return;
-    const { moved, anchor } = panelDrag;
-    panelDrag = null;
-    event.currentTarget.classList.remove("dragging");
-    if (moved) setPanelWidth(type === "pointerup" ? panelWidthAt(event) : $("side-panel").offsetWidth, true, anchor);
-  });
-}
-$("panel-resize").addEventListener("keydown", (event) => {
-  const { least, most } = panelBounds();
-  const width = { ArrowLeft:$("side-panel").offsetWidth + 16, ArrowRight:$("side-panel").offsetWidth - 16,
-                  Home:most, End:least }[event.key];
-  if (width === undefined) return;
-  event.preventDefault();
-  setPanelWidth(width, true);
-});
 $("panel-tabs").addEventListener("keydown", (event) => {
   const views = ["chat", "notes", "figure", "page"].filter((view) => !$(`panel-tab-${view}`).classList.contains("hidden"));
   const index = views.indexOf(panelView);
@@ -40841,16 +40725,12 @@ window.visualViewport?.addEventListener("scroll", fitVisualViewport);
 window.visualViewport?.addEventListener("resize", placeNoteEditor);
 window.addEventListener("resize", () => {
   fitVisualViewport(); fitDock(); observePaperBar(); queuePinned();
-  fitPanelWidth();
-  document.documentElement.classList.toggle("sheet-open", !!state && panelOpen && narrowScreen());
 });
 new ResizeObserver(fitDock).observe($("player-dock"));
 // The view's controls pinned on a wide screen (none on a phone: display:contents) under the paper bar: what
 // scrollIntoView, focus and Page Down keep clear of.
 new ResizeObserver(() => document.documentElement.style.setProperty("--listen-bar-h", `${$("listen-bar").offsetHeight}px`))
   .observe($("listen-bar"));
-new IntersectionObserver((entries) => { tabsInView = entries.at(-1).isIntersecting; fitPinned(); })
-  .observe(document.querySelector("nav.tabs"));
 observePaperBar();
 // Ask Hilde's model box takes a line of its own in a panel narrower than 420 px (a phone's sheet, a narrow window).
 new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side-panel").offsetWidth < 420))
@@ -40858,7 +40738,6 @@ new ResizeObserver(() => $("panel-head").classList.toggle("narrow-head", $("side
 window.addEventListener("pagehide", saveBookPlace);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveBookPlace(); });
 fitVisualViewport();
-fitPanelWidth();
 setHighlightStyle(stored("highlightStyle"), false);
 setTheme(stored("theme"), false);
 renderPlayer();
