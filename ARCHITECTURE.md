@@ -4178,7 +4178,10 @@ line, `showLiveYou()`) and Hilde's sentences as the server sends them (`say`,
 from the start of its sentence (`readerSentenceStart()`, the sentence cue's
 start) only when "Hilde" paused it (`resumeBook`).
 
-**End** (`endTalk()`, also when the panel moves to another book or help)
+**End** (`endTalk()`, also when the panel moves to another book or help; a page
+that goes away, closed, reloaded or left, ends its session with a `pagehide`
+beacon to `/api/live/end`, so none stays open until `LIVE_SESSION_SECONDS`;
+a restart of the server waits while any is open, `/api/live/active`, Zeki #1506)
 posts `/api/live/end`: the transcript's listener lines go through one edit
 pass by the same model (`live_edit()`, `LIVE_EDIT_SYSTEM`: mend misheard
 words and fillers, a JSON array of one line per line, else kept as heard),
@@ -4307,6 +4310,7 @@ keeps the network error (`Talk: the speech server could not …`).
 | `POST /api/live/start` | With `--live-voice` only (else 409, `LIVE_UNAVAILABLE`). JSON `book` (or `help: true`) and `model`; returns `{session, in_rate, out_rate}`. 400 without a model, 404 for an unknown book, 503 (`LIVE_SPEECH_DOWN`) while the speech server does not answer. See [Talk](#talk-spoken-conversation). |
 | `POST /api/live/turn?session=ID[&joins=1][&cut=S][&audio=STATE][&wake=1]` | Body: one turn as 16-bit mono PCM at `in_rate`, at most `LIVE_TURN_MAX_SECONDS`. Streams `application/x-ndjson`: `{"heard": bool, "you": text heard}`, then for each sentence `{"say": text}` before its `{"audio": base64 PCM at out_rate}` lines, then `{"done": true}` or `{"error"}`; dropping the request stops the answer. `cut`: seconds of the previous answer that played; `audio`: the browser's audio state, for the log; `wake`: the words said with "Hilde", whose name is dropped (`live_without_wake()`; the name alone is nothing heard). 404 (`LIVE_ENDED`) for an unknown session, 400 for an empty, odd-length, or too long body. |
 | `POST /api/live/end` | JSON `session` and optionally `cut`; keeps the edited transcript in `live.json` and returns `{live}` (as `GET /api/chat` shows it), or `{live: null}` when nothing was said. 404 for an unknown session. |
+| `GET /api/live/active` | From Hilde's own machine only (`local_client()`, else 403): `{sessions}`, the open live conversations (`LiveRegistry.active()`: each one's 12-character id as the log writes it, seconds since its last turn began, and whether a turn is being answered), for a restart to wait on. |
 | `POST /api/live/check?session=ID` | Body: sound heard over Hilde as 16-bit mono PCM at `in_rate`, at most `LIVE_CHECK_MAX_SECONDS`; `{echo}`, whether it is her own voice (`LiveSession.is_echo()`). 404 for an unknown session, 400 for a bad body, 502 when the speech server cannot hear it. |
 | `POST /api/live/wake` | With `--live-voice` only (else 409). Body: a sound, or the first 1.5 s of a longer one, as 16-bit mono PCM at 16 kHz, at most `LIVE_WAKE_MAX_SECONDS`; `{wake, more}`: whether it calls Hilde (`live_is_wake()`), and whether words followed her name in it (`live_without_wake()`). The speech server's state is checked first: 503 (`LIVE_SPEECH_DOWN`) while it does not answer, whatever the body, so the page's empty probe when listening starts (`startWake()`) learns it at once and the switch shows `down` with a note (Zeki #1473); then 400 for an empty, odd-length, or too long body, 502 when it fails to hear it. |
 | `GET /api/marks?book=...` | With `--enable-notes` only (else 404): `{items}`, the book's marks without tombstones, oldest first, each with `place` (`mark_place()`: `{status: "confirmed", view, paragraph, start, end}`, `{status: "unclear", candidates}`, or `{status: "missing"}`). HTTP 400 for an invalid id, 404 for a book not in the library, 500 for an unreadable marks file. See [Marks](#marks-highlights-and-notes). |
