@@ -894,11 +894,14 @@ missed. Talk, and listening for her name, understand English only. When Talk
 ends, a book paused this way goes on from the start of its sentence (one you
 paused yourself stays paused), and if nothing was said, a panel "Hilde" opened
 closes again. Talk doesn't start while Hilde is writing an answer, and it stops
-an answer being read aloud; if Talk can't start, a book it paused goes on. The
-first Talk turns the switch on, with a note saying so; press it to turn
-listening off, and it stays off (a note says which it did). Its dot is filled
-while it listens and ringed while it waits for your next click or tap (after a
-reload, or when the browser paused it). Only the first second and a half of each
+an answer being read aloud; if Talk can't start, a book it paused goes on.
+Listening is on from the start: it begins at your first click or tap anywhere on
+the page (browsers let a page use the microphone and play sound only after one;
+the first time, the browser asks to use the microphone, and a note says what
+listening does). Press the switch to turn it off, and it stays off, also after
+a reload (a note says which it did). Its dot is filled while it listens and
+ringed while it waits for your next click or tap (after a reload, or when the
+browser paused it). Only the first second and a half of each
 thing heard is checked for her name, by the speech server on Hilde's own
 machine; nothing goes to the cloud, and only what follows "Hilde" goes on to the
 model.

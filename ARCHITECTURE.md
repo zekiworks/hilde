@@ -4206,17 +4206,20 @@ question. **New conversation** deletes `live.json` with `chat.json`.
 
 **Listening for "Hilde"** (Ümit, 5 Nov): the header's switch (`#header-listen`,
 `toggleWake()`, kept as `hilde.listenForHilde`; its label reads "Listen for
-“Hilde”" off and "Listening for “Hilde”" on, Zeki #1439; the first Talk turns it
-on unless it was turned off, and says so in a note, as the switch does each time
-it is pressed, since a phone shows no tooltip) keeps a microphone open while the
-page is open (`startWake()`, its own `AudioContext`, made in the click). The
+“Hilde”" off and "Listening for “Hilde”" on, Zeki #1439; it is on unless the
+listener turned it off, `listenWanted()`, Ümit #1546; `startWakeAsWanted()` starts it and, the first time,
+says so in a note, as the switch does each time it is pressed, since a phone
+shows no tooltip) keeps a microphone open while the page is open (`startWake()`,
+its own `AudioContext`, made in a gesture). The
 switch reads `on` only while that context runs; one the browser pauses is asked
 to go on (`statechange`) and shows `armed` until the next gesture resumes it; a
 microphone track that ends stops listening until the next gesture. Gestures are
 the events browsers count as the listener's (`wakeGesture()`: a mouse's
 `pointerdown`, a finger's or pen's `pointerup`, `touchend`, `click`, `keydown`;
-never `touchstart`, which they do not count); a page loaded with
-the switch on starts listening at the first (`wakeAutoTried`). The page cuts what
+never `touchstart`, which they do not count); listening starts at a page's
+first one, anywhere but the switch (once per page load, `wakeAutoTried`, so a
+refused microphone is not asked again on every click), as a browser runs no
+page's sound before one. Talk's own buttons start it too. The page cuts what
 it hears into sounds (`onWakeFrame()`: `TALK_START_FRAMES` voiced frames start
 one, `WAKE_HANG_MS` of quiet ends it) and posts each one's first `WAKE_HEAD_MS`
 (1.5 s, with `WAKE_PREROLL_MS` before it) at most to `/api/live/wake`, which this

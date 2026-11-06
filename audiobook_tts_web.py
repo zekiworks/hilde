@@ -31647,19 +31647,25 @@ const TALK_TAP = `class TalkTap extends AudioWorkletProcessor {
 registerProcessor("talk-tap", TalkTap);`;
 let talk = null, talkStarting = false, wake = null;  // wake: listening for "Hilde" (below)
 // Talk from anywhere (the panel's Talk with Hilde, the header's and the player's microphone): the panel opens in
-// the mode the page is in and Talk starts in the same click, whose gesture its audio needs. That first Talk also
-// turns on listening for "Hilde" (Ümit, 5 Nov), unless it was turned off.
+// the mode the page is in and Talk starts in the same click, whose gesture its audio needs; listening for "Hilde"
+// starts with it, unless it was turned off.
 function talkFromButton(button) {
   if (talk || talkStarting) return;
   openTalkPanel(button);
   startTalk({ closePanel:false });
-  if (stored("listenForHilde") !== false) {
-    // Said once, when this first Talk turns it on (Ümit #1432: the switch's meaning did not show on a phone).
-    if (stored("listenForHilde") !== true)
-      showToast("Hilde now also listens for her name: say “Hilde” to talk. Listen for “Hilde” at the top turns it off.");
+  startWakeAsWanted();
+}
+// Listening for "Hilde" is on unless the listener turned it off (Ümit #1546: it had waited for the switch or a
+// first Talk). It starts at the first tap, click or key (wakeGesture()): a browser runs a page's sound only from
+// one. The first time it starts so, a note says what it does and where it turns off.
+function listenWanted() { return stored("listenForHilde") !== false; }
+function startWakeAsWanted() {
+  if (!listenWanted() || !(caps && caps.live_voice)) return;
+  if (stored("listenForHilde") !== true) {
     store("listenForHilde", true);
-    startWake();
+    showToast("Hilde listens for her name: say “Hilde” to talk. Listening for “Hilde” at the top turns it off.");
   }
+  startWake();
 }
 function openTalkPanel(opener) {
   syncAskMode();
@@ -31672,7 +31678,7 @@ function openTalkPanel(opener) {
 function renderVoiceButtons() {
   const voice = !!(caps && caps.live_voice);
   for (const id of ["header-talk", "header-listen", "player-talk"]) $(id).classList.toggle("hidden", !voice);
-  const listen = $("header-listen"), wanted = stored("listenForHilde") === true;
+  const listen = $("header-listen"), wanted = listenWanted();
   listen.setAttribute("aria-pressed", String(wanted));
   // Its label says what it does, on a phone too (Zeki #1439: a dot and "Hilde" did not).
   setText(listen.querySelector(".header-voice-label"), wanted ? "Listening for “Hilde”" : "Listen for “Hilde”");
@@ -31764,9 +31770,9 @@ function stopWake() {
   renderVoiceButtons();
 }
 function toggleWake() {
-  const wanted = stored("listenForHilde") === true;
+  const wanted = listenWanted();
   // Waiting for its first tap: the switch's own press starts it.
-  if (wanted && !wake) { startWake(); return; }
+  if (wanted && !wake) { startWakeAsWanted(); return; }
   if (wanted && wake.audio.state !== "running") { wake.audio.resume().catch(() => {}); return; }
   // What the switch did, said where a phone shows no tooltip (Ümit #1432).
   if (wanted) {
@@ -31777,15 +31783,15 @@ function toggleWake() {
     showToast("Hilde listens for her name: say “Hilde” to talk. Press Listening for “Hilde” at the top to stop.");
   }
 }
-// A page loaded with listening on starts it at the first tap, click or key anywhere but the switch, and a context
-// the browser paused goes on there: only events browsers count as the listener's gesture (a mouse press, a finger
-// lifted, a key; Ümit #1432: a finger's pointerdown is not one). Started once per page load, so a refused microphone
-// does not ask again on every click.
+// Listening starts at the first tap, click or key anywhere but the switch, and a context the browser paused goes
+// on there: only events browsers count as the listener's gesture (a mouse press, a finger lifted, a key; Ümit
+// #1432: a finger's pointerdown is not one). Started once per page load, so a refused microphone does not ask
+// again on every click.
 let wakeAutoTried = false;
 function wakeGesture(event) {
   if (event.type === "pointerdown" && event.pointerType !== "mouse") return;
   if (event.type === "pointerup" && event.pointerType === "mouse") return;
-  if (stored("listenForHilde") !== true || !(caps && caps.live_voice)) return;
+  if (!listenWanted() || !(caps && caps.live_voice)) return;
   if (event.target.closest && event.target.closest("#header-listen")) return;
   if (wake) {
     if (!wake.starting && wake.audio.state !== "running") wake.audio.resume().catch(() => {});
@@ -31793,7 +31799,7 @@ function wakeGesture(event) {
   }
   if (wakeAutoTried) return;
   wakeAutoTried = true;
-  startWake();
+  startWakeAsWanted();
 }
 // `click` and `touchend` too (Zeki #1439), which browsers also count; never `touchstart`, which they do not.
 for (const type of ["pointerdown", "pointerup", "touchend", "click", "keydown"])
