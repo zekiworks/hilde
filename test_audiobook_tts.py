@@ -10631,7 +10631,7 @@ class ChatTests(unittest.TestCase):
         chats.turns[book] = old
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             server.daemon_threads = True
-            server.storage, server.chats, server.chat_speaker = self.storage, chats, None
+            server.storage, server.chats, server.chat_reader = self.storage, chats, None
             server.search_server, server.verbose = "", False
             threading.Thread(target=server.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{server.server_port}"
@@ -10742,7 +10742,7 @@ class ChatTests(unittest.TestCase):
                 server.daemon_threads = True
                 server.storage = self.storage
                 server.chats = web.ChatRegistry()
-                server.chat_speaker = None
+                server.chat_reader = None
                 server.search_server = search_server
                 server.verbose = False
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -12239,44 +12239,48 @@ class ChatSpeechTests(unittest.TestCase):
         )
         self.assertEqual(web.chat_speech_blocks("```\ncode only\n```"), [])
 
-    def test_no_clip_crosses_a_block_and_the_first_is_short(self):
-        opening = ("The base model uses eight attention heads, each of 64 dimensions, so the total "
-                   "computational cost is similar to that of single-head attention with full "
-                   "dimensionality across all layers. It works.")
-        clips = web.chat_speech_chunks([(0, opening), (2, "Second block.")])
-        self.assertEqual(clips, [
-            (0, "The base model uses eight attention heads, each of 64 dimensions,"),
-            (0, "so the total computational cost is similar to that of single-head attention with "
-                "full dimensionality across all layers. It works."),
+    def test_each_clip_is_one_sentence_of_one_block_numbered_within_it(self):
+        # The page finds a clip's sentence by its number in its block (chatSentenceRange()), cutting as
+        # CHAT_SENTENCE does: an abbreviation's stop ends one, a decimal or address does not.
+        clips = web.chat_speech_chunks([
+            (0, "Heads are 64 wide, e.g. in layer 3.5 of the model. Why? “It works.” Then"),
             (2, "Second block."),
+        ])
+        self.assertEqual(clips, [
+            (0, 0, "Heads are 64 wide, e.g."),
+            (0, 1, "in layer 3.5 of the model."),
+            (0, 2, "Why?"),
+            (0, 3, "“It works.”"),
+            (0, 4, "Then"),
+            (2, 0, "Second block."),
         ])
 
     def test_a_reading_is_made_only_as_far_ahead_as_it_is_played(self):
-        class Speaker:
+        class Reader:
             def __init__(self):
                 self.spoken = []
 
-            def speak(self, voice_dir, text):
+            def speak(self, text):
                 self.spoken.append(text)
-                if text == "broken":
-                    raise RuntimeError("out of memory")
+                if text == "broken.":
+                    raise RuntimeError("the speech server isn't answering")
                 return text.encode()
 
-        speaker = Speaker()
-        reading = web.ChatReading(speaker, "k", Path("."), [f"part {number}" for number in range(1, 9)])
-        self.assertEqual(reading.clip(1, 5), b"part 1")
+        reader = Reader()
+        reading = web.ChatReading(reader, "k", [(0, number, f"part {number}.") for number in range(1, 9)])
+        self.assertEqual(reading.clip(1, 5), b"part 1.")
         # The maker stops once it is CHAT_SPEECH_AHEAD past the last clip asked for.
         deadline = time.monotonic() + 5
-        while len(speaker.spoken) < 1 + web.CHAT_SPEECH_AHEAD and time.monotonic() < deadline:
+        while len(reader.spoken) < 1 + web.CHAT_SPEECH_AHEAD and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.2)
-        self.assertEqual(speaker.spoken, ["part 1", "part 2", "part 3"])
-        self.assertEqual(reading.clip(5, 5), b"part 5")
+        self.assertEqual(reader.spoken, ["part 1.", "part 2.", "part 3."])
+        self.assertEqual(reading.clip(5, 5), b"part 5.")
         time.sleep(0.2)
-        self.assertEqual(len(speaker.spoken), 7)
+        self.assertEqual(len(reader.spoken), 7)
 
-        failing = web.ChatReading(speaker, "f", Path("."), ["broken"])
-        with self.assertRaisesRegex(RuntimeError, "couldn't read this aloud: out of memory"):
+        failing = web.ChatReading(reader, "f", [(0, 0, "broken.")])
+        with self.assertRaisesRegex(RuntimeError, "couldn't read this aloud: the speech server isn't answering"):
             failing.clip(1, 5)
 
     def test_reading_aloud_is_off_unless_a_browser_chose_it(self):
@@ -12284,19 +12288,39 @@ class ChatSpeechTests(unittest.TestCase):
         self.assertIs(normalize({"player": {"chat_speak": "yes"}})["player"]["chat_speak"], False)
         self.assertIs(normalize({"player": {"chat_speak": True}})["player"]["chat_speak"], True)
 
-    def test_answers_are_read_by_hilde_or_else_the_first_voice_by_name(self):
+    def test_hilde_is_no_narrators_name_and_the_old_hilde_voice_becomes_saga_with_its_books(self):
+        """Zeki #1532, 6 Nov: Hilde is the assistant and her one voice; the narration voice named Hilde is
+        Saga now, the books and the stopped book it read following it, at start-up, once."""
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         storage = web.SharedStorage(Path(temporary.name))
-        storage.ensure()
-        self.assertIsNone(web.chat_speech_voice(storage))
-        for name in ("eir", "Balder", "Hilde", ".staged"):
-            save_voice(storage.voices / name, np.zeros(2400, dtype=np.float32), 24000, "A reference.", "FLOAT")
-        (storage.voices / "Aaron").mkdir()  # not a saved voice: no sample
-        self.assertEqual(web.chat_speech_voice(storage).name, "Hilde")
-        (storage.voices / "Hilde").rename(storage.voices / ".Hilde-deleted")
-        # A hidden folder is a voice being staged or deleted, never a choice.
-        self.assertEqual(web.chat_speech_voice(storage).name, "Balder")
+        web.prepare_library(storage)
+        save_voice(storage.voices / "Hilde", np.zeros(2400, dtype=np.float32), 24000, "A reference.", "FLOAT")
+        version = web.saved_voice_version(storage.voices / "Hilde")
+        book = storage.audiobooks / ("a-book--" + "a" * 12)
+        (book / "voices" / "Hilde").mkdir(parents=True)
+        (book / "voices" / "Hilde" / "audio.mp3").write_bytes(b"mp3")
+        web.write_json_atomic(book / "book.json", {"title": "A book", "voices": [
+            {"name": "Hilde", "voice_version": version}, {"name": "Eir", "voice_version": "other"}]})
+        stage = storage.in_progress / ("b" * 64)
+        stage.mkdir(parents=True)
+        web.write_json_atomic(stage / web.MAKING_FILE, {"voice": "Hilde", "title": "Stopped"})
+        web.write_json_atomic(stage / "assets.json", {"voice_version": version})
+
+        with mock.patch("sys.stdout", io.StringIO()):
+            web.prepare_library(storage)
+            web.prepare_library(storage)  # starting again changes nothing
+        self.assertFalse((storage.voices / "Hilde").exists())
+        self.assertEqual(web.saved_voice_version(storage.voices / "Saga"), version)
+        record = web.read_json_file(book / "book.json")
+        self.assertEqual([voice["name"] for voice in record["voices"]], ["Saga", "Eir"])
+        self.assertEqual((book / "voices" / "Saga" / "audio.mp3").read_bytes(), b"mp3")
+        self.assertEqual(web.read_json_file(stage / web.MAKING_FILE)["voice"], "Saga")
+        # No voice takes the name again, in any case.
+        for name in ("Hilde", "hilde"):
+            self.assertIn("assistant's name", web.voice_name_problem(name))
+            with self.assertRaisesRegex(ValueError, "assistant's name"):
+                web.rename_voice(storage, "Saga", name)
 
 
 class WorkerNodeTests(unittest.TestCase):
@@ -15281,7 +15305,7 @@ class AskEverywhereTests(unittest.TestCase):
         # The page's routes: help=1 and {"help": true}; New clears the help history alone.
         with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as http:
             http.daemon_threads = True
-            http.storage, http.chats, http.chat_speaker, http.search_server, http.verbose = (
+            http.storage, http.chats, http.chat_reader, http.search_server, http.verbose = (
                 self.storage, chats, None, "", False)
             thread = threading.Thread(target=http.serve_forever, daemon=True)
             thread.start()

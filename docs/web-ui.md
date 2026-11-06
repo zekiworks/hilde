@@ -830,20 +830,20 @@ conversation can't be loaded again after an answer, the chat says so in red,
 keeps trying by itself, and never blocks your next question meanwhile.
 
 **🔈 Read aloud**, under each of Hilde's answers, reads it aloud in Hilde's
-own voice (or, when the Hilde voice is gone from **Voices**, the first voice
-there by name); the part being read is tinted, and kept in view.
+own voice, the one she talks in (the same whatever voice a book plays in);
+the sentence being read is marked, as in the book, and kept in view (a browser
+without CSS highlights marks its paragraph instead).
 While it is read, pause it with the chat's bottom button (below), which then
 offers **Resume**; under a paused answer, **Start over** reads it from the
 beginning. Listening to another answer keeps
 this one's place too. **Read answers aloud**, in the chat's **⋯** menu,
 reads each answer as soon as it is finished (not one you stopped). One sound
 plays at a time: reading an answer pauses the book, and when it ends the book
-stays paused; starting the book, or a voice preview, stops the others. The
-first answer after a while takes a few seconds longer while the narration
-model loads; it stays loaded for five minutes after the last answer read, then
-frees its GPU. Code, web addresses, and Markdown are not read; a citation such
-as ¶12 is read as "paragraph 12". Reading aloud needs the server's own
-narration model (`--voice-clone-model`); without it, neither shows.
+stays paused; starting the book, or a voice preview, stops the others. Code,
+web addresses, and Markdown are not read; a citation such as ¶12 is read as
+"paragraph 12". Reading aloud needs Hilde's speech server (`--live-voice`, see
+[Talking with Hilde](configuration.md#talking-with-hilde)); without it,
+neither shows, and while it is not answering, Read aloud says so.
 
 **Talk with Hilde**, the button across the top of the Ask Hilde panel, starts
 a spoken conversation with the model chosen for Ask Hilde (it needs the
@@ -1210,7 +1210,9 @@ tags**, **Rename…**, and **Delete…**:
 - **Rename** asks for the new name in a dialog and keeps everything else: its
   sample, transcript, description, and tags stay as they are, and the
   audiobooks it read show the new name too. It waits while an audiobook is
-  being made with the voice, and refuses a name another voice already has.
+  being made with the voice, and refuses a name another voice already has, or
+  Hilde: that is the assistant's name and voice (a narration voice once named
+  Hilde is now **Saga**).
 - **Edit tags** opens the same dialog for that one voice: its tags as kept
   chips (a click drops one), any suggestions waiting under **Suggested by
   Hilde**, and **Add your own**. **Save tags** keeps them, **Cancel** changes
@@ -1372,7 +1374,7 @@ change it. The groups:
   another GPU or batch size."). They change speed, memory
   use, and small details of the sound, never the voice. They apply to the next
   audiobook and the next voice preview you generate under **New voice**; saved
-  voices' previews and answers read aloud always use the defaults. With a
+  voices' previews always use the defaults. With a
   speech server narrating they apply only to the previews you generate, and
   with speech servers narrating and designing they are turned off.
 - **Narration**: **MP3 compression** on top; under **Advanced**, text encoding

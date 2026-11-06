@@ -33,7 +33,7 @@ paths; edit those for yours. Extra arguments pass through to the server.
 | `--manage-from-network` | Off: only a browser on the server's own machine adds, changes, and removes providers and machines and sets the default models. On: any browser that reaches the server may; see [Manage from other devices](#manage-from-other-devices). |
 | `--storage-root` | `~/.hilde/library`; see [Storage](#storage). |
 | `--search-server` | Off. A SearXNG address, such as `http://127.0.0.1:8890`, lets Ask Hilde search the web and read public pages; see [Web search for Chat](#web-search-for-chat). |
-| `--live-voice` | Off. The address of an LFM3-Audio speech server, such as `http://127.0.0.1:9941`, lets Ask Hilde talk out loud; see [Talking with Hilde](#talking-with-hilde). |
+| `--live-voice` | Off. The address of an LFM3-Audio speech server, such as `http://127.0.0.1:9941`, lets Ask Hilde talk out loud and read her answers aloud, in her one voice; see [Talking with Hilde](#talking-with-hilde). |
 | `--enable-notes` | Off. Turns on Listen's highlights and notes: highlights, your notes, and Ask Hilde answers you save are kept on the server, one file per book in `<storage-root>/Marks/` (see [Storage](#storage)), so every device shows the same ones. Off, the page offers none of it and `/api/marks` answers 404; marks already saved stay on disk untouched. |
 | `--local-server PROVIDER=URL` | None. A local model server (repeatable): `lm-studio` for any OpenAI-compatible server, or `ollama` for an Ollama server. Only the provider and the address: a comma and anything after it is refused, as an invalid address. Whether each of its models reads images is [found out automatically](#which-local-models-read-images). At startup a server whose address is not saved yet is added once to `~/.hilde/providers.yaml` (see [Local model servers](#local-model-servers)), named after its host; its row under **Settings › Providers** says "set at startup". Its name can be edited there, but it cannot be deleted, nor its address or images changed, while the flag is given. |
 | `--voice-design-model` | VoiceDesign model directory, or a Hugging Face ID with `--allow-model-downloads`. |
@@ -275,8 +275,8 @@ local network, also when a page redirects there. A long page (over
 
 ## Talking with Hilde
 
-Ask Hilde's **Talk** button (see the [web UI guide](web-ui.md#listen))
-needs a speech server that hears and speaks: LiquidAI's LFM3-Audio-2B run by
+Ask Hilde's **Talk** button and **🔈 Read aloud** (see the [web UI guide](web-ui.md#listen))
+need a speech server that hears and speaks: LiquidAI's LFM3-Audio-2B run by
 llama.cpp's `llama-server`, which answers `/v1/audio/transcriptions` (speech to
 text) and `/tts` (text to speech). Start Hilde with
 `--live-voice http://127.0.0.1:9941` (that server's address, host and port
@@ -284,7 +284,7 @@ only). The answers come from the model chosen for Ask Hilde, local or cloud,
 Claude Code included, about a book with the paragraphs
 [Ask Hilde settings](#ask-hilde-settings)' `retrieval` finds for each thing you
 say; the speech server only hears and speaks, in English, in its one built-in
-female voice, the same whatever book or narration voice is chosen. It takes
+female voice, Hilde's: Talk and answers read aloud both use it, the same whatever book or narration voice is chosen. It takes
 about 6.5 GB on a GPU, or runs on the CPU (`-ngl 0` with no GPU visible to it):
 measured on 6 Nov with 16 threads, it began speaking in 0.08 s and heard a turn
 in 0.12–0.15 s, as fast as on a GPU, so no GPU need be kept for it. What you say is sent as audio to the
@@ -532,6 +532,11 @@ buttons remove voices, documents, and audiobooks with every voice.
 A new library starts with the stock voices from the repository's `voices/`
 folder. They are copied only when the library is created, so a stock voice you
 delete stays deleted.
+
+Hilde is the assistant's name and her voice's, so no narration voice can be
+named Hilde (in any case). A narration voice named Hilde from before is renamed
+**Saga** when Hilde starts, with the audiobooks it read and a stopped one it was
+reading; their audio and progress stay as they are.
 
 Earlier versions kept the library in `User/` in the project folder. When
 `~/.hilde/library` does not exist yet and `User/` holds voices or books, the

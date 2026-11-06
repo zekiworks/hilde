@@ -281,10 +281,19 @@ stale; deleting the cache only costs a render. It is made lazily, on the first
 `GET /api/thumbnail` for the book (the card's `<img loading="lazy">`), never
 while listing the library.
 
-`prepare_library()` runs at startup. It creates the layout, runs `recover_books()` and `migrate_legacy_books()`, and, only when it
+`prepare_library()` runs at startup. It creates the layout, runs `recover_books()`, `migrate_legacy_books()` and
+`rename_hilde_voice()`, and, only when it
 creates `Voices/`, copies in each stock voice from `STOCK_VOICES_PATH` whole:
 staged under a hidden folder, hidden files skipped, then renamed into place. An
 existing library is never reseeded, so a deleted stock voice stays deleted.
+
+Hilde is the assistant's name and her one voice's (Zeki #1532, 6 Nov), so no narration voice takes it:
+`voice_name_problem()` refuses `ASSISTANT_NAME` in any case when a voice is designed, saved or renamed. A
+narration voice named Hilde from before is renamed `HILDE_VOICE_RENAMED` (Saga) at startup by
+`rename_hilde_voice()` through `rename_voice()`, before any job can run; a problem (Saga taken, say) is
+printed and the voice kept. `rename_voice()` renames the library folder, its tags, each book voice any of
+its versions read (folder and `book.json` entry), and the `making.json` voice of a stopped book whose
+stage's `assets.json` holds one of those versions, so **Continue…** selects the new name.
 
 ### Voice tags
 
@@ -1202,8 +1211,8 @@ background colour, opening in the browser as before). The header holds the
 mark (`assets/reader-leaf.svg`, the bare leaf, 36 px tall, 32 px on a phone, centred on the name and tagline; the tile stays the app icon's), the name ("Hilde" semibold in
 `--text`, then " Reader" regular in #c9ccd2, one line, 24 px on every width),
 and the tagline "Listen to your documents. Follow the text. Ask to
-understand." (shown on phones too, smaller). Ask Hilde and the voice Hilde
-keep their names.
+understand." (shown on phones too, smaller). Ask Hilde keeps its name; no
+narration voice is named Hilde (Saga, Voices).
 No model names or
 GPU details appear on Create; they are in the progress view and Settings. The
 palette is one charcoal ground, off-white text, one gray surface family, and
@@ -2216,8 +2225,8 @@ seed under Advanced. All four
 reach narration and voice design through `shared_arguments()`, so they
 apply to the next audiobook and the next voice preview generated in **New
 voice** (`create_voice_command()`); saved voices' previews
-(`voice_preview_command()`) and answers read aloud (`ChatSpeaker.command()`)
-use `normalize({})` defaults, which the note says. With a narration speech
+(`voice_preview_command()`) use `normalize({})` defaults, which the note says (answers read aloud
+are the speech server's, `--live-voice`). With a narration speech
 server only voice design uses them (`#speech-server-note`), and they are off
 when voice design uses a speech server too. **Narration**: MP3 compression on
 top; text encoding (TXT and Markdown input only; extracted PDFs are UTF-8),
@@ -3979,40 +3988,42 @@ recorded turn wrote the file.
 
 ### Reading answers aloud
 
-With a local narration model (`--voice-clone-model`), each answer has
+With Hilde's speech server (`--live-voice`, the one Talk speaks through), each answer has
 **Listen**, and the chat's ⋯ menu **Read answers aloud**
 (`player.chat_speak`); `/api/chat`'s `speech` is empty, or
-`CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is Hilde's
-(`chat_speech_voice()`: the saved voice `CHAT_SPEECH_VOICE`, else the first
-saved voice by name), whatever voice the book plays in.
+`CHAT_SPEECH_UNAVAILABLE` and neither shows. The voice is Hilde's, the speech
+server's one built-in voice as in Talk (`live_speak()`), whatever voice the book
+plays in (Zeki #1532, 6 Nov: one Hilde, one voice; answers had been read in the
+narration voice then named Hilde, now Saga, on a GPU).
 `chat_speech_blocks()` turns the answer's Markdown into words block by block:
 `(block, words)` for each paragraph, heading, list item, and table cell with
 words, where `block` counts every such inline block in order (one without
 words keeps its number), without code blocks or web addresses, a `¶N`
-citation as "paragraph N". `chat_speech_chunks()` cuts each block into clips
-of up to `CHAT_SPEECH_CHUNK_CHARS`, so no clip crosses a block; the first clip
-is the first sentence, cut at its last clause break within
-`CHAT_SPEECH_FIRST_CHARS` when longer, so speech starts soon.
+citation as "paragraph N". `chat_speech_chunks()` cuts each block into
+sentences (`CHAT_SENTENCE`: up to `.`, `!`, `?` or `…`, with any closing quote
+or bracket, before a space or the end), one clip each:
+`(block, sentence, text)`, `sentence` counting from 0 within its block.
 
-`ChatSpeaker` keeps one `_worker` process (the narration worker protocol)
-loaded with one voice, started on first use on `roomiest_cuda_device()` and
-stopped after `CHAT_SPEECH_IDLE` seconds unused, or when another voice is
-asked for; requests to it take turns. Each clip is capped like a narration
-clip (`clip_token_limit()`, under Narration and output). A
-`ChatReading` (one text in one voice, kept for the last
+`ChatReader` (made when `--live-voice` is given, `server.chat_reader`) has
+each clip spoken by the speech server and wrapped as WAV (`live_wav()`). A
+`ChatReading` (one text, kept for the last
 `CHAT_SPEECH_READINGS`) makes its clips in order, at most
 `CHAT_SPEECH_AHEAD` past the last one fetched, so a reading no one plays
 stops; starting another reading pauses the rest after the clip they are on.
-The server logs each load, clip (characters, seconds of speech, seconds
-taken), and unload as `Chat speech:` lines. Measured on an RTX PRO 6000: the
-model loads in about 5 s and speaks about 1.5 times faster than real time.
+`/api/chat/speak` answers 503 with `LIVE_SPEECH_DOWN` while the speech server
+does not answer (`live_voice_down()`). The speech server runs on the CPU and
+starts speaking in under 0.1 s, so nothing is loaded or kept loaded for it.
 
 The page plays clips through one `Audio` element, fetching the next while
-one plays (7 to 9 ms between clips). `/api/chat/speak` returns each clip's
-block; `chatBlocks()` finds the page's blocks in the same order (`p`,
-`h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and the playing one
-is marked `.chat-speaking` (tinted with the accent at 16%, Ümit, 5 Nov: the reading could not be followed) and
-scrolls into view. Under an answer, `setVoiceButton()` shows only the dashed
+one plays. `/api/chat/speak` returns each clip's block and sentence;
+`chatBlocks()` finds the page's blocks in the same order (`p`,
+`h1`–`h6`, `li` without a `p` of its own, `th`, `td`), and `markChatBlock()`
+marks the sentence playing with the CSS highlight `chat-speaking` (the accent
+at 24%, as the book marks its sentence; Zeki #1532): `chatSentenceRange()` cuts
+the block's text with the server's pattern (a `<br>` counting as a space) and
+takes that sentence's range. A browser without CSS highlights, or a sentence
+not found, marks the whole block `.chat-speaking` (the accent at 16%) instead.
+The mark is kept in view in `#chat-log`. Under an answer, `setVoiceButton()` shows only the dashed
 **🔈 Read aloud** pill (unlike the book's round play button) while the answer
 is not being read, or only **Start over** once it is paused partway; pausing
 and resuming are the panel's button (below). A pause, or another sound
@@ -4302,8 +4313,8 @@ keeps the network error (`Talk: the speech server could not …`).
 | `GET /api/chat?book=...` | The book's chat (`chat_payload()`): `problem` (`CHAT_OLD_BOOK` or empty), `conversation` as display entries (a listener's message with the `context` manifest it was sent with; an answer or failure with its `model` and `model_name` when saved with one; a listener's message and an answer with `at`, its ISO UTC time, when saved with one, which Save to notes copies as `asked_at`), `running`, the streaming `partial` answer and `event_index`, `turn` (the latest turn's id, "" before any), `running_model` and `running_model_name` (the running turn's model, else ""), `files` (each with its `section`, see [Ask Hilde](#ask-hilde)), `web_search` (whether the server runs with `--search-server`), `live_voice` (whether it runs with `--live-voice`), `live_voice_down` (`LIVE_SPEECH_DOWN` when its speech server does not answer, else ""), `live` (the kept spoken conversations, `live_display()`, oldest first; see [Talk](#talk-spoken-conversation)), `reading` (`{mode, text}`: `similarity` or `keyword` and the sentence saying so and why, `ask_reading()`), and `passages` (passage number to first reader paragraph). With `help=1` instead, the help conversation (`help_chat_payload()`): the same fields, `help` true, `book` and `document` "", no files, passages, reading, or web search. |
 | `GET /api/chat/events?book=...&from=N[&turn=ID]` | SSE of the running turn's events from index N, each with its `turn`, ending with `done`; with `turn`, HTTP 404 unless that is the book's current turn, so a stream asked for an earlier answer never carries a later one. `help=1` instead of `book` follows the help conversation's turn. |
 | `GET /api/chat/file?book=...&name=...` | Download one of the book's `files/` as `text/markdown`, HTTP 404 when missing. |
-| `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks}` for its reading in Hilde's voice (`chat_speech_voice()`), `blocks` naming the answer block each clip reads. HTTP 409 without a local narration model, 400 when it has no words, 404 when there is no saved voice. |
-| `GET /api/chat/speech?id=...&n=N` | Clip N of a reading as 16-bit WAV, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the model failed. |
+| `POST /api/chat/speak` | JSON `text` (an answer's Markdown); returns `{id, clips, blocks, sentences}` for its reading in Hilde's voice (the speech server's), `blocks[i]` and `sentences[i]` naming the answer block and the sentence in it clip i+1 reads. HTTP 409 without `--live-voice`, 400 when it has no words, 503 (`LIVE_SPEECH_DOWN`) while the speech server does not answer. |
+| `GET /api/chat/speech?id=...&n=N` | Clip N of a reading (one sentence) as 16-bit WAV at 24 kHz, made on demand and waited for; HTTP 404 for an unknown reading or clip, 502 with why the speech server failed. |
 | `POST /api/chat/context` | JSON `book`, `model`, and `about` (`chat_about()`); returns the manifest `chat_attachment()` makes for it, exactly what Send would bring: `about`, `section`, `preview`, `items` (`kind`, `label`, `text`, `passage`), `image` (`sent`, `count`, `why` when not sent), `badge`. HTTP 400 for no model or an invalid `about`, 404 for an unknown book, 409 for a book without summaries. |
 | `POST /api/chat/send` | JSON `book`, `text` (at most `CHAT_MESSAGE_MAX_CHARS`), `model` from the catalog, and optionally `about` (as for `/api/chat/context`; its manifest is rebuilt, kept with the message as `context`, and sent as labelled text and pictures); the local servers are this browser's (`Handler.local_servers()`). Saves the message, starts the turn, and returns what `GET /api/chat` does. With `help: true` instead of `book`, a `HelpTurn` in the help conversation; `about` is never read then. HTTP 409 while the book (or the help) answers another message, for a book without summaries, or (`CHAT_HELD`) while a book being made is published or deleted, 400 for an empty message or model or an invalid `about`. Every chat route takes a book being made's id (`chat_folder()`: its stage), and one published meanwhile reaches its book (`chat_key()`). |
 | `POST /api/chat/stop`, `POST /api/chat/new` | Stop the book's turn (with JSON `turn`, only when it is that turn: `ChatRegistry.stop(book, turn_id)`); or, when none runs, delete its `chat.json` and `live.json` and return what `GET /api/chat` does (the files stay). With `help: true` instead of `book`, the help conversation's turn, or its `help-chat/chat.json` and `live.json` alone (`chat_key()`: only that flag reaches the help conversation). |

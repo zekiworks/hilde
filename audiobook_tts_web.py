@@ -88,8 +88,6 @@ from audiobook_tts import (
     WORKER_PROTOCOL,
     WORKER_PROTOCOL_VERSION,
     WORKER_READY_SECONDS,
-    NarrationWorkerProcess,
-    clip_token_limit,
     gpu_free_mebibytes,
     positive_float,
     read_voice,
@@ -5597,8 +5595,25 @@ def voice_versions(voice_dir):
     return versions
 
 
+# Hilde is the assistant's name and her one voice (Zeki #1532, 6 Nov: one brand voice), so no narration
+# voice takes the name; the library's voice once named Hilde becomes HILDE_VOICE_RENAMED at start-up
+# (rename_hilde_voice()).
+ASSISTANT_NAME = "Hilde"
+HILDE_VOICE_RENAMED = "Saga"
+
+
+def voice_name_problem(name):
+    """Why `name` can't name a saved voice, or None."""
+    if not name or safe_asset_name(name) != name or name.startswith("."):
+        return "Enter a voice name without a slash."
+    if name.casefold() == ASSISTANT_NAME.casefold():
+        return "Hilde is the assistant's name and voice; give the narrator another name."
+    return None
+
+
 def rename_voice(storage, name, new_name):
-    """Rename a saved voice, and every book voice any of its versions read.
+    """Rename a saved voice, and every book voice any of its versions read, and
+    the voice a stopped book's stage names for Continue….
 
     The files stay as they are, so the voice keeps its version. Book voices are
     found by version, not by name: one made by another voice of the same name
@@ -5607,8 +5622,9 @@ def rename_voice(storage, name, new_name):
     voice_dir = resolve_asset(storage.voices, name)
     if not is_saved_voice(voice_dir):
         raise FileNotFoundError("no such voice")
-    if not new_name or safe_asset_name(new_name) != new_name or new_name.startswith("."):
-        raise ValueError("Enter a voice name without a slash.")
+    problem = voice_name_problem(new_name)
+    if problem:
+        raise ValueError(problem)
     if new_name == name:
         return
     if os.path.lexists(storage.voices / new_name):
@@ -5639,6 +5655,30 @@ def rename_voice(storage, name, new_name):
             voice_folder(path, entry["name"]).rename(voice_folder(path, new_name))
             entry["name"] = new_name
             write_json_atomic(path / "book.json", record)
+        for stage in storage.in_progress.iterdir() if storage.in_progress.is_dir() else ():
+            marker = read_json_file(stage / MAKING_FILE) if SHA256_PATTERN.fullmatch(stage.name) else None
+            if (
+                marker and marker.get("voice") == name
+                and (read_json_file(stage / "assets.json") or {}).get("voice_version") in versions
+            ):
+                marker["voice"] = new_name
+                write_json_atomic(stage / MAKING_FILE, marker)
+
+
+def rename_hilde_voice(storage):
+    """A narration voice named Hilde (any case), from before the name was the
+    assistant's alone, becomes HILDE_VOICE_RENAMED with the books and stopped
+    books it read (rename_voice()). It runs before any job can; a problem is
+    told and the voice kept as it is."""
+    for voice in sorted(storage.voices.iterdir()):
+        if voice.name.casefold() != ASSISTANT_NAME.casefold() or not is_saved_voice(voice):
+            continue
+        try:
+            rename_voice(storage, voice.name, HILDE_VOICE_RENAMED)
+        except (OSError, ValueError) as exc:
+            print(f"Could not rename the voice {voice.name} to {HILDE_VOICE_RENAMED}: {exc}", file=sys.stderr)
+            continue
+        print(f"Renamed the voice {voice.name} to {HILDE_VOICE_RENAMED}: Hilde is the assistant's name.", flush=True)
 
 
 def delete_document(storage, name):
@@ -5913,6 +5953,7 @@ def prepare_library(storage):
     storage.ensure()
     recover_books(storage)
     migrate_legacy_books(storage)
+    rename_hilde_voice(storage)
     if not new:
         return
     # Each voice is copied whole before it appears, so none is ever half there.
@@ -5955,8 +5996,9 @@ def save_voice_draft(storage, draft_id, name, tags, details):
     draft = resolve_asset(storage.drafts, draft_id)
     if not is_saved_voice(draft):
         raise FileNotFoundError("no such draft")
-    if not name or safe_asset_name(name) != name:
-        raise ValueError("Enter a voice name without a slash.")
+    problem = voice_name_problem(name)
+    if problem:
+        raise ValueError(problem)
     tags = clean_voice_tags(tags)
     details = " ".join(str(details or "").split())
     waveform, rate, transcript = read_voice(draft)
@@ -13806,8 +13848,9 @@ def create_voice_problem(values):
     if problem is not None:
         return problem
     name = values["voice_name"]
-    if not name or safe_asset_name(name) != name:
-        return "Enter a voice name without a slash."
+    problem = voice_name_problem(name)
+    if problem:
+        return problem
     target = Path(values["new_voice_dir"])
     if os.path.lexists(target) and (target.is_symlink() or not target.is_dir()):
         return "An existing voice must be a directory."
@@ -18216,9 +18259,10 @@ LIVE_SYSTEM = (
     "question needs but usually two to four sentences, with no lists, markdown, emojis, or stage directions.\n\n"
     "How you talk, if asked: Hilde Reader's own speech server, LiquidAI's LFM3-Audio (speech recognition may write "
     "it as \"Elephant 3\" or similar), runs on the reader's Hilde server; it turns what they say into text and "
-    "speaks your answers in its one built-in voice. That voice is fixed: it never changes with the book, the "
-    "narration voice they chose, or anything else, and it is not one of the narration voices under Voices, which "
-    "read books. Your words come from the chat model they chose in Ask Hilde, {model}. Their voice goes only to "
+    "speaks your answers in its one built-in voice, the same voice that reads your written answers aloud. That "
+    "voice is fixed: it never changes with the book, the narration voice they chose, or anything else, and it is "
+    "not one of the narration voices under Voices, which read books. Your words come from the chat model they "
+    "chose in Ask Hilde, {model}. Their voice goes only to "
     "that speech server, never to a cloud; a cloud model gets only the words heard."
 )
 # About a book (Can, 3 Nov: "we need them to know the document"): its abstract,
@@ -18761,39 +18805,18 @@ def help_chat_payload(storage, chats):
 
 # --- chat speech ----------------------------------------------------------------
 
-# Hilde's answers read aloud in the book's narrator voice, a few sentences at
-# a time, by one model process kept loaded only while it is used.
-CHAT_SPEECH_CHUNK_CHARS = 300
-# Speech is made at about 1.4 times real time, so the first clip is kept short.
-CHAT_SPEECH_FIRST_CHARS = 160
+# Hilde's written answers read aloud in her one voice, the speech server's that Talk speaks in (Zeki
+# #1532, 6 Nov: one Hilde, one voice; they had been read in a narration voice on a GPU), one sentence a
+# clip, so the page marks the sentence being read as the book's reader marks its own.
 CHAT_SPEECH_MAX_CHARS = 12_000
-# Seconds the model stays loaded after it last spoke.
-CHAT_SPEECH_IDLE = 300
-# Chunks made ahead of the one playing; a reading no one plays stops there.
+# Clips made ahead of the one playing; a reading no one plays stops there.
 CHAT_SPEECH_AHEAD = 2
 CHAT_SPEECH_READINGS = 16
-CHAT_SPEECH_LOAD_TIMEOUT = 600
-CHAT_SPEECH_CHUNK_TIMEOUT = 300
-CHAT_SPEECH_UNAVAILABLE = "Reading answers aloud needs a local narration model (--voice-clone-model)."
-# Answers are read in Hilde's own voice, or the first saved voice by name.
-CHAT_SPEECH_VOICE = "Hilde"
-
-
-def chat_speech_voice(storage):
-    """The saved voice answers are read in: CHAT_SPEECH_VOICE, else the first
-    saved voice by name, else None. A hidden folder is a voice being staged or
-    deleted."""
-    preferred = storage.voices / CHAT_SPEECH_VOICE
-    if is_saved_voice(preferred):
-        return preferred
-    voices = sorted(
-        (
-            path for path in storage.voices.iterdir()
-            if not path.name.startswith(".") and path.is_dir() and is_saved_voice(path)
-        ),
-        key=lambda path: path.name.casefold(),
-    ) if storage.voices.is_dir() else []
-    return voices[0] if voices else None
+CHAT_SPEECH_CHUNK_TIMEOUT = 60
+CHAT_SPEECH_UNAVAILABLE = "Reading answers aloud needs Hilde's speech server (--live-voice)."
+# A sentence: up to . ! ? or … (with any closing quote or bracket) before a space or the end, else to the
+# end of its block. The page's chatSentenceRange() cuts a block's text with the same pattern.
+CHAT_SENTENCE = re.compile(r"\S.*?(?:[.!?…]+[\"'”’)\]]*(?=\s|$)|$)", re.S)
 
 
 def chat_speech_blocks(markdown):
@@ -18829,153 +18852,40 @@ def chat_speech_blocks(markdown):
 
 
 def chat_speech_chunks(blocks):
-    """The clips an answer is read in, (block, text), none crossing a block.
-    The first is its first sentence, or that sentence up to its last clause
-    break within CHAT_SPEECH_FIRST_CHARS, so speech starts soon; the rest go
-    up to CHAT_SPEECH_CHUNK_CHARS at a time."""
-    clips = []
-    for block, words in blocks:
-        chunks = split_text(words, CHAT_SPEECH_CHUNK_CHARS)
-        if not clips and chunks:
-            first, *rest = split_text(chunks[0], CHAT_SPEECH_CHUNK_CHARS, sentence_chunks=True)
-            if len(first) > CHAT_SPEECH_FIRST_CHARS:
-                breaks = [match.end() for match in re.finditer(r"[,;:](?=\s)", first[:CHAT_SPEECH_FIRST_CHARS])]
-                if breaks and breaks[-1] >= 40:
-                    first, rest = first[:breaks[-1]], [first[breaks[-1]:].strip(), *rest]
-            chunks = [first] + ([" ".join(rest)] if rest else []) + chunks[1:]
-        clips.extend((block, chunk) for chunk in chunks)
-    return clips
+    """The clips an answer is read in, one sentence each (CHAT_SENTENCE):
+    (block, sentence, text), `sentence` counting from 0 within its block."""
+    return [
+        (block, number, match.group().strip())
+        for block, words in blocks
+        for number, match in enumerate(CHAT_SENTENCE.finditer(words))
+    ]
 
 
-class ChatSpeaker:
-    """One narration model process for reading answers aloud. It loads on
-    first use with a voice, on the GPU with the most free memory, reloads for
-    another voice, and stops after CHAT_SPEECH_IDLE seconds unused."""
+class ChatReader:
+    """Answers read aloud by the speech server (live_speak()). Each reading is
+    made a clip at a time; the one asked for last goes on, every other stops
+    after the clip it is on, until someone plays it again."""
 
-    def __init__(self, clone_model):
-        self.clone_model = clone_model
-        self.lock = threading.Lock()  # one request to the model at a time
-        self.worker = self.voice = self.events = None
-        self.used = 0.0
+    def __init__(self, origin):
+        self.origin = origin
         self.readings = collections.OrderedDict()
         self.readings_lock = threading.Lock()
-        threading.Thread(target=self._unload_when_idle, name="chat-speech-idle", daemon=True).start()
 
-    def command(self, voice_dir, device):
-        # Answers are read with the runtime a fresh browser starts with.
-        runtime = normalize({})["runtime"]
-        return [
-            sys.executable, "-u", str(SCRIPT), "_worker",
-            *model_arguments(self.clone_model, "--clone-model-path"),
-            "--voice-dir", str(voice_dir),
-            *shared_arguments({**runtime, "device": device}),
-        ]
+    def speak(self, text):
+        """One sentence in Hilde's voice, as 16-bit WAV bytes."""
+        pcm = []
+        live_speak(self.origin, text, pcm.append, lambda: False, timeout=CHAT_SPEECH_CHUNK_TIMEOUT)
+        if not pcm:
+            raise RuntimeError("the speech server said nothing")
+        return live_wav(b"".join(pcm), LIVE_OUT_RATE)
 
-    def _await(self, wanted, timeout):
-        deadline, last_log = time.monotonic() + timeout, ""
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("the narrator's voice did not answer in time")
-            try:
-                source, event = self.events.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if source is not self.worker:
-                continue
-            kind = event.get("type")
-            if kind == wanted:
-                return event
-            if kind == "log":
-                last_log = event.get("message") or last_log
-            elif kind == "error":
-                raise RuntimeError(event.get("message") or "the speech model failed")
-            elif kind == "exit":
-                raise RuntimeError(last_log or f"the speech model stopped (exit {event.get('code')})")
-
-    def _stop(self, why=""):
-        if self.worker is not None:
-            if why:
-                print(f"Chat speech: unloading the model ({why})", flush=True)
-            self.worker.finish(graceful=True)
-        self.worker = self.voice = self.events = None
-
-    def _ensure(self, voice_dir):
-        """Have the model loaded with this voice; the caller holds the lock."""
-        voice = (str(voice_dir), saved_voice_version(voice_dir))
-        if self.worker is not None and self.voice == voice and self.worker.process.poll() is None:
-            return
-        self._stop()
-        device = roomiest_cuda_device() or resolve_device("auto")
-        self.events = queue.Queue()
-        command, environment = pin_cuda(self.command(voice_dir, device))
-        self.worker = NarrationWorkerProcess(
-            "Chat speech", command, self.events, device=device, environment=environment
-        )
-        self.voice = voice
-        started = time.monotonic()
-        self.worker.start()
-        try:
-            self._await("ready", CHAT_SPEECH_LOAD_TIMEOUT)
-        except BaseException:
-            self._stop()
-            raise
-        print(
-            f"Chat speech: loaded {Path(voice_dir).name} on {public_device_label(device)} "
-            f"in {time.monotonic() - started:.1f} s",
-            flush=True,
-        )
-
-    def speak(self, voice_dir, text):
-        """One chunk of text in the voice, as 16-bit WAV bytes."""
-        import soundfile as sf
-
-        with self.lock:
-            self._ensure(voice_dir)
-            started = time.monotonic()
-            try:
-                # Capped like narration's clips (clip_token_limit()).
-                self.worker.send({
-                    "type": "generate", "indexes": [1], "texts": [text],
-                    "max_new_tokens": clip_token_limit([text]),
-                })
-                event = self._await("result", CHAT_SPEECH_CHUNK_TIMEOUT)
-            except BaseException as exc:
-                print(f"Chat speech: a clip of {len(text)} characters failed: {exc}", flush=True)
-                self._stop()
-                raise
-            self.used = time.monotonic()
-            made = self.used - started
-        waveform, rate = sf.read(io.BytesIO(base64.b64decode(event["waves"][0])), dtype="float32")
-        print(
-            f"Chat speech: {len(text)} characters, {len(waveform) / rate:.1f} s of speech in {made:.1f} s",
-            flush=True,
-        )
-        clip = io.BytesIO()
-        sf.write(clip, waveform, rate, format="WAV", subtype="PCM_16")
-        return clip.getvalue()
-
-    def _unload_when_idle(self):
-        while True:
-            time.sleep(30)
-            with self.lock:
-                if self.worker is not None and time.monotonic() - self.used > CHAT_SPEECH_IDLE:
-                    self._stop(f"unused for {CHAT_SPEECH_IDLE // 60} minutes")
-
-    def reading(self, voice_dir, blocks):
-        """The reading of an answer's blocks in a voice, made again only when
-        it is new. The model makes one clip at a time, so every other reading
-        stops after the clip it is on, until someone plays it again."""
-        key = hashlib.sha256(
-            json.dumps([str(voice_dir), saved_voice_version(voice_dir), blocks]).encode("utf-8")
-        ).hexdigest()[:24]
+    def reading(self, blocks):
+        """The reading of an answer's blocks, made again only when it is new."""
+        key = hashlib.sha256(json.dumps(blocks).encode("utf-8")).hexdigest()[:24]
         with self.readings_lock:
             reading = self.readings.get(key)
             if reading is None:
-                clips = chat_speech_chunks(blocks)
-                reading = self.readings[key] = ChatReading(
-                    self, key, voice_dir, [text for _, text in clips], [block for block, _ in clips]
-                )
+                reading = self.readings[key] = ChatReading(self, key, chat_speech_chunks(blocks))
                 while len(self.readings) > CHAT_SPEECH_READINGS:
                     self.readings.popitem(last=False)
             self.readings.move_to_end(key)
@@ -18990,13 +18900,15 @@ class ChatSpeaker:
 
 
 class ChatReading:
-    """One answer's chunks, made in order on demand: at most
-    CHAT_SPEECH_AHEAD past the last one asked for."""
+    """One answer's clips, made in order on demand: at most CHAT_SPEECH_AHEAD
+    past the last one asked for. `clips` are chat_speech_chunks()'s."""
 
-    def __init__(self, speaker, key, voice_dir, chunks, blocks=None):
-        self.speaker, self.key, self.voice_dir, self.chunks = speaker, key, voice_dir, chunks
-        # The answer block each clip reads, for the page to mark.
-        self.blocks = blocks or [0] * len(chunks)
+    def __init__(self, reader, key, clips):
+        self.reader, self.key = reader, key
+        self.chunks = [text for _, _, text in clips]
+        # The answer block and the sentence in it each clip reads, for the page to mark.
+        self.blocks = [block for block, _, _ in clips]
+        self.sentences = [sentence for _, sentence, _ in clips]
         self.clips, self.error, self.wanted = {}, "", 0
         self.making = False
         self.condition = threading.Condition()
@@ -19008,7 +18920,7 @@ class ChatReading:
             self.condition.notify_all()
 
     def clip(self, number, timeout):
-        """Chunk `number` (from 1) as WAV bytes, waiting for it to be made."""
+        """Clip `number` (from 1) as WAV bytes, waiting for it to be made."""
         with self.condition:
             self.wanted = max(self.wanted, number + CHAT_SPEECH_AHEAD)
             if not self.making and number not in self.clips:
@@ -19019,7 +18931,7 @@ class ChatReading:
             self.condition.wait_for(lambda: number in self.clips or bool(self.error), timeout)
             if number in self.clips:
                 return self.clips[number]
-            raise RuntimeError(self.error or "the narrator's voice is still busy")
+            raise RuntimeError(self.error or "Hilde's voice is still busy")
 
     def _make(self):
         try:
@@ -19030,7 +18942,7 @@ class ChatReading:
                     # Nobody listening this far: stop until someone asks.
                     if not self.condition.wait_for(lambda: number <= self.wanted, CHAT_SPEECH_CHUNK_TIMEOUT):
                         return
-                clip = self.speaker.speak(self.voice_dir, text)
+                clip = self.reader.speak(text)
                 with self.condition:
                     self.clips[number] = clip
                     self.condition.notify_all()
@@ -23885,7 +23797,7 @@ class Handler(BaseHTTPRequestHandler):
                 chat_payload(self.server.storage, self.server.chats, book, self.server.search_server))
         except (ValueError, FileNotFoundError):
             return self.fail(HTTPStatus.NOT_FOUND, "no such audiobook")
-        payload["speech"] = "" if self.server.chat_speaker else CHAT_SPEECH_UNAVAILABLE
+        payload["speech"] = "" if self.server.chat_reader else CHAT_SPEECH_UNAVAILABLE
         # Its kept live conversations, shown as callouts among the messages, and whether Talk is offered.
         payload["live_voice"] = bool(getattr(self.server, "live_voice", ""))
         # Its speech server not answering: Talk with Hilde says so (and tries again when pressed).
@@ -23897,24 +23809,26 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(HTTPStatus.OK, payload, extra=(("Cache-Control", "no-store"),))
 
     def chat_speak(self, body):
-        """Begin reading an answer aloud in Hilde's voice: its reading's id
-        and how many clips it has."""
-        speaker = self.server.chat_speaker
-        if speaker is None:
+        """Begin reading an answer aloud in Hilde's voice (the speech server's):
+        its reading's id, how many clips it has, and the block and the sentence
+        in it each one reads."""
+        reader = self.server.chat_reader
+        if reader is None:
             return self.fail(HTTPStatus.CONFLICT, CHAT_SPEECH_UNAVAILABLE)
         blocks = chat_speech_blocks(body.get("text"))
         if not blocks:
             return self.fail(HTTPStatus.BAD_REQUEST, "There are no words to read aloud.")
-        voice_dir = chat_speech_voice(self.server.storage)
-        if voice_dir is None:
-            return self.fail(HTTPStatus.NOT_FOUND, "There is no saved voice to read with; add one under Voices.")
-        reading = speaker.reading(voice_dir, blocks)
-        return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks), "blocks": reading.blocks})
+        down = live_voice_down(reader.origin)
+        if down:
+            return self.fail(HTTPStatus.SERVICE_UNAVAILABLE, down)
+        reading = reader.reading(blocks)
+        return self.reply(HTTPStatus.OK, {"id": reading.key, "clips": len(reading.chunks),
+                                          "blocks": reading.blocks, "sentences": reading.sentences})
 
     def chat_speech(self, key, number):
         """One clip of a reading, as WAV, once it is made."""
-        speaker = self.server.chat_speaker
-        reading = speaker.find(key) if speaker else None
+        reader = self.server.chat_reader
+        reading = reader.find(key) if reader else None
         try:
             number = int(number)
         except ValueError:
@@ -23922,7 +23836,7 @@ class Handler(BaseHTTPRequestHandler):
         if reading is None or not 1 <= number <= len(reading.chunks):
             return self.fail(HTTPStatus.NOT_FOUND, "no such clip")
         try:
-            clip = reading.clip(number, CHAT_SPEECH_LOAD_TIMEOUT + CHAT_SPEECH_CHUNK_TIMEOUT)
+            clip = reading.clip(number, 2 * CHAT_SPEECH_CHUNK_TIMEOUT)
         except RuntimeError as exc:
             return self.fail(HTTPStatus.BAD_GATEWAY, str(exc))
         return self.reply(HTTPStatus.OK, clip, "audio/wav", extra=(("Cache-Control", "no-store"),))
@@ -26182,8 +26096,9 @@ button.help-example:hover:not(:disabled) { background:var(--hover); }
                   background:var(--raised); white-space:pre-wrap; overflow-wrap:anywhere; }
 .chat-assistant { line-height:1.55; overflow-wrap:anywhere; }
 .chat-assistant.live { white-space:pre-wrap; }
-/* The block of an answer being read aloud (Ümit, 5 Nov: the reading could not be followed): tinted with the
-   accent, as the book tints its sentence. */
+/* The sentence of an answer being read aloud (Zeki #1532: followed sentence by sentence, as the book marks its own),
+   tinted with the accent (markChatBlock()); a browser without CSS highlights tints its whole block instead. */
+::highlight(chat-speaking) { background-color:color-mix(in srgb, var(--accent) 24%, transparent); color:var(--text); }
 .chat-assistant .chat-speaking { border-radius:4px; background:color-mix(in srgb, var(--accent) 16%, transparent);
                                  box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
 .chat-assistant > * { margin:0; }
@@ -26196,7 +26111,7 @@ button.help-example:hover:not(:disabled) { background:var(--hover); }
 .chat-tool, .chat-notice { margin:0; color:var(--dim); font-size:13px; }
 /* Under an answer, one row (.chat-answer-actions), side by side and whole: Read aloud starts it, Start over once it
    is paused (pausing and resuming are the panel's own button); then Save to notes. While it is read, Read aloud's
-   place is empty, and the answer stays plain text (no fill on the part being read). */
+   place is empty. */
 .chat-answer-actions { display:flex; flex-wrap:wrap; align-items:center; column-gap:10px; }
 .chat-assistant > .chat-answer-actions { margin-top:0; }
 .chat-answer-actions > * { margin-top:.7em; }
@@ -32605,12 +32520,11 @@ function renderSendButton() {
     : explain ? "Explain this part" : "Send";
 }
 
-// Reading answers aloud: one audio element plays an answer's clips in turn,
-// fetching the next while one plays, and keeps the block each clip reads in
-// view (`.chat-speaking`, tinted with the accent: the answer stays plain text).
-// Pause keeps the answer's place (clip and time); Resume goes on from it.
-// A tap (Read aloud, or Send with Read answers aloud on) starts it, so a
-// phone lets an answer finished later play too.
+// Reading answers aloud, in Hilde's voice (the speech server's, as Talk's): one audio element plays an
+// answer's clips, a sentence each, in turn, fetching the next while one plays, and marks the sentence
+// each clip reads (markChatBlock()), keeping it in view. Pause keeps the answer's place (clip and time);
+// Resume goes on from it. A tap (Read aloud, or Send with Read answers aloud on) starts it, so a phone
+// lets an answer finished later play too.
 const chatVoice = new Audio();
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 let chatSpeaking = null;  // { node, button, number, next, url }
@@ -32694,12 +32608,44 @@ function chatBlocks(node) {
   return [...node.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, th, td")]
     .filter((element) => !(element.tagName === "LI" && element.querySelector(":scope > p")));
 }
-function markChatBlock(node, block) {
+// Sentence `index` of a block as a Range, its text cut as the server cuts it (CHAT_SENTENCE), a line
+// break (<br>) counting as the space the server reads it as; null when the text has fewer sentences.
+const CHAT_SENTENCE = /\S[^]*?(?:[.!?…]+["'”’)\]]*(?=\s|$)|$)/g;
+function chatSentenceRange(element, index) {
+  const nodes = [], walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === Node.TEXT_NODE) { nodes.push({ node, at:text.length }); text += node.data; }
+    else if (node.tagName === "BR") text += " ";
+  }
+  const match = [...text.matchAll(CHAT_SENTENCE)][index];
+  if (!match) return null;
+  const start = match.index, end = match.index + match[0].trimEnd().length;
+  const first = nodes.find(({ node, at }) => start < at + node.data.length);
+  const last = nodes.find(({ node, at }) => end > at && end <= at + node.data.length);
+  if (!first || !last) return null;
+  const range = document.createRange();
+  range.setStart(first.node, Math.max(0, start - first.at));
+  range.setEnd(last.node, end - last.at);
+  return range;
+}
+// Mark what a clip reads: its sentence (a CSS highlight), or its whole block where the browser has no
+// highlights or the sentence is not found; null clears the mark. It is kept in view in the panel.
+function markChatBlock(node, block, sentence = 0) {
   for (const element of node.querySelectorAll(".chat-speaking")) element.classList.remove("chat-speaking");
+  if (window.CSS && CSS.highlights) CSS.highlights.delete("chat-speaking");
   const element = block === null ? null : chatBlocks(node)[block];
   if (!element) return;
-  element.classList.add("chat-speaking");
-  element.scrollIntoView({ block:"nearest", behavior:"smooth" });
+  const range = window.CSS && CSS.highlights ? chatSentenceRange(element, sentence) : null;
+  if (!range) {
+    element.classList.add("chat-speaking");
+    element.scrollIntoView({ block:"nearest", behavior:"smooth" });
+    return;
+  }
+  CSS.highlights.set("chat-speaking", new Highlight(range));
+  const log = $("chat-log"), seen = log.getBoundingClientRect(), at = range.getBoundingClientRect();
+  if (at.top < seen.top || at.bottom > seen.bottom)
+    log.scrollBy({ top:at.top - seen.top - seen.height / 3, behavior:"smooth" });
 }
 // Stop reading. A pause keeps the answer's place; finishing clears it.
 function stopSpeaking(finished = false) {
@@ -32747,7 +32693,7 @@ async function speakAnswer(button, { restart = false } = {}) {
         chatVoice.currentTime = place.time;
       }
       if (chatSpeaking !== speaking) return;
-      markChatBlock(node, reading.blocks[number - 1]);
+      markChatBlock(node, reading.blocks[number - 1], reading.sentences[number - 1]);
       setVoiceButton(node, "pause");
       await new Promise((resolve, reject) => {
         chatVoice.onended = resolve;
@@ -41394,9 +41340,8 @@ def main():
     # Whether each local model reads images is found out in the background
     # from now on (one small test picture per model, see IMAGE_CHECKS).
     IMAGE_CHECKS.enabled = True
-    server.chat_speaker = (
-        ChatSpeaker(tts_models["clone"]) if tts_models["clone"]["source"] == "local" else None
-    )
+    # Answers read aloud speak in Hilde's voice, the speech server's.
+    server.chat_reader = ChatReader(args.live_voice) if args.live_voice else None
     server.tts_models = tts_models
     server.storage = storage
     # This server's certificate fingerprint, which a computer pairing with it shows its user.
