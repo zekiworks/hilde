@@ -1768,7 +1768,8 @@ Each page:
   line ending in "…" (`text-overflow`): More details for a voice made from
   tags, else the description (`description.txt`, whitespace collapsed); no
   text reads "No description". The text (`aria-expanded`, `aria-controls` its
-  row's name cell `#voice-about-N`; Enter and Space as a button), or on a phone a tap
+  row's name cell `#voice-about-N`; Enter and Space as a button), a click on the
+  name cell (not on a button; `tr.has-details`), or on a phone a tap
   on the row (not on a button), toggles `is-open` (`toggleVoiceRow()`): every
   chip, wrapping, and the whole stored description; open rows are kept across
   re-renders in `expandedVoices`. Up to 640 px (`VOICE_PHONE`, the list's
@@ -1798,12 +1799,18 @@ Each page:
   matches all of: <terms>." with **Clear search**. One shared player
   (`previewAudio`) previews in place, so filtering never stops it, ignoring
   clips replaced before they start; a second preview stops the first, and a
-  preview never changes the selection. **Select** (`chooseVoice()`) sets
+  preview never changes the selection. The list's order is always by name:
+  the selected voice stays in its place (Ümit via Zeki #1548: moved to the top, it
+  pulled the next row under the finger, so Select went back and forth between two
+  voices). **Select** (`chooseVoice()`) sets
   `audiobook.voice`, the state Create's step 2 uses (its `#selected-voice`
   card, `renderSelectedVoice()`, shows the same confirmed tags as
-  `span.voice-tag`, on one line, and one `.voice-text` line); that voice moves
-  to the top and shows "✓ Selected" (solid green, dark text) instead, and a
-  banner offers **Back to Create**; a search that hides it leaves it selected.
+  `span.voice-tag`, on one line, and one `.voice-text` line); that voice's
+  button reads "✓ Selected" (solid green, dark text, `aria-pressed`), and pressing
+  it unselects the voice (`chooseVoice("")`, Create then asks for one); neither
+  button opens the row. Nothing else appears (a banner above the list, then a
+  toast over it, moved or covered the next rows); a search that hides the
+  selected voice leaves it selected.
   Each row's **⋯** (`rowMoreButton()`, one shared `#row-menu`) holds **Edit
   tags** (`editVoiceTags()`), **Rename…**, and **Delete…**. Rename (a confirm
   dialog with a name field, then `POST /api/voices/rename`) moves the voice to
@@ -1818,7 +1825,7 @@ Each page:
 - Review tags (`dialog#tag-review`, modal; up to 640 px a sheet filling the
   screen, its head and buttons fixed and the rest scrolling): `tagReview`
   holds the queue, the voice at hand and its chips. `openTagReview(start,
-  opener)` queues `voicesWaiting()` (list order, the selected voice first)
+  opener)` queues `voicesWaiting()` (list order, A–Z)
   from `start` round to the one before it (the banner: from the first);
   `editVoiceTags()` queues one voice in edit mode. The head: the green preview
   button (`previewButton()`), the name (`h2`), "Voice X of N" (not in edit

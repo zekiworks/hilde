@@ -1203,9 +1203,11 @@ Playing another stops
 the first, and a preview never changes which voice is selected.
 
 **Select** chooses the voice for your next audiobook: the same choice as the
-voice step on **Create**. The chosen voice moves to the top and shows
-**✓ Selected** instead, the one chosen before returns to its place, and a line
-says it is selected, with **Back to Create**. **⋯** on a row holds **Edit
+voice step on **Create**. The voices stay in their order and in their place; the
+chosen one's button reads **✓ Selected**, and pressing **✓ Selected** unselects
+it (Create then asks you to choose a voice). Neither button opens the row: its
+name, its text (or, on a phone, a tap anywhere else on the row) shows the whole
+description and every tag, and another folds them. **⋯** on a row holds **Edit
 tags**, **Rename…**, and **Delete…**:
 
 - **Delete** removes a voice after a confirmation naming it; audiobooks made

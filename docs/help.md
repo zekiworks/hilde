@@ -31,9 +31,9 @@ To go back, click or tap a step's row or press **← Back**; your choices are ke
 
 ## Choosing and changing a voice
 
-**Voices** lists your saved voices. Press the green play button to hear a voice. **Select** makes it the voice Create starts with. Click or tap a voice's description to read all of it.
+**Voices** lists your saved voices; the green play button plays one. **Select** makes it the voice Create starts with; press **✓ Selected** to unselect it. Click or tap its name or description to read all of it.
 
-To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitched*, add details in your own words if you like, and name it. **Generate preview** makes a sample. **Save voice** turns on once you have listened to the preview. New voices can be made only while no audiobook is being made.
+To make a new voice, press **New voice**, pick tags such as *warm* or *low-pitched*, add details if you like, and name it. **Generate preview** makes a sample. **Save voice** turns on once you have listened to the preview. New voices can be made only while no audiobook is being made.
 
 To hear a finished book in another voice, open it in **Listen**, then **⋯** › **Change voice…**. The text stays the same; the new voice is added beside the others. If a book has several voices, pick one in the line under its title.
 

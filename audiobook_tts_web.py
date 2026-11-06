@@ -25631,10 +25631,14 @@ button.tag-review-close:hover:not(:disabled) { background:var(--hover); color:va
 .voice-table button.voice-select { min-width:120px; background:transparent; border-color:var(--gray-line);
                                    box-shadow:none; }
 .voice-table button.voice-select:hover:not(:disabled) { background:var(--hover); }
+/* Selected is a button too: pressing it unselects the voice (Ümit via Zeki #1548). */
 .voice-table .selected-badge { display:inline-flex; align-items:center; justify-content:center; gap:6px;
-  min-width:120px; min-height:40px; padding:0 16px; vertical-align:middle; border-radius:8px;
-  background:var(--play); color:var(--play-ink); font-weight:650; white-space:nowrap; }
+  min-width:120px; min-height:40px; padding:0 16px; vertical-align:middle; border:0; border-radius:8px;
+  background:var(--play); box-shadow:none; color:var(--play-ink); font-weight:650; white-space:nowrap; }
+.voice-table button.selected-badge:hover:not(:disabled) { background:var(--play); filter:brightness(1.08); }
 .voice-table .selected-badge svg { width:14px; height:14px; fill:currentColor; }
+/* The name opens and folds the row's details, as its text and a phone's tap on the row do. */
+.voice-table tr.has-details .name { cursor:pointer; }
 .voice-table button.row-more { background:transparent; border-color:transparent; box-shadow:none;
                                color:var(--dim); }
 .voice-table button.row-more:hover:not(:disabled) { background:var(--hover); }
@@ -27479,8 +27483,6 @@ dialog h3 { margin:0 0 6px; font-size:15px; }
       <button id="new-voice" class="secondary" type="button" aria-controls="voice-form" aria-expanded="false"
         onclick="openVoiceForm()">New voice</button>
     </div>
-    <p id="voice-chosen" class="banner hidden" role="status"><span id="voice-chosen-text"></span>
-      <button type="button" onclick="setTab('audiobook')">Back to Create</button></p>
     <section id="voice-form" class="card hidden" aria-labelledby="voice-form-title">
       <div class="stack">
         <h3 id="voice-form-title">New voice</h3>
@@ -35076,14 +35078,10 @@ async function refreshVoices() {
   takeVoices(answer);
 }
 function voiceByName(name) { return voices.find((voice) => voice.name === name) || null; }
-// Voices whose suggested tags wait for Review tags, in the list's order (the
-// selected voice first, then A–Z), whatever the search shows.
+// Voices whose suggested tags wait for Review tags, in the list's order (A–Z),
+// whatever the search shows.
 function voicesWaiting() {
-  const chosen = facts.clone_server ? "" : state.audiobook.voice;
-  const waiting = voices.filter((voice) => voice.suggested.length > 0);
-  const at = waiting.findIndex((voice) => voice.name === chosen);
-  if (at > 0) waiting.unshift(...waiting.splice(at, 1));
-  return waiting;
+  return voices.filter((voice) => voice.suggested.length > 0);
 }
 // Hilde's tags in vocabulary order, then the user's own as given; no repeats.
 function vocabularyOrder() { return vocabulary.groups.flatMap((group) => group.tags); }
@@ -35107,16 +35105,14 @@ function compareVoiceNames(a, b) {
 }
 // The search: every typed word begins a word of the voice's description or
 // of its tags (AND, any order, case and accents aside), so tags only add to
-// what the description alone finds. It keeps the order above, the selected
-// voice first when it matches. Only the rows are rebuilt: the search box
-// keeps its text and cursor, and the one shared preview player keeps playing.
+// what the description alone finds. The order is always the one above, by name:
+// the selected voice stays in its place (Ümit via Zeki #1548: moved to the top,
+// it pulled the next row under the finger). Only the rows are rebuilt: the search
+// box keeps its text and cursor, and the one shared preview player keeps playing.
 function renderVoiceTable() {
   const query = $("voice-search").value;
   const terms = searchWords(query);
-  const chosen = facts.clone_server ? "" : state.audiobook.voice;
   const matches = voices.filter((voice) => matchesAll(voice.words, terms));
-  const at = matches.findIndex((voice) => voice.name === chosen);
-  if (at > 0) matches.unshift(...matches.splice(at, 1));
   $("voice-rows").replaceChildren(...matches.slice(0, voiceLimit).map((voice) => voiceRow(voice, terms)));
   $("voice-search-clear").classList.toggle("hidden", !query);
   $("voice-table").classList.toggle("hidden", matches.length === 0);
@@ -35302,19 +35298,24 @@ function voiceRow(voice, terms) {
     older.textContent = "Preview reads an older passage";
     name.append(older);
   }
-  // Select chooses the voice Create uses next; the chosen one says so instead.
+  // Select chooses the voice Create uses next; the chosen one's Selected unselects it. Neither opens the row.
   const select = cell("select");
-  if (selected) {
-    const badge = document.createElement("span");
-    badge.className = "selected-badge";
-    badge.innerHTML = CHECK_ICON;
-    badge.append("Selected");
-    select.append(badge);
-  } else if (!facts.clone_server) {
+  if (!facts.clone_server) {
     const choose = document.createElement("button");
-    choose.type = "button"; choose.className = "voice-select"; choose.textContent = "Select";
-    choose.setAttribute("aria-label", `Select ${voice.name} for the next audiobook`);
-    choose.addEventListener("click", () => chooseVoice(voice.name));
+    choose.type = "button";
+    choose.setAttribute("aria-pressed", String(selected));
+    if (selected) {
+      choose.className = "selected-badge";
+      choose.innerHTML = CHECK_ICON;
+      choose.append("Selected");
+      choose.title = "Selected for your next audiobook: press to unselect";
+      choose.setAttribute("aria-label", `${voice.name} is selected for the next audiobook; press to unselect it`);
+      choose.addEventListener("click", () => chooseVoice(""));
+    } else {
+      choose.className = "voice-select"; choose.textContent = "Select";
+      choose.setAttribute("aria-label", `Select ${voice.name} for the next audiobook`);
+      choose.addEventListener("click", () => chooseVoice(voice.name));
+    }
     select.append(choose);
   }
   select.append(rowMoreButton(`More for ${voice.name}`, () => [
@@ -35323,26 +35324,27 @@ function voiceRow(voice, terms) {
     { label:"Delete…", run:(button) => deleteVoice(voice.name, button) },
   ]));
   row.append(preview, name, modifiedCell(voice.modified), select);
+  row.classList.toggle("has-details", !!text);
   setVoiceRowOpen(row, voice, expandedVoices.has(voice.name));
   setPreviewButton(play);
-  // On a phone a tap on the row (not on one of its buttons) shows the whole
-  // description and every tag, and another folds them.
+  // A click or tap on the row (its name, its left side, not one of its buttons) shows the whole description and
+  // every tag, and another folds them; on a phone anywhere on the row (Ümit via Zeki #1548: Selected had opened it).
   row.addEventListener("click", (event) => {
     // The path as dispatched: a preview button redraws its icon while the click is under way.
-    if (!narrowLayout() || String(window.getSelection())
+    if (!text || String(window.getSelection())
         || event.composedPath().some((node) => node instanceof Element && node.matches("button, a, input"))) return;
+    if (!narrowLayout() && !event.composedPath().includes(name)) return;
     toggleVoiceRow(row, voice);
   });
   return row;
 }
-// The same choice as Create step 2's dropdown, and the same state.
+// The same choice as Create step 2's dropdown, and the same state; "" unselects. The button's own change is the
+// only sign: a note over the page covered the next rows on a phone, where the finger goes next.
 function chooseVoice(name) {
   state.audiobook.voice = name;
   populateAssets();
   render(); queueSync();
   renderVoiceTable();
-  $("voice-chosen-text").textContent = `${name} is selected for your next audiobook.`;
-  $("voice-chosen").classList.remove("hidden");
 }
 
 function previewButton(voice) {
@@ -38225,7 +38227,6 @@ function setTab(tab) {
   state.tab = tab;
   setStatus("");
   hideToast();
-  if (tab !== "voice") $("voice-chosen").classList.add("hidden");
   // Other browsers and the operator add voices and previews meanwhile.
   if (tab === "voice") { renderVoiceTable(); refreshVoices(); }
   if (tab === "player") {
